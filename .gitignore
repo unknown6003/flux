@@ -1,0 +1,10 @@
+# Swift / SwiftPM
+.build/
+.swiftpm/
+*.xcodeproj
+
+# Build output (the assembled .app + icon artifacts)
+build/
+
+# macOS
+.DS_Store
