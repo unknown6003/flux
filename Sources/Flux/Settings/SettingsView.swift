@@ -14,6 +14,7 @@ struct SettingsView: View {
                 generalCard
                 behaviorCard
                 appearanceCard
+                SoftwareUpdateCard()
             }
             .padding(20)
             FooterView()
@@ -91,6 +92,135 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Software Update
+
+/// The OTA surface: a status line that reflects `UpdateChecker.state`, the
+/// primary action for that state (check / download / re-open the installer), and
+/// an auto-check toggle. When an update is found it's presented in a prominent
+/// amber banner so it doesn't get lost among the settings.
+private struct SoftwareUpdateCard: View {
+    @EnvironmentObject private var settings: SettingsStore
+    @EnvironmentObject private var updater: UpdateChecker
+
+    var body: some View {
+        FluxCard(title: "Software Update") {
+            VStack(alignment: .leading, spacing: 12) {
+                content
+                Rectangle().fill(Theme.hairlineColor).frame(height: 1)
+                HStack(spacing: 12) {
+                    RowText(title: "Automatically check for updates",
+                            subtitle: "Quietly look for a newer Flux on GitHub.")
+                    Spacer(minLength: 12)
+                    Toggle("", isOn: $settings.automaticUpdateChecks)
+                        .labelsHidden().toggleStyle(.switch).tint(Theme.accentColor)
+                }
+                Text(footerText)
+                    .font(.caption).foregroundStyle(Theme.textSecondaryColor)
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch updater.state {
+        case .idle:
+            checkButton("Check for Updates")
+        case .checking:
+            busyRow("Checking for updates…")
+        case .upToDate:
+            VStack(alignment: .leading, spacing: 10) {
+                statusLine("checkmark.circle.fill", Theme.accentColor,
+                           "Flux \(AppInfo.version) is up to date.")
+                checkButton("Check Again")
+            }
+        case .available(let release):
+            availableBanner(release)
+        case .downloading:
+            busyRow("Downloading update…")
+        case .readyToInstall(let url):
+            VStack(alignment: .leading, spacing: 10) {
+                statusLine("checkmark.circle.fill", Theme.accentColor,
+                           "Downloaded — drag Flux to Applications in the window that opened.")
+                Button { NSWorkspace.shared.open(url) } label: {
+                    Label("Open Installer Again", systemImage: "externaldrive")
+                }
+                .buttonStyle(.fluxProminent)
+            }
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 10) {
+                statusLine("exclamationmark.triangle.fill", .orange, message)
+                checkButton("Try Again")
+            }
+        }
+    }
+
+    // MARK: Pieces
+
+    private func availableBanner(_ release: UpdateChecker.Release) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles").foregroundStyle(Theme.accentInkColor)
+                Text("Update available — \(release.name)")
+                    .font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimaryColor)
+                Spacer(minLength: 0)
+            }
+            if !release.notes.isEmpty {
+                Text(release.notes)
+                    .font(.caption).foregroundStyle(Theme.textSecondaryColor)
+                    .lineLimit(5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button { updater.downloadAndInstall(release) } label: {
+                Label("Download & Install", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.fluxProminent)
+            Button { NSWorkspace.shared.open(release.pageURL) } label: {
+                Text("View release on GitHub")
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(Theme.accentInkColor)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.accentWashColor)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.accentColor.opacity(0.35)))
+        )
+    }
+
+    private func checkButton(_ title: String) -> some View {
+        Button { updater.checkForUpdates(userInitiated: true) } label: {
+            Label(title, systemImage: "arrow.clockwise")
+        }
+        .buttonStyle(.fluxProminent)
+    }
+
+    private func busyRow(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.body).foregroundStyle(Theme.textPrimaryColor)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func statusLine(_ symbol: String, _ tint: Color, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(tint)
+            Text(text).font(.callout).foregroundStyle(Theme.textPrimaryColor)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var footerText: String {
+        guard let date = updater.lastChecked else { return "Flux \(AppInfo.version)" }
+        return "Flux \(AppInfo.version) · Last checked \(date.formatted(date: .omitted, time: .shortened))"
+    }
+}
+
 // MARK: - Row scaffolding
 
 private struct RowDivider: View {
@@ -150,17 +280,16 @@ private struct ArrangeRows: View {
                 Circle().fill(Theme.accentColor).frame(width: 8, height: 8)
                 Text("Arranging your menu bar").font(.body.weight(.semibold))
             }
-            // The coloured boundary markers are live in your menu bar right now —
-            // mirror them here so it's obvious what each one means. Each names the
-            // zone on either side of it; the arrows point the way to drag an icon.
-            (Text("Hold ") + Text("⌘").fontWeight(.bold)
-             + Text(" and drag icons across the coloured markers in your bar:"))
-                .font(.callout)
-                .foregroundStyle(Theme.textPrimaryColor)
+            // The coloured markers are live in your menu bar right now — mirror them
+            // here so it's obvious what each one means and which way to drag.
+            CmdDragCallout()
+            Text("Drag each icon into a zone — right to left in your bar:")
+                .font(.callout).foregroundStyle(Theme.textSecondaryColor)
             VStack(alignment: .leading, spacing: 8) {
-                boundaryRow(.hidden, .shown, "left → Hidden · right → Shown")
+                ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
+                ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
                 if settings.showAlwaysHiddenSection {
-                    boundaryRow(.alwaysHidden, .hidden, "left → Always-Hidden (reveal with ⌥)")
+                    ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
                 }
             }
             Text("Click Done — or the ✓ that replaced the Flux icon — to apply.")
@@ -171,13 +300,6 @@ private struct ArrangeRows: View {
                 Label("Done", systemImage: "checkmark")
             }
             .buttonStyle(.fluxProminent)
-        }
-    }
-
-    private func boundaryRow(_ left: MenuBarSection, _ right: MenuBarSection, _ text: String) -> some View {
-        HStack(spacing: 8) {
-            ArrangeBoundaryChip(left: left, right: right)
-            Text(text).font(.callout).foregroundStyle(Theme.textSecondaryColor)
         }
     }
 }

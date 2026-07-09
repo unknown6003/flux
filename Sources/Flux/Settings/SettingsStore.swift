@@ -20,6 +20,7 @@ final class SettingsStore: ObservableObject {
         self.autoRehide = defaults.bool(forKey: Keys.autoRehide)
         self.autoRehideDelay = defaults.double(forKey: Keys.autoRehideDelay)
         self.enableHotkey = defaults.bool(forKey: Keys.enableHotkey)
+        self.automaticUpdateChecks = defaults.bool(forKey: Keys.automaticUpdateChecks)
         let styleRaw = defaults.string(forKey: Keys.iconStyle) ?? MenuBarIconStyle.chevron.rawValue
         self.iconStyle = MenuBarIconStyle(rawValue: styleRaw) ?? .chevron
     }
@@ -53,6 +54,12 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(enableHotkey, forKey: Keys.enableHotkey) }
     }
 
+    /// Poll GitHub Releases for a newer Flux on launch and periodically. Purely a
+    /// version check over HTTPS — nothing downloads or installs without a click.
+    @Published var automaticUpdateChecks: Bool {
+        didSet { defaults.set(automaticUpdateChecks, forKey: Keys.automaticUpdateChecks) }
+    }
+
     // MARK: Appearance
 
     @Published var iconStyle: MenuBarIconStyle {
@@ -68,6 +75,7 @@ final class SettingsStore: ObservableObject {
         Keys.autoRehide: true,
         Keys.autoRehideDelay: 8.0,
         Keys.enableHotkey: true,
+        Keys.automaticUpdateChecks: true,
         Keys.iconStyle: MenuBarIconStyle.chevron.rawValue
     ]
 
@@ -78,6 +86,7 @@ final class SettingsStore: ObservableObject {
         static let autoRehide = "flux.autoRehide"
         static let autoRehideDelay = "flux.autoRehideDelay"
         static let enableHotkey = "flux.enableHotkey"
+        static let automaticUpdateChecks = "flux.automaticUpdateChecks"
         static let iconStyle = "flux.iconStyle"
     }
 }

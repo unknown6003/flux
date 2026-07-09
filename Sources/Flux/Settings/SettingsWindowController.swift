@@ -7,6 +7,7 @@ import SwiftUI
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let settings: SettingsStore
     private let arranger: MenuBarArranger
+    private let updater: UpdateChecker
     private var window: NSWindow?
 
     /// Fires with the new visibility whenever the window is shown or closed.
@@ -14,9 +15,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// already spells out the same guidance — is on screen.
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    init(settings: SettingsStore, arranger: MenuBarArranger) {
+    init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker) {
         self.settings = settings
         self.arranger = arranger
+        self.updater = updater
         super.init()
     }
 
@@ -34,6 +36,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let root = SettingsView()
             .environmentObject(settings)
             .environmentObject(arranger)
+            .environmentObject(updater)
         let hosting = NSHostingController(rootView: root)
 
         let window = NSWindow(contentViewController: hosting)

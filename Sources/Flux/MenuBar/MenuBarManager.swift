@@ -208,11 +208,12 @@ final class MenuBarManager {
             revealAlwaysHidden = settings.showAlwaysHiddenSection
 
             chevron.setArranging(true)
-            // Each divider marks the border between two zones — name both so the
-            // whole right-to-left order (Always-Hidden │ Hidden │ Shown) is legible.
-            hiddenDivider.setArrangingMarker(true, left: .hidden, right: .shown)
+            // Each divider names the zone to its left, so the right-to-left order
+            // (Shown │ Hidden │ Always-Hidden) reads straight off the bar. Shown
+            // owns no divider — it's simply the area to the right of ◀ Hidden.
+            hiddenDivider.setArrangingMarker(true, zone: .hidden)
             if settings.showAlwaysHiddenSection {
-                alwaysHiddenDivider?.setArrangingMarker(true, left: .alwaysHidden, right: .hidden)
+                alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
             } else {
                 alwaysHiddenDivider?.setArrangingMarker(false)
             }

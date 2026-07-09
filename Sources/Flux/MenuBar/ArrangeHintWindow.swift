@@ -1,38 +1,93 @@
 import AppKit
 import SwiftUI
 
-/// A SwiftUI mirror of a menu-bar **boundary marker**: a two-tone tag naming the
-/// zone on each side of a divider, each half in its zone colour with an arrow
-/// pointing into it (`◀ Hidden │ Shown ▶`). Used in the hint banner and the
-/// Settings arrange panel so what the user sees painted in the bar is explained
-/// pixel-for-pixel. Kept in exact visual sync with `ControlItem.markerImage`.
-struct ArrangeBoundaryChip: View {
-    let left: MenuBarSection
-    let right: MenuBarSection
+/// A SwiftUI mirror of a menu-bar **zone marker**: a solid pill in the zone's
+/// colour with a left arrow and its name (`◀ Hidden`) — "everything to the left
+/// of this marker is <zone>". Used in the hint banner and the Settings arrange
+/// panel so what the user sees painted in the bar is explained pixel-for-pixel.
+/// Kept in visual sync with `ControlItem.markerImage`.
+struct ArrangeZoneChip: View {
+    let zone: MenuBarSection
 
     var body: some View {
-        HStack(spacing: 0) {
-            half(left, pointingLeft: true)
-            Rectangle().fill(Color.black.opacity(0.20)).frame(width: 1)
-            half(right, pointingLeft: false)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-
-    private func half(_ section: MenuBarSection, pointingLeft: Bool) -> some View {
         HStack(spacing: 3) {
-            if pointingLeft {
-                Image(systemName: "arrowtriangle.left.fill").font(.system(size: 7, weight: .bold))
-            }
-            Text(section.displayName).font(.system(size: 11, weight: .bold))
-            if !pointingLeft {
-                Image(systemName: "arrowtriangle.right.fill").font(.system(size: 7, weight: .bold))
-            }
+            Image(systemName: "arrowtriangle.left.fill").font(.system(size: 7, weight: .bold))
+            Text(zone.displayName).font(.system(size: 11, weight: .bold))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(Theme.zoneColor(section))
+        .background(Theme.zoneColor(zone), in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// A deliberately loud reminder that the drag only works while ⌘ is held — the
+/// one non-obvious part of arranging. macOS offers no way to move another app's
+/// menu-bar icon without the ⌘ modifier, so Flux can't remove the requirement;
+/// the next best thing is to make it impossible to miss. Shared by the floating
+/// hint and the Settings arrange panel so the instruction reads identically.
+struct CmdDragCallout: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("⌘")
+                .font(.system(size: 19, weight: .semibold, design: .rounded))
+                .foregroundStyle(Theme.accentInkColor)
+                .frame(width: 34, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Theme.surfaceRaisedColor)
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(Theme.accentColor.opacity(0.55)))
+                )
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Hold ⌘ Command while you drag")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimaryColor)
+                Text("Icons only move across the markers while ⌘ is down.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondaryColor)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.accentWashColor)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.accentColor.opacity(0.35)))
+        )
+    }
+}
+
+/// A right→left legend row: the zone's marker chip (as it appears in the bar)
+/// next to a plain-language description. `zone == nil` is the Shown zone, which
+/// owns no marker — it's just the area nearest the clock, so it gets an outlined
+/// reference chip instead of a solid one.
+struct ArrangeZoneLegendRow: View {
+    let zone: MenuBarSection?
+    let desc: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Group {
+                if let zone {
+                    ArrangeZoneChip(zone: zone)
+                } else {
+                    HStack(spacing: 3) {
+                        Image(systemName: "clock").font(.system(size: 9, weight: .bold))
+                        Text("Shown").font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundStyle(Theme.zoneColor(.shown))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Theme.zoneColor(.shown)))
+                }
+            }
+            .frame(width: 116, alignment: .leading)
+            Text(desc).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -44,7 +99,7 @@ private struct ArrangeHintView: View {
     let showAlwaysHidden: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 7) {
                 Image(systemName: "hand.draw").font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.accentInkColor)
@@ -55,24 +110,21 @@ private struct ArrangeHintView: View {
                     .fixedSize()
             }
 
-            (Text("Hold ").foregroundStyle(.secondary)
-             + Text("⌘").fontWeight(.bold)
-             + Text(" and drag icons across the coloured markers in your bar:").foregroundStyle(.secondary))
-                .font(.system(size: 12))
+            CmdDragCallout()
 
-            HStack(spacing: 8) {
-                ArrangeBoundaryChip(left: .hidden, right: .shown)
-                Text("left → Hidden · right → Shown").font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            if showAlwaysHidden {
-                HStack(spacing: 8) {
-                    ArrangeBoundaryChip(left: .alwaysHidden, right: .hidden)
-                    Text("left → Always-Hidden (reveal with ⌥)").font(.system(size: 11)).foregroundStyle(.secondary)
+            Text("Drag each icon into a zone — right to left in your bar:")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 7) {
+                ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
+                ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
+                if showAlwaysHidden {
+                    ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
                 }
             }
         }
         .padding(14)
-        .frame(width: 320, alignment: .leading)
+        .frame(width: 340, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)

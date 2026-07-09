@@ -19,8 +19,9 @@ MainActor.assumeIsolated {
         exit(0)
     }
     if let idx = args.firstIndex(of: "--snapshot"), idx + 1 < args.count {
-        let dark = idx + 2 < args.count && args[idx + 2] == "dark"
-        SettingsSnapshot.capture(to: args[idx + 1], dark: dark)
+        let dark = args[(idx + 2)...].contains("dark")
+        let arranging = args[(idx + 2)...].contains("arrange")
+        SettingsSnapshot.capture(to: args[idx + 1], dark: dark, arranging: arranging)
         exit(0)
     }
     if args.contains("--selftest") {

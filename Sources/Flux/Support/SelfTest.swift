@@ -118,6 +118,16 @@ enum SelfTest {
         check(!s4.alwaysHiddenSectionPresent,
               "Disabling the Always-Hidden section removes its divider")
 
+        // --- OTA updater: semantic version comparison ---
+        let updater = UpdateChecker(currentVersion: "0.1.1")
+        check(updater.isNewer("0.2.0", than: "0.1.1"), "Update: 0.2.0 is newer than 0.1.1")
+        check(updater.isNewer("0.2", than: "0.1.9"), "Update: 0.2 outranks 0.1.9 (zero-padded)")
+        check(updater.isNewer("1.0.0", than: "0.9.9"), "Update: a major bump is newer")
+        check(!updater.isNewer("0.1.1", than: "0.1.1"), "Update: an identical version is not newer")
+        check(!updater.isNewer("0.1.0", than: "0.1.1"), "Update: an older version is not newer")
+        check(!updater.isNewer("0.1.1", than: "0.2.0"), "Update: the running build isn't behind a lower tag")
+        check(UpdateChecker.normalize("v0.1.1") == "0.1.1", "Update: a 'v' prefix is stripped from tags")
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }

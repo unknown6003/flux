@@ -14,7 +14,7 @@ permissions that **only a human can grant** — apps cannot grant them to themse
 | Builds a signed `.app` | `Scripts/build_app.sh` | ✅ `codesign --verify` passes |
 | Launches as a true agent | `open build/Flux.app` + `pgrep` | ✅ running, **no Dock icon** (`background only = true`) |
 | Status items created on launch | os_log `com.flux.menubar` | ✅ "MenuBarManager initialised" + hotkey registered each launch |
-| **Full state machine** | `Flux --selftest` (26 checks) | ✅ launch-collapsed → reveal-Hidden → reveal-all → collapse → **Arrange Mode enter/exit** → section-toggle, all asserting real `NSStatusItem.length` |
+| **Full state machine** | `Flux --selftest` (33 checks) | ✅ launch-collapsed → reveal-Hidden → reveal-all → collapse → **Arrange Mode enter/exit** → section-toggle → **OTA version compare**, all asserting real state |
 | Idle resource use | `ps` cputime over 3s | ✅ **~0% CPU** (cputime unchanged), ~31 MB, 3 threads |
 | Settings UI (real controls) | `Flux --snapshot` → PNG | ✅ see `docs/screenshots/` |
 
@@ -64,21 +64,31 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 ### 2b. Arrange Mode (assign zones visibly)
 - Right-click the chevron → **Arrange Menu Bar Items…** (or open Settings → **Menu Bar
   Layout** → **Arrange Menu Bar…**).
-- Every icon reappears and each zone boundary shows a **bold coloured tag** on an
-  amber-ramp — amber **Shown ▶**, burnt-orange **◀ Hidden**, deep-rust **◀ Always
-  Hidden** — so they can't be mistaken for an app icon. Each arrow points the way an
-  icon must be dragged to join that zone. The chevron becomes a **✓**.
-- A **floating hint banner** drops under the bar teaching the gesture at the point of
-  action: *Hold **⌘** and drag your menu-bar icons across the markers.* Its chips
-  mirror the live tags (same colours + arrows), and it carries its own **Done** button.
-- **⌘-drag** icons across the markers: left of *Hidden* → Hidden, left of *Always
-  Hidden* → Always-Hidden, right of *Hidden* → Shown.
+- Every icon reappears and each divider shows a **solid coloured marker naming the zone
+  to its left** — burnt-orange **◀ Hidden**, deep-rust **◀ Always Hidden** — so the
+  right-to-left order reads straight off the bar: `[✓] Shown  ◀Hidden  ◀Always Hidden`.
+  The left arrow points the way to drag an icon in. The chevron becomes a **✓**.
+- A **floating hint banner** drops under the bar with a **prominent ⌘ callout** (*Hold
+  ⌘ Command while you drag*) plus a right→left zone legend whose chips mirror the live
+  markers. It carries its own **Done** button. Settings shows the identical panel.
+- **⌘-drag** icons across the markers: left of *◀ Hidden* → Hidden, left of *◀ Always
+  Hidden* → Always-Hidden, everything right of *◀ Hidden* (nearest the clock) → Shown.
 - Click the **✓**, the banner's **Done**, or **Done** in Settings → markers and banner
   vanish and the new arrangement applies. It persists across launches.
 
 ### 3. Settings
 - Right-click the chevron → **Flux Settings…**.
 - Toggle options; they persist immediately.
+
+### 3b. Software Update (OTA)
+- Settings → **Software Update** → **Check for Updates**. Flux polls its GitHub
+  Releases (`unknown6003/flux`), compares the tag against the running build, and — if
+  newer — shows an amber banner with **Download & Install** (downloads the DMG to
+  ~/Downloads and opens it) plus **View release on GitHub**.
+- **Automatically check for updates** (on by default) does a quiet check ~4s after
+  launch and every 6 h; it never installs anything without a click. Zero permissions —
+  a plain HTTPS GET, no Sparkle, no privileged helper, no auto-replace.
+- Running 0.1.1 against the 0.1.1 release correctly reports **up to date**.
 
 ### 4. Launch at login (needs your approval)
 - Turn on **Launch at login** in Settings.

@@ -7,19 +7,23 @@ import AppKit
 /// `ImageRenderer`, this uses AppKit's own draw path, so native controls appear
 /// exactly as they do at runtime. No Screen Recording permission required.
 ///
-///   Flux --snapshot <path> [light|dark]
+///   Flux --snapshot <path> [light|dark] [arrange]
 @MainActor
 enum SettingsSnapshot {
-    static func capture(to path: String, dark: Bool) {
+    static func capture(to path: String, dark: Bool, arranging: Bool = false) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
         app.appearance = appearance
 
         let store = SettingsStore()
+        // Optionally capture the live Arrange-Mode panel (⌘ callout + zone legend).
+        let arranger = MenuBarArranger()
+        if arranging { arranger.setArranging(true) }
         let root = SettingsView()
             .environmentObject(store)
-            .environmentObject(MenuBarArranger())
+            .environmentObject(arranger)
+            .environmentObject(UpdateChecker())
             .environment(\.colorScheme, dark ? .dark : .light)
 
         let hosting = NSHostingView(rootView: AnyView(root))

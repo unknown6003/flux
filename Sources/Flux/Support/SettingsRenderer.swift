@@ -17,6 +17,7 @@ enum SettingsRenderer {
         let view = SettingsView()
             .environmentObject(SettingsStore())
             .environmentObject(MenuBarArranger())
+            .environmentObject(UpdateChecker())
             .environment(\.colorScheme, isDark ? .dark : .light)
 
         // Resolve system colors (controlBackgroundColor, etc.) against the
