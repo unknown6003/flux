@@ -150,19 +150,18 @@ private struct ArrangeRows: View {
                 Circle().fill(Theme.accentColor).frame(width: 8, height: 8)
                 Text("Arranging your menu bar").font(.body.weight(.semibold))
             }
-            // The coloured markers are live in your menu bar right now — mirror them
-            // here so it's obvious what each one means and how to use them. The
-            // arrow on each chip points the way to drag an icon into that zone.
+            // The coloured boundary markers are live in your menu bar right now —
+            // mirror them here so it's obvious what each one means. Each names the
+            // zone on either side of it; the arrows point the way to drag an icon.
             (Text("Hold ") + Text("⌘").fontWeight(.bold)
-             + Text(" and drag your menu-bar icons across the markers:"))
+             + Text(" and drag icons across the coloured markers in your bar:"))
                 .font(.callout)
                 .foregroundStyle(Theme.textPrimaryColor)
-            VStack(alignment: .leading, spacing: 6) {
-                chipRow(.hidden, .left, "drop an icon to its left to hide it")
+            VStack(alignment: .leading, spacing: 8) {
+                boundaryRow(.hidden, .shown, "left → Hidden · right → Shown")
                 if settings.showAlwaysHiddenSection {
-                    chipRow(.alwaysHidden, .left, "further left → Always-Hidden (reveal with ⌥)")
+                    boundaryRow(.alwaysHidden, .hidden, "left → Always-Hidden (reveal with ⌥)")
                 }
-                chipRow(.shown, .right, "right of Hidden → stays Shown")
             }
             Text("Click Done — or the ✓ that replaced the Flux icon — to apply.")
                 .font(.caption).foregroundStyle(Theme.textSecondaryColor)
@@ -175,9 +174,9 @@ private struct ArrangeRows: View {
         }
     }
 
-    private func chipRow(_ section: MenuBarSection, _ arrow: ArrangeMarkerChip.Arrow, _ text: String) -> some View {
+    private func boundaryRow(_ left: MenuBarSection, _ right: MenuBarSection, _ text: String) -> some View {
         HStack(spacing: 8) {
-            ArrangeMarkerChip(section: section, arrow: arrow)
+            ArrangeBoundaryChip(left: left, right: right)
             Text(text).font(.callout).foregroundStyle(Theme.textSecondaryColor)
         }
     }

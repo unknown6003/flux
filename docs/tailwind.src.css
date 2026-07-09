@@ -3,13 +3,13 @@
 /*
   Flux landing page — design tokens.
   Palette: Matte Black (#0A0A0A) 60% · Obsidian (#1C1C1E) 30% · Industrial Amber
-  (#FFB000) 10%. Amber is the single accent; everything else is warm neutral.
-  Theme-aware: the same semantic tokens flip with the viewer's OS appearance.
+  (#FFB000) 10%. Solid and flat: one amber accent used as a single colour, warm
+  neutrals, uniform hairline borders — no gradients, no glows. Theme-aware: the
+  same semantic tokens flip with the viewer's OS appearance.
 */
 
 @theme {
   --color-amber: #ffb000;
-  --color-amber-deep: #ff7a00;
   --color-matteblack: #0a0a0a;
   --color-obsidian: #1c1c1e;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -18,16 +18,17 @@
 
 @layer base {
   :root {
-    --bg: #f6f4f1;
-    --bg-soft: #efeae2;
+    --bg: #f5f3f0;
+    --bg-soft: #ece8e2;
     --surface: #ffffff;
-    --border: rgba(20, 16, 8, 0.10);
-    --border-strong: rgba(20, 16, 8, 0.16);
-    --text: #1a1a1c;
-    --text-soft: #6c675f;
-    --accent-ink: #9a6300; /* amber legible as text on light grounds */
-    --shadow: 0 18px 50px -22px rgba(30, 22, 8, 0.30);
-    --glow: rgba(255, 176, 0, 0.22);
+    --border: rgba(20, 16, 8, 0.12);
+    --border-strong: rgba(20, 16, 8, 0.24);
+    --text: #17161a;
+    --text-soft: #63605a;
+    --accent: #ffb000;
+    --accent-ink: #8a5a00;                 /* amber legible as text/icon on light grounds */
+    --accent-tint: rgba(255, 176, 0, 0.12);
+    --shadow: 0 12px 32px -18px rgba(30, 22, 8, 0.26);
     /* zone ramp — matches the app's live menu-bar markers */
     --z-shown: #c98a18;
     --z-hidden: #c15a22;
@@ -37,15 +38,16 @@
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0a0a0a;
-      --bg-soft: #141414;
+      --bg-soft: #141416;
       --surface: #1c1c1e;
-      --border: rgba(255, 255, 255, 0.10);
-      --border-strong: rgba(255, 176, 0, 0.32);
-      --text: #f5f4f2;
-      --text-soft: #9b968e;
+      --border: rgba(255, 255, 255, 0.12);
+      --border-strong: rgba(255, 255, 255, 0.22);
+      --text: #f4f3f1;
+      --text-soft: #9a958d;
+      --accent: #ffb000;
       --accent-ink: #ffb000;
-      --shadow: 0 26px 64px -26px rgba(0, 0, 0, 0.85);
-      --glow: rgba(255, 176, 0, 0.16);
+      --accent-tint: rgba(255, 176, 0, 0.14);
+      --shadow: 0 20px 50px -24px rgba(0, 0, 0, 0.80);
       --z-shown: #d99a26;
       --z-hidden: #d16a30;
       --z-always: #a04f3c;
@@ -60,52 +62,59 @@
     -webkit-font-smoothing: antialiased;
     line-height: 1.6;
   }
-  ::selection { background: rgba(255, 176, 0, 0.28); }
+  ::selection { background: rgba(255, 176, 0, 0.24); }
 }
 
 @layer components {
-  /* An industrial, monospaced section label with a leading amber tick. */
+  /* An industrial, monospaced section label led by a short amber tick. */
   .eyebrow {
-    @apply inline-flex items-center gap-2 font-mono text-xs font-semibold uppercase;
-    letter-spacing: 0.14em;
+    @apply inline-flex items-center gap-2.5 font-mono text-xs font-semibold uppercase;
+    letter-spacing: 0.16em;
     color: var(--accent-ink);
   }
   .eyebrow::before {
     content: "";
-    width: 0.55rem; height: 0.55rem;
-    background: var(--color-amber);
-    box-shadow: 0 0 0 4px var(--glow);
+    width: 0.75rem; height: 2px;
+    background: var(--accent);
   }
 
-  /* The Flux mark: an amber tile with a matte-black chevron. */
+  /* The Flux mark: a solid amber tile with a matte-black chevron. */
   .mark {
     @apply grid place-items-center;
-    background: linear-gradient(135deg, #ffc24a, #ff9500);
-    box-shadow: 0 8px 20px -8px rgba(255, 176, 0, 0.7);
+    background: var(--accent);
   }
 
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold no-underline;
-    @apply px-6 py-3 text-base transition-transform duration-150;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg font-semibold no-underline;
+    @apply px-5 py-3 text-[0.95rem];
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
   }
-  .btn:hover { transform: translateY(-2px); }
   .btn-primary {
-    background: linear-gradient(120deg, var(--color-amber), var(--color-amber-deep));
-    color: #17120a;
-    box-shadow: 0 14px 30px -12px rgba(255, 138, 0, 0.75);
+    background: var(--accent);
+    color: #14100a;
   }
+  .btn-primary:hover { background: #e69e00; }
   .btn-ghost {
-    background: var(--surface);
+    background: transparent;
     color: var(--text);
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
   }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent-ink); }
 
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    @apply rounded-2xl p-6 transition-all duration-150;
+    @apply rounded-xl p-6;
+    transition: border-color 0.15s ease;
   }
-  .card:hover { transform: translateY(-3px); border-color: var(--border-strong); }
+  .card:hover { border-color: var(--border-strong); }
+
+  /* A small square holding a section's amber line-icon. */
+  .icon-tile {
+    @apply grid h-11 w-11 place-items-center rounded-lg;
+    background: var(--accent-tint);
+    border: 1px solid var(--border);
+  }
 
   /* A menu-bar zone tag mirroring the live marker chips. */
   .tag {
@@ -113,8 +122,9 @@
   }
 
   kbd {
-    @apply rounded-md px-1.5 py-0.5 font-mono text-xs;
+    @apply rounded-md px-1.5 py-0.5 font-mono text-xs font-semibold;
     background: var(--bg-soft);
     border: 1px solid var(--border);
+    color: var(--text);
   }
 }

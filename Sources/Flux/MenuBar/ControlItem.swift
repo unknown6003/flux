@@ -169,22 +169,23 @@ final class ControlItem {
     }
 
     /// Divider only. In Arrange Mode a divider stops being invisible and shows a
-    /// small labeled marker so the user can see exactly where a zone boundary sits
-    /// and ⌘-drag icons across it. `section` names the zone whose items sit to the
-    /// marker's *left*. Passing `on: false` restores the invisible state — the
-    /// caller then sets the collapsed/revealed width.
-    func setArrangingMarker(_ on: Bool, section: MenuBarSection? = nil) {
+    /// labeled **boundary marker** so the user can see exactly where a zone edge
+    /// sits and ⌘-drag icons across it. A divider is the border between two
+    /// adjacent zones, so the marker names *both*: `left` is the zone whose items
+    /// sit to its left, `right` the zone to its right. That way every zone —
+    /// including Shown, which owns no divider of its own — is colour-coded and
+    /// named right in the bar. Passing `on: false` restores the invisible state.
+    func setArrangingMarker(_ on: Bool, left: MenuBarSection? = nil, right: MenuBarSection? = nil) {
         guard role == .divider, let button = statusItem.button else { return }
         isArranging = on
-        if on, let section {
-            // A bold, coloured tag (drawn, not a template symbol) so it reads as a
+        if on, let left, let right {
+            // A bold, two-tone tag (drawn, not a template symbol) so it reads as a
             // Flux zone boundary — not just another monochrome menu-bar icon — with
-            // a left arrow spelling out that items to its left join this zone.
-            button.image = ControlItem.markerImage(label: section.displayName,
-                                                   color: ArrangeStyle.nsColor(for: section))
+            // an arrow on each side spelling out which zone an icon joins.
+            button.image = ControlItem.markerImage(left: left, right: right)
             button.imagePosition = .imageOnly
             button.title = ""
-            button.toolTip = "Hold ⌘ and drag icons to the left of here to put them in \(section.displayName)."
+            button.toolTip = "Hold ⌘ and drag icons across here — left → \(left.displayName), right → \(right.displayName)."
             // Auto-fit to the tag so the marker is fully visible while arranging.
             statusItem.length = NSStatusItem.variableLength
         } else {
@@ -194,41 +195,63 @@ final class ControlItem {
         }
     }
 
-    /// Draws a rounded coloured "tag" — a left-pointing chevron plus the zone name
-    /// in white — sized to fit the menu bar. Non-template so the colour survives.
-    private static func markerImage(label: String, color: NSColor) -> NSImage {
+    /// Draws a rounded two-tone "boundary" tag — the zone on each side of the
+    /// divider in its own colour, each with an arrow pointing into that zone
+    /// (`◀ Hidden │ Shown ▶`). Sized to fit the menu bar; non-template so the
+    /// colours survive.
+    private static func markerImage(left: MenuBarSection, right: MenuBarSection) -> NSImage {
         let font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        let text = label as NSString
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
-        let textSize = text.size(withAttributes: attrs)
+        let leftText = left.displayName as NSString
+        let rightText = right.displayName as NSString
+        let leftSize = leftText.size(withAttributes: attrs)
+        let rightSize = rightText.size(withAttributes: attrs)
 
         let height: CGFloat = 16
         let hPad: CGFloat = 6
-        let arrowW: CGFloat = 6
-        let gap: CGFloat = 5
-        let width = ceil(hPad + arrowW + gap + textSize.width + hPad)
+        let arrowW: CGFloat = 5
+        let gap: CGFloat = 4
+        let leftSegW = ceil(hPad + arrowW + gap + leftSize.width + hPad)
+        let rightSegW = ceil(hPad + rightSize.width + gap + arrowW + hPad)
+        let width = leftSegW + rightSegW
+        let midY = height / 2
 
         let image = NSImage(size: NSSize(width: width, height: height))
         image.lockFocus()
-        let pill = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: width, height: height),
-                                xRadius: 4, yRadius: 4)
-        color.setFill()
-        pill.fill()
 
-        // Left-pointing chevron: "◀ this way is <zone>".
-        let midY = height / 2
-        let arrow = NSBezierPath()
-        arrow.move(to: NSPoint(x: hPad + arrowW, y: midY + 3.5))
-        arrow.line(to: NSPoint(x: hPad, y: midY))
-        arrow.line(to: NSPoint(x: hPad + arrowW, y: midY - 3.5))
-        arrow.lineWidth = 1.6
-        arrow.lineCapStyle = .round
-        arrow.lineJoinStyle = .round
-        NSColor.white.setStroke()
-        arrow.stroke()
+        // Clip to the pill, then paint each half so the colours meet in a crisp seam.
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: width, height: height),
+                     xRadius: 4, yRadius: 4).addClip()
+        Theme.zone(left).setFill()
+        NSRect(x: 0, y: 0, width: leftSegW, height: height).fill()
+        Theme.zone(right).setFill()
+        NSRect(x: leftSegW, y: 0, width: rightSegW, height: height).fill()
+        NSColor.black.withAlphaComponent(0.20).setFill()
+        NSRect(x: leftSegW - 0.5, y: 0, width: 1, height: height).fill()
 
-        text.draw(at: NSPoint(x: hPad + arrowW + gap, y: (height - textSize.height) / 2 - 0.5),
-                  withAttributes: attrs)
+        func arrow(pointingLeft: Bool, tipX: CGFloat) {
+            let path = NSBezierPath()
+            let backX = pointingLeft ? tipX + arrowW : tipX - arrowW
+            path.move(to: NSPoint(x: backX, y: midY + 3.5))
+            path.line(to: NSPoint(x: tipX, y: midY))
+            path.line(to: NSPoint(x: backX, y: midY - 3.5))
+            path.lineWidth = 1.6
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            NSColor.white.setStroke()
+            path.stroke()
+        }
+
+        // Left half: "◀ <left>"
+        arrow(pointingLeft: true, tipX: hPad)
+        leftText.draw(at: NSPoint(x: hPad + arrowW + gap, y: (height - leftSize.height) / 2 - 0.5),
+                      withAttributes: attrs)
+        // Right half: "<right> ▶"
+        let rightTextX = leftSegW + hPad
+        rightText.draw(at: NSPoint(x: rightTextX, y: (height - rightSize.height) / 2 - 0.5),
+                       withAttributes: attrs)
+        arrow(pointingLeft: false, tipX: width - hPad)
+
         image.unlockFocus()
         image.isTemplate = false
         return image

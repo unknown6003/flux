@@ -84,10 +84,11 @@ enum Theme {
     static var accentWashColor: Color { Color(nsColor: accentWash) }
     static func zoneColor(_ section: MenuBarSection) -> Color { Color(nsColor: zone(section)) }
 
-    /// The app mark gradient — Industrial Amber, top-lit.
+    /// The app mark fill — the true brand amber with a faint top sheen, matching
+    /// the app icon. Near-flat: enough depth to read as a mark, no orange fade.
     static var markGradient: LinearGradient {
-        LinearGradient(colors: [Color(nsColor: rgb(0xFFC24A)), Color(nsColor: rgb(0xFF9500))],
-                       startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [Color(nsColor: rgb(0xFFC752)), Color(nsColor: rgb(0xFFB000))],
+                       startPoint: .top, endPoint: .bottom)
     }
 }
 

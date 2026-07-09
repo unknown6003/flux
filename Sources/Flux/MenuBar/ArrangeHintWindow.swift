@@ -1,43 +1,38 @@
 import AppKit
 import SwiftUI
 
-/// Shared colours for the arrange-mode zone tags, so the markers drawn in the
-/// live menu bar (`ControlItem.markerImage`) and the SwiftUI chips in the hint
-/// banner / Settings stay in exact visual sync.
-enum ArrangeStyle {
-    static func nsColor(for section: MenuBarSection) -> NSColor {
-        Theme.zone(section)
-    }
-
-    static func color(for section: MenuBarSection) -> Color {
-        Theme.zoneColor(section)
-    }
-}
-
-/// A SwiftUI mirror of a menu-bar zone marker: a coloured tag with a directional
-/// arrow and the zone name. Used in the hint banner and the Settings arrange panel
-/// so the user can connect what they see in the bar with what it means. The arrow
-/// points the way an icon must be dragged to join that zone.
-struct ArrangeMarkerChip: View {
-    enum Arrow { case left, right, none }
-
-    let section: MenuBarSection
-    var arrow: Arrow = .left
+/// A SwiftUI mirror of a menu-bar **boundary marker**: a two-tone tag naming the
+/// zone on each side of a divider, each half in its zone colour with an arrow
+/// pointing into it (`◀ Hidden │ Shown ▶`). Used in the hint banner and the
+/// Settings arrange panel so what the user sees painted in the bar is explained
+/// pixel-for-pixel. Kept in exact visual sync with `ControlItem.markerImage`.
+struct ArrangeBoundaryChip: View {
+    let left: MenuBarSection
+    let right: MenuBarSection
 
     var body: some View {
+        HStack(spacing: 0) {
+            half(left, pointingLeft: true)
+            Rectangle().fill(Color.black.opacity(0.20)).frame(width: 1)
+            half(right, pointingLeft: false)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private func half(_ section: MenuBarSection, pointingLeft: Bool) -> some View {
         HStack(spacing: 3) {
-            if arrow == .left {
+            if pointingLeft {
                 Image(systemName: "arrowtriangle.left.fill").font(.system(size: 7, weight: .bold))
             }
             Text(section.displayName).font(.system(size: 11, weight: .bold))
-            if arrow == .right {
+            if !pointingLeft {
                 Image(systemName: "arrowtriangle.right.fill").font(.system(size: 7, weight: .bold))
             }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background(ArrangeStyle.color(for: section), in: RoundedRectangle(cornerRadius: 4))
+        .background(Theme.zoneColor(section))
     }
 }
 
@@ -62,22 +57,18 @@ private struct ArrangeHintView: View {
 
             (Text("Hold ").foregroundStyle(.secondary)
              + Text("⌘").fontWeight(.bold)
-             + Text(" and drag your menu-bar icons across the markers:").foregroundStyle(.secondary))
+             + Text(" and drag icons across the coloured markers in your bar:").foregroundStyle(.secondary))
                 .font(.system(size: 12))
 
             HStack(spacing: 8) {
-                ArrangeMarkerChip(section: .hidden)
-                Text("drop icons to its left → Hidden").font(.system(size: 11)).foregroundStyle(.secondary)
+                ArrangeBoundaryChip(left: .hidden, right: .shown)
+                Text("left → Hidden · right → Shown").font(.system(size: 11)).foregroundStyle(.secondary)
             }
             if showAlwaysHidden {
                 HStack(spacing: 8) {
-                    ArrangeMarkerChip(section: .alwaysHidden)
-                    Text("further left → Always-Hidden (reveal with ⌥)").font(.system(size: 11)).foregroundStyle(.secondary)
+                    ArrangeBoundaryChip(left: .alwaysHidden, right: .hidden)
+                    Text("left → Always-Hidden (reveal with ⌥)").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-            }
-            HStack(spacing: 8) {
-                ArrangeMarkerChip(section: .shown, arrow: .right)
-                Text("right of Hidden → stays Shown").font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
         .padding(14)

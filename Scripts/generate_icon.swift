@@ -24,11 +24,14 @@ func makePNG(pixels: Int) -> Data {
     let clip = NSBezierPath(roundedRect: tile, xRadius: radius, yRadius: radius)
     clip.addClip()
 
+    // A restrained, near-flat amber: a faint top sheen settling onto the true
+    // brand amber (#FFB000). Just enough depth to read as an app icon, no garish
+    // orange fade.
     let gradient = NSGradient(colors: [
-        NSColor(srgbRed: 1.00, green: 0.761, blue: 0.290, alpha: 1), // #FFC24A
-        NSColor(srgbRed: 1.00, green: 0.584, blue: 0.000, alpha: 1)  // #FF9500
+        NSColor(srgbRed: 1.00, green: 0.780, blue: 0.320, alpha: 1), // #FFC752 sheen
+        NSColor(srgbRed: 1.00, green: 0.690, blue: 0.000, alpha: 1)  // #FFB000 brand
     ])!
-    gradient.draw(in: tile, angle: -55)
+    gradient.draw(in: tile, angle: -90)
 
     // Chevron "‹"
     let c = NSBezierPath()
