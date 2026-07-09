@@ -8,198 +8,45 @@
 <meta property="og:title" content="Flux — A calmer menu bar">
 <meta property="og:description" content="A fast, stable, near-zero-resource menu bar manager for macOS. ~0% CPU at idle, zero permissions.">
 <meta property="og:type" content="website">
-<style>
-  :root {
-    --brand-1: #667dfa;
-    --brand-2: #8c5cf5;
-    --bg: #ffffff;
-    --bg-soft: #f5f6fb;
-    --card: #ffffff;
-    --border: rgba(10, 12, 40, 0.09);
-    --text: #14162a;
-    --text-soft: #565a72;
-    --shadow: 0 18px 50px -20px rgba(30, 34, 90, 0.35);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0c0d16;
-      --bg-soft: #12131f;
-      --card: #161826;
-      --border: rgba(255, 255, 255, 0.09);
-      --text: #eef0f7;
-      --text-soft: #9ea3bd;
-      --shadow: 0 22px 60px -22px rgba(0, 0, 0, 0.75);
-    }
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html { scroll-behavior: smooth; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: inherit; }
-  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
-
-  /* Nav */
-  nav {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 22px 24px; max-width: 1040px; margin: 0 auto;
-  }
-  .brand { display: flex; align-items: center; gap: 11px; font-weight: 600; font-size: 19px; letter-spacing: -0.01em; }
-  .mark {
-    width: 34px; height: 34px; border-radius: 9px;
-    background: linear-gradient(135deg, var(--brand-1), var(--brand-2));
-    display: grid; place-items: center;
-    box-shadow: 0 6px 16px -6px rgba(102, 125, 250, 0.7);
-  }
-  .mark svg { width: 15px; height: 15px; }
-  .nav-links { display: flex; gap: 26px; align-items: center; font-size: 15px; color: var(--text-soft); }
-  .nav-links a { text-decoration: none; transition: color .15s; }
-  .nav-links a:hover { color: var(--text); }
-  @media (max-width: 620px) { .nav-links a.hide-sm { display: none; } }
-
-  /* Hero */
-  header { text-align: center; padding: 68px 0 30px; position: relative; overflow: hidden; }
-  .glow {
-    position: absolute; top: -180px; left: 50%; transform: translateX(-50%);
-    width: 760px; height: 420px; pointer-events: none; z-index: 0;
-    background: radial-gradient(closest-side, rgba(124, 108, 250, 0.28), transparent 70%);
-    filter: blur(10px);
-  }
-  header .wrap { position: relative; z-index: 1; }
-  .pill {
-    display: inline-flex; align-items: center; gap: 7px;
-    font-size: 13px; font-weight: 500; color: var(--text-soft);
-    border: 1px solid var(--border); border-radius: 999px;
-    padding: 6px 14px; margin-bottom: 26px; background: var(--card);
-  }
-  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: #34c759; box-shadow: 0 0 0 3px rgba(52,199,89,.18); }
-  h1 {
-    font-size: clamp(40px, 7vw, 66px); line-height: 1.04; letter-spacing: -0.03em;
-    font-weight: 700; margin-bottom: 20px;
-  }
-  h1 .grad {
-    background: linear-gradient(120deg, var(--brand-1), var(--brand-2));
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .sub { font-size: clamp(17px, 2.4vw, 20px); color: var(--text-soft); max-width: 620px; margin: 0 auto 34px; }
-  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 9px;
-    font-size: 16px; font-weight: 600; text-decoration: none;
-    padding: 13px 24px; border-radius: 12px; transition: transform .12s, box-shadow .2s, background .2s;
-  }
-  .btn-primary { color: #fff; background: linear-gradient(120deg, var(--brand-1), var(--brand-2)); box-shadow: 0 12px 26px -10px rgba(102,125,250,.8); }
-  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 18px 34px -12px rgba(102,125,250,.9); }
-  .btn-ghost { color: var(--text); background: var(--card); border: 1px solid var(--border); }
-  .btn-ghost:hover { transform: translateY(-2px); }
-  .meta-line { margin-top: 18px; font-size: 13.5px; color: var(--text-soft); }
-
-  /* Menu-bar demo strip */
-  .demo {
-    margin: 46px auto 0; max-width: 720px;
-    border: 1px solid var(--border); border-radius: 16px; background: var(--bg-soft);
-    box-shadow: var(--shadow); overflow: hidden;
-  }
-  .demo-bar {
-    display: flex; align-items: center; gap: 16px; justify-content: flex-end;
-    padding: 12px 18px; font-size: 13px; color: var(--text-soft);
-    background: linear-gradient(180deg, rgba(128,128,160,.08), transparent);
-  }
-  .demo-bar .tag { color:#fff; font-weight:700; font-size:12px; padding:3px 9px; border-radius:6px; display:inline-flex; align-items:center; gap:5px; }
-  .tag.always { background:#ff3b30; }
-  .tag.hidden { background:#ff9500; }
-  .tag.shown { background:#34c759; }
-  .demo-bar .ico { opacity:.55; }
-  .demo-cap { padding: 11px 18px; font-size: 13px; color: var(--text-soft); border-top: 1px solid var(--border); text-align:center; }
-
-  /* Sections */
-  section { padding: 60px 0; }
-  .eyebrow { text-align:center; font-size:13px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--brand-2); margin-bottom:12px; }
-  h2 { text-align:center; font-size: clamp(28px, 4.2vw, 38px); letter-spacing:-0.02em; margin-bottom: 44px; }
-
-  .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-  @media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
-  .card {
-    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-    padding: 26px 24px; transition: transform .15s, border-color .15s;
-  }
-  .card:hover { transform: translateY(-3px); border-color: rgba(124,108,250,.4); }
-  .card .ic { width:42px; height:42px; border-radius:11px; display:grid; place-items:center; margin-bottom:16px;
-    background: linear-gradient(135deg, rgba(102,125,250,.16), rgba(140,92,245,.16)); }
-  .card .ic svg { width:20px; height:20px; stroke: var(--brand-2); }
-  .card h3 { font-size:18px; margin-bottom:7px; letter-spacing:-0.01em; }
-  .card p { font-size:14.5px; color: var(--text-soft); }
-
-  /* Zones */
-  .zones { max-width: 860px; margin: 0 auto; }
-  .zonebar { display:flex; gap:10px; margin-bottom:26px; flex-wrap:wrap; justify-content:center; }
-  .zone {
-    flex:1; min-width: 180px; border:1px solid var(--border); border-radius:14px; padding:18px 20px; background:var(--card);
-    border-top: 3px solid var(--zc);
-  }
-  .zone .zt { font-weight:700; font-size:15px; display:flex; align-items:center; gap:8px; margin-bottom:5px; }
-  .zone .zt::before { content:""; width:9px; height:9px; border-radius:50%; background:var(--zc); }
-  .zone p { font-size:13.5px; color:var(--text-soft); }
-  .zone.z-shown { --zc:#34c759; }
-  .zone.z-hidden { --zc:#ff9500; }
-  .zone.z-always { --zc:#ff3b30; }
-  .zones .note { text-align:center; font-size:14.5px; color:var(--text-soft); max-width:640px; margin:0 auto; }
-  .zones .note kbd {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px;
-    background: var(--bg-soft); border:1px solid var(--border); border-radius:6px; padding:1px 6px;
-  }
-
-  /* Shots */
-  .shots { display:grid; grid-template-columns: 1fr 1fr; gap:20px; }
-  @media (max-width: 720px) { .shots { grid-template-columns: 1fr; } }
-  .shots figure { margin:0; }
-  .shots img { width:100%; border-radius:14px; border:1px solid var(--border); box-shadow: var(--shadow); display:block; }
-  .shots figcaption { text-align:center; font-size:13px; color:var(--text-soft); margin-top:10px; }
-
-  /* Features */
-  .feat { display:grid; grid-template-columns: repeat(2, 1fr); gap:12px 30px; max-width:820px; margin:0 auto; }
-  @media (max-width: 640px) { .feat { grid-template-columns: 1fr; } }
-  .feat li { list-style:none; display:flex; gap:11px; align-items:flex-start; font-size:15px; padding:8px 0; }
-  .feat li svg { flex:none; width:19px; height:19px; margin-top:3px; stroke: var(--brand-2); }
-  .feat li b { font-weight:600; }
-
-  /* Footer */
-  footer { border-top:1px solid var(--border); padding: 40px 0; margin-top: 30px; }
-  .foot { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; color:var(--text-soft); font-size:14px; }
-  .foot a { color:var(--text-soft); text-decoration:none; }
-  .foot a:hover { color:var(--text); }
-  .foot-links { display:flex; gap:22px; }
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="font-sans">
 
-<nav>
-  <div class="brand">
-    <span class="mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<!-- Nav -->
+<nav class="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
+  <div class="flex items-center gap-3 text-lg font-semibold tracking-tight">
+    <span class="mark h-9 w-9 rounded-[10px]" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4"><path d="M15 5l-7 7 7 7" stroke="#0a0a0a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </span>
     Flux
   </div>
-  <div class="nav-links">
-    <a href="#how" class="hide-sm">How it works</a>
-    <a href="#features" class="hide-sm">Features</a>
-    <a href="https://github.com/unknown6003/flux">GitHub</a>
+  <div class="flex items-center gap-7 text-sm" style="color: var(--text-soft);">
+    <a href="#how" class="hidden transition-colors hover:text-[var(--text)] sm:inline">How it works</a>
+    <a href="#features" class="hidden transition-colors hover:text-[var(--text)] sm:inline">Features</a>
+    <a href="https://github.com/unknown6003/flux" class="transition-colors hover:text-[var(--text)]">GitHub</a>
   </div>
 </nav>
 
-<header>
-  <div class="glow" aria-hidden="true"></div>
-  <div class="wrap">
-    <span class="pill"><span class="dot"></span> ~0% CPU · zero permissions · open source</span>
-    <h1>A <span class="grad">calmer</span> menu bar<br>for macOS.</h1>
-    <p class="sub">Flux tucks away the menu-bar icons you don't need right now — fast, rock-stable, and without the Screen&nbsp;Recording or Accessibility permissions other managers demand.</p>
-    <div class="cta">
+<!-- Hero -->
+<header class="relative overflow-hidden px-6 pt-16 pb-8 text-center sm:pt-24">
+  <div class="pointer-events-none absolute left-1/2 top-[-200px] h-[440px] w-[760px] max-w-[92vw] -translate-x-1/2"
+       style="background: radial-gradient(closest-side, var(--glow), transparent 72%); filter: blur(8px);" aria-hidden="true"></div>
+  <div class="relative mx-auto max-w-3xl">
+    <span class="mb-7 inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium"
+          style="border-color: var(--border); background: var(--surface); color: var(--text-soft);">
+      <span class="h-1.5 w-1.5 rounded-full bg-amber" style="box-shadow: 0 0 0 3px var(--glow);"></span>
+      ~0% CPU · zero permissions · open source
+    </span>
+    <h1 class="text-balance text-5xl font-bold leading-[1.05] tracking-[-0.03em] sm:text-6xl">
+      A <span class="bg-gradient-to-r from-amber to-amber-deep bg-clip-text text-transparent">calmer</span> menu&nbsp;bar<br>for macOS.
+    </h1>
+    <p class="mx-auto mt-5 max-w-xl text-lg" style="color: var(--text-soft);">
+      Flux tucks away the menu-bar icons you don't need right now — fast, rock-stable,
+      and without the Screen&nbsp;Recording or Accessibility permissions other managers demand.
+    </p>
+    <div class="mt-9 flex flex-wrap justify-center gap-3.5">
       <a class="btn btn-primary" href="https://github.com/unknown6003/flux/releases/latest">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#17120a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
         Download for macOS
       </a>
       <a class="btn btn-ghost" href="https://github.com/unknown6003/flux">
@@ -207,103 +54,133 @@
         View source
       </a>
     </div>
-    <p class="meta-line">Universal · macOS Sonoma 14 or later · v0.1.0</p>
+    <p class="mt-5 text-sm" style="color: var(--text-soft);">Universal · macOS Sonoma 14 or later · v0.1.0</p>
 
-    <div class="demo" aria-hidden="true">
-      <div class="demo-bar">
-        <span class="ico">◔</span><span class="ico">✦</span><span class="ico">⧉</span>
-        <span class="tag always">‹ Always Hidden</span>
-        <span class="tag hidden">‹ Hidden</span>
-        <span>􀯶</span><span>9:41</span>
+    <!-- Menu-bar demo strip -->
+    <div class="mx-auto mt-12 max-w-2xl overflow-hidden rounded-2xl border"
+         style="border-color: var(--border); background: var(--bg-soft); box-shadow: var(--shadow);" aria-hidden="true">
+      <div class="flex items-center justify-end gap-4 px-5 py-3 text-sm" style="color: var(--text-soft);">
+        <span class="opacity-50">◔</span><span class="opacity-50">✦</span><span class="opacity-50">⧉</span>
+        <span class="tag" style="background: var(--z-always);">‹ Always&nbsp;Hidden</span>
+        <span class="tag" style="background: var(--z-hidden);">‹ Hidden</span>
+        <span class="font-mono text-amber">‹</span><span class="font-mono tabular-nums">9:41</span>
       </div>
-      <div class="demo-cap">Arrange Mode reveals every icon and labels each zone — ⌘-drag to sort them.</div>
+      <div class="border-t px-5 py-3 text-center text-sm" style="border-color: var(--border); color: var(--text-soft);">
+        Arrange Mode reveals every icon and labels each zone — ⌘-drag to sort them.
+      </div>
     </div>
   </div>
 </header>
 
-<section id="why">
-  <div class="wrap">
-    <p class="eyebrow">Why it's different</p>
-    <h2>Built for stability, not spectacle</h2>
-    <div class="grid">
+<!-- Why -->
+<section id="why" class="px-6 py-16">
+  <div class="mx-auto max-w-5xl">
+    <div class="mb-3 text-center"><span class="eyebrow">Why it's different</span></div>
+    <h2 class="mb-11 text-balance text-center text-3xl font-bold tracking-[-0.02em] sm:text-4xl">Built for stability, not spectacle</h2>
+    <div class="grid gap-5 md:grid-cols-3">
       <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg></div>
-        <h3>~0% CPU at idle</h3>
-        <p>No continuous screen capture, no polling, no redraw loop. Flux only reacts when you click. It just sits there — quietly.</p>
+        <div class="mb-4 grid h-11 w-11 place-items-center rounded-xl" style="background: var(--glow);">
+          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+        </div>
+        <h3 class="mb-1.5 text-lg font-semibold tracking-tight">~0% CPU at idle</h3>
+        <p class="text-sm" style="color: var(--text-soft);">No continuous screen capture, no polling, no redraw loop. Flux only reacts when you click. It just sits there — quietly.</p>
       </div>
       <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-        <h3>Zero permissions</h3>
-        <p>No Screen Recording. No Accessibility. The core hide/reveal needs nothing — so there's nothing to grant, and nothing to break.</p>
+        <div class="mb-4 grid h-11 w-11 place-items-center rounded-xl" style="background: var(--glow);">
+          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3 class="mb-1.5 text-lg font-semibold tracking-tight">Zero permissions</h3>
+        <p class="text-sm" style="color: var(--text-soft);">No Screen Recording. No Accessibility. The core hide/reveal needs nothing — so there's nothing to grant, and nothing to break.</p>
       </div>
       <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
-        <h3>Stable across releases</h3>
-        <p>Relies on documented <code>NSStatusItem</code> behaviour, not private or capture APIs — so macOS updates don't quietly break it.</p>
+        <div class="mb-4 grid h-11 w-11 place-items-center rounded-xl" style="background: var(--glow);">
+          <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="var(--accent-ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+        </div>
+        <h3 class="mb-1.5 text-lg font-semibold tracking-tight">Stable across releases</h3>
+        <p class="text-sm" style="color: var(--text-soft);">Relies on documented <code class="font-mono text-[0.85em]">NSStatusItem</code> behaviour, not private or capture APIs — so macOS updates don't quietly break it.</p>
       </div>
     </div>
   </div>
 </section>
 
-<section id="how" style="background:var(--bg-soft);">
-  <div class="wrap zones">
-    <p class="eyebrow">How it works</p>
-    <h2>Three zones, just like Bartender</h2>
-    <div class="zonebar">
-      <div class="zone z-shown"><div class="zt">Shown</div><p>Always visible, right where you left them.</p></div>
-      <div class="zone z-hidden"><div class="zt">Hidden</div><p>Revealed when you click the Flux chevron.</p></div>
-      <div class="zone z-always"><div class="zt">Always-Hidden</div><p>Revealed only with ⌥ — fully out of the way.</p></div>
+<!-- How it works -->
+<section id="how" class="px-6 py-16" style="background: var(--bg-soft);">
+  <div class="mx-auto max-w-4xl">
+    <div class="mb-3 text-center"><span class="eyebrow">How it works</span></div>
+    <h2 class="mb-11 text-balance text-center text-3xl font-bold tracking-[-0.02em] sm:text-4xl">Three zones, just like Bartender</h2>
+    <div class="mb-7 grid gap-4 sm:grid-cols-3">
+      <div class="rounded-2xl border p-5" style="border-color: var(--border); background: var(--surface); border-top: 3px solid var(--z-shown);">
+        <div class="mb-1.5 flex items-center gap-2 font-semibold"><span class="h-2.5 w-2.5 rounded-full" style="background: var(--z-shown);"></span>Shown</div>
+        <p class="text-sm" style="color: var(--text-soft);">Always visible, right where you left them.</p>
+      </div>
+      <div class="rounded-2xl border p-5" style="border-color: var(--border); background: var(--surface); border-top: 3px solid var(--z-hidden);">
+        <div class="mb-1.5 flex items-center gap-2 font-semibold"><span class="h-2.5 w-2.5 rounded-full" style="background: var(--z-hidden);"></span>Hidden</div>
+        <p class="text-sm" style="color: var(--text-soft);">Revealed when you click the Flux chevron.</p>
+      </div>
+      <div class="rounded-2xl border p-5" style="border-color: var(--border); background: var(--surface); border-top: 3px solid var(--z-always);">
+        <div class="mb-1.5 flex items-center gap-2 font-semibold"><span class="h-2.5 w-2.5 rounded-full" style="background: var(--z-always);"></span>Always-Hidden</div>
+        <p class="text-sm" style="color: var(--text-soft);">Revealed only with ⌥ — fully out of the way.</p>
+      </div>
     </div>
-    <p class="note">Assign an icon to a zone by <b>⌘-dragging</b> it across a Flux divider — the native macOS gesture, no permissions required. <b>Arrange Mode</b> makes the invisible boundaries visible with labeled <kbd>‹ Hidden</kbd> / <kbd>‹ Always&nbsp;Hidden</kbd> markers so you can see exactly where to drop each one.</p>
+    <p class="mx-auto max-w-2xl text-center text-[0.95rem]" style="color: var(--text-soft);">
+      Assign an icon to a zone by <b class="font-semibold" style="color: var(--text);">⌘-dragging</b> it across a Flux divider — the native
+      macOS gesture, no permissions required. <b class="font-semibold" style="color: var(--text);">Arrange Mode</b> makes the invisible boundaries
+      visible with labeled <kbd>‹ Hidden</kbd> / <kbd>‹ Always&nbsp;Hidden</kbd> markers so you can see exactly where to drop each one.
+    </p>
   </div>
 </section>
 
-<section id="screens">
-  <div class="wrap">
-    <p class="eyebrow">The app</p>
-    <h2>Clean, native, light &amp; dark</h2>
-    <div class="shots">
-      <figure>
-        <img src="screenshots/settings-light.png" alt="Flux settings window in light mode" loading="lazy">
-        <figcaption>Settings — Light</figcaption>
+<!-- Screens -->
+<section id="screens" class="px-6 py-16">
+  <div class="mx-auto max-w-5xl">
+    <div class="mb-3 text-center"><span class="eyebrow">The app</span></div>
+    <h2 class="mb-11 text-balance text-center text-3xl font-bold tracking-[-0.02em] sm:text-4xl">Clean, native, light &amp; dark</h2>
+    <div class="grid gap-5 sm:grid-cols-2">
+      <figure class="m-0">
+        <img src="screenshots/settings-light.png" alt="Flux settings window in light mode" loading="lazy"
+             class="w-full rounded-2xl border" style="border-color: var(--border); box-shadow: var(--shadow);">
+        <figcaption class="mt-2.5 text-center text-sm" style="color: var(--text-soft);">Settings — Light</figcaption>
       </figure>
-      <figure>
-        <img src="screenshots/settings-dark.png" alt="Flux settings window in dark mode" loading="lazy">
-        <figcaption>Settings — Dark</figcaption>
+      <figure class="m-0">
+        <img src="screenshots/settings-dark.png" alt="Flux settings window in dark mode" loading="lazy"
+             class="w-full rounded-2xl border" style="border-color: var(--border); box-shadow: var(--shadow);">
+        <figcaption class="mt-2.5 text-center text-sm" style="color: var(--text-soft);">Settings — Dark</figcaption>
       </figure>
     </div>
   </div>
 </section>
 
-<section id="features" style="background:var(--bg-soft);">
-  <div class="wrap">
-    <p class="eyebrow">Everything in 0.1</p>
-    <h2>Small, sharp feature set</h2>
-    <ul class="feat">
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Auto-hide on launch</b> — tuck icons away the moment Flux starts.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Global hotkey ⌥⌘B</b> — reveal or hide from anywhere.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Arrange Mode</b> — a guided, visible editor for sorting icons.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Click-through reveal</b> — revealed icons stay open under your click.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Auto re-hide</b> — collapses again after an adjustable delay.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Launch at login</b> — via the modern <code>SMAppService</code> API.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>Three icon styles</b> — Chevron, Dot, or Line.</span></li>
-      <li><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b>True agent</b> — no Dock icon, no app-switcher entry.</span></li>
+<!-- Features -->
+<section id="features" class="px-6 py-16" style="background: var(--bg-soft);">
+  <div class="mx-auto max-w-4xl">
+    <div class="mb-3 text-center"><span class="eyebrow">Everything in 0.1</span></div>
+    <h2 class="mb-11 text-balance text-center text-3xl font-bold tracking-[-0.02em] sm:text-4xl">Small, sharp feature set</h2>
+    <ul class="mx-auto grid max-w-3xl gap-x-8 gap-y-1 sm:grid-cols-2">
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Auto-hide on launch</b> — tuck icons away the moment Flux starts.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Global hotkey ⌥⌘B</b> — reveal or hide from anywhere.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Arrange Mode</b> — a guided, visible editor for sorting icons.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Click-through reveal</b> — revealed icons stay open under your click.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Auto re-hide</b> — collapses again after an adjustable delay.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Launch at login</b> — via the modern <code class="font-mono text-[0.85em]">SMAppService</code> API.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">Three icon styles</b> — Chevron, Dot, or Line.</span></li>
+      <li class="flex items-start gap-3 py-2 text-[0.95rem]"><svg viewBox="0 0 24 24" class="mt-1 h-4 w-4 flex-none" fill="none" stroke="var(--accent-ink)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span><b class="font-semibold">True agent</b> — no Dock icon, no app-switcher entry.</span></li>
     </ul>
   </div>
 </section>
 
-<footer>
-  <div class="wrap foot">
-    <div class="brand" style="font-size:16px;">
-      <span class="mark" style="width:26px;height:26px;border-radius:7px;" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<!-- Footer -->
+<footer class="border-t px-6 py-10" style="border-color: var(--border);">
+  <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 text-sm" style="color: var(--text-soft);">
+    <div class="flex items-center gap-2.5 font-semibold" style="color: var(--text);">
+      <span class="mark h-6 w-6 rounded-[6px]" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" class="h-3 w-3"><path d="M15 5l-7 7 7 7" stroke="#0a0a0a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </span>
       Flux
     </div>
-    <div class="foot-links">
-      <a href="https://github.com/unknown6003/flux">GitHub</a>
-      <a href="https://github.com/unknown6003/flux/releases/latest">Download</a>
-      <a href="https://github.com/unknown6003/flux/blob/main/LICENSE">MIT License</a>
+    <div class="flex gap-6">
+      <a href="https://github.com/unknown6003/flux" class="transition-colors hover:text-[var(--text)]">GitHub</a>
+      <a href="https://github.com/unknown6003/flux/releases/latest" class="transition-colors hover:text-[var(--text)]">Download</a>
+      <a href="https://github.com/unknown6003/flux/blob/main/LICENSE" class="transition-colors hover:text-[var(--text)]">MIT License</a>
     </div>
     <div>© 2026 Ammar Badawy</div>
   </div>

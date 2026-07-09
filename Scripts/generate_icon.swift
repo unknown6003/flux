@@ -1,9 +1,9 @@
 #!/usr/bin/env swift
 import AppKit
 
-// Renders Flux's app icon — a soft indigo→violet rounded tile with a white
+// Renders Flux's app icon — an Industrial Amber rounded tile with a matte-black
 // chevron — into a .iconset directory ready for `iconutil`. Pure AppKit drawing,
-// no external assets.
+// no external assets. Matches the in-app Flux mark and the amber brand palette.
 
 let outputDir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "AppIcon.iconset"
 
@@ -25,8 +25,8 @@ func makePNG(pixels: Int) -> Data {
     clip.addClip()
 
     let gradient = NSGradient(colors: [
-        NSColor(red: 0.40, green: 0.49, blue: 0.98, alpha: 1),
-        NSColor(red: 0.55, green: 0.36, blue: 0.96, alpha: 1)
+        NSColor(srgbRed: 1.00, green: 0.761, blue: 0.290, alpha: 1), // #FFC24A
+        NSColor(srgbRed: 1.00, green: 0.584, blue: 0.000, alpha: 1)  // #FF9500
     ])!
     gradient.draw(in: tile, angle: -55)
 
@@ -42,7 +42,7 @@ func makePNG(pixels: Int) -> Data {
     c.lineWidth = w * 0.085
     c.lineCapStyle = .round
     c.lineJoinStyle = .round
-    NSColor.white.setStroke()
+    NSColor(srgbRed: 0.039, green: 0.039, blue: 0.039, alpha: 1).setStroke() // matte black
     c.stroke()
 
     NSGraphicsContext.restoreGraphicsState()

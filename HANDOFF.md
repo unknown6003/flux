@@ -64,12 +64,13 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 ### 2b. Arrange Mode (assign zones visibly)
 - Right-click the chevron → **Arrange Menu Bar Items…** (or open Settings → **Menu Bar
   Layout** → **Arrange Menu Bar…**).
-- Every icon reappears and each zone boundary shows a **bold coloured tag** with a
-  left arrow — orange **◀ Hidden**, red **◀ Always Hidden** — so they can't be mistaken
-  for an app icon. The chevron becomes a **✓**.
+- Every icon reappears and each zone boundary shows a **bold coloured tag** on an
+  amber-ramp — amber **Shown ▶**, burnt-orange **◀ Hidden**, deep-rust **◀ Always
+  Hidden** — so they can't be mistaken for an app icon. Each arrow points the way an
+  icon must be dragged to join that zone. The chevron becomes a **✓**.
 - A **floating hint banner** drops under the bar teaching the gesture at the point of
   action: *Hold **⌘** and drag your menu-bar icons across the markers.* Its chips
-  mirror the live tags (same colours), and it carries its own **Done** button.
+  mirror the live tags (same colours + arrows), and it carries its own **Done** button.
 - **⌘-drag** icons across the markers: left of *Hidden* → Hidden, left of *Always
   Hidden* → Always-Hidden, right of *Hidden* → Shown.
 - Click the **✓**, the banner's **Done**, or **Done** in Settings → markers and banner
@@ -122,3 +123,18 @@ log show --last 5m --info --predicate 'subsystem == "com.flux.menubar"'
 # Rebuild from clean
 rm -rf .build build && ./Scripts/build_app.sh release
 ```
+
+## Landing page (`docs/`, served by GitHub Pages)
+
+`docs/index.html` links a single committed stylesheet, `docs/styles.css`, compiled
+from `docs/tailwind.src.css` with the **Tailwind v4 standalone CLI** (no Node):
+
+```bash
+# one-off download of the standalone binary, then:
+tailwindcss -i docs/tailwind.src.css -o docs/styles.css --minify
+```
+
+Edit `tailwind.src.css` (tokens + components), never `styles.css` (generated). The
+palette — Matte Black `#0A0A0A` · Obsidian `#1C1C1E` · Industrial Amber `#FFB000` —
+and the zone ramp mirror the app's `Theme.swift`. Both files are committed so Pages
+has no build step. Screenshots come from `Flux --snapshot out.png [light|dark]`.

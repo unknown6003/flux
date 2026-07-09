@@ -6,31 +6,33 @@ import SwiftUI
 /// banner / Settings stay in exact visual sync.
 enum ArrangeStyle {
     static func nsColor(for section: MenuBarSection) -> NSColor {
-        switch section {
-        case .shown: return .systemGreen
-        case .hidden: return .systemOrange
-        case .alwaysHidden: return .systemRed
-        }
+        Theme.zone(section)
     }
 
     static func color(for section: MenuBarSection) -> Color {
-        Color(nsColor: nsColor(for: section))
+        Theme.zoneColor(section)
     }
 }
 
-/// A SwiftUI mirror of a menu-bar zone marker: a coloured tag with a left arrow
-/// and the zone name. Used in the hint banner and the Settings arrange panel so
-/// the user can connect what they see in the bar with what it means.
+/// A SwiftUI mirror of a menu-bar zone marker: a coloured tag with a directional
+/// arrow and the zone name. Used in the hint banner and the Settings arrange panel
+/// so the user can connect what they see in the bar with what it means. The arrow
+/// points the way an icon must be dragged to join that zone.
 struct ArrangeMarkerChip: View {
+    enum Arrow { case left, right, none }
+
     let section: MenuBarSection
-    var showArrow = true
+    var arrow: Arrow = .left
 
     var body: some View {
         HStack(spacing: 3) {
-            if showArrow {
+            if arrow == .left {
                 Image(systemName: "arrowtriangle.left.fill").font(.system(size: 7, weight: .bold))
             }
             Text(section.displayName).font(.system(size: 11, weight: .bold))
+            if arrow == .right {
+                Image(systemName: "arrowtriangle.right.fill").font(.system(size: 7, weight: .bold))
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 6)
@@ -50,11 +52,12 @@ private struct ArrangeHintView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 Image(systemName: "hand.draw").font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.accentInkColor)
                 Text("Arranging your menu bar").font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 16)
                 Button("Done") { arranger.setArranging(false) }
-                    .controlSize(.small)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.fluxProminent)
+                    .fixedSize()
             }
 
             (Text("Hold ").foregroundStyle(.secondary)
@@ -69,12 +72,12 @@ private struct ArrangeHintView: View {
             if showAlwaysHidden {
                 HStack(spacing: 8) {
                     ArrangeMarkerChip(section: .alwaysHidden)
-                    Text("to its left → Always-Hidden").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("further left → Always-Hidden (reveal with ⌥)").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
             HStack(spacing: 8) {
-                ArrangeMarkerChip(section: .shown, showArrow: false)
-                Text("anything right of Hidden stays Shown").font(.system(size: 11)).foregroundStyle(.secondary)
+                ArrangeMarkerChip(section: .shown, arrow: .right)
+                Text("right of Hidden → stays Shown").font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
         .padding(14)
@@ -82,7 +85,7 @@ private struct ArrangeHintView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
+                .strokeBorder(Theme.hairlineColor)
         )
     }
 }

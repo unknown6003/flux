@@ -8,7 +8,7 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HeaderView()
-            Divider().opacity(0.35)
+            Rectangle().fill(Theme.hairlineColor).frame(height: 1)
             VStack(spacing: 18) {
                 layoutCard
                 generalCard
@@ -19,7 +19,9 @@ struct SettingsView: View {
             FooterView()
         }
         .frame(width: 480)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Theme.groundColor)
+        .tint(Theme.accentColor)
+        .foregroundStyle(Theme.textPrimaryColor)
     }
 
     // MARK: Menu bar layout
@@ -27,7 +29,7 @@ struct SettingsView: View {
     /// The one place the user assigns icons to zones. Enters Arrange Mode, which
     /// reveals labeled markers in the live bar so ⌘-drag becomes obvious.
     private var layoutCard: some View {
-        SettingsCard(title: "Menu Bar Layout") {
+        FluxCard(title: "Menu Bar Layout") {
             ArrangeRows()
         }
     }
@@ -35,7 +37,7 @@ struct SettingsView: View {
     // MARK: General
 
     private var generalCard: some View {
-        SettingsCard(title: "General") {
+        FluxCard(title: "General") {
             ToggleRow(title: "Launch at login",
                       subtitle: "Start Flux automatically when you sign in.",
                       isOn: $settings.launchAtLogin)
@@ -53,7 +55,7 @@ struct SettingsView: View {
     // MARK: Behavior
 
     private var behaviorCard: some View {
-        SettingsCard(title: "Behavior") {
+        FluxCard(title: "Behavior") {
             ToggleRow(title: "Auto re-hide",
                       subtitle: "Collapse again a moment after revealing.",
                       isOn: $settings.autoRehide)
@@ -71,7 +73,7 @@ struct SettingsView: View {
     // MARK: Appearance
 
     private var appearanceCard: some View {
-        SettingsCard(title: "Appearance") {
+        FluxCard(title: "Appearance") {
             VStack(alignment: .leading, spacing: 10) {
                 RowText(title: "Menu bar icon",
                         subtitle: "The glyph Flux shows in your menu bar.")
@@ -89,35 +91,11 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Card scaffolding
-
-private struct SettingsCard<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .tracking(0.8)
-                .padding(.leading, 4)
-            VStack(spacing: 0) { content }
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.07))
-                )
-        }
-    }
-}
+// MARK: - Row scaffolding
 
 private struct RowDivider: View {
     var body: some View {
-        Divider().opacity(0.5).padding(.leading, 14)
+        Rectangle().fill(Theme.hairlineColor).frame(height: 1).padding(.leading, 14)
     }
 }
 
@@ -126,8 +104,8 @@ private struct RowText: View {
     let subtitle: String
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.body)
-            Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(.body).foregroundStyle(Theme.textPrimaryColor)
+            Text(subtitle).font(.caption).foregroundStyle(Theme.textSecondaryColor)
         }
     }
 }
@@ -161,48 +139,46 @@ private struct ArrangeRows: View {
                 arranger.setArranging(true)
             } label: {
                 Label("Arrange Menu Bar…", systemImage: "slider.horizontal.3")
-                    .frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.fluxProminent)
         }
     }
 
     private var arrangingContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 7) {
-                Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+                Circle().fill(Theme.accentColor).frame(width: 8, height: 8)
                 Text("Arranging your menu bar").font(.body.weight(.semibold))
             }
             // The coloured markers are live in your menu bar right now — mirror them
-            // here so it's obvious what each one means and how to use them.
+            // here so it's obvious what each one means and how to use them. The
+            // arrow on each chip points the way to drag an icon into that zone.
             (Text("Hold ") + Text("⌘").fontWeight(.bold)
              + Text(" and drag your menu-bar icons across the markers:"))
                 .font(.callout)
+                .foregroundStyle(Theme.textPrimaryColor)
             VStack(alignment: .leading, spacing: 6) {
-                chipRow(.hidden, "drop an icon to its left to hide it")
+                chipRow(.hidden, .left, "drop an icon to its left to hide it")
                 if settings.showAlwaysHiddenSection {
-                    chipRow(.alwaysHidden, "to its left → Always-Hidden (reveal with ⌥)")
+                    chipRow(.alwaysHidden, .left, "further left → Always-Hidden (reveal with ⌥)")
                 }
-                chipRow(.shown, "anything right of Hidden stays Shown", arrow: false)
+                chipRow(.shown, .right, "right of Hidden → stays Shown")
             }
             Text("Click Done — or the ✓ that replaced the Flux icon — to apply.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(Theme.textSecondaryColor)
             Button {
                 arranger.setArranging(false)
             } label: {
                 Label("Done", systemImage: "checkmark")
-                    .frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.fluxProminent)
         }
     }
 
-    private func chipRow(_ section: MenuBarSection, _ text: String, arrow: Bool = true) -> some View {
+    private func chipRow(_ section: MenuBarSection, _ arrow: ArrangeMarkerChip.Arrow, _ text: String) -> some View {
         HStack(spacing: 8) {
-            ArrangeMarkerChip(section: section, showArrow: arrow)
-            Text(text).font(.callout).foregroundStyle(.secondary)
+            ArrangeMarkerChip(section: section, arrow: arrow)
+            Text(text).font(.callout).foregroundStyle(Theme.textSecondaryColor)
         }
     }
 }
@@ -219,7 +195,7 @@ private struct ToggleRow: View {
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .tint(.accentColor)
+                .tint(Theme.accentColor)
         }
         .padding(.vertical, 11)
         .padding(.horizontal, 14)
@@ -232,10 +208,10 @@ private struct SliderRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("Delay")
-            Slider(value: $value, in: range, step: 1).tint(.accentColor)
+            Text("Delay").foregroundStyle(Theme.textPrimaryColor)
+            Slider(value: $value, in: range, step: 1).tint(Theme.accentColor)
             Text("\(Int(value))s")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondaryColor)
                 .monospacedDigit()
                 .frame(width: 30, alignment: .trailing)
         }
@@ -256,9 +232,10 @@ private struct HeaderView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Flux")
                         .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.textPrimaryColor)
                     Text(AppInfo.tagline)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondaryColor)
                 }
                 Spacer()
             }
@@ -270,29 +247,27 @@ private struct HeaderView: View {
     }
 }
 
-/// The app mark: a soft gradient tile with a chevron — the minimal identity.
+/// The app mark: an Industrial Amber tile with a matte-black chevron — the
+/// minimal identity, accent-forward as a logo should be.
 private struct FluxMark: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(
-                LinearGradient(colors: [Color(red: 0.40, green: 0.49, blue: 0.98),
-                                        Color(red: 0.55, green: 0.36, blue: 0.96)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
+            .fill(Theme.markGradient)
             .frame(width: 46, height: 46)
             .overlay(
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color(red: 0.04, green: 0.04, blue: 0.04))
             )
-            .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
+            .shadow(color: Theme.accentColor.opacity(0.35), radius: 6, y: 2)
     }
 }
 
 // MARK: - Live menu-bar preview
 
 /// A faux menu bar that teaches the zone model at a glance and reflects the
-/// Always-Hidden toggle live.
+/// Always-Hidden toggle live. Each zone's dots carry its marker colour so the
+/// preview, the live markers, and the legend all read as one system.
 private struct MenuBarPreview: View {
     let showAlwaysHidden: Bool
 
@@ -301,36 +276,36 @@ private struct MenuBarPreview: View {
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 if showAlwaysHidden {
-                    zone(count: 2, tint: .secondary.opacity(0.45))
+                    zone(count: 2, tint: Theme.zoneColor(.alwaysHidden))
                     glyph("chevron.left.2")
                 }
-                zone(count: 3, tint: .secondary.opacity(0.7))
+                zone(count: 3, tint: Theme.zoneColor(.hidden))
                 glyph("chevron.left", accent: true)
-                zone(count: 2, tint: .primary.opacity(0.8))
+                zone(count: 2, tint: Theme.zoneColor(.shown))
                 Image(systemName: "clock")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondaryColor)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
+                    .fill(Theme.surfaceRaisedColor)
                     .overlay(
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.06))
+                            .strokeBorder(Theme.hairlineColor)
                     )
             )
 
             HStack(spacing: 14) {
-                legend(color: .primary.opacity(0.8), label: "Shown")
-                legend(color: .secondary.opacity(0.7), label: "Hidden")
+                legend(section: .shown, label: "Shown")
+                legend(section: .hidden, label: "Hidden")
                 if showAlwaysHidden {
-                    legend(color: .secondary.opacity(0.45), label: "Always-Hidden")
+                    legend(section: .alwaysHidden, label: "Always-Hidden")
                 }
             }
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.textSecondaryColor)
         }
     }
 
@@ -345,12 +320,12 @@ private struct MenuBarPreview: View {
     private func glyph(_ name: String, accent: Bool = false) -> some View {
         Image(systemName: name)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(accent ? Color.accentColor : .secondary)
+            .foregroundStyle(accent ? Theme.accentInkColor : Theme.textSecondaryColor)
     }
 
-    private func legend(color: Color, label: String) -> some View {
+    private func legend(section: MenuBarSection, label: String) -> some View {
         HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 8, height: 8)
+            Circle().fill(Theme.zoneColor(section)).frame(width: 8, height: 8)
             Text(label)
         }
     }
@@ -363,17 +338,17 @@ private struct FooterView: View {
         HStack {
             Text("Version \(AppInfo.version) (\(AppInfo.build))")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondaryColor)
             Spacer()
-            Button(role: .destructive) {
+            Button {
                 NSApp.terminate(nil)
             } label: {
-                Text("Quit Flux")
+                Text("Quit Flux").foregroundStyle(Theme.textSecondaryColor)
             }
-            .controlSize(.regular)
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Theme.groundColor)
     }
 }
