@@ -23,7 +23,15 @@ final class MenuBarManager {
 
     private var rehideTimer: Timer?
     private var outsideClickMonitor: Any?
+    private var overflowTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
+
+    /// How close the leftmost arrange marker may sit to the notch's right edge
+    /// before we treat the bar as full. Set to one whole inter-icon gap (macOS's
+    /// default `NSStatusItemSpacing` is 16 pt) so the warning fires while there's
+    /// still a full icon-slot of clearance — we'd rather warn a touch early than
+    /// let a zone slip behind the notch unannounced.
+    private static let overflowSlack: CGFloat = 16
 
     init(settings: SettingsStore,
          arranger: MenuBarArranger,
@@ -94,14 +102,27 @@ final class MenuBarManager {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.configureAlwaysHiddenSection()
-                // While arranging, re-apply markers so a newly created (or removed)
+                // While arranging, re-apply the focus so a newly created (or removed)
                 // Always-Hidden divider joins the arrange layout instead of the
                 // normal collapsed geometry.
                 if self.arranger.isArranging {
-                    self.applyArrangeMode(true)
+                    self.applyArrangeFocus()
+                    self.refreshOverflow()
                 } else {
                     self.applyState(animated: true)
                 }
+            }
+            .store(in: &cancellables)
+
+        // Incremental arranging: when the user changes which zones are revealed,
+        // re-lay the markers and re-check whether it now fits beside the notch.
+        arranger.$focus
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, self.arranger.isArranging else { return }
+                self.applyArrangeFocus()
+                self.refreshOverflow()
             }
             .store(in: &cancellables)
 
@@ -205,22 +226,12 @@ final class MenuBarManager {
             rehideTimer = nil
             updateOutsideClickMonitor(active: false)
 
-            // Reveal everything so all icons are on the bar to be dragged.
-            revealHidden = true
-            revealAlwaysHidden = settings.showAlwaysHiddenSection
-
             chevron.setArranging(true)
-            // Each divider names the zone to its left, so the right-to-left order
-            // (Shown │ Hidden │ Always-Hidden) reads straight off the bar. Shown
-            // owns no divider — it's simply the area to the right of ◀ Hidden.
-            hiddenDivider.setArrangingMarker(true, zone: .hidden)
-            if settings.showAlwaysHiddenSection {
-                alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
-            } else {
-                alwaysHiddenDivider?.setArrangingMarker(false)
-            }
+            applyArrangeFocus()
+            startOverflowMonitor()
             Log.menuBar.info("Entered Arrange Mode")
         } else {
+            stopOverflowMonitor()
             chevron.setArranging(false)
             hiddenDivider.setArrangingMarker(false)
             alwaysHiddenDivider?.setArrangingMarker(false)
@@ -231,6 +242,86 @@ final class MenuBarManager {
             applyState(animated: true)
             Log.menuBar.info("Exited Arrange Mode")
         }
+    }
+
+    /// Reveal the zones — and show the labeled markers — that the current arrange
+    /// focus calls for. `.all` reveals every zone at once; `.shownHidden` keeps the
+    /// Always-Hidden zone collapsed off-screen so fewer icons crowd the space beside
+    /// the notch while the user sorts the Shown ↔ Hidden boundary.
+    ///
+    /// Each divider names the zone to its left, so the right-to-left order
+    /// (Shown │ Hidden │ Always-Hidden) reads straight off the bar. Shown owns no
+    /// divider — it's simply the area to the right of ◀ Hidden.
+    private func applyArrangeFocus() {
+        let showAlways = settings.showAlwaysHiddenSection && arranger.focus == .all
+        revealHidden = true
+        revealAlwaysHidden = showAlways
+
+        hiddenDivider.setArrangingMarker(true, zone: .hidden)
+        if showAlways {
+            alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
+        } else {
+            // Hide the Always-Hidden marker and balloon its divider so the zone's
+            // icons are pushed off-screen — freeing room beside the notch.
+            alwaysHiddenDivider?.setArrangingMarker(false)
+            alwaysHiddenDivider?.setCollapsed(true, animated: true)
+        }
+    }
+
+    // MARK: Notch overflow
+
+    /// While arranging, poll the live bar and publish whether Flux's revealed items
+    /// still fit beside the notch. Menu-bar item frames shift as the user ⌘-drags
+    /// icons and macOS posts no notification for it, so a light poll (only while
+    /// arranging, a transient mode) keeps the warning honest.
+    private func startOverflowMonitor() {
+        refreshOverflow()
+        overflowTimer?.invalidate()
+        overflowTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshOverflow() }
+        }
+    }
+
+    private func stopOverflowMonitor() {
+        overflowTimer?.invalidate()
+        overflowTimer = nil
+    }
+
+    private func refreshOverflow() {
+        guard arranger.isArranging else { arranger.setOverflow(false); return }
+        arranger.setOverflow(computeArrangeOverflow())
+    }
+
+    /// Whether the leftmost revealed marker is jammed against (or past) the notch,
+    /// meaning the zone to its left has nowhere to go. Items fill the bar from the
+    /// clock leftward, so the leftmost marker's `minX` approaches the notch's right
+    /// edge exactly when the bar runs out of room.
+    private func computeArrangeOverflow() -> Bool {
+        guard let screen = menuBarScreen() else { return false }
+        let region = screen.statusItemRegion
+        let marker = leftmostArrangeMarker()
+        guard let frame = marker.statusItem.button?.window?.frame else { return false }
+        if frame.width < 1 { return true }                       // macOS couldn't place it at all
+        return frame.minX <= region.minX + Self.overflowSlack
+    }
+
+    /// The leftmost marker Flux is showing under the current focus: the Always-Hidden
+    /// marker when that zone is revealed, otherwise the Hidden marker.
+    private func leftmostArrangeMarker() -> ControlItem {
+        if settings.showAlwaysHiddenSection, arranger.focus == .all, let ah = alwaysHiddenDivider {
+            return ah
+        }
+        return hiddenDivider
+    }
+
+    /// The screen whose menu bar currently hosts Flux's items — found from the
+    /// chevron's own window so notch geometry is read from the right display.
+    private func menuBarScreen() -> NSScreen? {
+        if let window = chevron.statusItem.button?.window {
+            let mid = NSPoint(x: window.frame.midX, y: window.frame.midY)
+            return NSScreen.screens.first { $0.frame.contains(mid) } ?? window.screen ?? NSScreen.main
+        }
+        return NSScreen.main
     }
 
     // MARK: Auto-rehide
@@ -374,5 +465,6 @@ final class MenuBarManager {
         if let monitor = outsideClickMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        overflowTimer?.invalidate()
     }
 }

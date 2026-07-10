@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 /// A SwiftUI mirror of a menu-bar **zone marker**: a solid pill in the zone's
 /// colour with a left arrow and its name (`◀ Hidden`) — "everything to the left
@@ -110,6 +111,10 @@ private struct ArrangeHintView: View {
                     .fixedSize()
             }
 
+            if arranger.overflowsNotch {
+                overflowWarning
+            }
+
             CmdDragCallout()
 
             Text("Drag each icon into a zone — right to left in your bar:")
@@ -118,7 +123,7 @@ private struct ArrangeHintView: View {
             VStack(alignment: .leading, spacing: 7) {
                 ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
                 ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
-                if showAlwaysHidden {
+                if showAlwaysHidden && arranger.focus == .all {
                     ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
                 }
             }
@@ -131,6 +136,42 @@ private struct ArrangeHintView: View {
                 .strokeBorder(Theme.hairlineColor)
         )
     }
+
+    /// Warns, right where the arranging happens, when the revealed icons overflow
+    /// behind the notch — and offers the one-tap fix when tucking Always-Hidden away
+    /// would help.
+    private var overflowWarning: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11)).foregroundStyle(.orange)
+                Text("Some icons are behind the notch")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimaryColor)
+                Spacer(minLength: 0)
+            }
+            if showAlwaysHidden && arranger.focus == .all {
+                Text("Too many icons to show every zone beside the notch.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Button { arranger.focus = .shownHidden } label: {
+                    Label("Tuck away Always-Hidden", systemImage: "arrow.left.to.line")
+                }
+                .buttonStyle(.fluxProminent)
+            } else {
+                Text("Move some icons into Always-Hidden, or quit a few menu-bar apps.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.4)))
+        )
+    }
 }
 
 /// Owns the floating, non-activating panel that shows `ArrangeHintView` below the
@@ -141,10 +182,23 @@ final class ArrangeHintWindowController {
     private let arranger: MenuBarArranger
     private let showAlwaysHidden: () -> Bool
     private var panel: NSPanel?
+    private var cancellables = Set<AnyCancellable>()
 
     init(arranger: MenuBarArranger, showAlwaysHidden: @escaping () -> Bool) {
         self.arranger = arranger
         self.showAlwaysHidden = showAlwaysHidden
+
+        // The hint grows/shrinks when the overflow warning appears or the focus
+        // changes; re-fit the panel to the new content while it's on screen.
+        arranger.$overflowsNotch
+            .combineLatest(arranger.$focus)
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, let panel = self.panel, panel.isVisible else { return }
+                self.position(panel)
+            }
+            .store(in: &cancellables)
     }
 
     func show() {
@@ -181,6 +235,7 @@ final class ArrangeHintWindowController {
     private func position(_ panel: NSPanel) {
         guard let screen = NSScreen.main else { return }
         if let hosting = panel.contentView {
+            hosting.layoutSubtreeIfNeeded()   // pick up content that changed live (overflow/focus)
             hosting.setFrameSize(hosting.fittingSize)
             panel.setContentSize(hosting.fittingSize)
         }

@@ -5,24 +5,39 @@ struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var arranger: MenuBarArranger
 
+    /// When false the cards render in a plain, self-sizing column — used off-screen
+    /// to measure the window's natural height. On screen (`true`, the default) they
+    /// live in a `ScrollView`, so a tall settings list scrolls instead of
+    /// overflowing the bottom of a short display.
+    var scrolls = true
+
     var body: some View {
         VStack(spacing: 0) {
             HeaderView()
             Rectangle().fill(Theme.hairlineColor).frame(height: 1)
-            VStack(spacing: 18) {
-                layoutCard
-                generalCard
-                behaviorCard
-                appearanceCard
-                SoftwareUpdateCard()
+            if scrolls {
+                ScrollView { cardColumn }
+            } else {
+                cardColumn
             }
-            .padding(20)
+            Rectangle().fill(Theme.hairlineColor).frame(height: 1)
             FooterView()
         }
         .frame(width: 480)
         .background(Theme.groundColor)
         .tint(Theme.accentColor)
         .foregroundStyle(Theme.textPrimaryColor)
+    }
+
+    private var cardColumn: some View {
+        VStack(spacing: 18) {
+            layoutCard
+            generalCard
+            behaviorCard
+            appearanceCard
+            SoftwareUpdateCard()
+        }
+        .padding(20)
     }
 
     // MARK: Menu bar layout
@@ -283,12 +298,18 @@ private struct ArrangeRows: View {
             // The coloured markers are live in your menu bar right now — mirror them
             // here so it's obvious what each one means and which way to drag.
             CmdDragCallout()
+            if arranger.overflowsNotch {
+                NotchOverflowWarning()
+            }
+            if settings.showAlwaysHiddenSection {
+                ArrangeFocusPicker()
+            }
             Text("Drag each icon into a zone — right to left in your bar:")
                 .font(.callout).foregroundStyle(Theme.textSecondaryColor)
             VStack(alignment: .leading, spacing: 8) {
                 ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
                 ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
-                if settings.showAlwaysHiddenSection {
+                if settings.showAlwaysHiddenSection && arranger.focus == .all {
                     ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
                 }
             }
@@ -301,6 +322,81 @@ private struct ArrangeRows: View {
             }
             .buttonStyle(.fluxProminent)
         }
+    }
+}
+
+/// Incremental arranging: choose whether every zone is revealed at once or only
+/// the Shown ↔ Hidden boundary, so users with more icons than fit beside the notch
+/// can work one step at a time. Shown only when the Always-Hidden zone exists.
+private struct ArrangeFocusPicker: View {
+    @EnvironmentObject private var arranger: MenuBarArranger
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Reveal while arranging")
+                .font(.caption).foregroundStyle(Theme.textSecondaryColor)
+            Picker("", selection: $arranger.focus) {
+                ForEach(MenuBarArranger.Focus.allCases) { focus in
+                    Text(focus.title).tag(focus)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            Text(arranger.focus == .all
+                 ? "Every zone is on the bar. Best when your icons fit beside the notch."
+                 : "Always-Hidden is tucked away so fewer icons crowd the notch while you sort Shown and Hidden.")
+                .font(.caption2).foregroundStyle(Theme.textSecondaryColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Shown while arranging when Flux's revealed items don't all fit beside the notch.
+/// Explains what's happening and offers the one-tap mitigation — tuck Always-Hidden
+/// away — when that would actually free space.
+private struct NotchOverflowWarning: View {
+    @EnvironmentObject private var settings: SettingsStore
+    @EnvironmentObject private var arranger: MenuBarArranger
+
+    private var canTuckAway: Bool {
+        settings.showAlwaysHiddenSection && arranger.focus == .all
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Some icons are behind the notch")
+                    .font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimaryColor)
+                Spacer(minLength: 0)
+            }
+            Text(message)
+                .font(.caption).foregroundStyle(Theme.textSecondaryColor)
+                .fixedSize(horizontal: false, vertical: true)
+            if canTuckAway {
+                Button {
+                    arranger.focus = .shownHidden
+                } label: {
+                    Label("Tuck away Always-Hidden", systemImage: "arrow.left.to.line")
+                }
+                .buttonStyle(.fluxProminent)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.4)))
+        )
+    }
+
+    private var message: String {
+        if canTuckAway {
+            return "There are more menu-bar icons than fit next to the notch, so the leftmost zone is pushed out of sight. Tuck Always-Hidden away to free space, or quit a few menu-bar apps."
+        }
+        return "There are more menu-bar icons than fit next to the notch. Move some into Always-Hidden — they'll collapse out of the way — quit a few menu-bar apps, or rearrange on a display without a notch."
     }
 }
 

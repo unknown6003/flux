@@ -139,6 +139,25 @@ enum SelfTest {
         check(!isHidden(a0.hiddenDividerLength),
               "Arrange Mode reveals icons — the Hidden divider isn't at its 10 000pt collapse")
 
+        // Incremental arranging: tucking Always-Hidden away (for users with more
+        // icons than fit beside the notch) hides its marker and collapses its zone
+        // off-screen, while the Hidden marker stays put.
+        arranger.focus = .shownHidden
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1)) // let the focus sink fire
+        let af = manager.diagnostics
+        check(af.hiddenMarkerShown,
+              "Shown & Hidden focus keeps the Hidden marker")
+        check(!af.alwaysHiddenMarkerShown,
+              "Shown & Hidden focus hides the Always-Hidden marker")
+        check(isHidden(af.alwaysHiddenDividerLength),
+              "Shown & Hidden focus collapses the Always-Hidden zone off-screen")
+
+        arranger.focus = .all
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        let ab = manager.diagnostics
+        check(ab.alwaysHiddenMarkerShown,
+              "Switching back to All zones restores the Always-Hidden marker")
+
         arranger.setArranging(false)
         let a1 = manager.diagnostics
         check(!a1.isArranging, "Leaving Arrange Mode clears the arranging flag")

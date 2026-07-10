@@ -21,7 +21,8 @@ MainActor.assumeIsolated {
     if let idx = args.firstIndex(of: "--snapshot"), idx + 1 < args.count {
         let dark = args[(idx + 2)...].contains("dark")
         let arranging = args[(idx + 2)...].contains("arrange")
-        SettingsSnapshot.capture(to: args[idx + 1], dark: dark, arranging: arranging)
+        let overflow = args[(idx + 2)...].contains("overflow")
+        SettingsSnapshot.capture(to: args[idx + 1], dark: dark, arranging: arranging, overflow: overflow)
         exit(0)
     }
     if args.contains("--selftest") {
