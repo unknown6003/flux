@@ -122,8 +122,11 @@ private struct ArrangeHintView: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
-                ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
-                if showAlwaysHidden && arranger.focus == .all {
+                // Match the markers actually on the bar for this focus.
+                if arranger.focus != .hiddenAlwaysHidden {
+                    ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
+                }
+                if showAlwaysHidden && arranger.focus != .shownHidden {
                     ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
                 }
             }
@@ -137,30 +140,29 @@ private struct ArrangeHintView: View {
         )
     }
 
-    /// Warns, right where the arranging happens, when the revealed icons overflow
-    /// behind the notch — and offers the one-tap fix when tucking Always-Hidden away
-    /// would help.
+    /// Warns, right where the arranging happens, when the current edge's marker
+    /// can't sit clear of the notch — and offers a one-tap switch to the
+    /// less-crowded Shown ↔ Hidden edge when that isn't already the focus.
     private var overflowWarning: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11)).foregroundStyle(.orange)
-                Text("Some icons are behind the notch")
+                Text(arranger.focus == .shownHidden
+                     ? "Too many icons beside the notch"
+                     : "This edge won't fit beside the notch")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.textPrimaryColor)
                 Spacer(minLength: 0)
             }
-            if showAlwaysHidden && arranger.focus == .all {
-                Text("Too many icons to show every zone beside the notch.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(overflowDetail)
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if showAlwaysHidden && arranger.focus != .shownHidden {
                 Button { arranger.focus = .shownHidden } label: {
-                    Label("Tuck away Always-Hidden", systemImage: "arrow.left.to.line")
+                    Label("Sort Shown ↔ Hidden", systemImage: "arrow.left.to.line")
                 }
                 .buttonStyle(.fluxProminent)
-            } else {
-                Text("Move some icons into Always-Hidden, or quit a few menu-bar apps.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)
@@ -171,6 +173,17 @@ private struct ArrangeHintView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(Color.orange.opacity(0.4)))
         )
+    }
+
+    private var overflowDetail: String {
+        switch arranger.focus {
+        case .all:
+            return "More icons than fit beside the notch — sort one edge at a time, or quit a few menu-bar apps."
+        case .hiddenAlwaysHidden:
+            return "Shown and Hidden already fill the space — sort Shown ↔ Hidden first, or quit a few menu-bar apps."
+        case .shownHidden:
+            return "They don't fit even with Always-Hidden tucked away — quit a few menu-bar apps, or use a display without a notch."
+        }
     }
 }
 

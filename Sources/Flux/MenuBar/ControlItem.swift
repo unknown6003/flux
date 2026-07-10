@@ -243,18 +243,21 @@ final class ControlItem {
     }
 
     /// Draws a solid rounded tag in the zone's colour with a left arrow and the
-    /// zone name (`◀ Hidden`) — "everything to the left of here is <zone>". Sized
-    /// to fit the menu bar; non-template so the colour survives.
+    /// zone's short tag (`◀ Always`) — "everything to the left of here is <zone>".
+    /// Deliberately compact: on notched Macs the width this marker occupies is
+    /// width the user's real icons can't use, so a slimmer tag keeps more zones
+    /// on-screen. The full zone name lives in the tooltip and the hint legend.
+    /// Non-template so the colour survives.
     private static func markerImage(zone: MenuBarSection) -> NSImage {
-        let font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        let font = NSFont.systemFont(ofSize: 10, weight: .bold)
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white]
-        let text = zone.displayName as NSString
+        let text = zone.markerLabel as NSString
         let textSize = text.size(withAttributes: attrs)
 
-        let height: CGFloat = 16
-        let hPad: CGFloat = 6
-        let arrowW: CGFloat = 5
-        let gap: CGFloat = 4
+        let height: CGFloat = 15
+        let hPad: CGFloat = 5
+        let arrowW: CGFloat = 4.5
+        let gap: CGFloat = 3
         let width = ceil(hPad + arrowW + gap + textSize.width + hPad)
         let midY = height / 2
 

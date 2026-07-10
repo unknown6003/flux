@@ -27,6 +27,19 @@ enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// A short tag for the live menu-bar marker. On notched Macs every point of
+    /// menu-bar width is scarce — a full "Always Hidden" pill can be the difference
+    /// between a zone landing on-screen or vanishing behind the notch — so the
+    /// painted marker uses this compact form. The colour, tooltip, and the hint /
+    /// Settings legend still carry the full name.
+    var markerLabel: String {
+        switch self {
+        case .shown: return "Shown"
+        case .hidden: return "Hidden"
+        case .alwaysHidden: return "Always"
+        }
+    }
+
     var subtitle: String {
         switch self {
         case .shown: return "Always visible in the menu bar"

@@ -34,4 +34,17 @@ extension NSScreen {
         }
         return NSRect(x: frame.minX, y: barY, width: frame.width, height: menuBarThickness)
     }
+
+    /// Whether a status item with this window `frame` sits clear of the notch and
+    /// will therefore actually render. macOS packs status items right-to-left from
+    /// the clock; once they no longer fit in `statusItemRegion` the leftmost ones
+    /// are pushed to (or past) the notch, where they're clipped out of sight even
+    /// though their window frame and `isVisible` still read as placed. An item is
+    /// clear when its left edge stays `slack` points right of the region's left
+    /// edge — the notch's right edge on a notched Mac, the screen's left edge
+    /// otherwise. A zero-width frame (macOS couldn't place it) never fits.
+    func statusItemFitsBesideNotch(_ frame: NSRect, slack: CGFloat = 2) -> Bool {
+        guard frame.width >= 1 else { return false }
+        return frame.minX >= statusItemRegion.minX + slack
+    }
 }

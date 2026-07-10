@@ -310,8 +310,13 @@ private struct ArrangeRows: View {
                 .font(.callout).foregroundStyle(Theme.textSecondaryColor)
             VStack(alignment: .leading, spacing: 8) {
                 ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
-                ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
-                if settings.showAlwaysHiddenSection && arranger.focus == .all {
+                // Only list a zone whose marker is actually on the bar for this
+                // focus: .hiddenAlwaysHidden drops the ◀Hidden marker; .shownHidden
+                // tucks Always-Hidden away entirely.
+                if arranger.focus != .hiddenAlwaysHidden {
+                    ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
+                }
+                if settings.showAlwaysHiddenSection && arranger.focus != .shownHidden {
                     ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
                 }
             }
@@ -327,15 +332,15 @@ private struct ArrangeRows: View {
     }
 }
 
-/// Incremental arranging: choose whether every zone is revealed at once or only
-/// the Shown ↔ Hidden boundary, so users with more icons than fit beside the notch
-/// can work one step at a time. Shown only when the Always-Hidden zone exists.
+/// Incremental arranging: choose which edge to sort, so users with more icons than
+/// fit beside the notch can work one boundary at a time — Flux collapses the zone
+/// that isn't involved to free the most space. Shown only when Always-Hidden exists.
 private struct ArrangeFocusPicker: View {
     @EnvironmentObject private var arranger: MenuBarArranger
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Reveal while arranging")
+            Text("Sort which edge")
                 .font(.caption).foregroundStyle(Theme.textSecondaryColor)
             Picker("", selection: $arranger.focus) {
                 ForEach(MenuBarArranger.Focus.allCases) { focus in
@@ -344,42 +349,42 @@ private struct ArrangeFocusPicker: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            Text(arranger.focus == .all
-                 ? "Every zone is on the bar. Best when your icons fit beside the notch."
-                 : "Always-Hidden is tucked away so fewer icons crowd the notch while you sort Shown and Hidden.")
+            Text(arranger.focus.explanation)
                 .font(.caption2).foregroundStyle(Theme.textSecondaryColor)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
 
-/// Shown while arranging when Flux's revealed items don't all fit beside the notch.
-/// Explains what's happening and offers the one-tap mitigation — tuck Always-Hidden
-/// away — when that would actually free space.
+/// Shown while arranging when the current edge's marker can't sit clear of the
+/// notch, so that edge is out of reach. Gives an honest reason and — when a
+/// less-crowded edge exists — a one-tap way to switch to it.
 private struct NotchOverflowWarning: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var arranger: MenuBarArranger
 
-    private var canTuckAway: Bool {
-        settings.showAlwaysHiddenSection && arranger.focus == .all
+    /// Switching to the Shown ↔ Hidden edge tucks Always-Hidden away, freeing the
+    /// most space — only useful when we're not already on that edge.
+    private var canFocusShownHidden: Bool {
+        settings.showAlwaysHiddenSection && arranger.focus != .shownHidden
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Some icons are behind the notch")
+                Text(title)
                     .font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimaryColor)
                 Spacer(minLength: 0)
             }
             Text(message)
                 .font(.caption).foregroundStyle(Theme.textSecondaryColor)
                 .fixedSize(horizontal: false, vertical: true)
-            if canTuckAway {
+            if canFocusShownHidden {
                 Button {
                     arranger.focus = .shownHidden
                 } label: {
-                    Label("Tuck away Always-Hidden", systemImage: "arrow.left.to.line")
+                    Label("Sort Shown ↔ Hidden", systemImage: "arrow.left.to.line")
                 }
                 .buttonStyle(.fluxProminent)
             }
@@ -394,11 +399,21 @@ private struct NotchOverflowWarning: View {
         )
     }
 
+    private var title: String {
+        arranger.focus == .shownHidden
+            ? "Too many icons beside the notch"
+            : "This edge won't fit beside the notch"
+    }
+
     private var message: String {
-        if canTuckAway {
-            return "There are more menu-bar icons than fit next to the notch, so the leftmost zone is pushed out of sight. Tuck Always-Hidden away to free space, or quit a few menu-bar apps."
+        switch arranger.focus {
+        case .all:
+            return "There are more icons than fit beside the notch, so the Always-Hidden edge is clipped out of sight. Sort one edge at a time — start with Shown ↔ Hidden — or quit a few menu-bar apps."
+        case .hiddenAlwaysHidden:
+            return "Your Shown and Hidden icons already fill the space beside the notch, so the Always-Hidden edge can't be shown here. Sort Shown ↔ Hidden first, or quit a few menu-bar apps."
+        case .shownHidden:
+            return "Even with Always-Hidden tucked away, your Shown and Hidden icons don't fit beside the notch. Quit a few menu-bar apps, or arrange on a display without a notch."
         }
-        return "There are more menu-bar icons than fit next to the notch. Move some into Always-Hidden — they'll collapse out of the way — quit a few menu-bar apps, or rearrange on a display without a notch."
     }
 }
 

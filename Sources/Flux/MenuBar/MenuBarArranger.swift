@@ -16,22 +16,44 @@ final class MenuBarArranger: ObservableObject {
     /// True while the user is arranging zones (labeled markers shown in the bar).
     @Published private(set) var isArranging = false
 
-    /// Which zones are revealed while arranging. On Macs with a notch, a user with
-    /// more icons than fit beside it can't reveal every zone at once — the leftmost
-    /// spills behind the notch. `.shownHidden` tucks Always-Hidden away so fewer
-    /// icons compete for the space while the Shown ↔ Hidden boundary is sorted.
-    /// Bound directly by the Settings picker, so `MenuBarManager` observes it.
+    /// Which zones are revealed while arranging. On Macs with a notch, only the
+    /// strip to the *right* of the notch can actually show status items — items
+    /// pushed left of it vanish — so a user with more icons than fit there can't
+    /// reveal every zone at once. The boundary-focused modes collapse the zone
+    /// that isn't involved and show a single compact marker, freeing the most
+    /// space for the edge being sorted. Bound directly by the Settings picker, so
+    /// `MenuBarManager` observes it.
     enum Focus: String, CaseIterable, Identifiable {
         /// Reveal every zone at once — the default, best when it all fits.
         case all
-        /// Reveal Shown + Hidden only; keep Always-Hidden collapsed off-screen.
+        /// Sort the Shown ↔ Hidden edge: reveal Shown + Hidden, collapse
+        /// Always-Hidden off-screen so its icons don't compete for space.
         case shownHidden
+        /// Sort the Hidden ↔ Always-Hidden edge: reveal Hidden + Always-Hidden and
+        /// show only the Always-Hidden marker, so the Shown zone is the only extra
+        /// width competing for the space beside the notch.
+        case hiddenAlwaysHidden
 
         var id: String { rawValue }
+
+        /// Short label for the Settings segmented picker.
         var title: String {
             switch self {
-            case .all:         return "All zones"
-            case .shownHidden: return "Shown & Hidden"
+            case .all:                return "All"
+            case .shownHidden:        return "Shown · Hidden"
+            case .hiddenAlwaysHidden: return "Hidden · Always"
+            }
+        }
+
+        /// One-line explanation shown under the picker.
+        var explanation: String {
+            switch self {
+            case .all:
+                return "Every zone is on the bar. Best when your icons fit beside the notch."
+            case .shownHidden:
+                return "Always-Hidden is tucked away so you can sort which icons stay Shown vs. Hidden."
+            case .hiddenAlwaysHidden:
+                return "Shown stays put while you sort which Hidden icons move into Always-Hidden."
             }
         }
     }

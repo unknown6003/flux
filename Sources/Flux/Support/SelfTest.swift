@@ -158,6 +158,21 @@ enum SelfTest {
         check(ab.alwaysHiddenMarkerShown,
               "Switching back to All zones restores the Always-Hidden marker")
 
+        // Hidden ↔ Always-Hidden focus: shows ONLY the Always-Hidden marker (the
+        // Hidden marker drops to a 1pt spacer) so the Always edge — which has
+        // Shown + Hidden to its right — gets every point of room beside the notch.
+        arranger.focus = .hiddenAlwaysHidden
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        let ah = manager.diagnostics
+        check(ah.alwaysHiddenMarkerShown,
+              "Hidden ↔ Always focus keeps the Always-Hidden marker")
+        check(!ah.hiddenMarkerShown,
+              "Hidden ↔ Always focus drops the Hidden marker to reclaim its width")
+        check(!isHidden(ah.hiddenDividerLength),
+              "Hidden ↔ Always focus still reveals the Hidden zone (divider not collapsed)")
+        check(!isHidden(ah.alwaysHiddenDividerLength),
+              "Hidden ↔ Always focus reveals the Always-Hidden zone")
+
         arranger.setArranging(false)
         let a1 = manager.diagnostics
         check(!a1.isArranging, "Leaving Arrange Mode clears the arranging flag")
@@ -172,6 +187,28 @@ enum SelfTest {
         let s4 = manager.diagnostics
         check(!s4.alwaysHiddenSectionPresent,
               "Disabling the Always-Hidden section removes its divider")
+
+        // --- Notch geometry: statusItemFitsBesideNotch drives overflow detection ---
+        // A marker "fits" only when it sits clear of the notch (its left edge stays
+        // right of the usable region's left edge). This is the exact predicate the
+        // overflow monitor uses, so pin its behaviour deterministically.
+        if let screen = NSScreen.main {
+            let region = screen.statusItemRegion
+            func marker(atMinX x: CGFloat, width: CGFloat = 60) -> NSRect {
+                NSRect(x: x, y: region.minY, width: width, height: region.height)
+            }
+            check(screen.statusItemFitsBesideNotch(marker(atMinX: region.minX + 50)),
+                  "Fit: a marker well right of the region edge fits")
+            check(!screen.statusItemFitsBesideNotch(marker(atMinX: region.minX - 10)),
+                  "Fit: a marker pushed left of the region edge (toward the notch) doesn't fit")
+            check(!screen.statusItemFitsBesideNotch(marker(atMinX: region.minX)),
+                  "Fit: a marker with no clearance from the region edge doesn't fit")
+            check(screen.statusItemFitsBesideNotch(marker(atMinX: region.minX + 2)),
+                  "Fit: a marker exactly at the edge + slack fits")
+            check(!screen.statusItemFitsBesideNotch(
+                    NSRect(x: region.minX + 50, y: region.minY, width: 0, height: region.height)),
+                  "Fit: a zero-width frame (macOS couldn't place it) never fits")
+        }
 
         // --- OTA updater: semantic version comparison ---
         let updater = UpdateChecker(currentVersion: "0.1.1")
