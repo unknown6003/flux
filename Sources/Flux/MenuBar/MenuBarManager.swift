@@ -208,6 +208,21 @@ final class MenuBarManager {
         chevron.setChevron(revealed: showHidden)
 
         updateOutsideClickMonitor(active: showHidden)
+
+        // Track the notch highlight across normal reveals too: after the bar reflows
+        // (macOS posts no notification), re-measure whether the revealed icons clip
+        // behind the notch. Collapsing back here clears the glow.
+        scheduleOverflowRefresh()
+    }
+
+    /// Re-measure overflow once the bar has settled after a reveal/collapse. Normal
+    /// reveals are discrete events, so a single delayed check is enough — no need for
+    /// the continuous poll the drag-heavy arrange flow uses.
+    private func scheduleOverflowRefresh() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, !self.arranger.isArranging else { return }
+            self.refreshOverflow()
+        }
     }
 
     // MARK: Arrange Mode
@@ -290,6 +305,12 @@ final class MenuBarManager {
             hiddenDivider.setCollapsed(false, animated: true)
             alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
         }
+
+        // Reclaim the chevron's ~30pt whenever the Always-Hidden edge is on the bar
+        // (.all / .hiddenAlwaysHidden). That edge is furthest from the clock and
+        // first to fall behind the notch, so trimming right-side width pulls its
+        // marker back into view. Shown ↔ Hidden already fits, so keep the chevron.
+        chevron.setArrangeCollapsed(revealAlwaysHidden)
     }
 
     // MARK: Notch overflow
@@ -311,19 +332,46 @@ final class MenuBarManager {
         overflowTimer = nil
     }
 
+    /// Whether the leftmost thing the user is currently trying to *see* could be
+    /// clipped behind the notch: while arranging (a revealed edge marker), or during
+    /// a normal reveal (revealed icons spill past it). When nothing is revealed the
+    /// hidden zones sit behind the notch *by design*, so there's nothing to warn about.
+    private var shouldMonitorOverflow: Bool { arranger.isArranging || isAnyRevealed }
+
     private func refreshOverflow() {
-        guard arranger.isArranging else { arranger.setOverflow(false); return }
-        arranger.setOverflow(computeArrangeOverflow())
+        guard shouldMonitorOverflow else {
+            arranger.setOverflow(arrange: false, notch: false, iconCount: 0)
+            return
+        }
+        let deficit = computeOverflowDeficit()
+        let over = deficit > 0
+        let count = iconsToClear(deficit)
+        // The drawer's arrange coaching only makes sense while arranging; the notch
+        // glow applies to both. So a normal-reveal overflow lights the notch without
+        // surfacing the (focus-specific) drawer warning.
+        arranger.setOverflow(arrange: arranger.isArranging && over, notch: over, iconCount: count)
     }
 
-    /// Whether the current focus's leftmost marker can't sit clear of the notch,
-    /// so the edge it names is clipped out of reach. Items fill the bar from the
-    /// clock leftward, so the leftmost marker crosses into the notch exactly when
-    /// the revealed zones run out of room beside it.
-    private func computeArrangeOverflow() -> Bool {
-        guard let screen = menuBarScreen() else { return false }
-        guard let frame = leftmostArrangeMarker().statusItem.button?.window?.frame else { return false }
-        return !screen.statusItemFitsBesideNotch(frame, slack: Self.overflowSlack)
+    /// How far (in points) the leftmost revealed marker sits *left* of where it would
+    /// clear the notch — `0` when it already fits. Items fill the bar from the clock
+    /// leftward, so the leftmost marker crosses into the notch exactly when the
+    /// revealed zones run out of room beside it; the shortfall is how much width must
+    /// move off this edge before it comes back into view.
+    private func computeOverflowDeficit() -> CGFloat {
+        guard let screen = menuBarScreen() else { return 0 }
+        guard let frame = leftmostOverflowMarker()?.statusItem.button?.window?.frame else { return 0 }
+        guard frame.width >= 1 else { return .greatestFiniteMagnitude }   // couldn't place — deeply overflowed
+        return max(0, (screen.statusItemRegion.minX + Self.overflowSlack) - frame.minX)
+    }
+
+    /// Convert an overflow shortfall in points into an icon count for the cascade
+    /// coaching. Each menu-bar icon occupies roughly one slot's width plus spacing;
+    /// compact spacing tightens that, so fewer moves are needed per point. This is
+    /// an estimate — it only needs to be in the right ballpark to say "about N".
+    private func iconsToClear(_ deficit: CGFloat) -> Int {
+        guard deficit > 0 else { return 0 }
+        let perIcon: CGFloat = MenuBarSpacing.isCompact ? 28 : 38
+        return max(1, Int((deficit / perIcon).rounded(.up)))
     }
 
     /// The leftmost marker Flux is showing under the current focus — the one that
@@ -334,6 +382,18 @@ final class MenuBarManager {
             return ah
         }
         return hiddenDivider
+    }
+
+    /// The leftmost item whose clipping means "the user can't see what they wanted".
+    /// While arranging that's the focus's leftmost marker; during a normal reveal
+    /// it's the leftmost *revealed* divider — the boundary the revealed icons sit
+    /// left of, so if it's behind the notch those icons are clipped. Returns `nil`
+    /// when nothing relevant is revealed (collapsed zones hide by design).
+    private func leftmostOverflowMarker() -> ControlItem? {
+        if arranger.isArranging { return leftmostArrangeMarker() }
+        if revealAlwaysHidden, let ah = alwaysHiddenDivider { return ah }
+        if revealHidden { return hiddenDivider }
+        return nil
     }
 
     /// The screen whose menu bar currently hosts Flux's items — found from the

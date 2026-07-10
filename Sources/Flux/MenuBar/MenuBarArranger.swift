@@ -66,6 +66,19 @@ final class MenuBarArranger: ObservableObject {
     /// arrange panel and the floating hint as a warning.
     @Published private(set) var overflowsNotch = false
 
+    /// How many icon-widths the leftmost marker is short by — the estimated number
+    /// of icons that must move *out of* the crowded edge before it clears the notch.
+    /// Powers the cascade coaching ("about N icons over"): each icon dragged across
+    /// the marker frees roughly one icon-width, pulling the marker back toward view,
+    /// so only the first move is blind. `0` when nothing overflows.
+    @Published private(set) var overflowIconCount = 0
+
+    /// True whenever items the user is trying to *see* are clipped behind the notch —
+    /// during arranging (an edge won't fit) *or* during a normal reveal (revealed
+    /// icons spill past it). Drives the notch highlight overlay. Distinct from
+    /// `overflowsNotch`, which is arrange-only and drives the drawer's coaching.
+    @Published private(set) var notchOverflow = false
+
     /// Installed by `MenuBarManager` to apply the real menu-bar side effects.
     /// Left `nil` in headless/preview contexts (snapshot, render) where there is
     /// no live engine — toggling then only flips the published flag.
@@ -76,6 +89,8 @@ final class MenuBarArranger: ObservableObject {
         isArranging = on
         if !on {
             overflowsNotch = false   // clear stale warnings when arranging ends
+            // The notch glow is left to the engine's next reveal-state measurement:
+            // a normal reveal may still be clipping icons after arranging ends.
             focus = .all             // next session starts by revealing everything
         }
         onChange?(on)
@@ -84,8 +99,16 @@ final class MenuBarArranger: ObservableObject {
     func toggle() { setArranging(!isArranging) }
 
     /// Called by `MenuBarManager` after measuring the live bar.
-    func setOverflow(_ over: Bool) {
-        guard over != overflowsNotch else { return }
-        overflowsNotch = over
+    /// - `arrange`: the current arrange edge won't fit beside the notch (drawer warning).
+    /// - `notch`: items the user is trying to see are clipped (notch glow) — a superset
+    ///   of `arrange` that also covers normal reveals.
+    /// - `iconCount`: estimated icons the leftmost marker is short by (0 when it fits).
+    func setOverflow(arrange: Bool, notch: Bool, iconCount: Int) {
+        let count = notch ? max(1, iconCount) : 0
+        guard arrange != overflowsNotch || notch != notchOverflow || count != overflowIconCount
+        else { return }
+        overflowsNotch = arrange
+        notchOverflow = notch
+        overflowIconCount = count
     }
 }

@@ -21,7 +21,7 @@ enum SettingsSnapshot {
         // and its notch-overflow warning state.
         let arranger = MenuBarArranger()
         if arranging { arranger.setArranging(true) }
-        if arranging && overflow { arranger.setOverflow(true) }
+        if arranging && overflow { arranger.setOverflow(arrange: true, notch: true, iconCount: 4) }
         let root = SettingsView()
             .environmentObject(store)
             .environmentObject(arranger)

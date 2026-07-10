@@ -23,6 +23,9 @@ final class SettingsStore: ObservableObject {
         self.automaticUpdateChecks = defaults.bool(forKey: Keys.automaticUpdateChecks)
         let styleRaw = defaults.string(forKey: Keys.iconStyle) ?? MenuBarIconStyle.chevron.rawValue
         self.iconStyle = MenuBarIconStyle(rawValue: styleRaw) ?? .chevron
+        // Source of truth is the live global default, not a mirrored Flux key, so
+        // the toggle reflects the real system state (even if changed elsewhere).
+        self.compactMenuBarSpacing = MenuBarSpacing.isCompact
     }
 
     // MARK: General
@@ -64,6 +67,13 @@ final class SettingsStore: ObservableObject {
 
     @Published var iconStyle: MenuBarIconStyle {
         didSet { defaults.set(iconStyle.rawValue, forKey: Keys.iconStyle) }
+    }
+
+    /// Shrinks the global menu-bar item spacing so more icons fit beside the notch.
+    /// Not backed by a Flux key — it writes the system's own global default (see
+    /// `MenuBarSpacing`), which is the real source of truth.
+    @Published var compactMenuBarSpacing: Bool {
+        didSet { MenuBarSpacing.apply(compact: compactMenuBarSpacing) }
     }
 
     // MARK: Defaults

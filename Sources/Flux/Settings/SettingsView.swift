@@ -65,6 +65,10 @@ struct SettingsView: View {
             ToggleRow(title: "Always-Hidden zone",
                       subtitle: "A second zone revealed only with ⌥ (option).",
                       isOn: $settings.showAlwaysHiddenSection)
+            RowDivider()
+            ToggleRow(title: "Compact menu-bar spacing",
+                      subtitle: "Tightens the gap around every icon so more fit beside the notch. Affects all apps; full effect after your next login.",
+                      isOn: $settings.compactMenuBarSpacing)
         }
     }
 
@@ -380,6 +384,12 @@ private struct NotchOverflowWarning: View {
             Text(message)
                 .font(.caption).foregroundStyle(Theme.textSecondaryColor)
                 .fixedSize(horizontal: false, vertical: true)
+            if !MenuBarSpacing.isCompact {
+                Text("Tip: turn on Compact menu-bar spacing (above) to free room for every icon.")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.accentInkColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if canFocusShownHidden {
                 Button {
                     arranger.focus = .shownHidden
@@ -405,12 +415,23 @@ private struct NotchOverflowWarning: View {
             : "This edge won't fit beside the notch"
     }
 
+    /// "about N icons" phrasing for the cascade coaching; `Lead` capitalises only
+    /// the first letter for sentence starts.
+    private var overCount: String {
+        let n = arranger.overflowIconCount
+        return n > 0 ? "about \(n) icon\(n == 1 ? "" : "s")" : "a few icons"
+    }
+    private var overCountLead: String { overCount.prefix(1).uppercased() + overCount.dropFirst() }
+
     private var message: String {
         switch arranger.focus {
         case .all:
-            return "There are more icons than fit beside the notch, so the Always-Hidden edge is clipped out of sight. Sort one edge at a time — start with Shown ↔ Hidden — or quit a few menu-bar apps."
+            return "\(overCountLead) more than fit beside the notch, so the Always-Hidden edge is clipped out of sight. Sort one edge at a time — start with Shown ↔ Hidden — or quit a few menu-bar apps."
         case .hiddenAlwaysHidden:
-            return "Your Shown and Hidden icons already fill the space beside the notch, so the Always-Hidden edge can't be shown here. Sort Shown ↔ Hidden first, or quit a few menu-bar apps."
+            // Coach the cascade: the edge is behind the notch, but each icon dragged
+            // across ◀Always frees roughly its own width and pulls the marker back
+            // into view, so only the first move is blind.
+            return "\(overCountLead) sit to the right of ◀Always, so it's clipped behind the notch. You can still drag one from Hidden all the way to the far left — past the notch — to drop it into Always-Hidden. Each icon you move brings ◀Always back into view, so the next is easier."
         case .shownHidden:
             return "Even with Always-Hidden tucked away, your Shown and Hidden icons don't fit beside the notch. Quit a few menu-bar apps, or arrange on a display without a notch."
         }

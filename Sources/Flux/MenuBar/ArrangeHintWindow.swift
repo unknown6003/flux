@@ -101,10 +101,16 @@ private struct ArrangeHintView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
+            // Drawer grab-handle — reads as a panel pulled down from the menu bar.
+            Capsule().fill(Theme.hairlineColor)
+                .frame(width: 34, height: 4)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 1)
+
             HStack(spacing: 7) {
-                Image(systemName: "hand.draw").font(.system(size: 13, weight: .semibold))
+                Image(systemName: "tray.and.arrow.down.fill").font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.accentInkColor)
-                Text("Arranging your menu bar").font(.system(size: 13, weight: .semibold))
+                Text("Menu-bar drawer").font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 16)
                 Button("Done") { arranger.setArranging(false) }
                     .buttonStyle(.fluxProminent)
@@ -132,13 +138,18 @@ private struct ArrangeHintView: View {
             }
         }
         .padding(14)
+        .padding(.top, 2)
         .frame(width: 340, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Theme.hairlineColor)
-        )
+        // Flush top edge, rounded bottom: the panel looks like it slid out of the bar.
+        .background(.regularMaterial, in: Self.drawerShape)
+        .overlay(Self.drawerShape.strokeBorder(Theme.hairlineColor))
     }
+
+    /// Drawer silhouette — square top corners (attached to the menu bar), rounded
+    /// bottom corners (pulled down below it).
+    private static let drawerShape = UnevenRoundedRectangle(
+        topLeadingRadius: 0, bottomLeadingRadius: 16,
+        bottomTrailingRadius: 16, topTrailingRadius: 0, style: .continuous)
 
     /// Warns, right where the arranging happens, when the current edge's marker
     /// can't sit clear of the notch — and offers a one-tap switch to the
@@ -158,6 +169,12 @@ private struct ArrangeHintView: View {
             Text(overflowDetail)
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if !MenuBarSpacing.isCompact {
+                Text("Tip: turn on Compact menu-bar spacing in Settings to free room for every icon.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.accentInkColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if showAlwaysHidden && arranger.focus != .shownHidden {
                 Button { arranger.focus = .shownHidden } label: {
                     Label("Sort Shown ↔ Hidden", systemImage: "arrow.left.to.line")
@@ -175,12 +192,24 @@ private struct ArrangeHintView: View {
         )
     }
 
+    /// "about N icons" phrasing for the cascade coaching; falls back to a generic
+    /// clause when the shortfall couldn't be measured as a count. `Lead` is the
+    /// sentence-start form (first letter only capitalised).
+    private var overCount: String {
+        let n = arranger.overflowIconCount
+        return n > 0 ? "about \(n) icon\(n == 1 ? "" : "s")" : "a few icons"
+    }
+    private var overCountLead: String { overCount.prefix(1).uppercased() + overCount.dropFirst() }
+
     private var overflowDetail: String {
         switch arranger.focus {
         case .all:
-            return "More icons than fit beside the notch — sort one edge at a time, or quit a few menu-bar apps."
+            return "\(overCountLead) more than fit beside the notch. Sort one edge at a time — start with Shown ↔ Hidden — or quit a few menu-bar apps."
         case .hiddenAlwaysHidden:
-            return "Shown and Hidden already fill the space — sort Shown ↔ Hidden first, or quit a few menu-bar apps."
+            // The cascade: the Always edge is behind the notch, but each icon dragged
+            // across ◀Always frees roughly its own width and pulls the marker back
+            // toward view — so only the first move is blind. That's the way through.
+            return "\(overCountLead) sit right of ◀Always. Drag one from Hidden all the way to the far left — past the notch, even though you can't see the marker yet. Each icon you move brings ◀Always back into view, so the next is easier."
         case .shownHidden:
             return "They don't fit even with Always-Hidden tucked away — quit a few menu-bar apps, or use a display without a notch."
         }
@@ -204,7 +233,7 @@ final class ArrangeHintWindowController {
         // The hint grows/shrinks when the overflow warning appears or the focus
         // changes; re-fit the panel to the new content while it's on screen.
         arranger.$overflowsNotch
-            .combineLatest(arranger.$focus)
+            .combineLatest(arranger.$focus, arranger.$overflowIconCount)
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -215,10 +244,23 @@ final class ArrangeHintWindowController {
     }
 
     func show() {
+        let wasHidden = !(panel?.isVisible ?? false)
         let panel = panel ?? makePanel()
         self.panel = panel
         position(panel)
         panel.orderFrontRegardless()
+        guard wasHidden else { return }   // re-fits (overflow/focus) shouldn't re-animate
+
+        // Slide down out of the bar with a short fade.
+        let resting = panel.frame
+        panel.setFrame(resting.offsetBy(dx: 0, dy: 10), display: false)
+        panel.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(resting, display: true)
+            panel.animator().alphaValue = 1
+        }
     }
 
     func hide() {

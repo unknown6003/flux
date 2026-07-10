@@ -210,10 +210,23 @@ final class ControlItem {
     func setArranging(_ on: Bool) {
         guard role == .chevron else { return }
         isArranging = on
+        // Leaving Arrange Mode always restores the chevron's normal width, in case
+        // a focus had collapsed it (see setArrangeCollapsed).
+        if !on { statusItem.length = NSStatusItem.variableLength }
         statusItem.button?.toolTip = on
             ? "Flux — drag icons across the markers, then click to finish"
             : "Flux — click to reveal hidden menu bar items"
         redrawChevron()
+    }
+
+    /// Chevron only. Collapse the chevron to zero width while arranging so its
+    /// ~30pt is reclaimed for a tight edge — the Always-Hidden marker sits furthest
+    /// from the clock and is the first to slip behind the notch, so every point of
+    /// right-side width pulls it back toward the visible region. The floating hint's
+    /// **Done** button stands in while the chevron is collapsed.
+    func setArrangeCollapsed(_ collapsed: Bool) {
+        guard role == .chevron else { return }
+        statusItem.length = collapsed ? 0 : NSStatusItem.variableLength
     }
 
     /// Divider only. In Arrange Mode a divider stops being invisible and shows a

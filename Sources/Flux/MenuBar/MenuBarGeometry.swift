@@ -35,6 +35,20 @@ extension NSScreen {
         return NSRect(x: frame.minX, y: barY, width: frame.width, height: menuBarThickness)
     }
 
+    /// This screen's camera-housing notch as a rectangle in the menu bar, or `nil`
+    /// when the screen has no notch. Derived from the gap between the usable areas
+    /// on either side of it: `auxiliaryTopLeftArea` ends at the notch's left edge and
+    /// `auxiliaryTopRightArea` begins at its right edge. In global screen coordinates
+    /// so it can position an overlay window directly over the notch.
+    var notchRect: NSRect? {
+        guard hasNotch,
+              let left = auxiliaryTopLeftArea,
+              let right = auxiliaryTopRightArea,
+              right.minX > left.maxX else { return nil }
+        return NSRect(x: left.maxX, y: frame.maxY - menuBarThickness,
+                      width: right.minX - left.maxX, height: menuBarThickness)
+    }
+
     /// Whether a status item with this window `frame` sits clear of the notch and
     /// will therefore actually render. macOS packs status items right-to-left from
     /// the clock; once they no longer fit in `statusItemRegion` the leftmost ones

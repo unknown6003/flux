@@ -15,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arranger: arranger,
         showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
     )
+    // Glows the notch when icons are clipped behind it; clicking opens the drawer.
+    private lazy var notchHighlight = NotchHighlightWindowController(
+        arranger: arranger,
+        onActivate: { [arranger] in arranger.setArranging(true) }
+    )
     private var cancellables = Set<AnyCancellable>()
     private var settingsVisible = false
 
@@ -67,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.refreshArrangeHint() }
             .store(in: &cancellables)
+
+        // Instantiate the notch highlight so it starts observing overflow. It shows
+        // and hides itself from the arranger's `notchOverflow` state.
+        _ = notchHighlight
     }
 
     /// The floating arrange hint is redundant while Settings is open — that
