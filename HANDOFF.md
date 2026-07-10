@@ -14,7 +14,7 @@ permissions that **only a human can grant** — apps cannot grant them to themse
 | Builds a signed `.app` | `Scripts/build_app.sh` | ✅ `codesign --verify` passes |
 | Launches as a true agent | `open build/Flux.app` + `pgrep` | ✅ running, **no Dock icon** (`background only = true`) |
 | Status items created on launch | os_log `com.flux.menubar` | ✅ "MenuBarManager initialised" + hotkey registered each launch |
-| **Full state machine** | `Flux --selftest` (33 checks) | ✅ launch-collapsed → reveal-Hidden → reveal-all → collapse → **Arrange Mode enter/exit** → section-toggle → **OTA version compare**, all asserting real state |
+| **Full state machine** | `Flux --selftest` (39 checks) | ✅ **default-layout seeding** → launch-collapsed → reveal-Hidden → reveal-all → collapse → **Arrange Mode enter/exit** → section-toggle → **OTA version compare**, all asserting real state |
 | Idle resource use | `ps` cputime over 3s | ✅ **~0% CPU** (cputime unchanged), ~31 MB, 3 threads |
 | Settings UI (real controls) | `Flux --snapshot` → PNG | ✅ see `docs/screenshots/` |
 
@@ -31,6 +31,20 @@ permissions that **only a human can grant** — apps cannot grant them to themse
 > its left where they actually capture the user's icons. Clicking the chevron was
 > verified live to collapse the hidden divider 5002 → 3pt (icons return) while the
 > always-hidden zone stays hidden.
+
+> **Why the chevron revealed *nothing* (v0.1.2 fix):** the seeded layout put **both**
+> dividers near the clock (Hidden at 8, Always-Hidden at 16 points-from-the-right). But
+> every real menu-bar icon sits much further left, so all of them fell *left* of the
+> Always-Hidden divider — trapping the whole bar in **Always-Hidden** and leaving the
+> **Hidden** zone empty. A plain chevron click (which only reveals Hidden) therefore
+> showed nothing, and Hidden behaved identically to Always-Hidden. Fix: the
+> Always-Hidden divider now seeds to the **far left** (the widest screen's width in
+> points, past every icon) so its zone starts **empty** and the user's icons default
+> into the chevron-toggled **Hidden** zone — right → left the bar now reads
+> `[clock] [chevron] Shown · ◀Hidden · Hidden · ◀Always-Hidden · (empty)`. A one-time
+> `layoutVersion` migration clears the old saved positions on upgrade so existing
+> installs pick up the corrected seed once (a manual arrangement made afterwards
+> persists normally).
 
 Re-run the functional test yourself anytime:
 
@@ -88,7 +102,7 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 - **Automatically check for updates** (on by default) does a quiet check ~4s after
   launch and every 6 h; it never installs anything without a click. Zero permissions —
   a plain HTTPS GET, no Sparkle, no privileged helper, no auto-replace.
-- Running 0.1.1 against the 0.1.1 release correctly reports **up to date**.
+- Running 0.1.2 against the 0.1.2 release correctly reports **up to date**.
 
 ### 4. Launch at login (needs your approval)
 - Turn on **Launch at login** in Settings.

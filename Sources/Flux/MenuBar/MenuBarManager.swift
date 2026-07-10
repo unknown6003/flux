@@ -33,12 +33,14 @@ final class MenuBarManager {
         self.onOpenSettings = onOpenSettings
 
         // Before creating any status items: (1) drop any off-screen-corrupt saved
-        // positions so a polluted layout can't strand the chevron off-screen, then
-        // (2) seed a sane default layout (chevron rightmost, next to the clock) for
-        // any item the user hasn't positioned themselves.
-        ControlItem.sanitizePersistedPositions(autosaveNames: [
-            "flux.chevron", "flux.divider.hidden", "flux.divider.alwaysHidden",
-        ])
+        // positions so a polluted layout can't strand the chevron off-screen, (2)
+        // migrate installs from an older seeded layout so a corrected default takes
+        // hold once, then (3) seed a sane default layout (chevron rightmost next to the
+        // clock; Always-Hidden divider far left so its zone starts empty) for any item
+        // the user hasn't positioned themselves.
+        let controlItemNames = ["flux.chevron", "flux.divider.hidden", "flux.divider.alwaysHidden"]
+        ControlItem.sanitizePersistedPositions(autosaveNames: controlItemNames)
+        ControlItem.migrateLayoutIfNeeded(autosaveNames: controlItemNames)
         ControlItem.assignDefaultPositionsIfUnset()
 
         // Created right-to-left so creation order matches visual order on first

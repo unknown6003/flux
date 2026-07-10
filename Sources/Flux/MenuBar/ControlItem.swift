@@ -24,13 +24,15 @@ final class ControlItem {
 
     /// A menu-bar `NSStatusItem`'s saved "Preferred Position" is a distance-from-the-
     /// right-edge in points, so any legitimate value is at most the screen width plus
-    /// a little slack. The expandable-divider trick pushes those saved values much
-    /// higher: when macOS persists a position while a divider is at its 10 000pt
-    /// collapsed width, the divider (and its neighbours — including the chevron)
-    /// inherit an absurd position. On the next launch macOS restores the chevron to,
-    /// e.g., 10 462pt-from-the-right → thousands of points off the left of the screen,
-    /// so the user sees *nothing*. Anything beyond this ceiling is treated as polluted.
-    private static let maxPlausiblePosition: CGFloat = 2_500
+    /// a little slack — up to ~6 000pt on a 6K display, and we deliberately seed the
+    /// Always-Hidden divider near the widest screen's edge (see `farLeftPosition`). The
+    /// expandable-divider trick pushes *polluted* values far higher: when macOS persists
+    /// a position while a divider is at its 10 000pt collapsed width, the divider (and
+    /// its neighbours — including the chevron) inherit an absurd position (~10 462pt →
+    /// thousands of points off the left of the screen, so the user sees *nothing*). This
+    /// ceiling sits above any real screen width but below the 10 000pt-based pollution,
+    /// so legitimate far-left seeds survive while corrupt positions are caught.
+    private static let maxPlausiblePosition: CGFloat = 8_000
 
     /// UserDefaults key macOS uses to persist a status item's Cmd-drag position.
     private static func positionKey(_ autosaveName: String) -> String {
@@ -58,26 +60,72 @@ final class ControlItem {
         return true
     }
 
-    /// Seed a sensible default layout the first time (or after a reset) so the chevron
-    /// lands where menu-bar managers conventionally sit — **rightmost, next to the
-    /// system items/clock** — with the dividers stacked to its left. Without this,
-    /// macOS drops a freshly-created status item to the *left* of the user's existing
-    /// icons, where a small chevron is easy to miss and the dividers can't capture the
-    /// icons to hide. A saved position is a distance-from-the-right-edge in points, so
-    /// a *lower* value sits further right; the chevron gets the lowest.
+    /// A distance-from-the-right-edge seed that lands an item at the far **left** of the
+    /// bar, past every real icon. A saved position can never exceed a screen's width, so
+    /// seeding the widest attached screen's width guarantees the item sits left of all
+    /// the user's icons; macOS clamps it to the leftmost slot. Falls back to a generous
+    /// constant for headless/test runs where no screen is attached.
+    private static var farLeftPosition: Double {
+        let widest = NSScreen.screens.map(\.frame.width).max() ?? 2_000
+        return Double(widest)
+    }
+
+    /// Bump when the seeded default layout changes in a way existing installs must pick
+    /// up — not just fresh ones. `migrateLayoutIfNeeded` compares this against a stored
+    /// marker and, on an increase, clears the saved positions once so the corrected
+    /// defaults take hold.
+    ///
+    /// - v1: original layout (both dividers seeded near the clock).
+    /// - v2: Always-Hidden divider seeded far left so its zone starts **empty** and the
+    ///       user's icons default into the chevron-toggled Hidden zone.
+    private static let layoutVersion = 2
+    private static let layoutVersionKey = "flux.layoutVersion"
+
+    /// Seed a sensible default layout the first time (or after a reset). The three
+    /// control items, **right → left**, are:
+    ///
+    ///   `[clock] [chevron] [Shown] [hiddenDivider] [Hidden] [alwaysHiddenDivider] […]`
+    ///
+    /// A saved position is a distance-from-the-right-edge in points, so a *lower* value
+    /// sits further right. The chevron gets the lowest (rightmost, next to the clock).
+    /// The Hidden divider sits just to its left, **right of every real icon**, so by
+    /// default all the user's icons fall into the Hidden zone — revealed by a plain
+    /// chevron click. The Always-Hidden divider is seeded **far left, past every icon**,
+    /// so the Always-Hidden zone starts empty and is opt-in (drag an icon left of it).
+    /// Seeding it near the clock instead (the old v1 bug) trapped *every* icon in
+    /// Always-Hidden and left the Hidden zone empty, so the chevron revealed nothing.
     ///
     /// Only fills in items the user hasn't positioned themselves, so a manual Cmd-drag
-    /// arrangement is always preserved. Run after `sanitizePersistedPositions` and
-    /// before the items are created.
+    /// arrangement is always preserved. Run after `sanitizePersistedPositions` /
+    /// `migrateLayoutIfNeeded` and before the items are created.
     static func assignDefaultPositionsIfUnset(defaults: UserDefaults = .standard) {
         let layout: [(name: String, position: Double)] = [
-            ("flux.chevron", 0),            // rightmost — next to the clock
-            ("flux.divider.hidden", 8),     // just to the chevron's left
-            ("flux.divider.alwaysHidden", 16),
+            ("flux.chevron", 0),                          // rightmost — next to the clock
+            ("flux.divider.hidden", 8),                   // just left of the chevron, right of every icon
+            ("flux.divider.alwaysHidden", farLeftPosition), // far left — Always-Hidden starts empty
         ]
         for item in layout where defaults.object(forKey: positionKey(item.name)) == nil {
             defaults.set(item.position, forKey: positionKey(item.name))
         }
+    }
+
+    /// One-time migration for installs that predate a `layoutVersion` bump. When the
+    /// stored marker is behind the current version, clear the saved control-item
+    /// positions so `assignDefaultPositionsIfUnset` re-seeds the corrected layout, then
+    /// record the new version. Idempotent: it runs at most once per version bump and
+    /// leaves a manually-arranged layout alone on every subsequent launch.
+    ///
+    /// Run **after** `sanitizePersistedPositions` and **before**
+    /// `assignDefaultPositionsIfUnset`. Returns `true` if it migrated.
+    @discardableResult
+    static func migrateLayoutIfNeeded(autosaveNames: [String],
+                                      defaults: UserDefaults = .standard) -> Bool {
+        let stored = defaults.integer(forKey: layoutVersionKey)   // 0 when never set
+        guard stored < layoutVersion else { return false }
+        for name in autosaveNames { defaults.removeObject(forKey: positionKey(name)) }
+        defaults.set(layoutVersion, forKey: layoutVersionKey)
+        Log.menuBar.info("Migrated menu-bar layout v\(stored) → v\(layoutVersion); reset positions to re-seed corrected zones")
+        return true
     }
 
     let role: Role

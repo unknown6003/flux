@@ -43,6 +43,42 @@ enum SelfTest {
         chevron.removeFromStatusBar()
         divider.removeFromStatusBar()
 
+        // --- Default layout: Always-Hidden starts empty so the chevron reveals icons ---
+        // The v1 bug seeded the Always-Hidden divider near the clock (position 16), so
+        // every real icon — which sits further left — fell into Always-Hidden, leaving
+        // the Hidden zone empty and the chevron revealing nothing. The corrected layout
+        // seeds it far left. Verify on a throwaway suite so real defaults stay clean.
+        let layoutSuiteName = "flux.selftest.layout"
+        let layoutSuite = UserDefaults(suiteName: layoutSuiteName)!
+        layoutSuite.removePersistentDomain(forName: layoutSuiteName)
+        let names = ["flux.chevron", "flux.divider.hidden", "flux.divider.alwaysHidden"]
+        func posKey(_ name: String) -> String { "NSStatusItem Preferred Position \(name)" }
+
+        // A stale/broken position is cleared once on a layout-version bump.
+        layoutSuite.set(16.0, forKey: posKey("flux.divider.alwaysHidden"))
+        check(ControlItem.migrateLayoutIfNeeded(autosaveNames: names, defaults: layoutSuite),
+              "Layout migration fires when the stored version is behind")
+        check(layoutSuite.object(forKey: posKey("flux.divider.alwaysHidden")) == nil,
+              "Layout migration clears the stale Always-Hidden position")
+        // Idempotent: a second run at the same version leaves positions alone.
+        layoutSuite.set(42.0, forKey: posKey("flux.divider.alwaysHidden"))
+        check(!ControlItem.migrateLayoutIfNeeded(autosaveNames: names, defaults: layoutSuite),
+              "Layout migration runs at most once per version bump")
+        check(layoutSuite.double(forKey: posKey("flux.divider.alwaysHidden")) == 42.0,
+              "Layout migration doesn't touch positions after it has run")
+
+        // Seeding puts the chevron rightmost and the Always-Hidden divider far left.
+        layoutSuite.removeObject(forKey: posKey("flux.divider.alwaysHidden"))
+        ControlItem.assignDefaultPositionsIfUnset(defaults: layoutSuite)
+        let posChevron = layoutSuite.double(forKey: posKey("flux.chevron"))
+        let posHidden = layoutSuite.double(forKey: posKey("flux.divider.hidden"))
+        let posAlways = layoutSuite.double(forKey: posKey("flux.divider.alwaysHidden"))
+        check(posChevron < posHidden,
+              "Layout: chevron (\(Int(posChevron))) seeds right of the Hidden divider (\(Int(posHidden)))")
+        check(posAlways > posHidden + 100,
+              "Layout: Always-Hidden divider (\(Int(posAlways))) seeds far left of Hidden (\(Int(posHidden))) → empty zone")
+        layoutSuite.removePersistentDomain(forName: layoutSuiteName)
+
         // --- MenuBarManager: full state machine, asserting REAL bar geometry ---
         // Clean slate so defaults are deterministic (autoHideOnLaunch=true,
         // showAlwaysHiddenSection=true).
