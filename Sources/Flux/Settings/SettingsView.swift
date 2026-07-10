@@ -153,6 +153,8 @@ private struct SoftwareUpdateCard: View {
             availableBanner(release)
         case .downloading:
             busyRow("Downloading update…")
+        case .installing:
+            busyRow("Installing update — Flux will relaunch…")
         case .readyToInstall(let url):
             VStack(alignment: .leading, spacing: 10) {
                 statusLine("checkmark.circle.fill", Theme.accentColor,
