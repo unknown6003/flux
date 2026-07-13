@@ -280,6 +280,15 @@ enum SelfTest {
         ov.setArranging(false)
         check(!ov.overflowsNotch, "Overflow: leaving Arrange Mode clears the arrange warning")
 
+        // The cascade estimate stays sane: a stale ballooned divider frame or the
+        // "couldn't place" sentinel must never surface as a triple-digit notch badge.
+        check(MenuBarManager.iconsToClear(0, compact: false) == 0,
+              "Overflow: no deficit → no icons to clear")
+        check(MenuBarManager.iconsToClear(76, compact: false) == 2,
+              "Overflow: a 76pt deficit reads as ~2 icons at default spacing")
+        check(MenuBarManager.iconsToClear(.greatestFiniteMagnitude, compact: true) == 99,
+              "Overflow: an unbounded deficit clamps to 99 instead of trapping or flashing an absurd count")
+
         // --- OTA updater: semantic version comparison ---
         let updater = UpdateChecker(currentVersion: "0.1.1")
         check(updater.isNewer("0.2.0", than: "0.1.1"), "Update: 0.2.0 is newer than 0.1.1")

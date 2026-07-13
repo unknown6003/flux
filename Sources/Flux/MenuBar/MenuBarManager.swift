@@ -24,6 +24,7 @@ final class MenuBarManager {
     private var rehideTimer: Timer?
     private var outsideClickMonitor: Any?
     private var overflowTimer: Timer?
+    private var overflowRefreshWork: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
     /// How close the leftmost arrange marker may sit to the notch's right edge
@@ -218,11 +219,22 @@ final class MenuBarManager {
     /// Re-measure overflow once the bar has settled after a reveal/collapse. Normal
     /// reveals are discrete events, so a single delayed check is enough — no need for
     /// the continuous poll the drag-heavy arrange flow uses.
+    ///
+    /// Coalesced: each call cancels the previous pending check. A rapid chevron
+    /// burst would otherwise leave several checks in flight, and one scheduled by an
+    /// *earlier* toggle can fire milliseconds after a *later* reveal — while the bar
+    /// is still mid-reflow and the divider's window still reports its ballooned
+    /// collapsed frame — flashing a garbage "N behind the notch" count. Keeping only
+    /// the newest check guarantees the measurement runs a full settle-delay after
+    /// the most recent state change.
     private func scheduleOverflowRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        overflowRefreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             guard let self, !self.arranger.isArranging else { return }
             self.refreshOverflow()
         }
+        overflowRefreshWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
     // MARK: Arrange Mode
@@ -343,9 +355,16 @@ final class MenuBarManager {
             arranger.setOverflow(arrange: false, notch: false, iconCount: 0)
             return
         }
-        let deficit = computeOverflowDeficit()
+        // A `nil` deficit means the marker's window frame was stale (caught
+        // mid-reflow after a quick toggle). Publishing it would flash a bogus
+        // count, so keep the previous state and re-measure once the bar settles.
+        // While arranging the repeating monitor re-measures on its own.
+        guard let deficit = computeOverflowDeficit() else {
+            if !arranger.isArranging { scheduleOverflowRefresh() }
+            return
+        }
         let over = deficit > 0
-        let count = iconsToClear(deficit)
+        let count = Self.iconsToClear(deficit, compact: MenuBarSpacing.isCompact)
         // The drawer's arrange coaching only makes sense while arranging; the notch
         // glow applies to both. So a normal-reveal overflow lights the notch without
         // surfacing the (focus-specific) drawer warning.
@@ -353,13 +372,21 @@ final class MenuBarManager {
     }
 
     /// How far (in points) the leftmost revealed marker sits *left* of where it would
-    /// clear the notch — `0` when it already fits. Items fill the bar from the clock
-    /// leftward, so the leftmost marker crosses into the notch exactly when the
-    /// revealed zones run out of room beside it; the shortfall is how much width must
-    /// move off this edge before it comes back into view.
-    private func computeOverflowDeficit() -> CGFloat {
+    /// clear the notch — `0` when it already fits, `nil` when no trustworthy sample
+    /// could be taken. Items fill the bar from the clock leftward, so the leftmost
+    /// marker crosses into the notch exactly when the revealed zones run out of room
+    /// beside it; the shortfall is how much width must move off this edge before it
+    /// comes back into view.
+    ///
+    /// A collapsed divider hides its neighbours by ballooning to ~10,000pt, and
+    /// right after a quick toggle the item's window can still report that stale
+    /// geometry. A frame wider than the screen can only be the balloon — measuring
+    /// it would place the marker thousands of points off-screen and inflate the
+    /// icon estimate to an absurd figure — so report "no sample" instead.
+    private func computeOverflowDeficit() -> CGFloat? {
         guard let screen = menuBarScreen() else { return 0 }
         guard let frame = leftmostOverflowMarker()?.statusItem.button?.window?.frame else { return 0 }
+        guard frame.width <= screen.frame.width else { return nil }       // stale collapsed frame mid-reflow
         guard frame.width >= 1 else { return .greatestFiniteMagnitude }   // couldn't place — deeply overflowed
         return max(0, (screen.statusItemRegion.minX + Self.overflowSlack) - frame.minX)
     }
@@ -367,11 +394,15 @@ final class MenuBarManager {
     /// Convert an overflow shortfall in points into an icon count for the cascade
     /// coaching. Each menu-bar icon occupies roughly one slot's width plus spacing;
     /// compact spacing tightens that, so fewer moves are needed per point. This is
-    /// an estimate — it only needs to be in the right ballpark to say "about N".
-    private func iconsToClear(_ deficit: CGFloat) -> Int {
+    /// an estimate — it only needs to be in the right ballpark to say "about N", so
+    /// it's capped at 99: a real bar never has that many icons behind the notch, and
+    /// an unbounded deficit (the "couldn't place" sentinel) must not reach the
+    /// `Int` conversion, which traps on huge doubles. Static so the self-test can
+    /// pin down the clamp without a live engine.
+    static func iconsToClear(_ deficit: CGFloat, compact: Bool) -> Int {
         guard deficit > 0 else { return 0 }
-        let perIcon: CGFloat = MenuBarSpacing.isCompact ? 28 : 38
-        return max(1, Int((deficit / perIcon).rounded(.up)))
+        let perIcon: CGFloat = compact ? 28 : 38
+        return max(1, Int(min(deficit / perIcon, 99).rounded(.up)))
     }
 
     /// The leftmost marker Flux is showing under the current focus — the one that
