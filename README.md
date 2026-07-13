@@ -31,17 +31,22 @@ visible bar. The result:
 ## The three zones (just like Bartender)
 
 ```
-[ Always-Hidden ]  ‹‹  [ Hidden ]  ‹  [ Shown ]  🕓
-                    │              │
-            always-hidden       hidden divider
-              divider           + Flux chevron
+[ Always-Hidden ]  ‹‹  [ Hidden ]  ‹  ⌄  [ Shown ]  🕓
+                    │              │    │
+            always-hidden       hidden  Flux chevron
+              divider           divider
 ```
 
 | Zone | Behaviour |
 | --- | --- |
-| **Shown** | Always visible. |
+| **Shown** | Always visible. Anything to the **right of the chevron** — it never hides. |
 | **Hidden** | Revealed when you click the Flux chevron (the "drawer"). |
 | **Always-Hidden** | Revealed only with **⌥ (option)** — kept fully out of the way. |
+
+**Nothing is hidden until you say so.** On a fresh install Flux seeds its chevron and
+dividers to the *left* of every icon you already have, so all of them start in **Shown**
+and the bar looks exactly as it did before. You then drag icons *leftward*, past the
+chevron, to tuck them away.
 
 You assign an icon to a zone by **⌘-dragging** it to one side of a Flux divider — the
 native macOS gesture. To make the (normally invisible) zone boundaries visible while
@@ -58,9 +63,9 @@ arrangement across launches.
 
 ## Features (MVP)
 
-- Auto-hide menu bar items on launch.
-- Click the chevron (or press **⌥⌘B**) to reveal. Clicking a revealed icon **keeps it
-  open** so you can use it; clicking down in a window re-hides.
+- Click the chevron (or press the global hotkey, **⌃⌥⌘F** by default and fully
+  rebindable in Settings) to reveal. Clicking a revealed icon **keeps it open** so you
+  can use it; clicking down in a window re-hides.
 - **Arrange Mode** — a guided editor that reveals labeled zone markers in the live
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
@@ -123,7 +128,9 @@ Sources/Flux/
     SettingsView.swift       # custom-card SwiftUI UI
     SettingsWindowController.swift
   Login/LoginItemManager.swift   # SMAppService launch-at-login
-  Hotkey/HotkeyManager.swift     # Carbon global hotkey (⌥⌘B)
+  Hotkey/HotkeyManager.swift     # Carbon global hotkey (registers the recorded chord)
+  Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F default
+  Hotkey/HotkeyRecorderView.swift # click-to-record shortcut field
   Support/                       # logging, app info, render/snapshot/selftest
 ```
 

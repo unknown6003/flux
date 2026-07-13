@@ -103,11 +103,21 @@ final class MenuBarArranger: ObservableObject {
     /// - `notch`: items the user is trying to see are clipped (notch glow) — a superset
     ///   of `arrange` that also covers normal reveals.
     /// - `iconCount`: estimated icons the leftmost marker is short by (0 when it fits).
+    ///
+    /// `arrange` is gated on `isArranging`, `notch` deliberately is not. The drawer
+    /// warning is only ever meaningful while arranging, and the overflow monitor is a
+    /// repeating timer that hops to the main actor — so a measurement taken just before
+    /// the user clicked the chevron could otherwise land just *after* arranging ended
+    /// and flash the banner during an ordinary reveal. Dropping a late `arrange: true`
+    /// here makes that race unrepresentable instead of relying on every caller to check
+    /// the flag first. The notch glow, by contrast, is supposed to fire outside Arrange
+    /// Mode — a normal reveal can clip icons too — so it passes through untouched.
     func setOverflow(arrange: Bool, notch: Bool, iconCount: Int) {
+        let arranging = isArranging && arrange
         let count = notch ? max(1, iconCount) : 0
-        guard arrange != overflowsNotch || notch != notchOverflow || count != overflowIconCount
+        guard arranging != overflowsNotch || notch != notchOverflow || count != overflowIconCount
         else { return }
-        overflowsNotch = arrange
+        overflowsNotch = arranging
         notchOverflow = notch
         overflowIconCount = count
     }

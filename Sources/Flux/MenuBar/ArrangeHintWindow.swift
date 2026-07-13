@@ -117,7 +117,8 @@ private struct ArrangeHintView: View {
                     .fixedSize()
             }
 
-            if arranger.overflowsNotch {
+            // Both flags: the notch warning is meaningless outside Arrange Mode.
+            if arranger.isArranging && arranger.overflowsNotch {
                 overflowWarning
             }
 

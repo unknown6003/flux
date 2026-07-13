@@ -58,10 +58,6 @@ struct SettingsView: View {
                       subtitle: "Start Flux automatically when you sign in.",
                       isOn: $settings.launchAtLogin)
             RowDivider()
-            ToggleRow(title: "Auto-hide on launch",
-                      subtitle: "Tuck items away as soon as Flux starts.",
-                      isOn: $settings.autoHideOnLaunch)
-            RowDivider()
             ToggleRow(title: "Always-Hidden zone",
                       subtitle: "A second zone revealed only with ⌥ (option).",
                       isOn: $settings.showAlwaysHiddenSection)
@@ -85,8 +81,12 @@ struct SettingsView: View {
             }
             RowDivider()
             ToggleRow(title: "Toggle hotkey",
-                      subtitle: "Reveal or hide with ⌥⌘B from anywhere.",
+                      subtitle: "Reveal or hide the menu bar from anywhere.",
                       isOn: $settings.enableHotkey)
+            if settings.enableHotkey {
+                RowDivider()
+                HotkeyRow()
+            }
         }
     }
 
@@ -282,6 +282,8 @@ private struct ArrangeRows: View {
         .animation(.easeInOut(duration: 0.15), value: arranger.isArranging)
     }
 
+    @State private var confirmingReset = false
+
     private var idleContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             RowText(title: "Organize your menu bar",
@@ -292,6 +294,22 @@ private struct ArrangeRows: View {
                 Label("Arrange Menu Bar…", systemImage: "slider.horizontal.3")
             }
             .buttonStyle(.fluxProminent)
+
+            Button("Reset layout…") { confirmingReset = true }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondaryColor)
+                .confirmationDialog("Reset your menu bar layout?",
+                                    isPresented: $confirmingReset,
+                                    titleVisibility: .visible) {
+                    Button("Reset and Relaunch", role: .destructive) {
+                        ControlItem.resetLayout()
+                        Relaunch.now()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Every icon goes back to Shown and Flux's markers return to their default places. Flux relaunches to apply it. Your other settings are untouched.")
+                }
         }
     }
 
@@ -304,7 +322,8 @@ private struct ArrangeRows: View {
             // The coloured markers are live in your menu bar right now — mirror them
             // here so it's obvious what each one means and which way to drag.
             CmdDragCallout()
-            if arranger.overflowsNotch {
+            // Both flags: the notch warning is meaningless outside Arrange Mode.
+            if arranger.isArranging && arranger.overflowsNotch {
                 NotchOverflowWarning()
             }
             if settings.showAlwaysHiddenSection {
@@ -435,6 +454,49 @@ private struct NotchOverflowWarning: View {
         case .shownHidden:
             return "Even with Always-Hidden tucked away, your Shown and Hidden icons don't fit beside the notch. Quit a few menu-bar apps, or arrange on a display without a notch."
         }
+    }
+}
+
+/// The recordable shortcut row. Click the field, press a chord, done.
+///
+/// `RegisterEventHotKey` is first-come-first-served across the whole system, so a
+/// chord another app already owns simply fails to register and the hotkey would
+/// silently do nothing. `AppDelegate` reports that back as `hotkeyConflict`, and we
+/// say so plainly here rather than leaving the user to wonder.
+private struct HotkeyRow: View {
+    @EnvironmentObject private var settings: SettingsStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                RowText(title: "Shortcut",
+                        subtitle: "Click the field, then press the keys you want.")
+                Spacer(minLength: 12)
+                HotkeyRecorderView(shortcut: $settings.hotkeyShortcut)
+                    .frame(width: 132, height: 26)
+                    .fixedSize()
+            }
+            if settings.hotkeyConflict {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                    Text("\(settings.hotkeyShortcut.displayString) is already taken by another app, so it won't reach Flux. Pick a different chord.")
+                        .font(.caption).foregroundStyle(Theme.textSecondaryColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+            if settings.hotkeyShortcut != .default {
+                Button("Reset to \(HotkeyShortcut.default.displayString)") {
+                    settings.hotkeyShortcut = .default
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(Theme.accentInkColor)
+            }
+        }
+        .padding(.vertical, 11)
+        .padding(.horizontal, 14)
     }
 }
 

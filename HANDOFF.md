@@ -69,7 +69,8 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 ### 2. Hide / reveal
 - **⌘-drag** a couple of menu bar icons to the **left** of Flux's chevron.
 - They vanish (collapsed into the Hidden zone).
-- **Click the chevron** (or press **⌥⌘B**) → they reappear.
+- **Click the chevron** (or press the hotkey — **⌃⌥⌘F** by default, rebindable in
+  Settings → Behavior → Shortcut) → they reappear.
 - **Click one of the revealed icons** → it stays open so you can use it (it no longer
   re-hides out from under your click — *fixed*). Click down in a window → they re-hide.
   Or just wait ~8s.
@@ -117,7 +118,7 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 | Feature | Permission | Who grants it |
 | --- | --- | --- |
 | Hide/reveal (core MVP) | **none** | — |
-| Global hotkey ⌥⌘B | none (Carbon) | — |
+| Global hotkey (⌃⌥⌘F, rebindable) | none (Carbon) | — |
 | Launch at login | Login Items | you, on first toggle |
 | *(future)* per-app drawer / search | Accessibility + Screen Recording | you, post-MVP |
 
@@ -135,8 +136,10 @@ whole point of the divider approach and the source of its stability and low cost
   zones already match Bartender's core Show / Hide / Always-Hide model.
 - **No separate floating drawer popover yet** — reveal happens inline in the bar
   (lighter and more reliable). The floating/notch drawer is roadmapped.
-- Flux's chevron should sit **rightmost** (nearest the clock) for the zones to line
-  up; ⌘-drag it there once and it's remembered.
+- Flux's chevron sits at the **left end of your icon run**, not against the clock —
+  that's what makes a **Shown** zone possible: everything to the *right* of the chevron
+  is Shown and never hides. The v3 layout seeds it (and both dividers) left of every
+  existing icon, so a fresh install hides nothing until you drag something leftward.
 
 ## If something's off
 

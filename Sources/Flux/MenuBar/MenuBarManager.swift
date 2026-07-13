@@ -43,16 +43,17 @@ final class MenuBarManager {
         // Before creating any status items: (1) drop any off-screen-corrupt saved
         // positions so a polluted layout can't strand the chevron off-screen, (2)
         // migrate installs from an older seeded layout so a corrected default takes
-        // hold once, then (3) seed a sane default layout (chevron rightmost next to the
-        // clock; Always-Hidden divider far left so its zone starts empty) for any item
-        // the user hasn't positioned themselves.
-        let controlItemNames = ["flux.chevron", "flux.divider.hidden", "flux.divider.alwaysHidden"]
-        ControlItem.sanitizePersistedPositions(autosaveNames: controlItemNames)
-        ControlItem.migrateLayoutIfNeeded(autosaveNames: controlItemNames)
+        // hold once, then (3) seed the default layout — the whole control cluster left
+        // of every real icon, so nothing starts hidden and every zone is reachable
+        // (see `ControlItem.assignDefaultPositionsIfUnset`) — for any item the user
+        // hasn't positioned themselves.
+        ControlItem.sanitizePersistedPositions(autosaveNames: ControlItem.allAutosaveNames)
+        ControlItem.migrateLayoutIfNeeded(autosaveNames: ControlItem.allAutosaveNames)
         ControlItem.assignDefaultPositionsIfUnset()
 
-        // Created right-to-left so creation order matches visual order on first
-        // launch: chevron nearest the clock, dividers to its left.
+        // Created right-to-left so creation order matches visual order on first launch:
+        // the chevron is the rightmost of Flux's three items, dividers to its left.
+        // (The user's own icons sit right of all three — that's the Shown zone.)
         self.chevron = ControlItem(role: .chevron, autosaveName: "flux.chevron")
         self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden")
 
@@ -64,12 +65,11 @@ final class MenuBarManager {
         // both through the engine so it owns the real menu-bar side effects.
         arranger.onChange = { [weak self] on in self?.applyArrangeMode(on) }
 
-        // Start collapsed (the default): hide everything in the Hidden /
-        // Always-Hidden zones. If the user disabled auto-hide-on-launch, begin
-        // with the Hidden section revealed so nothing disappears until they ask.
-        if !settings.autoHideOnLaunch {
-            revealHidden = true
-        }
+        // Start collapsed: whatever the user assigned to Hidden / Always-Hidden is
+        // tucked away. On a fresh install both zones are empty (the seeded layout puts
+        // every existing icon in Shown), so this collapses nothing — it only bites once
+        // the user has actually moved an icon into a hidden zone, which is exactly when
+        // they want it honoured.
         applyState(animated: false)
         Log.menuBar.info("MenuBarManager initialised (alwaysHidden=\(self.settings.showAlwaysHiddenSection))")
     }

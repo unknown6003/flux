@@ -54,6 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.configureHotkey() }
             .store(in: &cancellables)
 
+        // Re-register as soon as the user records a new chord, so the field in
+        // Settings and the live system hotkey never disagree.
+        settings.$hotkeyShortcut
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.configureHotkey() }
+            .store(in: &cancellables)
+
         settings.$automaticUpdateChecks
             .dropFirst()
             .sink { [weak self] _ in self?.configureUpdateChecks() }
@@ -89,13 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Install (or tear down) the global hotkey to match the current preferences, and
+    /// push the *actual* outcome back into settings: macOS hands a chord to whichever
+    /// app claimed it first, so a registration can legitimately fail. Surfacing that as
+    /// `hotkeyConflict` is the only way the user learns their shortcut is dead rather
+    /// than assuming Flux is broken.
     private func configureHotkey() {
         hotkey.onTrigger = { [weak self] in self?.menuBar?.toggleReveal() }
-        if settings.enableHotkey {
-            hotkey.register()
-        } else {
+        guard settings.enableHotkey else {
             hotkey.unregister()
+            settings.hotkeyConflict = false
+            return
         }
+        settings.hotkeyConflict = !hotkey.register(settings.hotkeyShortcut)
     }
 
     // MARK: Software update

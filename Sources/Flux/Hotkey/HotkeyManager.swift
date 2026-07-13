@@ -1,19 +1,34 @@
 import AppKit
 import Carbon.HIToolbox
 
-/// Registers a single global hotkey (⌥⌘B) to toggle reveal. Carbon's
+/// Registers a single, user-configurable global hotkey to toggle reveal. Carbon's
 /// `RegisterEventHotKey` is still the canonical, dependency-free way to get a
-/// system-wide hotkey and works through Tahoe. Custom key recording is a
-/// post-MVP refinement; the engine below already supports re-registration.
+/// system-wide hotkey and works through Tahoe.
 @MainActor
 final class HotkeyManager {
     var onTrigger: (() -> Void)?
 
+    /// The shortcut most recently handed to `register`. Kept so `isRegistered` and
+    /// the Settings conflict hint can reflect what's actually live in the system.
+    private(set) var registered: HotkeyShortcut?
+
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
 
-    func register() {
+    /// Install `shortcut` as the global hotkey, replacing any previous one.
+    ///
+    /// Returns `false` when macOS refuses the registration — which in practice means
+    /// **another app already owns that chord**. `RegisterEventHotKey` is first-come,
+    /// first-served, so this is the only way to detect a conflict; Settings surfaces
+    /// it so the user can pick a different chord instead of wondering why their
+    /// hotkey silently does nothing.
+    @discardableResult
+    func register(_ shortcut: HotkeyShortcut) -> Bool {
         unregister()
+        guard shortcut.isValid else {
+            Log.hotkey.error("Refusing to register a modifier-less hotkey")
+            return false
+        }
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: OSType(kEventHotKeyPressed))
@@ -31,14 +46,16 @@ final class HotkeyManager {
         }, 1, &eventType, selfPtr, &eventHandler)
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x464C5558) /* 'FLUX' */, id: 1)
-        let modifiers = UInt32(optionKey | cmdKey)
-        let status = RegisterEventHotKey(UInt32(kVK_ANSI_B), modifiers, hotKeyID,
+        let status = RegisterEventHotKey(shortcut.keyCode, shortcut.carbonModifiers, hotKeyID,
                                          GetApplicationEventTarget(), 0, &hotKeyRef)
-        if status == noErr {
-            Log.hotkey.info("Registered global hotkey ⌥⌘B")
-        } else {
-            Log.hotkey.error("Failed to register hotkey (OSStatus \(status))")
+        guard status == noErr else {
+            Log.hotkey.error("Failed to register hotkey \(shortcut.displayString, privacy: .public) (OSStatus \(status)) — likely already taken by another app")
+            unregister()
+            return false
         }
+        registered = shortcut
+        Log.hotkey.info("Registered global hotkey \(shortcut.displayString, privacy: .public)")
+        return true
     }
 
     func unregister() {
@@ -50,6 +67,7 @@ final class HotkeyManager {
             RemoveEventHandler(eventHandler)
             self.eventHandler = nil
         }
+        registered = nil
     }
 
     deinit {

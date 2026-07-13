@@ -15,7 +15,6 @@ final class SettingsStore: ObservableObject {
         defaults.register(defaults: Self.factoryDefaults)
 
         self.launchAtLogin = defaults.bool(forKey: Keys.launchAtLogin)
-        self.autoHideOnLaunch = defaults.bool(forKey: Keys.autoHideOnLaunch)
         self.showAlwaysHiddenSection = defaults.bool(forKey: Keys.showAlwaysHiddenSection)
         self.autoRehide = defaults.bool(forKey: Keys.autoRehide)
         self.autoRehideDelay = defaults.double(forKey: Keys.autoRehideDelay)
@@ -26,16 +25,16 @@ final class SettingsStore: ObservableObject {
         // Source of truth is the live global default, not a mirrored Flux key, so
         // the toggle reflects the real system state (even if changed elsewhere).
         self.compactMenuBarSpacing = MenuBarSpacing.isCompact
+        self.hotkeyShortcut = HotkeyShortcut(
+            keyCode: UInt32(defaults.integer(forKey: Keys.hotkeyKeyCode)),
+            carbonModifiers: UInt32(defaults.integer(forKey: Keys.hotkeyModifiers))
+        )
     }
 
     // MARK: General
 
     @Published var launchAtLogin: Bool {
         didSet { defaults.set(launchAtLogin, forKey: Keys.launchAtLogin) }
-    }
-
-    @Published var autoHideOnLaunch: Bool {
-        didSet { defaults.set(autoHideOnLaunch, forKey: Keys.autoHideOnLaunch) }
     }
 
     @Published var showAlwaysHiddenSection: Bool {
@@ -56,6 +55,20 @@ final class SettingsStore: ObservableObject {
     @Published var enableHotkey: Bool {
         didSet { defaults.set(enableHotkey, forKey: Keys.enableHotkey) }
     }
+
+    /// The chord that toggles reveal from anywhere. User-recordable in Settings.
+    @Published var hotkeyShortcut: HotkeyShortcut {
+        didSet {
+            defaults.set(Int(hotkeyShortcut.keyCode), forKey: Keys.hotkeyKeyCode)
+            defaults.set(Int(hotkeyShortcut.carbonModifiers), forKey: Keys.hotkeyModifiers)
+        }
+    }
+
+    /// True when macOS refused to register `hotkeyShortcut` — almost always because
+    /// another app already owns that chord. Set by `AppDelegate` after each attempt;
+    /// deliberately **not** persisted, since it's a fact about the live system, not a
+    /// preference. Settings surfaces it so a dead hotkey doesn't fail silently.
+    @Published var hotkeyConflict = false
 
     /// Poll GitHub Releases for a newer Flux on launch and periodically. Purely a
     /// version check over HTTPS — nothing downloads or installs without a click.
@@ -80,23 +93,25 @@ final class SettingsStore: ObservableObject {
 
     private static let factoryDefaults: [String: Any] = [
         Keys.launchAtLogin: false,
-        Keys.autoHideOnLaunch: true,
         Keys.showAlwaysHiddenSection: true,
         Keys.autoRehide: true,
         Keys.autoRehideDelay: 8.0,
         Keys.enableHotkey: true,
         Keys.automaticUpdateChecks: true,
-        Keys.iconStyle: MenuBarIconStyle.chevron.rawValue
+        Keys.iconStyle: MenuBarIconStyle.chevron.rawValue,
+        Keys.hotkeyKeyCode: Int(HotkeyShortcut.default.keyCode),
+        Keys.hotkeyModifiers: Int(HotkeyShortcut.default.carbonModifiers),
     ]
 
     private enum Keys {
         static let launchAtLogin = "flux.launchAtLogin"
-        static let autoHideOnLaunch = "flux.autoHideOnLaunch"
         static let showAlwaysHiddenSection = "flux.showAlwaysHiddenSection"
         static let autoRehide = "flux.autoRehide"
         static let autoRehideDelay = "flux.autoRehideDelay"
         static let enableHotkey = "flux.enableHotkey"
         static let automaticUpdateChecks = "flux.automaticUpdateChecks"
         static let iconStyle = "flux.iconStyle"
+        static let hotkeyKeyCode = "flux.hotkey.keyCode"
+        static let hotkeyModifiers = "flux.hotkey.modifiers"
     }
 }

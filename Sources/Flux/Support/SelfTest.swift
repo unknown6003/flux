@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 /// Headless functional test of the menu-bar engine. Creates real status items in
 /// the system menu bar and asserts the collapse/reveal geometry that does the
@@ -67,21 +68,27 @@ enum SelfTest {
         check(layoutSuite.double(forKey: posKey("flux.divider.alwaysHidden")) == 42.0,
               "Layout migration doesn't touch positions after it has run")
 
-        // Seeding puts the chevron rightmost and the Always-Hidden divider far left.
+        // Seeding puts the three control items in bar order (right → left: chevron,
+        // Hidden divider, Always-Hidden divider) as one adjacent cluster, and puts the
+        // whole cluster LEFT of every real icon — a saved position is a distance from
+        // the right edge, so "left of every icon" means "beyond the widest screen's
+        // width", which no real icon's position can reach.
         layoutSuite.removeObject(forKey: posKey("flux.divider.alwaysHidden"))
         ControlItem.assignDefaultPositionsIfUnset(defaults: layoutSuite)
         let posChevron = layoutSuite.double(forKey: posKey("flux.chevron"))
         let posHidden = layoutSuite.double(forKey: posKey("flux.divider.hidden"))
         let posAlways = layoutSuite.double(forKey: posKey("flux.divider.alwaysHidden"))
-        check(posChevron < posHidden,
-              "Layout: chevron (\(Int(posChevron))) seeds right of the Hidden divider (\(Int(posHidden)))")
-        check(posAlways > posHidden + 100,
-              "Layout: Always-Hidden divider (\(Int(posAlways))) seeds far left of Hidden (\(Int(posHidden))) → empty zone")
+        check(posChevron < posHidden && posHidden < posAlways,
+              "Layout: bar order right→left is chevron (\(Int(posChevron))) · Hidden (\(Int(posHidden))) · Always-Hidden (\(Int(posAlways)))")
+        let widest = NSScreen.screens.map(\.frame.width).max() ?? 2_000
+        check(posChevron >= widest,
+              "Layout: the cluster seeds left of every real icon (chevron \(Int(posChevron)) ≥ widest screen \(Int(widest))) → everything starts Shown")
+        check(posAlways - posChevron < 100,
+              "Layout: the three control items seed adjacent (\(Int(posAlways - posChevron))pt apart), so every marker stays reachable")
         layoutSuite.removePersistentDomain(forName: layoutSuiteName)
 
         // --- MenuBarManager: full state machine, asserting REAL bar geometry ---
-        // Clean slate so defaults are deterministic (autoHideOnLaunch=true,
-        // showAlwaysHiddenSection=true).
+        // Clean slate so defaults are deterministic (showAlwaysHiddenSection=true).
         let suiteName = "flux.selftest"
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
@@ -91,10 +98,12 @@ enum SelfTest {
         func isHidden(_ length: CGFloat?) -> Bool { (length ?? 0) > 5_000 }
         func isRevealed(_ length: CGFloat?) -> Bool { (length ?? 99) < 5 }
 
-        // Launch state: auto-hide on → everything collapsed, chevron shows ‹.
+        // Launch state: always collapsed — whatever the user assigned to a hidden zone
+        // stays tucked away. (On a fresh install both zones are empty, so this hides
+        // nothing.) Chevron shows ‹.
         let s0 = manager.diagnostics
         check(!s0.revealHidden && !s0.revealAlwaysHidden,
-              "Launches collapsed when auto-hide-on-launch is on")
+              "Launches collapsed, honouring the saved arrangement")
         check(isHidden(s0.hiddenDividerLength),
               "Hidden zone starts hidden (divider \(Int(s0.hiddenDividerLength))pt)")
         check(s0.alwaysHiddenSectionPresent,
@@ -209,6 +218,67 @@ enum SelfTest {
                     NSRect(x: region.minX + 50, y: region.minY, width: 0, height: region.height)),
                   "Fit: a zero-width frame (macOS couldn't place it) never fits")
         }
+
+        // --- Reset: the escape hatch out of a layout you can't drag your way out of ---
+        let resetSuiteName = "flux.selftest.reset"
+        let resetSuite = UserDefaults(suiteName: resetSuiteName)!
+        resetSuite.removePersistentDomain(forName: resetSuiteName)
+        ControlItem.migrateLayoutIfNeeded(autosaveNames: ControlItem.allAutosaveNames,
+                                          defaults: resetSuite)
+        ControlItem.assignDefaultPositionsIfUnset(defaults: resetSuite)
+        // Simulate a layout the user has dragged into a corner they can't recover from.
+        resetSuite.set(9_999.0, forKey: posKey("flux.chevron"))
+        ControlItem.resetLayout(defaults: resetSuite)
+        check(ControlItem.allAutosaveNames.allSatisfy { resetSuite.object(forKey: posKey($0)) == nil },
+              "Reset: clears every saved control-item position")
+        check(resetSuite.integer(forKey: "flux.layoutVersion") == 0,
+              "Reset: clears the layout marker so the next launch re-seeds")
+        // ...and the next launch really does re-seed a clean, everything-Shown layout.
+        ControlItem.migrateLayoutIfNeeded(autosaveNames: ControlItem.allAutosaveNames,
+                                          defaults: resetSuite)
+        ControlItem.assignDefaultPositionsIfUnset(defaults: resetSuite)
+        let reseeded = resetSuite.double(forKey: posKey("flux.chevron"))
+        check(reseeded > 0 && reseeded < 8_000,
+              "Reset: the next launch re-seeds a sane chevron position (\(Int(reseeded)))")
+        resetSuite.removePersistentDomain(forName: resetSuiteName)
+
+        // --- Hotkey: the recorded shortcut round-trips and the default is a real chord ---
+        check(HotkeyShortcut.default.isValid,
+              "Hotkey: the default \(HotkeyShortcut.default.displayString) is registrable (has modifiers)")
+        check(HotkeyShortcut.default.displayString == "⌃⌥⌘F",
+              "Hotkey: the default renders as ⌃⌥⌘F, got \(HotkeyShortcut.default.displayString)")
+        check(!HotkeyShortcut(keyCode: 0, carbonModifiers: 0).isValid,
+              "Hotkey: a modifier-less chord is rejected (it would swallow the key system-wide)")
+
+        // A recorded shortcut must survive a round-trip through UserDefaults, or the
+        // user's binding silently reverts on the next launch.
+        let hkSuiteName = "flux.selftest.hotkey"
+        UserDefaults.standard.removePersistentDomain(forName: hkSuiteName)
+        let hkDefaults = UserDefaults(suiteName: hkSuiteName)!
+        let hkStore = SettingsStore(defaults: hkDefaults)
+        check(hkStore.hotkeyShortcut == .default,
+              "Hotkey: a fresh install starts on the default chord")
+        let custom = HotkeyShortcut(keyCode: UInt32(kVK_ANSI_J),
+                                    carbonModifiers: UInt32(cmdKey | shiftKey))
+        hkStore.hotkeyShortcut = custom
+        let reloaded = SettingsStore(defaults: hkDefaults)
+        check(reloaded.hotkeyShortcut == custom,
+              "Hotkey: a recorded chord (\(custom.displayString)) persists across launches")
+        UserDefaults.standard.removePersistentDomain(forName: hkSuiteName)
+
+        // --- The arrange warning is arrange-only; the notch glow is not ---
+        let ov = MenuBarArranger()
+        ov.setOverflow(arrange: true, notch: true, iconCount: 3)
+        check(!ov.overflowsNotch,
+              "Overflow: an arrange warning measured outside Arrange Mode is refused, so it can't flash on a plain chevron toggle")
+        check(ov.notchOverflow,
+              "Overflow: the notch glow still fires outside Arrange Mode — a normal reveal can clip icons too")
+        ov.setArranging(true)
+        ov.setOverflow(arrange: true, notch: true, iconCount: 3)
+        check(ov.overflowsNotch && ov.overflowIconCount == 3,
+              "Overflow: while arranging, a real overflow latches with its icon count")
+        ov.setArranging(false)
+        check(!ov.overflowsNotch, "Overflow: leaving Arrange Mode clears the arrange warning")
 
         // --- OTA updater: semantic version comparison ---
         let updater = UpdateChecker(currentVersion: "0.1.1")

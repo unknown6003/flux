@@ -25,7 +25,8 @@ final class ControlItem {
     /// A menu-bar `NSStatusItem`'s saved "Preferred Position" is a distance-from-the-
     /// right-edge in points, so any legitimate value is at most the screen width plus
     /// a little slack — up to ~6 000pt on a 6K display, and we deliberately seed the
-    /// Always-Hidden divider near the widest screen's edge (see `farLeftPosition`). The
+    /// whole control cluster at the widest screen's width (see `farLeftPosition` and
+    /// `assignDefaultPositionsIfUnset`, whose furthest item lands at that width + 16). The
     /// expandable-divider trick pushes *polluted* values far higher: when macOS persists
     /// a position while a divider is at its 10 000pt collapsed width, the divider (and
     /// its neighbours — including the chevron) inherit an absurd position (~10 462pt →
@@ -34,9 +35,30 @@ final class ControlItem {
     /// so legitimate far-left seeds survive while corrupt positions are caught.
     private static let maxPlausiblePosition: CGFloat = 8_000
 
+    /// Every control item Flux owns, in bar order (right → left).
+    static let allAutosaveNames = [
+        "flux.chevron",
+        "flux.divider.hidden",
+        "flux.divider.alwaysHidden",
+    ]
+
     /// UserDefaults key macOS uses to persist a status item's Cmd-drag position.
     private static func positionKey(_ autosaveName: String) -> String {
         "NSStatusItem Preferred Position \(autosaveName)"
+    }
+
+    /// Throw away the saved arrangement so the next launch re-seeds the defaults from
+    /// scratch — every icon back in **Shown**, every marker back where it belongs.
+    ///
+    /// This is the escape hatch. A menu bar can get into states the user can't drag
+    /// their way out of (an icon stranded past the notch, a divider dropped somewhere
+    /// unreachable), and without a reset the only recovery is hand-editing
+    /// `UserDefaults`. Clearing the version marker too means `migrateLayoutIfNeeded`
+    /// re-runs and re-seeds on the next launch.
+    static func resetLayout(defaults: UserDefaults = .standard) {
+        for name in allAutosaveNames { defaults.removeObject(forKey: positionKey(name)) }
+        defaults.removeObject(forKey: layoutVersionKey)
+        Log.menuBar.info("Menu-bar layout reset — defaults will re-seed on next launch")
     }
 
     /// Guard against the pollution described above. If *any* of Flux's control items
@@ -75,34 +97,57 @@ final class ControlItem {
     /// marker and, on an increase, clears the saved positions once so the corrected
     /// defaults take hold.
     ///
-    /// - v1: original layout (both dividers seeded near the clock).
-    /// - v2: Always-Hidden divider seeded far left so its zone starts **empty** and the
-    ///       user's icons default into the chevron-toggled Hidden zone.
-    private static let layoutVersion = 2
+    /// - v1: both dividers seeded near the clock. Every real icon sat *left* of the
+    ///       Always-Hidden divider, so the whole bar was trapped in Always-Hidden and a
+    ///       chevron click revealed nothing.
+    /// - v2: Always-Hidden divider seeded far left, so its zone started empty and icons
+    ///       defaulted into the chevron-toggled Hidden zone. This traded one bug for
+    ///       three: the Always-Hidden divider sat *past every icon at the edge of the
+    ///       bar* — on a notched Mac that's behind the notch — so nothing could be
+    ///       dragged into Always-Hidden (it was permanently empty, and option-click
+    ///       revealed nothing), and the chevron, pinned rightmost against the clock,
+    ///       left no room for a Shown zone at all.
+    /// - v3: the whole control cluster seeds **left of every real icon**, in bar order.
+    ///       Nothing is hidden on a fresh install and every zone is reachable — see
+    ///       `assignDefaultPositionsIfUnset`.
+    private static let layoutVersion = 3
     private static let layoutVersionKey = "flux.layoutVersion"
 
-    /// Seed a sensible default layout the first time (or after a reset). The three
-    /// control items, **right → left**, are:
+    /// Seed the default layout the first time (or after a reset). Read **right → left**
+    /// along the bar, a saved position is a distance-from-the-right-edge in points, so a
+    /// *lower* value sits further right:
     ///
-    ///   `[clock] [chevron] [Shown] [hiddenDivider] [Hidden] [alwaysHiddenDivider] […]`
+    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…] [alwaysHiddenDivider] [Always…]`
     ///
-    /// A saved position is a distance-from-the-right-edge in points, so a *lower* value
-    /// sits further right. The chevron gets the lowest (rightmost, next to the clock).
-    /// The Hidden divider sits just to its left, **right of every real icon**, so by
-    /// default all the user's icons fall into the Hidden zone — revealed by a plain
-    /// chevron click. The Always-Hidden divider is seeded **far left, past every icon**,
-    /// so the Always-Hidden zone starts empty and is opt-in (drag an icon left of it).
-    /// Seeding it near the clock instead (the old v1 bug) trapped *every* icon in
-    /// Always-Hidden and left the Hidden zone empty, so the chevron revealed nothing.
+    /// Two properties fall out of seeding the three control items as one tight cluster
+    /// to the **left of every real icon** (all three get a position at or beyond the
+    /// widest screen's width, which no real icon can exceed):
     ///
-    /// Only fills in items the user hasn't positioned themselves, so a manual Cmd-drag
+    /// 1. **Nothing hides on a fresh install.** Every existing icon lands to the *right*
+    ///    of the Hidden divider — i.e. in **Shown** — so Flux can never make an icon
+    ///    vanish that the user didn't move there themselves. Hiding is opt-in: ⌘-drag an
+    ///    icon *leftward* past the ◀Hidden marker.
+    /// 2. **Every zone is reachable.** The dividers sit just left of the icon run rather
+    ///    than parked at the screen edge, so the markers the user must drag across are
+    ///    on-screen and clear of the notch.
+    ///
+    /// The chevron is the rightmost of the three, which is what makes a **Shown** zone
+    /// possible at all: anything the user drags to the *right* of the chevron is right of
+    /// the Hidden divider too, so it stays visible permanently. (Seeding the chevron at
+    /// position 0 — hard against the clock, as v1/v2 did — left literally nowhere for a
+    /// Shown icon to live.)
+    ///
+    /// Only fills in items the user hasn't positioned themselves, so a manual ⌘-drag
     /// arrangement is always preserved. Run after `sanitizePersistedPositions` /
     /// `migrateLayoutIfNeeded` and before the items are created.
     static func assignDefaultPositionsIfUnset(defaults: UserDefaults = .standard) {
+        // One slot apart, so the three stay adjacent and in order with no room for a
+        // stray icon to land between them on the initial seed.
+        let base = farLeftPosition
         let layout: [(name: String, position: Double)] = [
-            ("flux.chevron", 0),                          // rightmost — next to the clock
-            ("flux.divider.hidden", 8),                   // just left of the chevron, right of every icon
-            ("flux.divider.alwaysHidden", farLeftPosition), // far left — Always-Hidden starts empty
+            ("flux.chevron", base),                            // rightmost of the three
+            ("flux.divider.hidden", base + 8),                 // its left; Shown lies right of here
+            ("flux.divider.alwaysHidden", base + 16),          // furthest left
         ]
         for item in layout where defaults.object(forKey: positionKey(item.name)) == nil {
             defaults.set(item.position, forKey: positionKey(item.name))
@@ -252,6 +297,13 @@ final class ControlItem {
             button.image = nil
             button.title = ""
             button.toolTip = nil
+            // Drop straight back to a hairline. Without this the item keeps the
+            // `variableLength` it was given for the marker, and an image-less
+            // variable-length button auto-sizes to a default width — a phantom gap
+            // that shoves the neighbouring icons sideways every time a marker is
+            // taken down. The caller may override this immediately (a collapse), but
+            // it must never be left to macOS to guess.
+            statusItem.length = ControlItem.revealedWidth
         }
     }
 
