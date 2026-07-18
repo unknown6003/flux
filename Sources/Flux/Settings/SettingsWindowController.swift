@@ -8,6 +8,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let settings: SettingsStore
     private let arranger: MenuBarArranger
     private let updater: UpdateChecker
+    private let nowPlaying: NowPlayingService
     private var window: NSWindow?
 
     /// Fires with the new visibility whenever the window is shown or closed.
@@ -15,10 +16,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// already spells out the same guidance — is on screen.
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker) {
+    /// The tab currently showing. Tracked here (not just inside SwiftUI)
+    /// because switching tabs changes the content's natural height, and the
+    /// window needs re-fitting the same way it does on first open.
+    private var currentTab: SettingsTab = .general
+
+    init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker, nowPlaying: NowPlayingService) {
         self.settings = settings
         self.arranger = arranger
         self.updater = updater
+        self.nowPlaying = nowPlaying
         super.init()
     }
 
@@ -39,10 +46,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow() -> NSWindow {
-        let root = SettingsView()
-            .environmentObject(settings)
-            .environmentObject(arranger)
-            .environmentObject(updater)
+        let root = SettingsView(initialTab: currentTab, onTabChange: { [weak self] tab in
+            self?.currentTab = tab
+            self?.refitForTabChange()
+        })
+        .environmentObject(settings)
+        .environmentObject(arranger)
+        .environmentObject(updater)
+        .environmentObject(nowPlaying)
         let hosting = NSHostingController(rootView: root)
         // We own the window's size (measured + clamped to the screen below); the
         // SwiftUI ScrollView absorbs any overflow. Letting the hosting controller
@@ -65,13 +76,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Sizing
 
-    /// The height the settings content wants when nothing is scrolled. Measured from
-    /// a non-scrolling copy so a tall update banner or extra rows are accounted for.
+    /// The height `currentTab`'s content wants when nothing is scrolled. Measured
+    /// from a non-scrolling copy of just that tab so a tall update banner or extra
+    /// rows are accounted for.
     private func naturalContentHeight() -> CGFloat {
-        let probe = NSHostingView(rootView: SettingsView(scrolls: false)
+        let probe = NSHostingView(rootView: SettingsView(scrolls: false, initialTab: currentTab)
             .environmentObject(settings)
             .environmentObject(arranger)
-            .environmentObject(updater))
+            .environmentObject(updater)
+            .environmentObject(nowPlaying))
         probe.layoutSubtreeIfNeeded()
         return ceil(probe.fittingSize.height)
     }
@@ -102,10 +115,35 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let window else { return }
         let natural = naturalContentHeight()
         let available = availableHeight(on: window.screen)
+        // Set alongside `contentMaxSize`, and always before `setContentSize`
+        // below: `min(320, natural)` can never exceed `natural` itself, so
+        // min ≤ max holds no matter how tall (or short) this tab's content
+        // is — leaving `contentMinSize` at a stale, taller value from a
+        // previous (taller) tab could otherwise pin the window above the max
+        // this tab just set, or reject `setContentSize` outright.
+        window.contentMinSize = NSSize(width: Self.contentWidth, height: min(320, natural))
         window.contentMaxSize = NSSize(width: Self.contentWidth, height: natural)
         if let contentHeight = window.contentView?.frame.height, contentHeight > available {
             window.setContentSize(NSSize(width: Self.contentWidth, height: available))
         }
+    }
+
+    /// Switching tabs changes the content's natural height (e.g. the Menu Bar
+    /// tab's live preview + Arrange Mode card is taller than About) — re-measure
+    /// and grow/shrink the window to fit the new tab, same clamp-to-screen rule
+    /// as the initial open.
+    private func refitForTabChange() {
+        guard let window else { return }
+        let natural = naturalContentHeight()
+        let available = availableHeight(on: window.screen)
+        // See `clampHeightToScreen`'s comment on this same pairing — a tab
+        // switch is exactly the case that comment worries about: min/max both
+        // need to reflect the *new* tab's natural height before
+        // `setContentSize` runs, or a leftover min from a taller previous tab
+        // can end up above this tab's own max.
+        window.contentMinSize = NSSize(width: Self.contentWidth, height: min(320, natural))
+        window.contentMaxSize = NSSize(width: Self.contentWidth, height: natural)
+        window.setContentSize(NSSize(width: Self.contentWidth, height: min(natural, available)))
     }
 
     func windowWillClose(_ notification: Notification) {

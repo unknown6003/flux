@@ -1,562 +1,150 @@
 import SwiftUI
 import AppKit
 
+/// Which top-level Settings section is showing. Not persisted — reopening
+/// Settings always starts on `initialTab` (General by default), matching the
+/// plan's "custom, not TabView chrome" tab bar.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general, menuBar, notch, about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .menuBar: return "Menu Bar"
+        case .notch: return "Notch"
+        case .about: return "About"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .menuBar: return "menubar.rectangle"
+        case .notch: return "capsule.portrait"
+        case .about: return "info.circle"
+        }
+    }
+}
+
+/// The Settings window's root view: a slim header, a custom segmented tab
+/// bar, and the selected tab's scrollable content.
 struct SettingsView: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var arranger: MenuBarArranger
+    @EnvironmentObject private var nowPlaying: NowPlayingService
 
-    /// When false the cards render in a plain, self-sizing column — used off-screen
-    /// to measure the window's natural height. On screen (`true`, the default) they
-    /// live in a `ScrollView`, so a tall settings list scrolls instead of
+    /// When false the tab's content renders in a plain, self-sizing column — used
+    /// off-screen to measure the window's natural height. On screen (`true`, the
+    /// default) it lives in a `ScrollView`, so a tall tab scrolls instead of
     /// overflowing the bottom of a short display.
-    var scrolls = true
+    var scrolls: Bool
+    /// Which tab opens first. `SettingsWindowController` also uses this to
+    /// re-measure the *current* tab's natural height when the user switches
+    /// tabs; `--render-settings`/`--snapshot` pass it directly so CI/dev
+    /// tooling can capture any single tab headlessly.
+    var initialTab: SettingsTab
+    /// Fired whenever the user switches tabs, so `SettingsWindowController`
+    /// can re-fit the window to the new tab's natural height.
+    var onTabChange: ((SettingsTab) -> Void)?
+
+    @State private var selectedTab: SettingsTab
+
+    init(scrolls: Bool = true, initialTab: SettingsTab = .general, onTabChange: ((SettingsTab) -> Void)? = nil) {
+        self.scrolls = scrolls
+        self.initialTab = initialTab
+        self.onTabChange = onTabChange
+        _selectedTab = State(initialValue: initialTab)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HeaderView()
+            TabBar(selection: $selectedTab)
             Rectangle().fill(Theme.hairlineColor).frame(height: 1)
             if scrolls {
-                ScrollView { cardColumn }
+                ScrollView { tabContent }
             } else {
-                cardColumn
+                tabContent
             }
-            Rectangle().fill(Theme.hairlineColor).frame(height: 1)
-            FooterView()
         }
         .frame(width: 480)
         .background(Theme.groundColor)
         .tint(Theme.accentColor)
         .foregroundStyle(Theme.textPrimaryColor)
+        .onChange(of: selectedTab) { _, newValue in onTabChange?(newValue) }
     }
 
-    private var cardColumn: some View {
-        VStack(spacing: 18) {
-            layoutCard
-            generalCard
-            behaviorCard
-            appearanceCard
-            SoftwareUpdateCard()
-        }
-        .padding(20)
-    }
-
-    // MARK: Menu bar layout
-
-    /// The one place the user assigns icons to zones. Enters Arrange Mode, which
-    /// reveals labeled markers in the live bar so ⌘-drag becomes obvious.
-    private var layoutCard: some View {
-        FluxCard(title: "Menu Bar Layout") {
-            ArrangeRows()
-        }
-    }
-
-    // MARK: General
-
-    private var generalCard: some View {
-        FluxCard(title: "General") {
-            ToggleRow(title: "Launch at login",
-                      subtitle: "Start Flux automatically when you sign in.",
-                      isOn: $settings.launchAtLogin)
-            RowDivider()
-            ToggleRow(title: "Always-Hidden zone",
-                      subtitle: "A second zone revealed only with ⌥ (option).",
-                      isOn: $settings.showAlwaysHiddenSection)
-            RowDivider()
-            ToggleRow(title: "Compact menu-bar spacing",
-                      subtitle: "Tightens the gap around every icon so more fit beside the notch. Affects all apps; full effect after your next login.",
-                      isOn: $settings.compactMenuBarSpacing)
-        }
-    }
-
-    // MARK: Behavior
-
-    private var behaviorCard: some View {
-        FluxCard(title: "Behavior") {
-            ToggleRow(title: "Auto re-hide",
-                      subtitle: "Collapse again a moment after revealing.",
-                      isOn: $settings.autoRehide)
-            if settings.autoRehide {
-                RowDivider()
-                SliderRow(value: $settings.autoRehideDelay, range: 2...30)
-            }
-            RowDivider()
-            ToggleRow(title: "Toggle hotkey",
-                      subtitle: "Reveal or hide the menu bar from anywhere.",
-                      isOn: $settings.enableHotkey)
-            if settings.enableHotkey {
-                RowDivider()
-                HotkeyRow()
-            }
-        }
-    }
-
-    // MARK: Appearance
-
-    private var appearanceCard: some View {
-        FluxCard(title: "Appearance") {
-            VStack(alignment: .leading, spacing: 10) {
-                RowText(title: "Menu bar icon",
-                        subtitle: "The glyph Flux shows in your menu bar.")
-                Picker("", selection: $settings.iconStyle) {
-                    ForEach(MenuBarIconStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-            }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 14)
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .general: GeneralTab()
+        case .menuBar: MenuBarTab()
+        case .notch: NotchTab()
+        case .about: AboutTab()
         }
     }
 }
 
-// MARK: - Software Update
+// MARK: - Tab bar
 
-/// The OTA surface: a status line that reflects `UpdateChecker.state`, the
-/// primary action for that state (check / download / re-open the installer), and
-/// an auto-check toggle. When an update is found it's presented in a prominent
-/// amber banner so it doesn't get lost among the settings.
-private struct SoftwareUpdateCard: View {
-    @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var updater: UpdateChecker
+/// A custom, Theme-styled segmented control — deliberately not `TabView`
+/// (whose chrome doesn't match Flux's card-and-hairline visual language).
+private struct TabBar: View {
+    @Binding var selection: SettingsTab
 
     var body: some View {
-        FluxCard(title: "Software Update") {
-            VStack(alignment: .leading, spacing: 12) {
-                content
-                Rectangle().fill(Theme.hairlineColor).frame(height: 1)
-                HStack(spacing: 12) {
-                    RowText(title: "Automatically check for updates",
-                            subtitle: "Quietly look for a newer Flux on GitHub.")
-                    Spacer(minLength: 12)
-                    Toggle("", isOn: $settings.automaticUpdateChecks)
-                        .labelsHidden().toggleStyle(.switch).tint(Theme.accentColor)
-                }
-                Text(footerText)
-                    .font(.caption).foregroundStyle(Theme.textSecondaryColor)
-            }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 14)
-        }
-    }
-
-    @ViewBuilder private var content: some View {
-        switch updater.state {
-        case .idle:
-            checkButton("Check for Updates")
-        case .checking:
-            busyRow("Checking for updates…")
-        case .upToDate:
-            VStack(alignment: .leading, spacing: 10) {
-                statusLine("checkmark.circle.fill", Theme.accentColor,
-                           "Flux \(AppInfo.version) is up to date.")
-                checkButton("Check Again")
-            }
-        case .available(let release):
-            availableBanner(release)
-        case .downloading:
-            busyRow("Downloading update…")
-        case .installing:
-            busyRow("Installing update — Flux will relaunch…")
-        case .readyToInstall(let url):
-            VStack(alignment: .leading, spacing: 10) {
-                statusLine("checkmark.circle.fill", Theme.accentColor,
-                           "Downloaded — drag Flux to Applications in the window that opened.")
-                Button { NSWorkspace.shared.open(url) } label: {
-                    Label("Open Installer Again", systemImage: "externaldrive")
-                }
-                .buttonStyle(.fluxProminent)
-            }
-        case .failed(let message):
-            VStack(alignment: .leading, spacing: 10) {
-                statusLine("exclamationmark.triangle.fill", .orange, message)
-                checkButton("Try Again")
+        HStack(spacing: 2) {
+            ForEach(SettingsTab.allCases) { tab in
+                tabButton(tab)
             }
         }
-    }
-
-    // MARK: Pieces
-
-    private func availableBanner(_ release: UpdateChecker.Release) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles").foregroundStyle(Theme.accentInkColor)
-                Text("Update available — \(release.name)")
-                    .font(.body.weight(.semibold)).foregroundStyle(Theme.textPrimaryColor)
-                Spacer(minLength: 0)
-            }
-            if !release.notes.isEmpty {
-                Text(release.notes)
-                    .font(.caption).foregroundStyle(Theme.textSecondaryColor)
-                    .lineLimit(5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            Button { updater.downloadAndInstall(release) } label: {
-                Label("Download & Install", systemImage: "arrow.down.circle")
-            }
-            .buttonStyle(.fluxProminent)
-            Button { NSWorkspace.shared.open(release.pageURL) } label: {
-                Text("View release on GitHub")
-            }
-            .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundStyle(Theme.accentInkColor)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(4)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Theme.accentWashColor)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Theme.accentColor.opacity(0.35)))
+                .fill(Theme.surfaceRaisedColor)
         )
+        .padding(.horizontal, 20)
+        .padding(.bottom, 14)
     }
 
-    private func checkButton(_ title: String) -> some View {
-        Button { updater.checkForUpdates(userInitiated: true) } label: {
-            Label(title, systemImage: "arrow.clockwise")
+    private func tabButton(_ tab: SettingsTab) -> some View {
+        let isSelected = tab == selection
+        return Button {
+            selection = tab
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: tab.symbol).font(.system(size: 11, weight: .medium))
+                Text(tab.title).font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(isSelected ? Color.black.opacity(0.85) : Theme.textSecondaryColor)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isSelected ? Theme.accentColor : Color.clear)
+            )
         }
-        .buttonStyle(.fluxProminent)
-    }
-
-    private func busyRow(_ text: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            Text(text).font(.body).foregroundStyle(Theme.textPrimaryColor)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func statusLine(_ symbol: String, _ tint: Color, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(tint)
-            Text(text).font(.callout).foregroundStyle(Theme.textPrimaryColor)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var footerText: String {
-        guard let date = updater.lastChecked else { return "Flux \(AppInfo.version)" }
-        return "Flux \(AppInfo.version) · Last checked \(date.formatted(date: .omitted, time: .shortened))"
-    }
-}
-
-// MARK: - Row scaffolding
-
-private struct RowDivider: View {
-    var body: some View {
-        Rectangle().fill(Theme.hairlineColor).frame(height: 1).padding(.leading, 14)
-    }
-}
-
-private struct RowText: View {
-    let title: String
-    let subtitle: String
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.body).foregroundStyle(Theme.textPrimaryColor)
-            Text(subtitle).font(.caption).foregroundStyle(Theme.textSecondaryColor)
-        }
-    }
-}
-
-/// The interactive contents of the "Menu Bar Layout" card. Toggles Arrange Mode
-/// and, while it's active, spells out exactly how the ⌘-drag zoning works so the
-/// live markers in the bar aren't a mystery.
-private struct ArrangeRows: View {
-    @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var arranger: MenuBarArranger
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if arranger.isArranging {
-                arrangingContent
-            } else {
-                idleContent
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 12)
-        .padding(.horizontal, 14)
-        .animation(.easeInOut(duration: 0.15), value: arranger.isArranging)
-    }
-
-    @State private var confirmingReset = false
-
-    private var idleContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            RowText(title: "Organize your menu bar",
-                    subtitle: "Choose which icons stay Shown, tuck into Hidden, or go Always-Hidden.")
-            Button {
-                arranger.setArranging(true)
-            } label: {
-                Label("Arrange Menu Bar…", systemImage: "slider.horizontal.3")
-            }
-            .buttonStyle(.fluxProminent)
-
-            Button("Reset layout…") { confirmingReset = true }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondaryColor)
-                .confirmationDialog("Reset your menu bar layout?",
-                                    isPresented: $confirmingReset,
-                                    titleVisibility: .visible) {
-                    Button("Reset and Relaunch", role: .destructive) {
-                        ControlItem.resetLayout()
-                        Relaunch.now()
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Every icon goes back to Shown and Flux's markers return to their default places. Flux relaunches to apply it. Your other settings are untouched.")
-                }
-        }
-    }
-
-    private var arrangingContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 7) {
-                Circle().fill(Theme.accentColor).frame(width: 8, height: 8)
-                Text("Arranging your menu bar").font(.body.weight(.semibold))
-            }
-            // The coloured markers are live in your menu bar right now — mirror them
-            // here so it's obvious what each one means and which way to drag.
-            CmdDragCallout()
-            // Both flags: the notch warning is meaningless outside Arrange Mode.
-            if arranger.isArranging && arranger.overflowsNotch {
-                NotchOverflowWarning()
-            }
-            if settings.showAlwaysHiddenSection {
-                ArrangeFocusPicker()
-            }
-            Text("Drag each icon into a zone — right to left in your bar:")
-                .font(.callout).foregroundStyle(Theme.textSecondaryColor)
-            VStack(alignment: .leading, spacing: 8) {
-                ArrangeZoneLegendRow(zone: nil, desc: "Stays visible, next to the clock")
-                // Only list a zone whose marker is actually on the bar for this
-                // focus: .hiddenAlwaysHidden drops the ◀Hidden marker; .shownHidden
-                // tucks Always-Hidden away entirely.
-                if arranger.focus != .hiddenAlwaysHidden {
-                    ArrangeZoneLegendRow(zone: .hidden, desc: "Tucked behind the chevron")
-                }
-                if settings.showAlwaysHiddenSection && arranger.focus != .shownHidden {
-                    ArrangeZoneLegendRow(zone: .alwaysHidden, desc: "Revealed only with ⌥ option")
-                }
-            }
-            Text("Click Done — or the ✓ that replaced the Flux icon — to apply.")
-                .font(.caption).foregroundStyle(Theme.textSecondaryColor)
-            Button {
-                arranger.setArranging(false)
-            } label: {
-                Label("Done", systemImage: "checkmark")
-            }
-            .buttonStyle(.fluxProminent)
-        }
-    }
-}
-
-/// Incremental arranging: choose which edge to sort, so users with more icons than
-/// fit beside the notch can work one boundary at a time — Flux collapses the zone
-/// that isn't involved to free the most space. Shown only when Always-Hidden exists.
-private struct ArrangeFocusPicker: View {
-    @EnvironmentObject private var arranger: MenuBarArranger
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Sort which edge")
-                .font(.caption).foregroundStyle(Theme.textSecondaryColor)
-            Picker("", selection: $arranger.focus) {
-                ForEach(MenuBarArranger.Focus.allCases) { focus in
-                    Text(focus.title).tag(focus)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            Text(arranger.focus.explanation)
-                .font(.caption2).foregroundStyle(Theme.textSecondaryColor)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-/// Shown while arranging when the current edge's marker can't sit clear of the
-/// notch, so that edge is out of reach. Gives an honest reason and — when a
-/// less-crowded edge exists — a one-tap way to switch to it.
-private struct NotchOverflowWarning: View {
-    @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var arranger: MenuBarArranger
-
-    /// Switching to the Shown ↔ Hidden edge tucks Always-Hidden away, freeing the
-    /// most space — only useful when we're not already on that edge.
-    private var canFocusShownHidden: Bool {
-        settings.showAlwaysHiddenSection && arranger.focus != .shownHidden
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(title)
-                    .font(.callout.weight(.semibold)).foregroundStyle(Theme.textPrimaryColor)
-                Spacer(minLength: 0)
-            }
-            Text(message)
-                .font(.caption).foregroundStyle(Theme.textSecondaryColor)
-                .fixedSize(horizontal: false, vertical: true)
-            if !MenuBarSpacing.isCompact {
-                Text("Tip: turn on Compact menu-bar spacing (above) to free room for every icon.")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Theme.accentInkColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if canFocusShownHidden {
-                Button {
-                    arranger.focus = .shownHidden
-                } label: {
-                    Label("Sort Shown ↔ Hidden", systemImage: "arrow.left.to.line")
-                }
-                .buttonStyle(.fluxProminent)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.orange.opacity(0.12))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.orange.opacity(0.4)))
-        )
-    }
-
-    private var title: String {
-        arranger.focus == .shownHidden
-            ? "Too many icons beside the notch"
-            : "This edge won't fit beside the notch"
-    }
-
-    /// "about N icons" phrasing for the cascade coaching; `Lead` capitalises only
-    /// the first letter for sentence starts.
-    private var overCount: String {
-        let n = arranger.overflowIconCount
-        return n > 0 ? "about \(n) icon\(n == 1 ? "" : "s")" : "a few icons"
-    }
-    private var overCountLead: String { overCount.prefix(1).uppercased() + overCount.dropFirst() }
-
-    private var message: String {
-        switch arranger.focus {
-        case .all:
-            return "\(overCountLead) more than fit beside the notch, so the Always-Hidden edge is clipped out of sight. Sort one edge at a time — start with Shown ↔ Hidden — or quit a few menu-bar apps."
-        case .hiddenAlwaysHidden:
-            // Coach the cascade: the edge is behind the notch, but each icon dragged
-            // across ◀Always frees roughly its own width and pulls the marker back
-            // into view, so only the first move is blind.
-            return "\(overCountLead) sit to the right of ◀Always, so it's clipped behind the notch. You can still drag one from Hidden all the way to the far left — past the notch — to drop it into Always-Hidden. Each icon you move brings ◀Always back into view, so the next is easier."
-        case .shownHidden:
-            return "Even with Always-Hidden tucked away, your Shown and Hidden icons don't fit beside the notch. Quit a few menu-bar apps, or arrange on a display without a notch."
-        }
-    }
-}
-
-/// The recordable shortcut row. Click the field, press a chord, done.
-///
-/// `RegisterEventHotKey` is first-come-first-served across the whole system, so a
-/// chord another app already owns simply fails to register and the hotkey would
-/// silently do nothing. `AppDelegate` reports that back as `hotkeyConflict`, and we
-/// say so plainly here rather than leaving the user to wonder.
-private struct HotkeyRow: View {
-    @EnvironmentObject private var settings: SettingsStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                RowText(title: "Shortcut",
-                        subtitle: "Click the field, then press the keys you want.")
-                Spacer(minLength: 12)
-                HotkeyRecorderView(shortcut: $settings.hotkeyShortcut)
-                    .frame(width: 132, height: 26)
-                    .fixedSize()
-            }
-            if settings.hotkeyConflict {
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange)
-                    Text("\(settings.hotkeyShortcut.displayString) is already taken by another app, so it won't reach Flux. Pick a different chord.")
-                        .font(.caption).foregroundStyle(Theme.textSecondaryColor)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-            }
-            if settings.hotkeyShortcut != .default {
-                Button("Reset to \(HotkeyShortcut.default.displayString)") {
-                    settings.hotkeyShortcut = .default
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(Theme.accentInkColor)
-            }
-        }
-        .padding(.vertical, 11)
-        .padding(.horizontal, 14)
-    }
-}
-
-private struct ToggleRow: View {
-    let title: String
-    let subtitle: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(spacing: 12) {
-            RowText(title: title, subtitle: subtitle)
-            Spacer(minLength: 12)
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(Theme.accentColor)
-        }
-        .padding(.vertical, 11)
-        .padding(.horizontal, 14)
-    }
-}
-
-private struct SliderRow: View {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Text("Delay").foregroundStyle(Theme.textPrimaryColor)
-            Slider(value: $value, in: range, step: 1).tint(Theme.accentColor)
-            Text("\(Int(value))s")
-                .foregroundStyle(Theme.textSecondaryColor)
-                .monospacedDigit()
-                .frame(width: 30, alignment: .trailing)
-        }
-        .padding(.vertical, 9)
-        .padding(.horizontal, 14)
+        .buttonStyle(.plain)
     }
 }
 
 // MARK: - Header
 
 private struct HeaderView: View {
-    @EnvironmentObject private var settings: SettingsStore
-
     var body: some View {
-        VStack(spacing: 16) {
-            HStack(spacing: 12) {
-                FluxMark()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Flux")
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Theme.textPrimaryColor)
-                    Text(AppInfo.tagline)
-                        .font(.callout)
-                        .foregroundStyle(Theme.textSecondaryColor)
-                }
-                Spacer()
+        HStack(spacing: 12) {
+            FluxMark()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Flux")
+                    .font(.system(size: 22, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.textPrimaryColor)
+                Text(AppInfo.tagline)
+                    .font(.callout)
+                    .foregroundStyle(Theme.textSecondaryColor)
             }
-            MenuBarPreview(showAlwaysHidden: settings.showAlwaysHiddenSection)
+            Spacer()
         }
         .padding(.horizontal, 20)
         .padding(.top, 22)
@@ -577,95 +165,5 @@ private struct FluxMark: View {
                     .foregroundStyle(Color(red: 0.04, green: 0.04, blue: 0.04))
             )
             .shadow(color: Theme.accentColor.opacity(0.35), radius: 6, y: 2)
-    }
-}
-
-// MARK: - Live menu-bar preview
-
-/// A faux menu bar that teaches the zone model at a glance and reflects the
-/// Always-Hidden toggle live. Each zone's dots carry its marker colour so the
-/// preview, the live markers, and the legend all read as one system.
-private struct MenuBarPreview: View {
-    let showAlwaysHidden: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                if showAlwaysHidden {
-                    zone(count: 2, tint: Theme.zoneColor(.alwaysHidden))
-                    glyph("chevron.left.2")
-                }
-                zone(count: 3, tint: Theme.zoneColor(.hidden))
-                glyph("chevron.left", accent: true)
-                zone(count: 2, tint: Theme.zoneColor(.shown))
-                Image(systemName: "clock")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.textSecondaryColor)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Theme.surfaceRaisedColor)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .strokeBorder(Theme.hairlineColor)
-                    )
-            )
-
-            HStack(spacing: 14) {
-                legend(section: .shown, label: "Shown")
-                legend(section: .hidden, label: "Hidden")
-                if showAlwaysHidden {
-                    legend(section: .alwaysHidden, label: "Always-Hidden")
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(Theme.textSecondaryColor)
-        }
-    }
-
-    private func zone(count: Int, tint: Color) -> some View {
-        HStack(spacing: 6) {
-            ForEach(0..<count, id: \.self) { _ in
-                Circle().fill(tint).frame(width: 11, height: 11)
-            }
-        }
-    }
-
-    private func glyph(_ name: String, accent: Bool = false) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(accent ? Theme.accentInkColor : Theme.textSecondaryColor)
-    }
-
-    private func legend(section: MenuBarSection, label: String) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(Theme.zoneColor(section)).frame(width: 8, height: 8)
-            Text(label)
-        }
-    }
-}
-
-// MARK: - Footer
-
-private struct FooterView: View {
-    var body: some View {
-        HStack {
-            Text("Version \(AppInfo.version) (\(AppInfo.build))")
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondaryColor)
-            Spacer()
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Text("Quit Flux").foregroundStyle(Theme.textSecondaryColor)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Theme.groundColor)
     }
 }

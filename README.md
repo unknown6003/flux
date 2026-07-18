@@ -69,6 +69,13 @@ arrangement across launches.
 - **Arrange Mode** — a guided editor that reveals labeled zone markers in the live
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
+- **Notch panel** — on notched Macs, hover (or click) the camera housing to expand
+  a **Now Playing** widget: artwork, title/artist, a scrubber, and transport
+  controls for whatever's playing (any app, via a vendored MediaRemote adapter;
+  falls back to AppleScript for Music/Spotify — macOS may show an Automation
+  permission prompt the first time that fallback controls either app). Open
+  gesture, hover delays, and which widgets are enabled are all configurable in
+  Settings → Notch.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
@@ -109,6 +116,7 @@ The executable understands a few headless flags used for testing:
 ```bash
 Flux --selftest                     # functional test of the collapse engine
 Flux --snapshot out.png [light|dark] # render the real settings UI to a PNG
+Flux --snapshot-notch out.png [dark] [collapsed|activity|expanded] # render the notch panel to a PNG
 ```
 
 ## Architecture
@@ -125,11 +133,20 @@ Sources/Flux/
     MenuBarIconStyle.swift   # chevron / dot / line
   Settings/
     SettingsStore.swift      # UserDefaults-backed, observable
-    SettingsView.swift       # custom-card SwiftUI UI
+    SettingsView.swift       # tab host (General / Menu Bar / Notch / About)
+    SettingsRows.swift       # shared row primitives
+    Tabs/                    # one file per settings tab
     SettingsWindowController.swift
+  Notch/
+    NotchWindowController.swift # owns the notch panel's lifecycle
+    NotchViewModel.swift     # collapsed/activity/expanded state machine
+    NotchWidget.swift        # widget protocol + registry
+    LiveActivity.swift       # priority-queued "wings" content
+    Widgets/NowPlayingWidget.swift
+  Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
   Login/LoginItemManager.swift   # SMAppService launch-at-login
-  Hotkey/HotkeyManager.swift     # Carbon global hotkey (registers the recorded chord)
-  Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F default
+  Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
+  Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults
   Hotkey/HotkeyRecorderView.swift # click-to-record shortcut field
   Support/                       # logging, app info, render/snapshot/selftest
 ```
@@ -138,7 +155,8 @@ Sources/Flux/
 
 - **Per-app list control** and a searchable **drawer** popover (needs Accessibility +
   ScreenCaptureKit — deliberately deferred to keep the MVP resource-light).
-- **Notch features** — use the notch area as the reveal drawer on notched Macs.
+- More notch widgets (Shelf, Calendar, Mirror, Timers, Clipboard) beyond the
+  Now Playing widget shipped in this milestone.
 - Custom hotkey recording, profiles, triggers (show on update/active).
 
 ## License

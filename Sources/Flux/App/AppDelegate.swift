@@ -9,17 +9,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
     private var updateTimer: Timer?
+
+    // Notch suite: one panel/state-machine controller plus the Now Playing
+    // service + widget it hosts for M1.
+    private let notchWindow = NotchWindowController()
+    private let nowPlayingService = NowPlayingService()
+    private lazy var nowPlayingWidget = NowPlayingWidget(
+        service: nowPlayingService, isEnabled: settings.notchNowPlayingEnabled)
+
     private lazy var settingsWindow = SettingsWindowController(
-        settings: settings, arranger: arranger, updater: updater)
+        settings: settings, arranger: arranger, updater: updater, nowPlaying: nowPlayingService)
     private lazy var arrangeHint = ArrangeHintWindowController(
         arranger: arranger,
         showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
     )
     // Glows the notch when icons are clipped behind it; clicking opens the drawer.
-    private lazy var notchHighlight = NotchHighlightWindowController(
-        arranger: arranger,
-        onActivate: { [arranger] in arranger.setArranging(true) }
-    )
+    // Only used when the notch panel itself is disabled — see
+    // `configureNotchOverflowCoexistence`.
+    private var notchHighlight: NotchHighlightWindowController?
+    private var notchOverflowActivityCancellable: AnyCancellable?
+
     private var cancellables = Set<AnyCancellable>()
     private var settingsVisible = false
 
@@ -34,7 +43,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // is the source of truth, so push the actual state back into settings.
         settings.launchAtLogin = LoginItemManager.setEnabled(settings.launchAtLogin)
 
+        notchWindow.registry.register(nowPlayingWidget)
+        notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
+        // A tap on the overflow indicator's wings should open Arrange Mode,
+        // same as the legacy `NotchHighlightWindowController` glow's
+        // `onActivate` — not toggle the notch panel itself, which is what a
+        // plain `viewModel.clicked()` would otherwise do for every activity.
+        notchWindow.onActivityTap = { [arranger] kind in
+            guard kind == .menuBarOverflow else { return false }
+            arranger.setArranging(true)
+            return true
+        }
+
         configureHotkey()
+        configureNotch()
         configureUpdateChecks()
         observeSettings()
     }
@@ -82,9 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.refreshArrangeHint() }
             .store(in: &cancellables)
 
-        // Instantiate the notch highlight so it starts observing overflow. It shows
-        // and hides itself from the arranger's `notchOverflow` state.
-        _ = notchHighlight
+        observeNotchSettings()
     }
 
     /// The floating arrange hint is redundant while Settings is open — that
@@ -104,13 +124,142 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `hotkeyConflict` is the only way the user learns their shortcut is dead rather
     /// than assuming Flux is broken.
     private func configureHotkey() {
-        hotkey.onTrigger = { [weak self] in self?.menuBar?.toggleReveal() }
+        hotkey.onTrigger[.menuBarToggle] = { [weak self] in self?.menuBar?.toggleReveal() }
         guard settings.enableHotkey else {
-            hotkey.unregister()
+            hotkey.unregister(.menuBarToggle)
             settings.hotkeyConflict = false
             return
         }
-        settings.hotkeyConflict = !hotkey.register(settings.hotkeyShortcut)
+        settings.hotkeyConflict = !hotkey.register(settings.hotkeyShortcut, for: .menuBarToggle)
+    }
+
+    // MARK: Notch
+
+    /// Push every notch-related preference into the live controller. Called
+    /// once at launch (to apply whatever was persisted) and again from each
+    /// setting's own Combine sink.
+    private func configureNotch() {
+        // Applied before `setEnabled` so a fresh panel is built with the
+        // right collection behavior from the start, rather than defaulting
+        // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
+        // tick and then immediately being corrected.
+        notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
+        notchWindow.setEnabled(settings.notchEnabled)
+        notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
+        notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
+        notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
+        notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
+        notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
+        configureNotchOverflowCoexistence()
+        configureNotchHotkey()
+    }
+
+    private func observeNotchSettings() {
+        settings.$notchEnabled
+            .dropFirst()
+            .sink { [weak self] _ in self?.configureNotch() }
+            .store(in: &cancellables)
+
+        settings.$notchExpansionTrigger
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.viewModel.expansionTrigger = value }
+            .store(in: &cancellables)
+
+        settings.$notchHoverOpenDelay
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.viewModel.hoverOpenDelay = value }
+            .store(in: &cancellables)
+
+        settings.$notchHoverCloseDelay
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.viewModel.hoverCloseDelay = value }
+            .store(in: &cancellables)
+
+        settings.$notchShowInFullscreen
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.setShowInFullscreen(value) }
+            .store(in: &cancellables)
+
+        settings.$notchWidgetOrder
+            .dropFirst()
+            .sink { [weak self] value in
+                self?.notchWindow.registry.order = value.compactMap(WidgetID.init(rawValue:))
+            }
+            .store(in: &cancellables)
+
+        settings.$notchNowPlayingEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.nowPlaying, value) }
+            .store(in: &cancellables)
+
+        settings.$notchHotkey
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.configureNotchHotkey() }
+            .store(in: &cancellables)
+    }
+
+    /// Register (or tear down) the notch toggle hotkey, mirroring
+    /// `configureHotkey()`'s pattern for the menu-bar chord. Only meaningful
+    /// while the notch feature itself is on — there's nothing to toggle
+    /// otherwise.
+    private func configureNotchHotkey() {
+        // Routed through `NotchWindowController.hotkeyToggled()` (not the
+        // view model directly) so it's a no-op while the controller has
+        // nothing presenting — the hotkey stays registered even on an
+        // external-only clamshell setup with no built-in notched screen,
+        // and must not drive a headless expand in that case.
+        hotkey.onTrigger[.notchToggle] = { [weak self] in self?.notchWindow.hotkeyToggled() }
+        guard settings.notchEnabled, settings.notchHotkey.isValid else {
+            hotkey.unregister(.notchToggle)
+            settings.notchHotkeyConflict = false
+            return
+        }
+        settings.notchHotkeyConflict = !hotkey.register(settings.notchHotkey, for: .notchToggle)
+    }
+
+    /// The legacy `NotchHighlightWindowController` overlay and the notch
+    /// panel's own live-activity glow both exist to say "icons are clipped
+    /// behind the notch" — showing both at once would double up over the
+    /// same physical notch. When the notch panel is enabled, the overflow
+    /// warning rides as a `LiveActivity` in its wings instead; the legacy
+    /// floating overlay is only (re)created when the notch panel is off.
+    private func configureNotchOverflowCoexistence() {
+        if settings.notchEnabled {
+            notchHighlight = nil
+            observeNotchOverflowActivity()
+        } else {
+            notchOverflowActivityCancellable = nil
+            notchWindow.activities.dismiss(kind: .menuBarOverflow)
+            if notchHighlight == nil {
+                notchHighlight = NotchHighlightWindowController(
+                    arranger: arranger,
+                    onActivate: { [arranger] in arranger.setArranging(true) }
+                )
+            }
+        }
+    }
+
+    private func observeNotchOverflowActivity() {
+        guard notchOverflowActivityCancellable == nil else { return }
+        notchOverflowActivityCancellable = arranger.$notchOverflow
+            .combineLatest(arranger.$overflowIconCount)
+            .removeDuplicates { $0 == $1 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] overflowing, count in
+                guard let self else { return }
+                if overflowing {
+                    self.notchWindow.activities.post(LiveActivity(
+                        kind: .menuBarOverflow,
+                        leading: .icon(systemName: "exclamationmark.triangle.fill"),
+                        trailing: count > 0 ? .text("\(count)") : .none,
+                        duration: nil,
+                        priority: 150))
+                } else {
+                    self.notchWindow.activities.dismiss(kind: .menuBarOverflow)
+                }
+            }
     }
 
     // MARK: Software update
