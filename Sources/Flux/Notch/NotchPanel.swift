@@ -119,6 +119,11 @@ final class NotchHostingView: NSHostingView<AnyView> {
         fatalError("NotchHostingView does not support NSCoding")
     }
 
+    @available(*, unavailable)
+    required init(rootView: AnyView) {
+        fatalError("NotchHostingView requires a viewModel; use init(viewModel:rootView:)")
+    }
+
     /// Pass-through hit-testing: a point outside the currently-visible black
     /// shape isn't part of the notch UI at all — it's transparent panel over
     /// someone else's window — so returning `nil` there tells AppKit to keep

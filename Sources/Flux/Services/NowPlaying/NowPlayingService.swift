@@ -32,10 +32,15 @@ final class NowPlayingService: ObservableObject {
     /// `activeSourceName` and command routing.
     private var usingAdapter = false
 
-    init(adapterSource: MediaRemoteAdapterSource = MediaRemoteAdapterSource(),
-         scriptingSource: ScriptingNowPlayingSource = ScriptingNowPlayingSource()) {
-        self.adapterSource = adapterSource
-        self.scriptingSource = scriptingSource
+    init(adapterSource: MediaRemoteAdapterSource? = nil,
+         scriptingSource: ScriptingNowPlayingSource? = nil) {
+        // Default parameter values are evaluated in a nonisolated context
+        // even though this initializer itself is @MainActor (a quirk of how
+        // Swift evaluates default arguments), so the @MainActor-isolated
+        // sources are constructed here in the body instead, where we're
+        // guaranteed to already be on the main actor.
+        self.adapterSource = adapterSource ?? MediaRemoteAdapterSource()
+        self.scriptingSource = scriptingSource ?? ScriptingNowPlayingSource()
         observeSources()
     }
 
