@@ -1,0 +1,52 @@
+name: CI
+
+# Builds Flux on a macOS runner (this repo is developed from a Linux box, so CI
+# is the only place the app compiles), runs the headless self-test, and — on
+# v* tag pushes — publishes a GitHub release with Flux.dmg attached, which is
+# the artifact UpdateChecker consumes for in-app auto-update.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build app + DMG
+        run: ./Scripts/build_dmg.sh
+
+      - name: Self-test
+        run: ./build/Flux.app/Contents/MacOS/Flux --selftest
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flux.dmg
+          path: build/Flux.dmg
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" build/Flux.dmg \
+            --title "Flux $VERSION" \
+            --generate-notes
