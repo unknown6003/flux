@@ -20,7 +20,7 @@ enum NowPlayingFixtures {
     /// `Data(base64Encoded:)` round-trips through an actual image decoder in
     /// tests, not just a decodable-but-meaningless string.
     static let streamFullSnapshotJSON = """
-    {"type":"data","diff":false,"payload":{"processIdentifier":501,"bundleIdentifier":"com.apple.Music","playing":true,"title":"Sunday Morning","artist":"The Velvet Underground","album":"Loaded","duration":167.5,"elapsedTime":42.25,"timestamp":"2026-07-18T09:30:00Z","artworkMimeType":"image/png","artworkData":"\(tinyPNGBase64)"}}
+    {"type":"data","diff":false,"payload":{"processIdentifier":501,"bundleIdentifier":"com.apple.Music","playing":true,"title":"Sunday Morning","artist":"The Velvet Underground","album":"Loaded","duration":167.5,"elapsedTime":42.25,"timestamp":"2026-07-18T09:30:00Z","playbackRate":1.0,"artworkMimeType":"image/png","artworkData":"\(tinyPNGBase64)"}}
     """
 
     /// A diffed `stream` line a moment later: only the playback clock moved

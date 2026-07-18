@@ -585,6 +585,7 @@ enum SelfTest {
             check(fullState.artist == "The Velvet Underground", "NowPlaying: full snapshot decodes the artist")
             check(fullState.isPlaying, "NowPlaying: full snapshot decodes isPlaying")
             check(fullState.elapsed == 42.25, "NowPlaying: full snapshot decodes elapsed")
+            check(fullState.playbackRate == 1.0, "NowPlaying: full snapshot decodes playbackRate")
             check((fullState.artworkData?.isEmpty ?? true) == false,
                   "NowPlaying: full snapshot's base64 artwork decodes to real bytes")
         } else {
@@ -597,6 +598,8 @@ enum SelfTest {
         if let tickState = decodedState(merged) {
             check(tickState.title == "Sunday Morning", "NowPlaying: a diff tick preserves the title unchanged")
             check(tickState.elapsed == 43.25, "NowPlaying: a diff tick updates elapsed")
+            check(tickState.playbackRate == 1.0,
+                  "NowPlaying: a diff tick (which doesn't mention playbackRate) preserves it unchanged")
         } else {
             check(false, "NowPlaying: diff-tick merge failed to decode")
         }
@@ -616,6 +619,64 @@ enum SelfTest {
 
         let idleState = decodedState(fixturePayloadDict(NowPlayingFixtures.streamIdleJSON))
         check(idleState == nil, "NowPlaying: an idle empty payload (no title) yields no displayable state")
+
+        // --- NowPlayingService: currentElapsed(at:) scales its projection by
+        // playbackRate, and clamps an implausible one to the documented
+        // 0.25...4 range instead of letting the scrubber jump wildly. ---
+        let rateService = NowPlayingService()
+        let sampleTimestamp = Date()
+        rateService.injectPreviewState(NowPlayingState(
+            title: "Test Track", artist: nil, album: nil, duration: 100,
+            elapsed: 10, isPlaying: true, playbackRate: 2.0, artworkData: nil,
+            sourceBundleID: nil, timestamp: sampleTimestamp))
+        let doubleSpeedElapsed = rateService.currentElapsed(at: sampleTimestamp.addingTimeInterval(5))
+        check(doubleSpeedElapsed.map { abs($0 - 20) < 0.01 } ?? false,
+              "NowPlaying: currentElapsed at 2x scales 5s of real time into +10s of elapsed (got \(String(describing: doubleSpeedElapsed)))")
+
+        rateService.injectPreviewState(NowPlayingState(
+            title: "Test Track", artist: nil, album: nil, duration: 100,
+            elapsed: 10, isPlaying: true, playbackRate: 0.5, artworkData: nil,
+            sourceBundleID: nil, timestamp: sampleTimestamp))
+        let halfSpeedElapsed = rateService.currentElapsed(at: sampleTimestamp.addingTimeInterval(4))
+        check(halfSpeedElapsed.map { abs($0 - 12) < 0.01 } ?? false,
+              "NowPlaying: currentElapsed at 0.5x scales 4s of real time into +2s of elapsed (got \(String(describing: halfSpeedElapsed)))")
+
+        rateService.injectPreviewState(NowPlayingState(
+            title: "Test Track", artist: nil, album: nil, duration: 100,
+            elapsed: 10, isPlaying: true, playbackRate: 100, artworkData: nil,
+            sourceBundleID: nil, timestamp: sampleTimestamp))
+        let clampedElapsed = rateService.currentElapsed(at: sampleTimestamp.addingTimeInterval(1))
+        check(clampedElapsed.map { abs($0 - 14) < 0.01 } ?? false,
+              "NowPlaying: currentElapsed clamps an absurd playbackRate to the 4x ceiling (got \(String(describing: clampedElapsed)))")
+
+        rateService.injectPreviewState(NowPlayingState(
+            title: "Test Track", artist: nil, album: nil, duration: nil,
+            elapsed: 10, isPlaying: true, playbackRate: nil, artworkData: nil,
+            sourceBundleID: nil, timestamp: sampleTimestamp))
+        let missingRateElapsed = rateService.currentElapsed(at: sampleTimestamp.addingTimeInterval(3))
+        check(missingRateElapsed.map { abs($0 - 13) < 0.01 } ?? false,
+              "NowPlaying: currentElapsed treats a missing playbackRate as normal 1x speed (got \(String(describing: missingRateElapsed)))")
+
+        // --- ScriptingNowPlayingSource: per-poll player selection ---
+        // Pure functions (no AppleScript execution) so they're testable on a
+        // machine that can't run Music or Spotify at all.
+        check(ScriptingNowPlayingSource.primaryCandidate(current: nil, running: []) == nil,
+              "Scripting: primaryCandidate is nil when nothing is running")
+        check(ScriptingNowPlayingSource.primaryCandidate(current: nil, running: [.spotify]) == .spotify,
+              "Scripting: primaryCandidate picks the only running app")
+        check(ScriptingNowPlayingSource.primaryCandidate(current: nil, running: [.music, .spotify]) == .music,
+              "Scripting: primaryCandidate prefers Music first when nothing is already selected")
+        check(ScriptingNowPlayingSource.primaryCandidate(current: .spotify, running: [.music, .spotify]) == .spotify,
+              "Scripting: primaryCandidate sticks with the current app if it's still running, even if Music also is")
+        check(ScriptingNowPlayingSource.primaryCandidate(current: .spotify, running: [.music]) == .music,
+              "Scripting: primaryCandidate falls back once the current app is no longer running")
+
+        check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .music, running: [.music]) == nil,
+              "Scripting: fallbackCandidate is nil when the excluded app is the only one running")
+        check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .music, running: [.music, .spotify]) == .spotify,
+              "Scripting: fallbackCandidate — the fix for a stopped Music silently starving a playing Spotify — offers the other running app for a probe")
+        check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .spotify, running: [.music, .spotify]) == .music,
+              "Scripting: fallbackCandidate works symmetrically the other direction (stopped Spotify, playing Music)")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

@@ -15,6 +15,30 @@ import SwiftUI
 /// `canJoinAllSpaces`/`fullScreenAuxiliary` collection behavior so it rides
 /// above normal windows and survives Space switches and fullscreen apps, the
 /// same recipe `NotchHighlightWindow` already uses for the overflow glow.
+///
+/// ## Why `hitTest` returning `nil` isn't enough for pass-through
+///
+/// `NotchHostingView.hitTest` declines the point (returns `nil`) everywhere
+/// outside the currently-visible notch shape, which is the right idea — but
+/// it only decides how *this window* dispatches the event to *its own view
+/// hierarchy*. AppKit never retargets a declined hit-test to whatever window
+/// happens to be sitting underneath; the event is simply consumed by this
+/// window (or dropped) either way. Since this panel is fixed at 600×280+ and
+/// frontmost at `.statusBar` level, that means a big transparent rectangle
+/// across the top-center of the screen would swallow every click and scroll
+/// aimed at another app passing through it — `hitTest` alone only stops
+/// *this panel's own SwiftUI content* from reacting, not the window itself
+/// from claiming the event.
+///
+/// The actual fix is `NSWindow.ignoresMouseEvents`, toggled by
+/// `NotchWindowController` to match `NotchViewModel.state`: `true` while
+/// `.collapsed` (the physical notch has no interactive pixels of its own
+/// regardless, so nothing is lost) truly hands every event to whatever's
+/// beneath, and `false` while `.activity`/`.expanded` restores normal
+/// hit-testing for the wider shape's real interactive content. Collapsed
+/// hover/click detection moves to global+local `NSEvent` monitors in that
+/// state (see `NotchWindowController`), since a window that ignores mouse
+/// events also stops seeing them itself.
 final class NotchPanel: NSPanel {
     private let viewModel: NotchViewModel
 
@@ -32,6 +56,10 @@ final class NotchPanel: NSPanel {
         hasShadow = false
         acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Safe starting point matching the state machine's own initial
+        // `.collapsed` value; `NotchWindowController` immediately re-syncs
+        // this to the live state once the panel is attached/shown.
+        ignoresMouseEvents = true
     }
 
     /// Never key: taking key focus would (a) steal it from whatever app the

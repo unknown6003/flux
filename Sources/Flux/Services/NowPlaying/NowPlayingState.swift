@@ -16,6 +16,13 @@ struct NowPlayingState: Equatable {
     /// `timestamp` and `isPlaying` (see `NowPlayingService.currentElapsed`).
     var elapsed: TimeInterval?
     var isPlaying: Bool
+    /// Playback speed multiplier as of `timestamp` (1.0 = normal speed; 0.5x/
+    /// 2x/etc. for slowed-down or sped-up audiobooks/podcasts/videos).
+    /// `nil` when the source doesn't report one (the AppleScript fallback
+    /// never does) — `NowPlayingService.currentElapsed(at:)` treats that the
+    /// same as `1.0`. Defaults to `nil` so existing memberwise-init call
+    /// sites that predate this field keep compiling unchanged.
+    var playbackRate: Double? = nil
     /// Raw, undecoded image bytes (JPEG/PNG/TIFF — whatever the source app
     /// reports). Downsampling to a display-ready `NSImage` is
     /// `NowPlayingService`'s job, not this layer's.
@@ -67,6 +74,11 @@ struct MediaRemoteAdapterPayload: Decodable, Equatable {
     /// Seconds, as of `timestamp` (upstream's `elapsedTime` key).
     var elapsedTime: Double?
     var timestamp: Date?
+    /// Playback speed multiplier (upstream's `playbackRate` key — see
+    /// `kMRAPlaybackRate` in `Vendor/mediaremote-adapter/src/adapter/keys.m`,
+    /// set from `MediaRemote`'s own `kMRMediaRemoteNowPlayingInfoPlaybackRate`
+    /// in `src/adapter/now_playing.m`). 1.0 is normal speed.
+    var playbackRate: Double?
     var artworkMimeType: String?
     /// Base64 (upstream encodes with `NSData.base64EncodedStringWithOptions:`,
     /// no line wrapping) — still-encoded here; decoding to `Data` happens in
@@ -77,7 +89,7 @@ struct MediaRemoteAdapterPayload: Decodable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case processIdentifier, bundleIdentifier, parentApplicationBundleIdentifier
         case playing, title, artist, album, duration, elapsedTime, timestamp
-        case artworkMimeType, artworkData
+        case playbackRate, artworkMimeType, artworkData
     }
 
     init(from decoder: Decoder) throws {
@@ -97,6 +109,7 @@ struct MediaRemoteAdapterPayload: Decodable, Equatable {
         } else {
             timestamp = nil
         }
+        playbackRate = try c.decodeIfPresent(Double.self, forKey: .playbackRate)
         artworkMimeType = try c.decodeIfPresent(String.self, forKey: .artworkMimeType)
         artworkData = try c.decodeIfPresent(String.self, forKey: .artworkData)
     }
@@ -105,7 +118,7 @@ struct MediaRemoteAdapterPayload: Decodable, Equatable {
          parentApplicationBundleIdentifier: String? = nil, playing: Bool? = nil,
          title: String? = nil, artist: String? = nil, album: String? = nil,
          duration: Double? = nil, elapsedTime: Double? = nil, timestamp: Date? = nil,
-         artworkMimeType: String? = nil, artworkData: String? = nil) {
+         playbackRate: Double? = nil, artworkMimeType: String? = nil, artworkData: String? = nil) {
         self.processIdentifier = processIdentifier
         self.bundleIdentifier = bundleIdentifier
         self.parentApplicationBundleIdentifier = parentApplicationBundleIdentifier
@@ -116,6 +129,7 @@ struct MediaRemoteAdapterPayload: Decodable, Equatable {
         self.duration = duration
         self.elapsedTime = elapsedTime
         self.timestamp = timestamp
+        self.playbackRate = playbackRate
         self.artworkMimeType = artworkMimeType
         self.artworkData = artworkData
     }
@@ -161,6 +175,7 @@ extension NowPlayingState {
         duration = payload.duration
         elapsed = payload.elapsedTime
         isPlaying = payload.playing ?? false
+        playbackRate = payload.playbackRate
         artworkData = payload.artworkData.flatMap { Data(base64Encoded: $0) }
         sourceBundleID = payload.bundleIdentifier
         timestamp = payload.timestamp ?? Date()

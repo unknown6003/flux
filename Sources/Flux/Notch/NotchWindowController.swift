@@ -44,6 +44,36 @@ final class NotchWindowController {
     private var showInFullscreen = true
     private var cancellables = Set<AnyCancellable>()
 
+    /// True once a panel exists AND is actually shown over a real physical
+    /// notch — false while disabled, and false when the notch's screen has
+    /// been lost (external-only clamshell) even though `panel` itself is
+    /// kept alive, merely ordered out, for instant reattachment (see
+    /// `resolveScreen`). The global hotkey stays registered even when this
+    /// is `false` (so it starts working the instant the notch reappears),
+    /// but must not drive a headless expand while it is — see
+    /// `hotkeyToggled()`.
+    private(set) var isPresenting = false
+
+    // MARK: - Collapsed-state pass-through monitors (Finding 1)
+    //
+    // While `.collapsed`, `panel.ignoresMouseEvents` is `true` (see
+    // `NotchPanel`'s doc comment for why `hitTest` alone can't achieve
+    // pass-through) — which also means the panel itself stops receiving
+    // mouse events, so hover/click detection for that state moves here:
+    // global monitors see events over every other app; local monitors see
+    // events over Flux's own windows (global monitors never fire for
+    // own-app events). Installed only while collapsed; torn down the moment
+    // the state moves on, the panel is disabled, or the screen is lost.
+    private var globalMoveMonitor: Any?
+    private var localMoveMonitor: Any?
+    private var globalClickMonitor: Any?
+    private var localClickMonitor: Any?
+    /// Debounces the monitors' (frequent) `mouseMoved` reports the same way
+    /// `NotchHostingView.updateHover` debounces its own tracking-area
+    /// redeliveries — only an actual inside/outside transition should reach
+    /// `viewModel.hoverChanged`.
+    private var lastMonitoredInside = false
+
     init() {
         let registry = NotchWidgetRegistry()
         let activities = LiveActivityCenter()
@@ -57,6 +87,23 @@ final class NotchWindowController {
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.resolveScreen() }
             .store(in: &cancellables)
+
+        // Keeps the panel's `ignoresMouseEvents`/monitor setup in lockstep
+        // with the state machine — a state change while already presenting
+        // is the common case this reacts to (screen-change-driven syncing
+        // is handled explicitly in `resolveScreen`, since that's a re-sync
+        // of `isPresenting` itself, not just `state`).
+        viewModel.$state
+            .sink { [weak self] state in self?.updatePassThrough(for: state) }
+            .store(in: &cancellables)
+    }
+
+    deinit {
+        // `NSEvent.removeMonitor` is safe to call from `deinit` — it's a
+        // plain class method taking the opaque token, not a call on `self`.
+        [globalMoveMonitor, localMoveMonitor, globalClickMonitor, localClickMonitor]
+            .compactMap { $0 }
+            .forEach { NSEvent.removeMonitor($0) }
     }
 
     /// Turns the whole notch feature on/off. Disabling tears the panel down
@@ -68,6 +115,12 @@ final class NotchWindowController {
         if enabled {
             resolveScreen()
         } else {
+            // `isPresenting` (and the monitors it gates) go first so the
+            // `forceCollapse()` below — which republishes `.collapsed` on
+            // `viewModel.$state` — can't turn around and reinstall them on a
+            // panel that's about to be torn down.
+            isPresenting = false
+            removeCollapsedMonitors()
             // Force the state machine to `.collapsed` *before* tearing the
             // panel down. A plain `collapse()` could re-enter `.activity` if
             // one happened to be current, leaving an expanded widget's
@@ -89,6 +142,24 @@ final class NotchWindowController {
         panel?.setShowInFullscreen(show)
     }
 
+    // MARK: - Hotkey
+
+    /// Entry point for the global notch-toggle hotkey. The hotkey stays
+    /// registered even when there's no built-in notched screen at all
+    /// (external-display clamshell, non-notch Mac) so it starts working
+    /// again the instant one reappears — but firing straight into
+    /// `viewModel.hotkeyToggled()` while `isPresenting` is `false` would
+    /// expand/collapse a state machine nothing is showing: an invisible
+    /// widget (e.g. Now Playing) would start running for zero visible
+    /// benefit. This is the single gate that keeps a headless expand from
+    /// ever happening; every other input (hover, click, swipe) already only
+    /// reaches `viewModel` through the panel itself, which can't receive
+    /// them unless it's presenting.
+    func hotkeyToggled() {
+        guard isPresenting else { return }
+        viewModel.hotkeyToggled()
+    }
+
     // MARK: - Screen resolution
 
     /// Finds (or loses) the built-in notched screen and reflects that in the
@@ -98,10 +169,20 @@ final class NotchWindowController {
     /// an external-only setup. Ordering out rather than tearing down means
     /// returning to the built-in display (opening the lid) reattaches
     /// instantly, with the notch UI's state exactly as it was left.
+    ///
+    /// Losing the screen also force-collapses: with `isPresenting` about to
+    /// go `false`, there is by definition no panel left to show a widget or
+    /// live activity in, so anything still `.expanded`/`.activity` at that
+    /// moment must be told to stop the same way `setEnabled(false)` already
+    /// does — otherwise a widget could keep polling/ticking headlessly until
+    /// the notch's screen comes back.
     private func resolveScreen() {
         guard isEnabled else { return }
         guard let screen = NSScreen.builtInNotchedScreen, let notchRect = screen.notchRect else {
+            isPresenting = false
+            removeCollapsedMonitors()
             panel?.orderOut(nil)
+            viewModel.forceCollapse()
             return
         }
 
@@ -110,6 +191,14 @@ final class NotchWindowController {
         hostingView?.rootView = makeRootView(notchSize: notchRect.size)
         position(panel, on: screen, notchRect: notchRect)
         panel.orderFrontRegardless()
+        isPresenting = true
+        // A state-machine *change* re-syncs `ignoresMouseEvents`/monitors on
+        // its own via the `viewModel.$state` sink installed in `init`, but
+        // `isPresenting` flipping true here isn't itself a state change (the
+        // state could easily already be `.collapsed` from before the screen
+        // was lost), so this explicit call is what actually arms the
+        // monitors for a freshly-(re)presented panel.
+        updatePassThrough(for: viewModel.state)
     }
 
     private func makePanel() -> NotchPanel {
@@ -140,5 +229,98 @@ final class NotchWindowController {
         let height = NotchMetrics.expandedHeight
         let origin = NSPoint(x: notchRect.midX - width / 2, y: screen.frame.maxY - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
+    }
+
+    // MARK: - Collapsed-state pass-through (Finding 1)
+
+    /// The single place `panel.ignoresMouseEvents` is decided, and the
+    /// monitors that stand in for hit-testing while it's `true`. See
+    /// `NotchPanel`'s doc comment for why `hitTest` returning `nil` can't do
+    /// this on its own.
+    ///
+    /// Note this intentionally does *not* cover the two-finger swipe gesture
+    /// `NotchPanel.sendEvent` recognizes (`swiped(.down)` opening from
+    /// `.collapsed`) — `ignoresMouseEvents` suppresses scroll-wheel delivery
+    /// to the panel exactly like every other mouse event, so that gesture is
+    /// only live while `.activity`/`.expanded`. Hover and click already cover
+    /// opening from collapsed, so this is a narrower gesture surface, not a
+    /// silent break of the primary open paths.
+    private func updatePassThrough(for state: NotchState) {
+        guard let panel, isPresenting else {
+            removeCollapsedMonitors()
+            return
+        }
+        switch state {
+        case .collapsed:
+            panel.ignoresMouseEvents = true
+            installCollapsedMonitors()
+        case .activity, .expanded:
+            panel.ignoresMouseEvents = false
+            removeCollapsedMonitors()
+        }
+    }
+
+    /// No-op if already installed — callers (the `viewModel.$state` sink,
+    /// `resolveScreen`) can call this freely without risking doubled monitors.
+    private func installCollapsedMonitors() {
+        guard globalMoveMonitor == nil else { return }
+        lastMonitoredInside = false
+
+        globalMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            // Captured synchronously — matching `MenuBarManager`'s own
+            // outside-click monitor — since global-monitor handlers aren't
+            // guaranteed to run on the main actor and `NSEvent.mouseLocation`
+            // could otherwise read a slightly later position after the hop.
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in self?.handleMonitoredMove(at: location) }
+        }
+        // Global monitors never fire for events targeting Flux's own
+        // windows — a local monitor is the only way to see mouse-moved
+        // events while, e.g., the Settings window has focus.
+        localMoveMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            self?.handleMonitoredMove(at: NSEvent.mouseLocation)
+            return event
+        }
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in self?.handleMonitoredClick(at: location) }
+        }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.handleMonitoredClick(at: NSEvent.mouseLocation)
+            return event
+        }
+    }
+
+    private func removeCollapsedMonitors() {
+        [globalMoveMonitor, localMoveMonitor, globalClickMonitor, localClickMonitor]
+            .compactMap { $0 }
+            .forEach { NSEvent.removeMonitor($0) }
+        globalMoveMonitor = nil
+        localMoveMonitor = nil
+        globalClickMonitor = nil
+        localClickMonitor = nil
+        lastMonitoredInside = false
+    }
+
+    /// `NSEvent.mouseLocation` is already in global screen coordinates — the
+    /// same space `NSScreen.notchRect` is published in — so, unlike the
+    /// hit-test path `NotchHostingView` uses while presenting non-collapsed,
+    /// no window/view coordinate conversion is needed here at all.
+    private func handleMonitoredMove(at location: NSPoint) {
+        guard let rect = NSScreen.builtInNotchedScreen?.notchRect else { return }
+        let inside = rect.contains(location)
+        guard inside != lastMonitoredInside else { return }
+        lastMonitoredInside = inside
+        viewModel.hoverChanged(inside: inside)
+    }
+
+    /// A click landing on the notch while collapsed would otherwise be lost
+    /// entirely — `ignoresMouseEvents` means `NotchRootView`'s own
+    /// `onTapGesture` never sees it. Global monitors can't consume/swallow
+    /// the event they observe, which is fine here: the physical notch has no
+    /// real pixels for another app to receive that same click instead.
+    private func handleMonitoredClick(at location: NSPoint) {
+        guard let rect = NSScreen.builtInNotchedScreen?.notchRect, rect.contains(location) else { return }
+        viewModel.clicked()
     }
 }

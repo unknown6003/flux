@@ -72,8 +72,10 @@ arrangement across launches.
 - **Notch panel** — on notched Macs, hover (or click) the camera housing to expand
   a **Now Playing** widget: artwork, title/artist, a scrubber, and transport
   controls for whatever's playing (any app, via a vendored MediaRemote adapter;
-  falls back to AppleScript for Music/Spotify). Open gesture, hover delays, and
-  which widgets are enabled are all configurable in Settings → Notch.
+  falls back to AppleScript for Music/Spotify — macOS may show an Automation
+  permission prompt the first time that fallback controls either app). Open
+  gesture, hover delays, and which widgets are enabled are all configurable in
+  Settings → Notch.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.

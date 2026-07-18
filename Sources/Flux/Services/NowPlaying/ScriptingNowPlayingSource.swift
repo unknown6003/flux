@@ -24,7 +24,11 @@ import Combine
 @MainActor
 final class ScriptingNowPlayingSource: NowPlayingSource {
 
-    private enum PlayerApp: String, CaseIterable {
+    // `internal` (not `private`) so `SelfTest` can exercise the pure
+    // selection functions below (`primaryCandidate`/`fallbackCandidate`)
+    // directly, without needing a real Music/Spotify process — this
+    // machine can't run either at all.
+    enum PlayerApp: String, CaseIterable {
         case music = "com.apple.Music"
         case spotify = "com.spotify.client"
 
@@ -97,7 +101,8 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
     }
 
     func send(_ command: NowPlayingCommand) {
-        guard let app = activeApp ?? Self.detectRunningApp(preferring: nil) else { return }
+        let running = Set(PlayerApp.allCases.filter(Self.isRunning))
+        guard let app = Self.primaryCandidate(current: activeApp, running: running) else { return }
         switch command {
         case .play: runCommand(.play, on: app)
         case .pause: runCommand(.pause, on: app)
@@ -112,7 +117,8 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
 
     private func poll() {
         guard isStarted else { return }
-        guard let app = Self.detectRunningApp(preferring: activeApp) else {
+        let running = Set(PlayerApp.allCases.filter(Self.isRunning))
+        guard let candidate = Self.primaryCandidate(current: activeApp, running: running) else {
             activeApp = nil
             isAvailable = false
             lastState = nil
@@ -122,7 +128,15 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
             return
         }
         isAvailable = true
-        activeApp = app
+        activeApp = candidate
+        runStatePoll(for: candidate, running: running)
+    }
+
+    /// Runs (and dispatches the result of) one player's state script. Shared
+    /// between the primary poll and the one-shot fallback probe below —
+    /// `isFallback` just threads through to `handlePollResult` so it can cap
+    /// the fallback at a single extra hop per cycle instead of ping-ponging.
+    private func runStatePoll(for app: PlayerApp, running: Set<PlayerApp>, isFallback: Bool = false) {
         let script = stateScript(for: app)
         scriptQueue.async { [weak self] in
             var errorInfo: NSDictionary?
@@ -132,7 +146,7 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
                 nowPlayingLog.error("AppleScript state poll failed for \(app.scriptingName, privacy: .public): \(errorInfo)")
             }
             Task { @MainActor in
-                self?.handlePollResult(rawString, app: app)
+                self?.handlePollResult(rawString, app: app, running: running, isFallback: isFallback)
             }
         }
     }
@@ -140,7 +154,15 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
     /// Fields are `|||`-delimited: state | title | artist | album | duration
     /// (seconds) | position (seconds) | a per-track identity key (used only
     /// to detect track changes for artwork re-fetching, never surfaced).
-    private func handlePollResult(_ raw: String?, app: PlayerApp) {
+    ///
+    /// When `app` reports `stopped` (or an unparseable line) and it isn't
+    /// already a fallback probe, this tries the *other* running player once
+    /// before giving up for the cycle — the fix for a stopped-but-still-
+    /// running Music silently starving a playing Spotify (or vice versa):
+    /// without this, `poll()` would keep sticking with whichever app it last
+    /// picked purely because its process is still alive, never noticing the
+    /// other one actually has something playing.
+    private func handlePollResult(_ raw: String?, app: PlayerApp, running: Set<PlayerApp>, isFallback: Bool = false) {
         guard isStarted, activeApp == app else { return }
         guard let raw else {
             stateSubject.send(nil)
@@ -148,10 +170,15 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
         }
         let fields = raw.components(separatedBy: "|||")
         guard fields.count == 7, fields[0] != "stopped" else {
-            lastState = nil
-            artworkTrackKey = nil
-            artworkData = nil
-            stateSubject.send(nil)
+            if !isFallback, let other = Self.fallbackCandidate(excluding: app, running: running) {
+                activeApp = other
+                runStatePoll(for: other, running: running, isFallback: true)
+            } else {
+                lastState = nil
+                artworkTrackKey = nil
+                artworkData = nil
+                stateSubject.send(nil)
+            }
             return
         }
 
@@ -361,18 +388,36 @@ final class ScriptingNowPlayingSource: NowPlayingSource {
         return script
     }
 
-    // MARK: - App detection
+    // MARK: - App detection / selection
 
     private static func isRunning(_ app: PlayerApp) -> Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: app.rawValue).isEmpty
     }
 
-    /// Sticks with `preferring` (the currently-tracked app) if it's still
-    /// running, so a session doesn't flip-flop between Music and Spotify
-    /// when both happen to be open; otherwise picks whichever of the two is
-    /// running, Music first.
-    private static func detectRunningApp(preferring: PlayerApp?) -> PlayerApp? {
-        if let preferring, isRunning(preferring) { return preferring }
-        return PlayerApp.allCases.first(where: isRunning)
+    /// Which player to poll (or route a command to) *first* this cycle.
+    /// Sticks with `current` if it's still running, so a session doesn't
+    /// flip-flop between Music and Spotify purely because both happen to be
+    /// open; otherwise falls back to whichever of the two is running, Music
+    /// first. This alone doesn't fix the starvation bug — `current` staying
+    /// "running" is exactly the case where it might be stopped while the
+    /// other plays — `fallbackCandidate` below is what actually lets `poll()`
+    /// notice and switch. Pure/static (no `NSAppleScript`, no I/O) so
+    /// `SelfTest` can exercise the policy directly without a real Music/
+    /// Spotify process — this machine can't run either at all.
+    static func primaryCandidate(current: PlayerApp?, running: Set<PlayerApp>) -> PlayerApp? {
+        if let current, running.contains(current) { return current }
+        return PlayerApp.allCases.first { running.contains($0) }
+    }
+
+    /// The *other* running player, tried once when `app`'s own poll comes
+    /// back stopped/no-track — the actual fix for the bug where a stopped
+    /// Music (process still alive, just idle/paused) permanently starved a
+    /// playing Spotify (or vice versa): as long as some other player is
+    /// actually running, it's always worth one probe before giving up for
+    /// the cycle. `nil` when `app` is the only one running (nothing else to
+    /// try) or excludes itself. Pure/static for the same testability reason
+    /// as `primaryCandidate`.
+    static func fallbackCandidate(excluding app: PlayerApp, running: Set<PlayerApp>) -> PlayerApp? {
+        PlayerApp.allCases.first { $0 != app && running.contains($0) }
     }
 }

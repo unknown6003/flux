@@ -109,14 +109,21 @@ final class NowPlayingService: ObservableObject {
 
     /// `state.elapsed` is a sample as of `state.timestamp`, not "right now" —
     /// this projects it forward (only while playing) so a UI can tick a
-    /// progress bar every frame without re-polling anything. Clamped to
-    /// `duration` when known, since the extrapolation is necessarily a rough
-    /// estimate (playback rate changes, seeks, and buffering aren't
-    /// reflected until the next real update arrives).
+    /// progress bar every frame without re-polling anything. The projection
+    /// is scaled by `state.playbackRate` so a sped-up/slowed-down audiobook
+    /// or podcast (1.5x, 2x, 0.5x, ...) doesn't visibly drift out of sync
+    /// with the real player between polls; a missing rate (the AppleScript
+    /// source never reports one) is treated as normal (1.0) speed. Clamped
+    /// to a sane `0.25...4` range first — a source reporting something wild
+    /// or malformed shouldn't be able to make this jump the scrubber by
+    /// absurd amounts per second. Clamped to `duration` when known, since the
+    /// extrapolation is necessarily a rough estimate (rate changes, seeks,
+    /// and buffering aren't reflected until the next real update arrives).
     func currentElapsed(at date: Date) -> TimeInterval? {
         guard let state, let elapsed = state.elapsed else { return nil }
         guard state.isPlaying else { return elapsed }
-        let projected = elapsed + date.timeIntervalSince(state.timestamp)
+        let rate = min(max(state.playbackRate ?? 1.0, 0.25), 4.0)
+        let projected = elapsed + date.timeIntervalSince(state.timestamp) * rate
         guard let duration = state.duration else { return max(0, projected) }
         return min(max(0, projected), duration)
     }

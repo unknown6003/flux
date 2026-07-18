@@ -224,8 +224,23 @@ private struct NowPlayingExpandedView: View {
         }
     }
 
+    /// A real, positive `duration` renders the interactive slider; anything
+    /// else (`nil`, or `0`/negative — a live radio stream, or a source that
+    /// simply hasn't reported one yet) has no meaningful "total" to scrub
+    /// against, so it falls back to a non-interactive affordance instead of
+    /// fabricating one — the previous behavior clamped a missing duration to
+    /// a fake 1s, which both drew a nonsensical slider and could send a
+    /// bogus absolute `.seek(dragValue)` clamped into that fake 0...1s range.
+    @ViewBuilder
     private func scrubberBody(_ state: NowPlayingState, at date: Date) -> some View {
-        let duration = max(state.duration ?? 0, 1)
+        if let duration = state.duration, duration > 0 {
+            interactiveScrubber(state, duration: duration, at: date)
+        } else {
+            indeterminateScrubber(at: date)
+        }
+    }
+
+    private func interactiveScrubber(_ state: NowPlayingState, duration: TimeInterval, at date: Date) -> some View {
         let elapsed = min(max(isDragging ? dragValue : (service.currentElapsed(at: date) ?? 0), 0), duration)
         let binding = Binding<TimeInterval>(
             get: { elapsed },
@@ -243,6 +258,26 @@ private struct NowPlayingExpandedView: View {
                 Text(Self.format(elapsed))
                 Spacer()
                 Text(Self.format(duration))
+            }
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(Color.white.opacity(0.5))
+        }
+    }
+
+    /// No slider (nothing to drag against, and no `.seek` is ever sent from
+    /// here), and no total-time label (there is no total) — just the elapsed
+    /// time over a thin, static capsule that reads as "progress is happening,
+    /// scale unknown" rather than a real, draggable timeline.
+    private func indeterminateScrubber(at date: Date) -> some View {
+        let elapsed = max(service.currentElapsed(at: date) ?? 0, 0)
+        return VStack(spacing: 4) {
+            Capsule()
+                .fill(Color.white.opacity(0.15))
+                .frame(height: 4)
+
+            HStack {
+                Text(Self.format(elapsed))
+                Spacer()
             }
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(Color.white.opacity(0.5))

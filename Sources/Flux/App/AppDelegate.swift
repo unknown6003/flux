@@ -205,7 +205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// while the notch feature itself is on — there's nothing to toggle
     /// otherwise.
     private func configureNotchHotkey() {
-        hotkey.onTrigger[.notchToggle] = { [weak self] in self?.notchWindow.viewModel.hotkeyToggled() }
+        // Routed through `NotchWindowController.hotkeyToggled()` (not the
+        // view model directly) so it's a no-op while the controller has
+        // nothing presenting — the hotkey stays registered even on an
+        // external-only clamshell setup with no built-in notched screen,
+        // and must not drive a headless expand in that case.
+        hotkey.onTrigger[.notchToggle] = { [weak self] in self?.notchWindow.hotkeyToggled() }
         guard settings.notchEnabled, settings.notchHotkey.isValid else {
             hotkey.unregister(.notchToggle)
             settings.notchHotkeyConflict = false
