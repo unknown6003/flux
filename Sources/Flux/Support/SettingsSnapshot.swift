@@ -10,7 +10,8 @@ import AppKit
 ///   Flux --snapshot <path> [light|dark] [arrange] [overflow]
 @MainActor
 enum SettingsSnapshot {
-    static func capture(to path: String, dark: Bool, arranging: Bool = false, overflow: Bool = false) {
+    static func capture(to path: String, dark: Bool, arranging: Bool = false, overflow: Bool = false,
+                        tab: SettingsTab = .general) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
@@ -22,10 +23,11 @@ enum SettingsSnapshot {
         let arranger = MenuBarArranger()
         if arranging { arranger.setArranging(true) }
         if arranging && overflow { arranger.setOverflow(arrange: true, notch: true, iconCount: 4) }
-        let root = SettingsView()
+        let root = SettingsView(initialTab: tab)
             .environmentObject(store)
             .environmentObject(arranger)
             .environmentObject(UpdateChecker())
+            .environmentObject(NowPlayingService())
             .environment(\.colorScheme, dark ? .dark : .light)
 
         let hosting = NSHostingView(rootView: AnyView(root))

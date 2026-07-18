@@ -25,6 +25,14 @@ struct HotkeyShortcut: Equatable {
         carbonModifiers: UInt32(controlKey | optionKey | cmdKey)
     )
 
+    /// ⌃⌥⌘N — the notch toggle's default, in the same three-modifier space as
+    /// `.default` (⌃⌥⌘F) so the two built-in hotkeys never collide with each
+    /// other or with mainstream app shortcuts.
+    static let notchDefault = HotkeyShortcut(
+        keyCode: UInt32(kVK_ANSI_N),
+        carbonModifiers: UInt32(controlKey | optionKey | cmdKey)
+    )
+
     /// A hotkey needs at least one modifier — registering a bare key would swallow
     /// that keypress system-wide, in every app.
     var isValid: Bool { carbonModifiers != 0 }

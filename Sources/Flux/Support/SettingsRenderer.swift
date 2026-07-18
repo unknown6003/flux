@@ -7,17 +7,18 @@ import AppKit
 /// Screen Recording permission. This is the same view the app shows at runtime.
 @MainActor
 enum SettingsRenderer {
-    static func render(to path: String, appearanceName: String) {
+    static func render(to path: String, appearanceName: String, tab: SettingsTab = .general) {
         // SwiftUI needs an app + appearance context for fonts/colors.
         _ = NSApplication.shared
         let isDark = appearanceName == "dark"
         let appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)!
         NSApp.appearance = appearance
 
-        let view = SettingsView()
+        let view = SettingsView(initialTab: tab)
             .environmentObject(SettingsStore())
             .environmentObject(MenuBarArranger())
             .environmentObject(UpdateChecker())
+            .environmentObject(NowPlayingService())
             .environment(\.colorScheme, isDark ? .dark : .light)
 
         // Resolve system colors (controlBackgroundColor, etc.) against the

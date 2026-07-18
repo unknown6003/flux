@@ -1,5 +1,26 @@
 import AppKit
 import Carbon.HIToolbox
+import SwiftUI
+import Foundation
+
+/// A minimal `NotchWidget` stub used only by the notch section of this test —
+/// counts `willPresent`/`didDismiss` calls so the state machine's "exactly
+/// once per visibility change" contract can be asserted directly, without a
+/// real widget's own side effects (services, timers) in the way.
+@MainActor
+private final class SelfTestWidget: NotchWidget {
+    let id: WidgetID
+    var isEnabled: Bool = true
+    private(set) var presentCount = 0
+    private(set) var dismissCount = 0
+
+    init(id: WidgetID) { self.id = id }
+
+    func makeExpandedView() -> AnyView { AnyView(EmptyView()) }
+    func makeCompactView() -> AnyView? { nil }
+    func willPresent() { presentCount += 1 }
+    func didDismiss() { dismissCount += 1 }
+}
 
 /// Headless functional test of the menu-bar engine. Creates real status items in
 /// the system menu bar and asserts the collapse/reveal geometry that does the
@@ -298,6 +319,226 @@ enum SelfTest {
         check(!updater.isNewer("0.1.0", than: "0.1.1"), "Update: an older version is not newer")
         check(!updater.isNewer("0.1.1", than: "0.2.0"), "Update: the running build isn't behind a lower tag")
         check(UpdateChecker.normalize("v0.1.1") == "0.1.1", "Update: a 'v' prefix is stripped from tags")
+
+        // --- Notch: NotchWidgetRegistry ordering, enable filtering, wrap-around ---
+        let registry = NotchWidgetRegistry()
+        let rWidgetA = SelfTestWidget(id: .nowPlaying)
+        let rWidgetB = SelfTestWidget(id: .shelf)
+        let rWidgetC = SelfTestWidget(id: .calendar)
+        registry.register(rWidgetA)
+        registry.register(rWidgetB)
+        registry.register(rWidgetC)
+        registry.register(rWidgetA) // duplicate registration must be a no-op
+        check(registry.widgets.count == 3,
+              "Registry: a duplicate registration of an already-registered id is ignored")
+
+        registry.order = [.calendar, .nowPlaying, .shelf]
+        check(registry.enabledWidgets.map(\.id) == [.calendar, .nowPlaying, .shelf],
+              "Registry: enabledWidgets follows the persisted order")
+
+        rWidgetB.isEnabled = false
+        check(registry.enabledWidgets.map(\.id) == [.calendar, .nowPlaying],
+              "Registry: a disabled widget is filtered out of enabledWidgets")
+
+        check(registry.next(after: .calendar) == .nowPlaying, "Registry: next() walks forward in order")
+        check(registry.next(after: .nowPlaying) == .calendar,
+              "Registry: next() wraps around past the last enabled widget")
+        check(registry.previous(before: .calendar) == .nowPlaying,
+              "Registry: previous() wraps around before the first enabled widget")
+
+        rWidgetB.isEnabled = true
+        registry.order = [.nowPlaying] // shelf/calendar now unordered
+        check(registry.enabledWidgets.map(\.id) == [.nowPlaying, .shelf, .calendar],
+              "Registry: an unordered-but-registered widget still appears, appended in registration order")
+
+        let emptyRegistry = NotchWidgetRegistry()
+        check(emptyRegistry.next(after: .nowPlaying) == nil,
+              "Registry: next() is nil when nothing is registered/enabled")
+
+        // --- Notch: LiveActivityCenter priority queue + expiry-free dismiss ---
+        let center = LiveActivityCenter()
+        let low = LiveActivity(kind: .bluetoothDevice, leading: .none, trailing: .none, duration: nil, priority: 100)
+        let high = LiveActivity(kind: .hudVolume, leading: .none, trailing: .none, duration: nil, priority: 300)
+        center.post(low)
+        check(center.current?.id == low.id, "LiveActivity: the only queued activity becomes current")
+        center.post(high)
+        check(center.current?.id == high.id,
+              "LiveActivity: a higher-priority activity posted later preempts the current one")
+        center.dismiss(id: high.id)
+        check(center.current?.id == low.id,
+              "LiveActivity: dismissing the current activity restores the next-highest queued one")
+        center.dismiss(id: low.id)
+        check(center.current == nil, "LiveActivity: dismissing the last activity leaves nothing current")
+
+        let batteryA = LiveActivity(kind: .battery, leading: .text("80%"), trailing: .none, duration: nil, priority: 200)
+        let batteryB = LiveActivity(kind: .battery, leading: .text("79%"), trailing: .none, duration: nil, priority: 200)
+        center.post(batteryA)
+        center.post(batteryB)
+        check(center.current?.id == batteryB.id,
+              "LiveActivity: posting the same kind again replaces the stale one instead of stacking")
+        center.dismiss(id: batteryB.id)
+
+        // --- Notch: NotchViewModel transition table ---
+        let notchRegistry = NotchWidgetRegistry()
+        let widgetA = SelfTestWidget(id: .nowPlaying)
+        let widgetB = SelfTestWidget(id: .shelf)
+        notchRegistry.register(widgetA)
+        notchRegistry.register(widgetB)
+        notchRegistry.order = [.nowPlaying, .shelf]
+
+        let activities = LiveActivityCenter()
+        let notchVM = NotchViewModel(registry: notchRegistry, activities: activities, expansionTrigger: .hover)
+        check(notchVM.state == .collapsed, "Notch: starts collapsed")
+
+        // Hover-open only fires in hover mode, after the configured delay.
+        notchVM.hoverChanged(inside: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(notchVM.hoverOpenDelay + 0.15))
+        check(notchVM.state == .expanded(.nowPlaying),
+              "Notch: hovering in hover mode opens to the first enabled widget after the open delay")
+        check(widgetA.presentCount == 1 && widgetA.dismissCount == 0,
+              "Notch: willPresent fires exactly once for the widget that opened")
+
+        notchVM.hoverChanged(inside: false)
+        RunLoop.current.run(until: Date().addingTimeInterval(notchVM.hoverCloseDelay + 0.15))
+        check(notchVM.state == .collapsed, "Notch: hovering out collapses after the close delay")
+        check(widgetA.dismissCount == 1, "Notch: didDismiss fires exactly once when the widget collapses")
+
+        // Click mode: hover has no effect at all.
+        notchVM.expansionTrigger = .click
+        notchVM.hoverChanged(inside: true)
+        RunLoop.current.run(until: Date().addingTimeInterval(notchVM.hoverOpenDelay + 0.15))
+        check(notchVM.state == .collapsed, "Notch: hovering in click mode never opens the panel")
+        notchVM.hoverChanged(inside: false)
+
+        // Click toggles open/closed regardless of trigger mode.
+        notchVM.clicked()
+        check(notchVM.state == .expanded(.nowPlaying), "Notch: a click opens the panel")
+        check(widgetA.presentCount == 2, "Notch: willPresent fires again on the second open")
+        notchVM.clicked()
+        check(notchVM.state == .collapsed, "Notch: a second click collapses it")
+        check(widgetA.dismissCount == 2, "Notch: didDismiss fires again on collapse")
+
+        // Swipe cycling.
+        notchVM.expand(nil)
+        check(notchVM.state == .expanded(.nowPlaying), "Notch: expand(nil) opens the first enabled widget")
+        notchVM.swiped(.left)
+        check(notchVM.state == .expanded(.shelf), "Notch: swipe left cycles forward")
+        check(widgetA.dismissCount == 3 && widgetB.presentCount == 1,
+              "Notch: cycling widget→widget dismisses the old one and presents the new one exactly once")
+        notchVM.swiped(.left)
+        check(notchVM.state == .expanded(.nowPlaying), "Notch: swipe left wraps around back to the first widget")
+        notchVM.swiped(.right)
+        check(notchVM.state == .expanded(.shelf), "Notch: swipe right cycles backward (wraps)")
+        notchVM.swiped(.up)
+        check(notchVM.state == .collapsed, "Notch: swipe up collapses from any state")
+        // widgetB (shelf) has been the showing widget twice now (swipe-right landed
+        // back on it just before this collapse) — swiped(.up)'s dismiss is its 2nd.
+        check(widgetB.dismissCount == 2, "Notch: collapsing from a swipe still dismisses the showing widget exactly once per visibility change")
+        notchVM.swiped(.down)
+        // lastUsedWidget was last set entering .expanded(shelf) (the swipe-right just
+        // before collapsing), and collapsing never changes it — so reopening from
+        // collapsed resolves back to shelf, not nowPlaying.
+        check(notchVM.state == .expanded(.shelf), "Notch: swipe down from collapsed opens the last-used widget")
+
+        // Live-activity preemption + return-to-collapsed.
+        notchVM.collapse()
+        check(notchVM.state == .collapsed, "Notch: collapse() returns to collapsed with no activity queued")
+        let liveActivity = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.100"),
+                                        trailing: .none, duration: nil, priority: 200)
+        activities.post(liveActivity)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        check(notchVM.state == .activity(liveActivity.id), "Notch: a live activity preempts the collapsed state")
+        activities.dismiss(id: liveActivity.id)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        check(notchVM.state == .collapsed, "Notch: dismissing the only activity returns to collapsed")
+
+        // An activity never disturbs an already-expanded widget.
+        notchVM.expand(.shelf)
+        let widgetBPresentsBefore = widgetB.presentCount
+        activities.post(liveActivity)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        check(notchVM.state == .expanded(.shelf), "Notch: a live activity doesn't preempt an expanded widget")
+        check(widgetB.presentCount == widgetBPresentsBefore,
+              "Notch: willPresent doesn't refire for a widget that stayed expanded through an activity post")
+        activities.dismiss(id: liveActivity.id)
+        notchVM.collapse()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        check(notchVM.state == .collapsed, "Notch: cleanup — back to collapsed")
+
+        // --- Notch: builtInNotchedScreen is nil-safe whether or not a notch exists ---
+        if let builtIn = NSScreen.builtInNotchedScreen {
+            check(builtIn.hasNotch, "Notch: builtInNotchedScreen (when non-nil) really is notched")
+        } else {
+            check(NSScreen.screens.allSatisfy { !$0.hasNotch || $0.displayID.map { CGDisplayIsBuiltin($0) == 0 } ?? true },
+                  "Notch: builtInNotchedScreen is correctly nil when no screen is both notched and built-in")
+        }
+
+        // --- NowPlayingState: decode from checked-in adapter JSON fixtures ---
+        func fixturePayloadDict(_ json: String) -> [String: Any] {
+            guard let data = json.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let payload = object["payload"] as? [String: Any]
+            else { return [:] }
+            return payload
+        }
+        func decodedState(_ dict: [String: Any]) -> NowPlayingState? {
+            guard JSONSerialization.isValidJSONObject(dict),
+                  let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let payload = try? JSONDecoder().decode(MediaRemoteAdapterPayload.self, from: data)
+            else { return nil }
+            return NowPlayingState(payload: payload)
+        }
+        // Mirrors MediaRemoteAdapterSource.applyPayload's dictionary-level merge:
+        // an explicit `null` in a diff line *removes* the key (cleared), while a
+        // key simply absent from the diff is left untouched (unchanged) — a
+        // distinction Codable-only decoding of one line in isolation can't make.
+        func applyDiff(_ payload: [String: Any], into merged: inout [String: Any]) {
+            for (key, value) in payload {
+                if value is NSNull {
+                    merged.removeValue(forKey: key)
+                } else {
+                    merged[key] = value
+                }
+            }
+        }
+
+        let fullDict = fixturePayloadDict(NowPlayingFixtures.streamFullSnapshotJSON)
+        if let fullState = decodedState(fullDict) {
+            check(fullState.title == "Sunday Morning", "NowPlaying: full snapshot decodes the title")
+            check(fullState.artist == "The Velvet Underground", "NowPlaying: full snapshot decodes the artist")
+            check(fullState.isPlaying, "NowPlaying: full snapshot decodes isPlaying")
+            check(fullState.elapsed == 42.25, "NowPlaying: full snapshot decodes elapsed")
+            check((fullState.artworkData?.isEmpty ?? true) == false,
+                  "NowPlaying: full snapshot's base64 artwork decodes to real bytes")
+        } else {
+            check(false, "NowPlaying: full snapshot fixture failed to decode")
+        }
+
+        var merged = fullDict
+        merged.removeValue(forKey: "artworkData") // full-snapshot handling strips artwork from the merge dict
+        applyDiff(fixturePayloadDict(NowPlayingFixtures.streamDiffTickJSON), into: &merged)
+        if let tickState = decodedState(merged) {
+            check(tickState.title == "Sunday Morning", "NowPlaying: a diff tick preserves the title unchanged")
+            check(tickState.elapsed == 43.25, "NowPlaying: a diff tick updates elapsed")
+        } else {
+            check(false, "NowPlaying: diff-tick merge failed to decode")
+        }
+
+        applyDiff(fixturePayloadDict(NowPlayingFixtures.streamDiffPauseJSON), into: &merged)
+        if let pausedState = decodedState(merged) {
+            check(!pausedState.isPlaying, "NowPlaying: a diff pause flips isPlaying without touching other fields")
+            check(pausedState.title == "Sunday Morning", "NowPlaying: a diff pause preserves the title through the pause diff")
+        } else {
+            check(false, "NowPlaying: diff-pause merge failed to decode")
+        }
+
+        merged["artworkMimeType"] = "image/png" // pretend it survived from the full snapshot
+        applyDiff(fixturePayloadDict(NowPlayingFixtures.streamDiffClearArtworkJSON), into: &merged)
+        check(merged["artworkMimeType"] == nil,
+              "NowPlaying: a diff's explicit null clears a key instead of leaving it (or merely 'absent')")
+
+        let idleState = decodedState(fixturePayloadDict(NowPlayingFixtures.streamIdleJSON))
+        check(idleState == nil, "NowPlaying: an idle empty payload (no title) yields no displayable state")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

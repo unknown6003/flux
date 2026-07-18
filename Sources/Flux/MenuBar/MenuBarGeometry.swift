@@ -61,4 +61,21 @@ extension NSScreen {
         guard frame.width >= 1 else { return false }
         return frame.minX >= statusItemRegion.minX + slack
     }
+
+    /// This screen's `CGDirectDisplayID`, pulled from the AppKit device
+    /// description dictionary. `nil` only in exotic setups (screen mirroring
+    /// edge cases) where the OS doesn't hand one back.
+    var displayID: CGDirectDisplayID? {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+
+    /// The built-in notched display, if the notch suite has anything to attach
+    /// to. Deliberately narrower than `hasNotch`: an external monitor can't
+    /// grow a physical notch, so a screen only qualifies here when it's both
+    /// notched *and* the Mac's own panel (`CGDisplayIsBuiltin`) — never a fake
+    /// notch drawn on an external. `nil` when no screen qualifies, e.g. an
+    /// external-only setup with the lid closed.
+    static var builtInNotchedScreen: NSScreen? {
+        screens.first { $0.hasNotch && $0.displayID.map { CGDisplayIsBuiltin($0) != 0 } == true }
+    }
 }

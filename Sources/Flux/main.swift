@@ -15,14 +15,23 @@ MainActor.assumeIsolated {
     let args = CommandLine.arguments
     if let idx = args.firstIndex(of: "--render-settings"), idx + 1 < args.count {
         let appearance = idx + 2 < args.count ? args[idx + 2] : "light"
-        SettingsRenderer.render(to: args[idx + 1], appearanceName: appearance)
+        let tab = (idx + 3 < args.count ? SettingsTab(rawValue: args[idx + 3]) : nil) ?? .general
+        SettingsRenderer.render(to: args[idx + 1], appearanceName: appearance, tab: tab)
         exit(0)
     }
     if let idx = args.firstIndex(of: "--snapshot"), idx + 1 < args.count {
         let dark = args[(idx + 2)...].contains("dark")
         let arranging = args[(idx + 2)...].contains("arrange")
         let overflow = args[(idx + 2)...].contains("overflow")
-        SettingsSnapshot.capture(to: args[idx + 1], dark: dark, arranging: arranging, overflow: overflow)
+        let tab = args[(idx + 2)...].compactMap(SettingsTab.init(rawValue:)).first ?? .general
+        SettingsSnapshot.capture(to: args[idx + 1], dark: dark, arranging: arranging, overflow: overflow, tab: tab)
+        exit(0)
+    }
+    // Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded]
+    if let idx = args.firstIndex(of: "--snapshot-notch"), idx + 1 < args.count {
+        let dark = args[(idx + 2)...].contains("dark")
+        let state = ["collapsed", "activity", "expanded"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
+        NotchSnapshot.capture(to: args[idx + 1], dark: dark, state: state)
         exit(0)
     }
     if args.contains("--selftest") {

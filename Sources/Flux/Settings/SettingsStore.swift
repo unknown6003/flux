@@ -29,6 +29,19 @@ final class SettingsStore: ObservableObject {
             keyCode: UInt32(defaults.integer(forKey: Keys.hotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.hotkeyModifiers))
         )
+
+        self.notchEnabled = defaults.bool(forKey: Keys.notchEnabled)
+        let triggerRaw = defaults.string(forKey: Keys.notchExpansionTrigger) ?? NotchExpansionTrigger.hover.rawValue
+        self.notchExpansionTrigger = NotchExpansionTrigger(rawValue: triggerRaw) ?? .hover
+        self.notchHoverOpenDelay = defaults.double(forKey: Keys.notchHoverOpenDelay)
+        self.notchHoverCloseDelay = defaults.double(forKey: Keys.notchHoverCloseDelay)
+        self.notchShowInFullscreen = defaults.bool(forKey: Keys.notchShowInFullscreen)
+        self.notchWidgetOrder = defaults.stringArray(forKey: Keys.notchWidgetOrder) ?? [WidgetID.nowPlaying.rawValue]
+        self.notchNowPlayingEnabled = defaults.bool(forKey: Keys.notchNowPlayingEnabled)
+        self.notchHotkey = HotkeyShortcut(
+            keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
+            carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
+        )
     }
 
     // MARK: General
@@ -89,6 +102,60 @@ final class SettingsStore: ObservableObject {
         didSet { MenuBarSpacing.apply(compact: compactMenuBarSpacing) }
     }
 
+    // MARK: Notch
+
+    /// Master on/off for the notch panel feature.
+    @Published var notchEnabled: Bool {
+        didSet { defaults.set(notchEnabled, forKey: Keys.notchEnabled) }
+    }
+
+    /// Which gesture opens the notch panel — mirrors `NotchViewModel.expansionTrigger`.
+    @Published var notchExpansionTrigger: NotchExpansionTrigger {
+        didSet { defaults.set(notchExpansionTrigger.rawValue, forKey: Keys.notchExpansionTrigger) }
+    }
+
+    /// Hover-in intent delay before the notch expands, in seconds.
+    @Published var notchHoverOpenDelay: Double {
+        didSet { defaults.set(notchHoverOpenDelay, forKey: Keys.notchHoverOpenDelay) }
+    }
+
+    /// Hover-out intent delay before the notch collapses, in seconds.
+    @Published var notchHoverCloseDelay: Double {
+        didSet { defaults.set(notchHoverCloseDelay, forKey: Keys.notchHoverCloseDelay) }
+    }
+
+    /// Keep the notch panel available over fullscreen apps.
+    @Published var notchShowInFullscreen: Bool {
+        didSet { defaults.set(notchShowInFullscreen, forKey: Keys.notchShowInFullscreen) }
+    }
+
+    /// User-chosen widget cycling order, as `WidgetID` raw values — mirrors
+    /// `NotchWidgetRegistry.order`. Stored as `[String]` (rather than
+    /// `[WidgetID]`) so a future widget id removed from the app doesn't
+    /// prevent the array itself from round-tripping through `UserDefaults`.
+    @Published var notchWidgetOrder: [String] {
+        didSet { defaults.set(notchWidgetOrder, forKey: Keys.notchWidgetOrder) }
+    }
+
+    /// Whether the Now Playing widget is enabled in the notch's cycle.
+    @Published var notchNowPlayingEnabled: Bool {
+        didSet { defaults.set(notchNowPlayingEnabled, forKey: Keys.notchNowPlayingEnabled) }
+    }
+
+    /// The chord that toggles the notch panel from anywhere — independent of
+    /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
+    @Published var notchHotkey: HotkeyShortcut {
+        didSet {
+            defaults.set(Int(notchHotkey.keyCode), forKey: Keys.notchHotkeyKeyCode)
+            defaults.set(Int(notchHotkey.carbonModifiers), forKey: Keys.notchHotkeyModifiers)
+        }
+    }
+
+    /// True when macOS refused to register `notchHotkey` — see `hotkeyConflict`'s
+    /// doc comment; same reasoning, kept as a separate flag since the two hotkeys
+    /// register (and can conflict) independently.
+    @Published var notchHotkeyConflict = false
+
     // MARK: Defaults
 
     private static let factoryDefaults: [String: Any] = [
@@ -101,6 +168,15 @@ final class SettingsStore: ObservableObject {
         Keys.iconStyle: MenuBarIconStyle.chevron.rawValue,
         Keys.hotkeyKeyCode: Int(HotkeyShortcut.default.keyCode),
         Keys.hotkeyModifiers: Int(HotkeyShortcut.default.carbonModifiers),
+        Keys.notchEnabled: true,
+        Keys.notchExpansionTrigger: NotchExpansionTrigger.hover.rawValue,
+        Keys.notchHoverOpenDelay: 0.15,
+        Keys.notchHoverCloseDelay: 0.40,
+        Keys.notchShowInFullscreen: true,
+        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue],
+        Keys.notchNowPlayingEnabled: true,
+        Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
+        Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
 
     private enum Keys {
@@ -113,5 +189,14 @@ final class SettingsStore: ObservableObject {
         static let iconStyle = "flux.iconStyle"
         static let hotkeyKeyCode = "flux.hotkey.keyCode"
         static let hotkeyModifiers = "flux.hotkey.modifiers"
+        static let notchEnabled = "flux.notch.enabled"
+        static let notchExpansionTrigger = "flux.notch.expansionTrigger"
+        static let notchHoverOpenDelay = "flux.notch.hoverOpenDelay"
+        static let notchHoverCloseDelay = "flux.notch.hoverCloseDelay"
+        static let notchShowInFullscreen = "flux.notch.showInFullscreen"
+        static let notchWidgetOrder = "flux.notch.widgetOrder"
+        static let notchNowPlayingEnabled = "flux.notch.nowPlayingEnabled"
+        static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
+        static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }
 }
