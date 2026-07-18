@@ -39,6 +39,18 @@ final class NotchPanel: NSPanel {
     /// supports (hover, click, scroll) works on a non-key panel.
     override var canBecomeKey: Bool { false }
 
+    /// Toggles `.fullScreenAuxiliary` to match `SettingsStore.
+    /// notchShowInFullscreen`, live — called from `NotchWindowController`
+    /// instead of only being decided once in `init`, so flipping the
+    /// preference takes effect immediately without tearing the panel down.
+    func setShowInFullscreen(_ show: Bool) {
+        if show {
+            collectionBehavior.insert(.fullScreenAuxiliary)
+        } else {
+            collectionBehavior.remove(.fullScreenAuxiliary)
+        }
+    }
+
     // MARK: - Swipe recognition
 
     /// Minimum accumulated scroll distance (points) before a gesture commits

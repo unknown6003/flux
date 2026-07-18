@@ -19,8 +19,12 @@ protocol NotchWidget: AnyObject {
     var id: WidgetID { get }
 
     /// Settings-driven; the registry filters `enabledWidgets` on this so a
-    /// disabled widget never appears in the cycle order or the expanded panel.
-    var isEnabled: Bool { get }
+    /// disabled widget never appears in the cycle order or the expanded
+    /// panel. Settable (rather than `{ get }`) so `NotchWidgetRegistry.
+    /// setEnabled` — the one place the wiring agent should flip this — can
+    /// write it uniformly across every conforming widget without each one
+    /// exposing its own separate setter.
+    var isEnabled: Bool { get set }
 
     /// Full content shown in the expanded notch panel.
     func makeExpandedView() -> AnyView
@@ -55,6 +59,13 @@ final class NotchWidgetRegistry: ObservableObject {
     /// over from a removed widget can't wedge the list.
     @Published var order: [WidgetID] = []
 
+    /// Fires the id of a widget right after `setEnabled` actually changes its
+    /// `isEnabled`. `NotchViewModel` is the one subscriber that matters: if
+    /// the widget named here is the one currently `.expanded`, it re-resolves
+    /// away from it instead of being left pointing at a widget that just
+    /// dropped out of `enabledWidgets`.
+    let enabledDidChange = PassthroughSubject<WidgetID, Never>()
+
     /// Enabled widgets, in `order`. Any registered-but-unordered widget (e.g.
     /// one added after `order` was last persisted) is appended afterward in
     /// registration order, so it still shows up somewhere sane instead of
@@ -83,6 +94,19 @@ final class NotchWidgetRegistry: ObservableObject {
 
     func widget(for id: WidgetID) -> NotchWidget? {
         widgets.first { $0.id == id }
+    }
+
+    /// The one place a widget's enabled flag should be written — routes
+    /// through the registry (rather than the wiring agent poking
+    /// `widget.isEnabled` directly) so every enable/disable, for every
+    /// widget, uniformly fires `enabledDidChange` and can never forget to.
+    /// A no-op if `id` isn't registered, or the value isn't actually changing
+    /// (so a settings sink that re-delivers the same value on every launch
+    /// doesn't spuriously nudge `NotchViewModel`).
+    func setEnabled(_ id: WidgetID, _ enabled: Bool) {
+        guard let widget = widget(for: id), widget.isEnabled != enabled else { return }
+        widget.isEnabled = enabled
+        enabledDidChange.send(id)
     }
 
     /// The widget after `id` in the enabled/ordered cycle, wrapping around.

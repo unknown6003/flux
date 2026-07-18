@@ -26,9 +26,22 @@ final class NotchWindowController {
         didSet { refreshRootView() }
     }
 
+    /// Lets the wiring agent intercept a tap on a live activity's wings —
+    /// forwarded straight to `NotchRootView.onActivityTap`. See that
+    /// property's doc comment; set once by the wiring agent (e.g. to route
+    /// `.menuBarOverflow` into Arrange Mode).
+    var onActivityTap: ((LiveActivity.Kind) -> Bool)? {
+        didSet { refreshRootView() }
+    }
+
     private var panel: NotchPanel?
     private var hostingView: NotchHostingView?
     private var isEnabled = false
+    /// Mirrors `SettingsStore.notchShowInFullscreen`; applied to `panel` as
+    /// soon as one exists, and re-applied to every panel `makePanel()` builds
+    /// (a screen change tears down and rebuilds the panel, which would
+    /// otherwise silently reset to the `NotchPanel.init` default).
+    private var showInFullscreen = true
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -55,10 +68,25 @@ final class NotchWindowController {
         if enabled {
             resolveScreen()
         } else {
+            // Force the state machine to `.collapsed` *before* tearing the
+            // panel down. A plain `collapse()` could re-enter `.activity` if
+            // one happened to be current, leaving an expanded widget's
+            // `didDismiss()` never called even though its panel just
+            // vanished — `forceCollapse()` guarantees the exactly-once
+            // willPresent/didDismiss pairing holds even on the way out.
+            viewModel.forceCollapse()
             panel?.orderOut(nil)
             panel = nil
             hostingView = nil
         }
+    }
+
+    /// Mirrors `SettingsStore.notchShowInFullscreen` into the live panel (and
+    /// remembers it for the next panel `makePanel()` builds, e.g. after a
+    /// screen change).
+    func setShowInFullscreen(_ show: Bool) {
+        showInFullscreen = show
+        panel?.setShowInFullscreen(show)
     }
 
     // MARK: - Screen resolution
@@ -86,6 +114,7 @@ final class NotchWindowController {
 
     private func makePanel() -> NotchPanel {
         let panel = NotchPanel(viewModel: viewModel)
+        panel.setShowInFullscreen(showInFullscreen)
         let hosting = NotchHostingView(viewModel: viewModel, rootView: makeRootView(notchSize: .zero))
         panel.contentView = hosting
         hostingView = hosting
@@ -93,7 +122,8 @@ final class NotchWindowController {
     }
 
     private func makeRootView(notchSize: CGSize) -> AnyView {
-        AnyView(NotchRootView(viewModel: viewModel, notchSize: notchSize, artworkProvider: artworkProvider))
+        AnyView(NotchRootView(viewModel: viewModel, notchSize: notchSize,
+                              artworkProvider: artworkProvider, onActivityTap: onActivityTap))
     }
 
     private func refreshRootView() {
@@ -106,8 +136,8 @@ final class NotchWindowController {
     /// — only the SwiftUI content inside grows/shrinks — so repositioning only
     /// has to happen when the screen itself changes.
     private func position(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
-        let width = max(notchRect.width + 440, 600)
-        let height: CGFloat = 280
+        let width = NotchMetrics.expandedWidth(for: notchRect.width)
+        let height = NotchMetrics.expandedHeight
         let origin = NSPoint(x: notchRect.midX - width / 2, y: screen.frame.maxY - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
     }

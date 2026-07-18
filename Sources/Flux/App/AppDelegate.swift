@@ -45,6 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         notchWindow.registry.register(nowPlayingWidget)
         notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
+        // A tap on the overflow indicator's wings should open Arrange Mode,
+        // same as the legacy `NotchHighlightWindowController` glow's
+        // `onActivate` — not toggle the notch panel itself, which is what a
+        // plain `viewModel.clicked()` would otherwise do for every activity.
+        notchWindow.onActivityTap = { [arranger] kind in
+            guard kind == .menuBarOverflow else { return false }
+            arranger.setArranging(true)
+            return true
+        }
 
         configureHotkey()
         configureNotch()
@@ -130,12 +139,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// once at launch (to apply whatever was persisted) and again from each
     /// setting's own Combine sink.
     private func configureNotch() {
+        // Applied before `setEnabled` so a fresh panel is built with the
+        // right collection behavior from the start, rather than defaulting
+        // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
+        // tick and then immediately being corrected.
+        notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
         notchWindow.setEnabled(settings.notchEnabled)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
         notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
-        nowPlayingWidget.isEnabled = settings.notchNowPlayingEnabled
+        notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
     }
@@ -161,6 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] value in self?.notchWindow.viewModel.hoverCloseDelay = value }
             .store(in: &cancellables)
 
+        settings.$notchShowInFullscreen
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.setShowInFullscreen(value) }
+            .store(in: &cancellables)
+
         settings.$notchWidgetOrder
             .dropFirst()
             .sink { [weak self] value in
@@ -170,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchNowPlayingEnabled
             .dropFirst()
-            .sink { [weak self] value in self?.nowPlayingWidget.isEnabled = value }
+            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.nowPlaying, value) }
             .store(in: &cancellables)
 
         settings.$notchHotkey

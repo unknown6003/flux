@@ -96,6 +96,7 @@ final class NotchViewModel: ObservableObject {
         self.activities = activities
         self.expansionTrigger = expansionTrigger
         observeActivities()
+        observeRegistry()
     }
 
     deinit {
@@ -127,6 +128,22 @@ final class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// Reacts to a widget being disabled/re-enabled through the registry
+    /// (`NotchWidgetRegistry.setEnabled`). Only the currently-*expanded*
+    /// widget matters here — a disabled widget elsewhere just quietly drops
+    /// out of `enabledWidgets` on its own. Re-resolving via `expand(nil)`
+    /// (rather than reaching into `state` directly) reuses its existing
+    /// last-used/first-enabled fallback, and now also its empty-registry
+    /// collapse — see `expand(_:)`.
+    private func observeRegistry() {
+        registry.enabledDidChange
+            .sink { [weak self] id in
+                guard let self, case .expanded(let current) = self.state, current == id else { return }
+                self.expand(nil)
+            }
+            .store(in: &cancellables)
+    }
+
     // MARK: - Inputs
 
     /// Debounced hover containment. `inside` is `interactiveRect.contains(point)`,
@@ -136,7 +153,12 @@ final class NotchViewModel: ObservableObject {
     /// of continuously restarting the open/close delay while the cursor merely
     /// wanders inside (or stays outside) the same region.
     func hoverChanged(inside: Bool) {
-        hoverHint = inside
+        // `mouseMoved` redelivers on every pixel of movement inside/outside the
+        // same region, so guard the published write itself — not just the
+        // debounced `isHovering` transition below — or every one of those
+        // redeliveries republishes `hoverHint` and re-triggers any SwiftUI view
+        // observing it (the breathing-cue animation) for no reason.
+        if hoverHint != inside { hoverHint = inside }
         guard inside != isHovering else { return }
         isHovering = inside
         guard expansionTrigger == .hover else { return }
@@ -203,12 +225,33 @@ final class NotchViewModel: ObservableObject {
         transition(to: activities.current.map { .activity($0.id) } ?? .collapsed)
     }
 
+    /// Forces the state machine straight to `.collapsed`, bypassing the
+    /// live-activity preemption `collapse()` honors. Used only when the notch
+    /// *panel itself* is being disabled/torn down (`NotchWindowController.
+    /// setEnabled(false)`) — at that point there's no wing left to show an
+    /// activity in, so re-surfacing one via `collapse()`'s usual fallback
+    /// would just leave `state` (and, wrongly, an expanded widget's
+    /// `willPresent`/`didDismiss` pairing) out of sync with the panel that's
+    /// about to disappear. Routes through `transition(to:)` like every other
+    /// input, so a widget that was expanded still gets its exactly-once
+    /// `didDismiss()`.
+    func forceCollapse() {
+        transition(to: .collapsed)
+    }
+
     /// Expand to a specific widget, or (when `id` is `nil`, or that widget
     /// isn't currently enabled) the last-used widget, or the first enabled
-    /// one. A no-op when no widget is enabled at all.
+    /// one. Collapses (honoring the same live-activity preemption as
+    /// `collapse()`) when no widget is enabled at all — notably including the
+    /// case where the *currently expanded* widget was just disabled out from
+    /// under it (see `observeRegistry()`), which must not leave `state`
+    /// pointing at a widget `enabledWidgets` no longer lists.
     func expand(_ id: WidgetID?) {
         let enabledIDs = registry.enabledWidgets.map(\.id)
-        guard !enabledIDs.isEmpty else { return }
+        guard !enabledIDs.isEmpty else {
+            collapse()
+            return
+        }
 
         let resolved: WidgetID
         if let id, enabledIDs.contains(id) {

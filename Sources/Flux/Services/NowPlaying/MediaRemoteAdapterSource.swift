@@ -66,7 +66,18 @@ final class MediaRemoteAdapterSource: NowPlayingSource {
     /// absent from most lines — this cache just needs to not throw away the
     /// decoded bytes when that happens, and to actually decode when the key
     /// legitimately reappears with a new value.
-    private var cachedArtworkBase64: String?
+    ///
+    /// Change detection is done via a cheap fingerprint (the base64 string's
+    /// `count` + `hashValue`) rather than retaining the base64 string itself
+    /// — artwork payloads can be tens/hundreds of KB, and holding onto that
+    /// full string just to `!=`-compare it against the next line would double
+    /// this source's memory footprint for artwork it already has decoded
+    /// bytes for in `cachedArtworkData`.
+    private struct ArtworkFingerprint: Equatable {
+        let count: Int
+        let hash: Int
+    }
+    private var cachedArtworkFingerprint: ArtworkFingerprint?
     private var cachedArtworkData: Data?
 
     private let frameworkPath: String?
@@ -224,20 +235,21 @@ final class MediaRemoteAdapterSource: NowPlayingSource {
     private func applyArtwork(from payload: [String: Any], isFullSnapshot: Bool) {
         if let raw = payload["artworkData"] {
             if let base64 = raw as? String, !base64.isEmpty {
-                if base64 != cachedArtworkBase64 {
-                    cachedArtworkBase64 = base64
+                let fingerprint = ArtworkFingerprint(count: base64.count, hash: base64.hashValue)
+                if fingerprint != cachedArtworkFingerprint {
+                    cachedArtworkFingerprint = fingerprint
                     cachedArtworkData = Data(base64Encoded: base64)
                 }
             } else {
                 // Explicit null (diff clearing it) or an unexpected type.
-                cachedArtworkBase64 = nil
+                cachedArtworkFingerprint = nil
                 cachedArtworkData = nil
             }
         } else if isFullSnapshot {
             // A full snapshot with no artworkData key at all means "no
             // artwork for this item" — unlike a diff line, absence here is
             // authoritative, not "unchanged".
-            cachedArtworkBase64 = nil
+            cachedArtworkFingerprint = nil
             cachedArtworkData = nil
         }
     }
@@ -268,7 +280,7 @@ final class MediaRemoteAdapterSource: NowPlayingSource {
     private func resetAccumulatedState() {
         lineBuffer = Data()
         mergedPayload = [:]
-        cachedArtworkBase64 = nil
+        cachedArtworkFingerprint = nil
         cachedArtworkData = nil
     }
 

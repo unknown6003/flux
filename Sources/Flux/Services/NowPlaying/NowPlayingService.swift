@@ -14,7 +14,7 @@ final class NowPlayingService: ObservableObject {
     /// A single cached, downsampled (≤300pt on the long edge) image — the
     /// previous one is released as soon as a new one replaces it, and it's
     /// only ever recomputed when the underlying artwork bytes actually
-    /// change (tracked via `lastArtworkData`, independent of how often
+    /// change (tracked via `lastArtworkFingerprint`, independent of how often
     /// `state` itself changes for unrelated reasons like the playback
     /// clock).
     @Published private(set) var artwork: NSImage?
@@ -26,7 +26,17 @@ final class NowPlayingService: ObservableObject {
     private var isActive = false
     private var latestAdapterState: NowPlayingState?
     private var latestScriptingState: NowPlayingState?
-    private var lastArtworkData: Data?
+
+    /// A cheap stand-in for the last artwork `Data` this service downsampled
+    /// — `count` + `hashValue` rather than the encoded bytes themselves, so
+    /// this service doesn't hold a *second* full-size copy of the artwork
+    /// buffer purely to detect "did it change" (the state pipeline already
+    /// keeps its own copy on `state.artworkData`).
+    private struct ArtworkFingerprint: Equatable {
+        let count: Int
+        let hash: Int
+    }
+    private var lastArtworkFingerprint: ArtworkFingerprint?
 
     /// Whichever source's data is currently authoritative — drives both
     /// `activeSourceName` and command routing.
@@ -174,8 +184,9 @@ final class NowPlayingService: ObservableObject {
     // MARK: - Artwork
 
     private func updateArtwork(from data: Data?) {
-        guard data != lastArtworkData else { return }
-        lastArtworkData = data
+        let fingerprint = data.map { ArtworkFingerprint(count: $0.count, hash: $0.hashValue) }
+        guard fingerprint != lastArtworkFingerprint else { return }
+        lastArtworkFingerprint = fingerprint
         artwork = data.flatMap { Self.downsample($0) }
     }
 

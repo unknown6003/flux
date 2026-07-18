@@ -115,6 +115,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let window else { return }
         let natural = naturalContentHeight()
         let available = availableHeight(on: window.screen)
+        // Set alongside `contentMaxSize`, and always before `setContentSize`
+        // below: `min(320, natural)` can never exceed `natural` itself, so
+        // min ≤ max holds no matter how tall (or short) this tab's content
+        // is — leaving `contentMinSize` at a stale, taller value from a
+        // previous (taller) tab could otherwise pin the window above the max
+        // this tab just set, or reject `setContentSize` outright.
+        window.contentMinSize = NSSize(width: Self.contentWidth, height: min(320, natural))
         window.contentMaxSize = NSSize(width: Self.contentWidth, height: natural)
         if let contentHeight = window.contentView?.frame.height, contentHeight > available {
             window.setContentSize(NSSize(width: Self.contentWidth, height: available))
@@ -129,6 +136,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         guard let window else { return }
         let natural = naturalContentHeight()
         let available = availableHeight(on: window.screen)
+        // See `clampHeightToScreen`'s comment on this same pairing — a tab
+        // switch is exactly the case that comment worries about: min/max both
+        // need to reflect the *new* tab's natural height before
+        // `setContentSize` runs, or a leftover min from a taller previous tab
+        // can end up above this tab's own max.
+        window.contentMinSize = NSSize(width: Self.contentWidth, height: min(320, natural))
         window.contentMaxSize = NSSize(width: Self.contentWidth, height: natural)
         window.setContentSize(NSSize(width: Self.contentWidth, height: min(natural, available)))
     }

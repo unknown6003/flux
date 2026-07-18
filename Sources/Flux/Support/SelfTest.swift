@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
+import Combine
 import Foundation
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
@@ -464,6 +465,82 @@ enum SelfTest {
         notchVM.collapse()
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         check(notchVM.state == .collapsed, "Notch: cleanup — back to collapsed")
+
+        // --- Notch: forceCollapse() (used when the notch panel itself is
+        // disabled) dismisses whatever's showing exactly once, and — unlike
+        // collapse() — never resurfaces a live activity in its place. ---
+        let forceRegistry = NotchWidgetRegistry()
+        let forceWidget = SelfTestWidget(id: .nowPlaying)
+        forceRegistry.register(forceWidget)
+        forceRegistry.order = [.nowPlaying]
+        let forceActivities = LiveActivityCenter()
+        let forceVM = NotchViewModel(registry: forceRegistry, activities: forceActivities)
+
+        forceVM.expand(.nowPlaying)
+        let stickyActivity = LiveActivity(kind: .battery, leading: .none, trailing: .none, duration: nil, priority: 200)
+        forceActivities.post(stickyActivity)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        check(forceVM.state == .expanded(.nowPlaying),
+              "Notch: setup — a live activity doesn't preempt an already-expanded widget")
+
+        forceVM.forceCollapse()
+        check(forceVM.state == .collapsed,
+              "Notch: forceCollapse() goes straight to .collapsed even with a live activity current — unlike collapse(), which would resurface it")
+        check(forceWidget.dismissCount == 1,
+              "Notch: forceCollapse() fires didDismiss exactly once for the widget that was expanded")
+
+        forceVM.forceCollapse()
+        check(forceWidget.dismissCount == 1,
+              "Notch: forceCollapse() is idempotent — already collapsed, a second call doesn't refire didDismiss")
+
+        // --- Notch: disabling a widget through the registry re-routes the
+        // view model away from it when (and only when) it's the one
+        // currently expanded ---
+        let disableRegistry = NotchWidgetRegistry()
+        let onlyWidget = SelfTestWidget(id: .nowPlaying)
+        let otherWidget = SelfTestWidget(id: .shelf)
+        disableRegistry.register(onlyWidget)
+        disableRegistry.register(otherWidget)
+        disableRegistry.order = [.nowPlaying, .shelf]
+        let disableVM = NotchViewModel(registry: disableRegistry, activities: LiveActivityCenter())
+
+        disableVM.expand(.nowPlaying)
+        check(disableVM.state == .expanded(.nowPlaying), "Notch: setup — nowPlaying is expanded")
+
+        disableRegistry.setEnabled(.shelf, false)
+        check(disableVM.state == .expanded(.nowPlaying),
+              "Notch: disabling a widget that isn't the one currently expanded leaves the state machine untouched")
+
+        disableRegistry.setEnabled(.nowPlaying, false)
+        check(disableVM.state == .collapsed,
+              "Notch: disabling the currently-expanded widget collapses the panel when no other widget is left enabled")
+        check(onlyWidget.dismissCount == 1,
+              "Notch: didDismiss fires for a widget disabled while it was expanded")
+
+        disableRegistry.setEnabled(.nowPlaying, true)
+        disableRegistry.setEnabled(.shelf, true)
+        disableVM.expand(.shelf)
+        disableRegistry.setEnabled(.shelf, false)
+        check(disableVM.state == .expanded(.nowPlaying),
+              "Notch: disabling the expanded widget falls back to another still-enabled widget instead of collapsing when one exists")
+        check(otherWidget.dismissCount == 1 && onlyWidget.presentCount == 2,
+              "Notch: falling back to nowPlaying dismisses shelf and re-presents nowPlaying exactly once")
+
+        // --- Notch: hoverChanged's hoverHint write is a same-value no-op —
+        // the frequent `mouseMoved` redeliveries within an unchanged hover
+        // state must not keep republishing it. ---
+        let hoverOnlyVM = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter(), expansionTrigger: .click)
+        var hoverHintPublishCount = 0
+        let hoverHintCancellable = hoverOnlyVM.$hoverHint.dropFirst().sink { _ in hoverHintPublishCount += 1 }
+        hoverOnlyVM.hoverChanged(inside: true)
+        check(hoverHintPublishCount == 1, "Notch: hoverChanged publishes hoverHint on a real change")
+        hoverOnlyVM.hoverChanged(inside: true)
+        hoverOnlyVM.hoverChanged(inside: true)
+        check(hoverHintPublishCount == 1,
+              "Notch: repeated hoverChanged(inside: true) calls (simulating mouseMoved redeliveries) don't republish hoverHint")
+        hoverOnlyVM.hoverChanged(inside: false)
+        check(hoverHintPublishCount == 2, "Notch: hoverChanged publishes hoverHint again once it actually changes back")
+        hoverHintCancellable.cancel()
 
         // --- Notch: builtInNotchedScreen is nil-safe whether or not a notch exists ---
         if let builtIn = NSScreen.builtInNotchedScreen {

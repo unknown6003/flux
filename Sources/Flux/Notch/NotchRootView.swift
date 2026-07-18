@@ -25,24 +25,44 @@ struct NotchRootView: View {
     /// back to a generic note glyph.
     var artworkProvider: (() -> NSImage?)?
 
-    private static let wingWidth: CGFloat = 90
-    private static let expandedHeight: CGFloat = 280
+    /// Lets the wiring agent intercept a tap while a live activity's wings are
+    /// showing — e.g. routing a `.menuBarOverflow` tap into Arrange Mode
+    /// instead of the notch's own open/close toggle. Return `true` to mark
+    /// the tap handled (skip `viewModel.clicked()`); returning `false`, or a
+    /// `nil` closure, falls through to the normal click behavior. Threaded in
+    /// the same optional-closure style as `artworkProvider`; `LiveActivity`
+    /// itself stays data-only, so this closure is the one place a tap gets
+    /// app-specific meaning.
+    var onActivityTap: ((LiveActivity.Kind) -> Bool)?
+
     private static let springAnimation = Animation.spring(response: 0.35, dampingFraction: 0.8)
+
+    /// How long the spring in `springAnimation` takes to settle — used to
+    /// delay narrowing `interactiveRect` back down to the final rect (see
+    /// `updateInteractiveRect`). Kept close to, but a hair past, the spring's
+    /// own `response` so the widened hit region outlives the visible morph
+    /// rather than snapping in early.
+    private static let interactiveRectSettleDelay: TimeInterval = 0.4
+
+    /// Cancelled/replaced on every state change so only the most recent
+    /// transition's narrowing actually lands — see `updateInteractiveRect`.
+    @State private var interactiveRectSettleTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { proxy in
             shapeLayer
                 .overlay(contentLayer)
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
-                // A plain tap toggles collapse/expand. This sits on the
+                // A plain tap toggles collapse/expand (unless `onActivityTap`
+                // claims it first — see `handleTap`). This sits on the
                 // *container*, underneath whatever a widget's expanded view
                 // draws; SwiftUI hit-tests descendant controls (a widget's own
                 // buttons) before an ancestor's `onTapGesture`, so this never
                 // steals taps meant for the widget's own UI.
-                .onTapGesture { viewModel.clicked() }
+                .onTapGesture { handleTap() }
                 .onAppear { updateInteractiveRect(panelWidth: proxy.size.width) }
-                .onChange(of: viewModel.state) { _, _ in
-                    updateInteractiveRect(panelWidth: proxy.size.width)
+                .onChange(of: viewModel.state) { oldState, newState in
+                    updateInteractiveRect(panelWidth: proxy.size.width, from: oldState, to: newState)
                 }
         }
         // Kept at this stable, always-present position (rather than nested
@@ -56,21 +76,54 @@ struct NotchRootView: View {
         .ignoresSafeArea()
     }
 
+    // MARK: - Tap routing
+
+    /// A plain tap normally toggles collapse/expand. While a live activity's
+    /// wings are showing, though, some activity kinds want the tap to mean
+    /// something else entirely (`.menuBarOverflow` opening Arrange Mode
+    /// rather than expanding a notch widget for it) — `onActivityTap` is the
+    /// hook that lets the wiring agent claim that tap; only when it declines
+    /// (or isn't set) does this fall through to the ordinary toggle.
+    private func handleTap() {
+        if case .activity = viewModel.state,
+           let kind = viewModel.activities.current?.kind,
+           onActivityTap?(kind) == true {
+            return
+        }
+        viewModel.clicked()
+    }
+
     // MARK: - Geometry
 
-    /// The shape's current footprint. Only `viewModel.state` drives this —
-    /// `notchSize` is fixed for the panel's lifetime (a screen change tears
-    /// down and rebuilds the whole panel via `NotchWindowController`).
-    private var containerSize: CGSize {
-        switch viewModel.state {
+    /// The footprint for an arbitrary state — not just the current one — so
+    /// `updateInteractiveRect` can compute the outgoing shape's rect during a
+    /// transition, not only the incoming one. `notchSize` is fixed for the
+    /// panel's lifetime (a screen change tears down and rebuilds the whole
+    /// panel via `NotchWindowController`).
+    private func size(for state: NotchState) -> CGSize {
+        switch state {
         case .collapsed:
             return notchSize
         case .activity:
-            return CGSize(width: notchSize.width + Self.wingWidth * 2,
+            return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2,
                           height: max(notchSize.height, 32))
         case .expanded:
-            return CGSize(width: max(notchSize.width + 440, 600), height: Self.expandedHeight)
+            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
+                          height: NotchMetrics.expandedHeight)
         }
+    }
+
+    /// The shape's current footprint — `viewModel.state`'s size, centered in
+    /// the fixed-size panel.
+    private var containerSize: CGSize { size(for: viewModel.state) }
+
+    /// The rect `state`'s shape occupies in this view's own coordinate space
+    /// (top-anchored, horizontally centered — matching how `shapeLayer` and
+    /// `NotchWindowController.position` both lay the panel out).
+    private func rect(for state: NotchState, panelWidth: CGFloat) -> CGRect {
+        let size = size(for: state)
+        let origin = CGPoint(x: (panelWidth - size.width) / 2, y: 0)
+        return CGRect(origin: origin, size: size)
     }
 
     /// Publishes the shape's current bounds, in this view's own coordinate
@@ -79,10 +132,37 @@ struct NotchRootView: View {
     /// hover outside the visible black shape fall through to whatever's
     /// behind the (otherwise fully transparent) panel instead of being
     /// swallowed by it.
-    private func updateInteractiveRect(panelWidth: CGFloat) {
-        let size = containerSize
-        let origin = CGPoint(x: (panelWidth - size.width) / 2, y: 0)
-        viewModel.interactiveRect = CGRect(origin: origin, size: size)
+    ///
+    /// A state *change* is where this gets subtle: `shapeLayer`'s footprint
+    /// spends `springAnimation`'s ~0.35s morphing between the outgoing and
+    /// incoming sizes, but `viewModel.state` itself (and hence this rect,
+    /// if it jumped straight to the final size) changes instantly. Setting
+    /// `interactiveRect` to only the final rect for that whole window would
+    /// make part of the still-visible outgoing shape (while it's shrinking)
+    /// or part of the newly-growing incoming shape fail to hit-test as
+    /// "inside the notch" for the animation's duration. So a transition
+    /// first *widens* `interactiveRect` to the union of both rects — always
+    /// a superset of whatever's actually on screen mid-morph — then narrows
+    /// it back down to just the settled, final rect once the spring's had
+    /// time to finish (`interactiveRectSettleDelay`), cancelling any
+    /// still-pending narrowing from a previous, since-superseded transition.
+    private func updateInteractiveRect(panelWidth: CGFloat, from oldState: NotchState? = nil, to newState: NotchState? = nil) {
+        let state = newState ?? viewModel.state
+        let finalRect = rect(for: state, panelWidth: panelWidth)
+
+        interactiveRectSettleTask?.cancel()
+
+        guard let oldState, oldState != state else {
+            viewModel.interactiveRect = finalRect
+            return
+        }
+
+        viewModel.interactiveRect = rect(for: oldState, panelWidth: panelWidth).union(finalRect)
+        interactiveRectSettleTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(Self.interactiveRectSettleDelay))
+            guard !Task.isCancelled else { return }
+            viewModel.interactiveRect = finalRect
+        }
     }
 
     // MARK: - Shape layer
@@ -163,10 +243,10 @@ struct NotchRootView: View {
     private var activityContent: some View {
         HStack(spacing: 0) {
             content(for: viewModel.activities.current?.leading ?? .none)
-                .frame(width: Self.wingWidth, height: notchSize.height)
+                .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
             Spacer(minLength: notchSize.width)
             content(for: viewModel.activities.current?.trailing ?? .none)
-                .frame(width: Self.wingWidth, height: notchSize.height)
+                .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
         }
         .frame(width: containerSize.width, height: containerSize.height)
     }
@@ -175,8 +255,13 @@ struct NotchRootView: View {
     /// the top (so nothing is drawn under the physical camera), showing the
     /// active widget's `makeCompactView()` if it has one, then the widget's
     /// full `makeExpandedView()` filling the rest of the panel below it.
+    /// Resolved through `enabledWidgets` (not the plain, unfiltered
+    /// `registry.widget(for:)`) so a widget that was disabled out from under
+    /// an in-flight state transition can never render here even for a single
+    /// frame — belt-and-suspenders alongside `NotchViewModel` re-routing
+    /// `state` away from it (see `observeRegistry()`).
     private func expandedContent(for widgetID: WidgetID) -> some View {
-        let widget = viewModel.registry.widget(for: widgetID)
+        let widget = viewModel.registry.enabledWidgets.first { $0.id == widgetID }
         return VStack(spacing: 0) {
             HStack {
                 if let compact = widget?.makeCompactView() {
