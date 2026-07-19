@@ -1454,8 +1454,18 @@ enum SelfTest {
         let m5VolumeActivity = NotchActivityRouter.volumeActivity(level: 0.4, muted: false)
         check(m5VolumeActivity.kind == .hudVolume && m5VolumeActivity.priority == 300 && m5VolumeActivity.duration == 1.5,
               "NotchActivityRouter: volumeActivity posts at kind .hudVolume, priority 300, duration 1.5s")
-        check(m5VolumeActivity.trailing == .gauge(0.4, systemName: "speaker.wave.2.fill"),
-              "NotchActivityRouter: volumeActivity's trailing content is a gauge carrying the exact level and matching icon")
+        // Not a plain `==` against `.gauge(0.4, ...)`: `volumeActivity` stores
+        // `Double(level)` where `level` is a `Float`, and widening a `Float`
+        // 0.4 to `Double` (~0.4000000059604645) doesn't bit-for-bit match the
+        // `Double` literal `0.4` — an epsilon compare on the unwrapped value
+        // is the correct check, not a red herring to "fix" by chasing exact
+        // equality.
+        if case let .gauge(value, systemName) = m5VolumeActivity.trailing {
+            check(abs(value - 0.4) < 0.0001 && systemName == "speaker.wave.2.fill",
+                  "NotchActivityRouter: volumeActivity's trailing content is a gauge carrying the exact level and matching icon")
+        } else {
+            check(false, "NotchActivityRouter: volumeActivity's trailing content is a gauge (got \(m5VolumeActivity.trailing))")
+        }
 
         let m5BrightnessActivity = NotchActivityRouter.brightnessActivity(level: 0.9)
         check(m5BrightnessActivity.kind == .hudBrightness && m5BrightnessActivity.priority == 300,
