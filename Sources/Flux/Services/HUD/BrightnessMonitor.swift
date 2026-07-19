@@ -50,6 +50,7 @@ final class BrightnessMonitor {
     /// first.
     private(set) var isAvailable: Bool
 
+    private let handle: UnsafeMutableRawPointer?
     private let getBrightnessFn: DisplayServicesGetBrightnessFn?
     private let setBrightnessFn: DisplayServicesSetBrightnessFn?
     private let canChangeFn: DisplayServicesCanChangeBrightnessFn?
@@ -59,6 +60,7 @@ final class BrightnessMonitor {
     init() {
         guard let handle = dlopen(Self.frameworkPath, RTLD_LAZY) else {
             hudLog.notice("BrightnessMonitor: dlopen(DisplayServices) failed — brightness HUD/intercept unavailable, volume HUD unaffected")
+            self.handle = nil
             getBrightnessFn = nil
             setBrightnessFn = nil
             canChangeFn = nil
@@ -71,12 +73,24 @@ final class BrightnessMonitor {
             return unsafeBitCast(symbol, to: type)
         }
 
+        self.handle = handle
         getBrightnessFn = loadSymbol("DisplayServicesGetBrightness", as: DisplayServicesGetBrightnessFn.self)
         setBrightnessFn = loadSymbol("DisplayServicesSetBrightness", as: DisplayServicesSetBrightnessFn.self)
         canChangeFn = loadSymbol("DisplayServicesCanChangeBrightness", as: DisplayServicesCanChangeBrightnessFn.self)
         isAvailable = getBrightnessFn != nil && setBrightnessFn != nil
         if !isAvailable {
             hudLog.notice("BrightnessMonitor: DisplayServices loaded but is missing a required symbol — brightness HUD/intercept unavailable")
+        }
+    }
+
+    deinit {
+        // Mirrors `VolumeMonitor.deinit`/`MediaKeyInterceptor.deinit`: plain
+        // teardown of what this instance itself opened, called directly from
+        // a nonisolated `deinit` rather than routed through an instance
+        // method. `dlclose` is a no-op-safe call to skip entirely when
+        // `dlopen` itself never succeeded (`handle == nil`).
+        if let handle {
+            dlclose(handle)
         }
     }
 
@@ -90,6 +104,27 @@ final class BrightnessMonitor {
     /// nowhere to show its HUD in that case anyway.
     private static func targetDisplay() -> CGDirectDisplayID? {
         NSScreen.builtInNotchedScreen?.displayID
+    }
+
+    /// Whether THIS display's brightness can actually be changed right now —
+    /// `isAvailable` (the DisplayServices symbols loaded) AND
+    /// `DisplayServicesCanChangeBrightness` reports true for the built-in
+    /// display. The code-review fix this backs: `isAvailable` alone only
+    /// means the symbols exist, not that a change would succeed — some
+    /// configurations (an MDM-enforced brightness lock, certain external/
+    /// non-standard panels) load the framework fine but categorically refuse
+    /// `DisplayServicesSetBrightness`. `NotchActivityRouter` gates
+    /// brightness-key swallowing on this rather than bare `isAvailable`, so a
+    /// key this app can't actually act on passes through instead of being
+    /// silently eaten. When `canChangeFn` itself failed to load, this falls
+    /// back to the same permissive assumption `setBrightness` already makes
+    /// (`if let canChangeFn, !canChangeFn(display)` — no function means no
+    /// veto, not an automatic refusal) rather than a second, stricter
+    /// standard.
+    var canChangeBrightness: Bool {
+        guard isAvailable, let display = Self.targetDisplay() else { return false }
+        guard let canChangeFn else { return true }
+        return canChangeFn(display)
     }
 
     /// Current brightness (0...1), or `nil` when unavailable, there's no

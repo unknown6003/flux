@@ -1647,6 +1647,56 @@ enum SelfTest {
             }
         }
 
+        // --- M5 bot-review fix: VolumeMonitor.perChannelTargets — the pure
+        // per-channel delta math backing `adjustVolume`'s no-virtual-main-
+        // volume fallback. The bug this replaced: the old fallback read the
+        // shared AVERAGE of the two channels, added `delta` once, and wrote
+        // that single result back to BOTH channels — flattening any existing
+        // left/right balance to identical values the very first time a
+        // volume key was pressed. Applying `delta` to each channel
+        // independently (verified here) preserves whatever gap already
+        // existed between them instead. ---
+        do {
+            let balanced = VolumeMonitor.perChannelTargets(left: 0.3, right: 0.5, delta: 0.1)
+            check(balanced.left.map { abs($0 - 0.4) < 0.0001 } == true,
+                  "VolumeMonitor: perChannelTargets applies delta to the left channel independently")
+            check(balanced.right.map { abs($0 - 0.6) < 0.0001 } == true,
+                  "VolumeMonitor: perChannelTargets applies delta to the right channel independently, preserving the existing left/right gap rather than collapsing both to a shared average")
+
+            let clampedHigh = VolumeMonitor.perChannelTargets(left: 0.95, right: 0.95, delta: 0.5)
+            check(clampedHigh.left == 1.0 && clampedHigh.right == 1.0,
+                  "VolumeMonitor: perChannelTargets clamps each channel at 1.0")
+
+            let clampedLow = VolumeMonitor.perChannelTargets(left: 0.05, right: 0.05, delta: -0.5)
+            check(clampedLow.left == 0.0 && clampedLow.right == 0.0,
+                  "VolumeMonitor: perChannelTargets clamps each channel at 0.0")
+
+            let missingChannel = VolumeMonitor.perChannelTargets(left: 0.4, right: nil, delta: 0.1)
+            check(missingChannel.left != nil && missingChannel.right == nil,
+                  "VolumeMonitor: perChannelTargets leaves an unreadable channel nil rather than fabricating a value for it")
+        }
+
+        // --- M5 bot-review fix: BrightnessMonitor.canChangeBrightness — a
+        // smoke test safe on a headless CI runner with no guaranteed real
+        // display brightness support: must not crash, and can never be true
+        // when `isAvailable` itself is false (missing DisplayServices symbols
+        // leaves nothing that could possibly change anything). This is the
+        // gate `NotchActivityRouter.applyHUDState` now wires into
+        // `interceptor.brightnessAvailable` instead of the weaker bare
+        // `isAvailable` (see that call site's doc comment) — `shouldSwallow`
+        // itself is unchanged (still a pure function of whatever Bool it's
+        // handed), so only the caller's choice of Bool needed new coverage. ---
+        do {
+            let brightnessProbe = BrightnessMonitor()
+            if !brightnessProbe.isAvailable {
+                check(!brightnessProbe.canChangeBrightness,
+                      "BrightnessMonitor: canChangeBrightness is false whenever isAvailable is false")
+            } else {
+                check(true,
+                      "BrightnessMonitor: canChangeBrightness computed without crashing (\(brightnessProbe.canChangeBrightness)) alongside isAvailable == true")
+            }
+        }
+
         // --- M5 code review: PermissionCenter re-checks Accessibility on the
         // undocumented-but-established "com.apple.accessibility.api"
         // DistributedNotificationCenter post, so a revoke/grant while Flux

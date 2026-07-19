@@ -66,10 +66,12 @@ final class MediaKeyInterceptor {
     let events = PassthroughSubject<HUDKeyEvent, Never>()
 
     /// Whether brightness keys should be swallowed at all — mirrors
-    /// `BrightnessMonitor.isAvailable`. Brightness keys pass through
-    /// untouched when `false` (there's no private API left to act on them
-    /// with), even while volume keys are still fully intercepted;
-    /// `NotchActivityRouter` sets this right after a successful `start()`.
+    /// `BrightnessMonitor.canChangeBrightness` (not the weaker `isAvailable`:
+    /// the symbols loading isn't the same as THIS display actually accepting
+    /// a change). Brightness keys pass through untouched when `false` (there's
+    /// no private API left to act on them with, or this display refuses
+    /// anyway), even while volume keys are still fully intercepted;
+    /// `NotchActivityRouter` sets this right before a successful `start()`.
     var brightnessAvailable = false
 
     /// Whether the CURRENT default output device can actually have its

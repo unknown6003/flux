@@ -609,22 +609,43 @@ final class NotchActivityRouter {
     private static let hudFineStep: Float = 1.0 / 64.0
 
     private func applyVolumeKey(_ key: HUDKey, fine: Bool) {
+        // Recorded BEFORE calling into `volume` at all — not just before
+        // reading `.current` back — because the code-review fix here is that
+        // a device's CoreAudio listener can fire *synchronously* from
+        // *within* `adjustVolume`/`toggleMute`/`setMute` itself (observed on
+        // some devices), i.e. before any of those calls below have even
+        // returned. Setting this after the write (the old shape) left a
+        // window where that synchronous re-entrant fire would read
+        // `lastInterceptorVolumeApplyAt` still at its previous (stale, or
+        // `nil`) value and post a duplicate — `isVolumeMonitorEventSuppressed`
+        // can only suppress it if this is already set by the time that
+        // listener runs.
+        lastInterceptorVolumeApplyAt = Date()
         switch key {
         case .mute:
             volume.toggleMute()
-        case .volumeUp, .volumeDown:
+        case .volumeUp:
+            // Matches the system's own behavior: raising the volume while
+            // muted also unmutes — a press of Volume Up is a request to make
+            // sound audible again, not to silently raise a still-silenced
+            // level. Volume Down deliberately does NOT symmetrically
+            // re-mute; only Up unmutes, mirroring the physical/system keys.
+            if volume.current?.muted == true {
+                volume.setMute(false)
+            }
             let step = fine ? Self.hudFineStep : Self.hudStep
-            volume.adjustVolume(by: key == .volumeUp ? step : -step)
+            volume.adjustVolume(by: step)
+        case .volumeDown:
+            let step = fine ? Self.hudFineStep : Self.hudStep
+            volume.adjustVolume(by: -step)
         case .brightnessUp, .brightnessDown:
             return
         }
-        // Recorded BEFORE reading `volume.current` back, not after — the
-        // CoreAudio listener this write triggers can fire synchronously
-        // within `adjustVolume`/`toggleMute` itself (observed on some
-        // devices), and `lastInterceptorVolumeApplyAt` must already be set by
-        // the time `handleVolumeEvent` runs for `isVolumeMonitorEventSuppressed`
-        // to actually suppress it.
-        lastInterceptorVolumeApplyAt = Date()
+        // Read back the actual level/mute from `volume` rather than assuming
+        // any of the writes above landed at the requested value — if a write
+        // silently failed (an unsettable property, or a race with some other
+        // change), this posts whatever is REALLY now in effect, never a
+        // fabricated "what we asked for" value.
         guard let current = volume.current else { return }
         activities.post(Self.volumeActivity(level: current.level, muted: current.muted))
     }
@@ -753,7 +774,14 @@ final class NotchActivityRouter {
         case .intercept:
             volume.start()
             if !interceptor.isTapActive {
-                interceptor.brightnessAvailable = brightness.isAvailable
+                // `canChangeBrightness` — not the bare `isAvailable` — gates
+                // this: `isAvailable` only means the DisplayServices symbols
+                // loaded, not that THIS display can actually be changed
+                // (`DisplayServicesCanChangeBrightness` can still refuse, e.g.
+                // an MDM-locked brightness profile). Swallowing the key on
+                // `isAvailable` alone would silently eat it with nothing this
+                // app can do in response.
+                interceptor.brightnessAvailable = brightness.canChangeBrightness
                 interceptor.start()
             }
         }

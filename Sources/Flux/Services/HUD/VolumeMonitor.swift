@@ -114,6 +114,17 @@ final class VolumeMonitor {
     /// exposes neither the virtual main volume nor a per-channel scalar
     /// volume (some digital/HDMI outputs report no software-controllable
     /// volume whatsoever).
+    ///
+    /// On the per-channel fallback (no virtual main volume — see
+    /// `readVolume`'s doc comment), this reports the AVERAGE of the readable
+    /// channels rather than their max — a deliberate, documented choice: the
+    /// HUD gauge is meant to track "how loud is this overall," and an average
+    /// tracks a symmetric channel adjustment (what `adjustVolume` below now
+    /// does) exactly, whereas a max would visually overstate the level the
+    /// instant the two channels differ (e.g. right at a stereo balance
+    /// extreme). `adjustVolume`'s own per-channel delta application is
+    /// independent of this choice either way — it never round-trips through
+    /// this averaged value to decide what to write.
     var current: (level: Float, muted: Bool)? {
         let device = resolvedDeviceID()
         guard device != kAudioObjectUnknown, let level = Self.readVolume(device: device) else { return nil }
@@ -145,9 +156,42 @@ final class VolumeMonitor {
     /// clamped to 0...1. A no-op when there's currently no readable level at
     /// all (no default output device, or the device is silent about both
     /// volume properties).
+    ///
+    /// On the per-channel fallback (no virtual main volume), the code-review
+    /// fix here is applying `delta` to EACH channel independently
+    /// (`Self.perChannelTargets`) rather than collapsing to the shared
+    /// average `current.level` reports and writing that single value back to
+    /// both channels — the old shape silently erased any existing left/right
+    /// balance (set in Audio MIDI Setup, or by a hardware volume knob) the
+    /// very first time a volume key was pressed, since both channels would
+    /// end up identical from then on.
     func adjustVolume(by delta: Float) {
-        guard let current else { return }
-        setVolume(min(max(current.level + delta, 0), 1))
+        let device = resolvedDeviceID()
+        guard device != kAudioObjectUnknown else { return }
+        if Self.hasVirtualMainVolume(device: device) {
+            var address = Self.volumeAddress
+            guard let level = Self.readFloat32(device, &address) else { return }
+            _ = Self.writeFloat32(device, &address, min(max(level + delta, 0), 1))
+            return
+        }
+        var left = Self.channelVolumeAddress(channel: 1)
+        var right = Self.channelVolumeAddress(channel: 2)
+        let targets = Self.perChannelTargets(left: Self.readFloat32(device, &left),
+                                              right: Self.readFloat32(device, &right),
+                                              delta: delta)
+        if let target = targets.left { _ = Self.writeFloat32(device, &left, target) }
+        if let target = targets.right { _ = Self.writeFloat32(device, &right, target) }
+    }
+
+    /// Pure per-channel delta math backing `adjustVolume`'s fallback path —
+    /// split out so it's directly testable without a real CoreAudio device.
+    /// Applies `delta` to each channel that's actually readable (`nil`
+    /// stays `nil` rather than fabricating a value for a channel that
+    /// couldn't be read), clamping each result to 0...1 independently — this
+    /// is what preserves an existing left/right balance instead of
+    /// flattening both channels to a shared value.
+    nonisolated static func perChannelTargets(left: Float?, right: Float?, delta: Float) -> (left: Float?, right: Float?) {
+        (left.map { min(max($0 + delta, 0), 1) }, right.map { min(max($0 + delta, 0), 1) })
     }
 
     func toggleMute() {
@@ -155,6 +199,16 @@ final class VolumeMonitor {
         guard device != kAudioObjectUnknown else { return }
         let muted = Self.readMute(device: device) ?? false
         _ = Self.writeMute(device: device, muted: !muted)
+    }
+
+    /// Sets mute to an explicit state (rather than toggling) — used by
+    /// `NotchActivityRouter.applyVolumeKey`'s Volume-Up-while-muted-unmutes
+    /// fix, which needs to force mute *off* specifically, not flip whatever
+    /// it currently is.
+    func setMute(_ muted: Bool) {
+        let device = resolvedDeviceID()
+        guard device != kAudioObjectUnknown else { return }
+        _ = Self.writeMute(device: device, muted: muted)
     }
 
     /// `deviceID` when listening (`start()` has resolved it); otherwise

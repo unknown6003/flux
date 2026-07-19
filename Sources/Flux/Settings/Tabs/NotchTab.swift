@@ -142,10 +142,19 @@ struct NotchTab: View {
     /// CoreAudio-driven wings posted alongside whatever system bezel macOS
     /// still shows, needing no permission — and stays on by default.
     /// `notchHudInterceptEnabled` escalates to swallowing the keys outright
-    /// (`MediaKeyInterceptor`) so only the notch HUD appears; it's disabled
-    /// in the UI until Accessibility is actually granted, since turning it on
-    /// without the permission would just mean `NotchActivityRouter` silently
-    /// keeps falling back to observe mode anyway (see `applyHUDState`).
+    /// (`MediaKeyInterceptor`) so only the notch HUD appears.
+    ///
+    /// The code-review fix here: the control is disabled only for turning the
+    /// toggle ON without Accessibility granted (`NotchActivityRouter` would
+    /// just silently keep falling back to observe mode anyway — see
+    /// `applyHUDState`) — NOT while it's already ON and permission gets
+    /// revoked later. The old `.disabled(... != .granted)` condition, with no
+    /// exception for "already on," left the persisted toggle stuck ON with no
+    /// way to switch it back OFF from this screen the moment Accessibility
+    /// was revoked in System Settings — the user's only way out would've been
+    /// editing the underlying default directly. `hudInterceptSubtitle` below
+    /// covers the resulting "on, but not actually doing anything" state so
+    /// that's visible rather than silent.
     private var hudCard: some View {
         FluxCard(title: "Volume & Brightness HUD") {
             ToggleRow(title: "Show in the notch",
@@ -154,13 +163,25 @@ struct NotchTab: View {
             if settings.notchHudEnabled {
                 RowDivider()
                 ToggleRow(title: "Replace the system overlay",
-                          subtitle: "Take over the volume/brightness keys so only the notch HUD appears — never the system bezel. Requires Accessibility below.",
+                          subtitle: hudInterceptSubtitle,
                           isOn: $settings.notchHudInterceptEnabled)
-                    .disabled(permissions.statuses[.accessibility] != .granted)
+                    .disabled(!settings.notchHudInterceptEnabled && permissions.statuses[.accessibility] != .granted)
                 RowDivider()
                 PermissionRow(kind: .accessibility, title: "Accessibility access", permissions: permissions)
             }
         }
+    }
+
+    /// Reflects whether intercept mode is actually doing anything right now,
+    /// not just whether the toggle is persisted ON — the toggle can be ON
+    /// with Accessibility since revoked (see `hudCard`'s doc comment on why
+    /// it stays operable in that state), and the subtitle should say so
+    /// rather than keep promising behavior that isn't currently happening.
+    private var hudInterceptSubtitle: String {
+        guard settings.notchHudInterceptEnabled, permissions.statuses[.accessibility] != .granted else {
+            return "Take over the volume/brightness keys so only the notch HUD appears — never the system bezel. Requires Accessibility below."
+        }
+        return "Inactive until Accessibility access is granted below — the system bezel still appears in the meantime."
     }
 
     /// Never (`0`), 1/3/7 days — mapped onto `notchShelfExpiryDays`'s raw
