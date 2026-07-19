@@ -152,11 +152,11 @@ final class PermissionCenter: ObservableObject {
                 Task { @MainActor in self?.refresh(.camera) }
             }
         case .accessibility:
-            // `kAXTrustedCheckOptionPrompt` bridges directly to `String` (a
-            // plain extern CFString constant, not an audited CF-returning
-            // function) — no `Unmanaged` unwrap needed, matching every other
-            // Swift call site for this exact API.
-            let options = [kAXTrustedCheckOptionPrompt: true] as CFDictionary
+            // `kAXTrustedCheckOptionPrompt` is imported as `Unmanaged<CFString>!`
+            // (an audited CF-returning global), so it must be unwrapped with
+            // `takeUnretainedValue()` before it can be used as a dictionary key.
+            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            let options = [promptKey: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
         }
     }
