@@ -76,6 +76,13 @@ arrangement across launches.
   permission prompt the first time that fallback controls either app). Open
   gesture, hover delays, and which widgets are enabled are all configurable in
   Settings → Notch.
+- **File Shelf** — drag files straight onto the notch to hold them: hovering a
+  drag over the (collapsed) camera housing expands the shelf automatically,
+  and dropping copies the files in (they survive the source being moved,
+  ejected, or deleted). From the shelf: click a tile to open it, drag it back
+  out to Finder/Mail/Slack/etc., or use the tile's context menu for AirDrop,
+  "Show in Finder", or "Copy". An optional auto-clear (never / 1 / 3 / 7 days)
+  in Settings → Notch tidies the shelf on its own.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
@@ -143,7 +150,9 @@ Sources/Flux/
     NotchWidget.swift        # widget protocol + registry
     LiveActivity.swift       # priority-queued "wings" content
     Widgets/NowPlayingWidget.swift
+    Widgets/ShelfWidget.swift  # tiles, drag in/out, AirDrop/Finder/Copy
   Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
+  Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
   Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults
@@ -155,8 +164,8 @@ Sources/Flux/
 
 - **Per-app list control** and a searchable **drawer** popover (needs Accessibility +
   ScreenCaptureKit — deliberately deferred to keep the MVP resource-light).
-- More notch widgets (Shelf, Calendar, Mirror, Timers, Clipboard) beyond the
-  Now Playing widget shipped in this milestone.
+- More notch widgets (Calendar, Mirror, Timers, Clipboard) beyond Now Playing
+  and File Shelf shipped so far.
 - Custom hotkey recording, profiles, triggers (show on update/active).
 
 ## License

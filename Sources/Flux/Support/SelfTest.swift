@@ -678,6 +678,240 @@ enum SelfTest {
         check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .spotify, running: [.music, .spotify]) == .music,
               "Scripting: fallbackCandidate works symmetrically the other direction (stopped Spotify, playing Music)")
 
+        // --- Shelf: ShelfStore round-trip, remove, persistence, reconcile, expiry ---
+        // Entirely against throwaway temp directories (never the user's real
+        // App Support/Flux/Shelf) so this is safe to run repeatedly and
+        // leaves nothing behind once the cleanup at the end of this section runs.
+        func makeShelfTempDir() -> URL {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        func makeShelfSourceFile(named name: String, in dir: URL, contents: String = "flux-selftest") -> URL {
+            let url = dir.appendingPathComponent(name)
+            try? contents.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        }
+        /// Writes `item`'s stored file directly into its per-item
+        /// subdirectory, bypassing `ShelfStore.add(urls:)` — for tests that
+        /// need to seed on-disk state (alongside a hand-written manifest) as
+        /// if a previous launch had already added the item, matching the
+        /// `<directory>/<id>/<fileName>` layout `ShelfItem.storedURL(in:)`
+        /// now expects.
+        func writeShelfStoredFile(for item: ShelfItem, in directory: URL, contents: String = "x") {
+            let url = item.storedURL(in: directory)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? contents.write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        let shelfSourceDir = makeShelfTempDir()
+        let shelfDirA = makeShelfTempDir()
+        let shelfManifestURLA = shelfDirA.appendingPathComponent("manifest.json")
+
+        // Round-trip add: a dropped file is copied in, shows up in `items`,
+        // its stored copy exists, and the manifest is written.
+        let shelfSrc1 = makeShelfSourceFile(named: "hello.txt", in: shelfSourceDir, contents: "hello shelf")
+        let shelfStore1 = ShelfStore(directory: shelfDirA)
+        let shelfAdded1 = shelfStore1.add(urls: [shelfSrc1])
+        check(shelfAdded1.count == 1,
+              "Shelf: add() copies a single dropped file and returns exactly the item added")
+
+        if let shelfItem1 = shelfAdded1.first {
+            check(shelfStore1.items.contains(where: { $0.id == shelfItem1.id }),
+                  "Shelf: the added item appears in items")
+            check(FileManager.default.fileExists(atPath: shelfItem1.storedURL(in: shelfDirA).path),
+                  "Shelf: the added item's stored copy exists on disk")
+            check(FileManager.default.fileExists(atPath: shelfManifestURLA.path),
+                  "Shelf: adding writes manifest.json")
+            // Storage layout fix: each item lives in its own `<id>/`
+            // subdirectory rather than a UUID-prefixed on-disk file name, so
+            // the URL handed out for every export (drag-out, AirDrop, Copy)
+            // keeps the original basename verbatim — no "2F…-hello.txt"
+            // leaking into whatever app receives it.
+            check(shelfStore1.url(for: shelfItem1.id)?.lastPathComponent == "hello.txt",
+                  "Shelf: the exported URL's last path component is exactly the original file name, not a UUID-prefixed stand-in")
+
+            // Remove: whole per-item subdirectory gone, item gone, manifest updated.
+            shelfStore1.remove(shelfItem1.id)
+            check(!shelfStore1.items.contains(where: { $0.id == shelfItem1.id }),
+                  "Shelf: remove() drops the item from items")
+            check(!FileManager.default.fileExists(atPath: shelfItem1.storedURL(in: shelfDirA).path),
+                  "Shelf: remove() deletes the stored file")
+            check(!FileManager.default.fileExists(atPath: shelfItem1.storedDirectoryURL(in: shelfDirA).path),
+                  "Shelf: remove() deletes the whole per-item subdirectory, not just the file inside it")
+            let shelfManifestAfterRemove = (try? Data(contentsOf: shelfManifestURLA))
+                .flatMap { try? JSONDecoder().decode([ShelfItem].self, from: $0) } ?? []
+            check(!shelfManifestAfterRemove.contains(where: { $0.id == shelfItem1.id }),
+                  "Shelf: remove() persists the drop to manifest.json")
+        } else {
+            check(false, "Shelf: add() produced an item to test remove() against")
+        }
+
+        // Persistence: a second ShelfStore instance on the same directory
+        // loads what the first one persisted.
+        let shelfSrc2 = makeShelfSourceFile(named: "world.txt", in: shelfSourceDir, contents: "world shelf")
+        let shelfAdded2 = shelfStore1.add(urls: [shelfSrc2])
+        if let shelfItem2 = shelfAdded2.first {
+            let shelfStore2 = ShelfStore(directory: shelfDirA)
+            check(shelfStore2.items.contains(where: { $0.id == shelfItem2.id && $0.fileName == "world.txt" }),
+                  "Shelf: persistence — a fresh ShelfStore on the same directory loads the manifest")
+
+            // Reconcile: delete the stored file behind the store's back (as if
+            // the user removed it in Finder) — the next instance to load this
+            // directory must drop the now-dangling manifest entry.
+            try? FileManager.default.removeItem(at: shelfItem2.storedURL(in: shelfDirA))
+            let shelfStore3 = ShelfStore(directory: shelfDirA)
+            check(!shelfStore3.items.contains(where: { $0.id == shelfItem2.id }),
+                  "Shelf: reconcile — a new instance drops a manifest entry whose stored file vanished behind its back")
+        } else {
+            check(false, "Shelf: add() produced an item to test persistence/reconcile against")
+        }
+
+        // Expiry: an item older than expiryInterval is swept once it's set,
+        // but left alone while expiryInterval is nil.
+        let shelfDirExpiry = makeShelfTempDir()
+        let shelfStaleItem = ShelfItem(fileName: "stale.txt", addedAt: Date().addingTimeInterval(-3_600))
+        writeShelfStoredFile(for: shelfStaleItem, in: shelfDirExpiry, contents: "stale")
+        if let shelfExpiryManifest = try? JSONEncoder().encode([shelfStaleItem]) {
+            try? shelfExpiryManifest.write(to: shelfDirExpiry.appendingPathComponent("manifest.json"))
+        }
+        let shelfStoreExpiry = ShelfStore(directory: shelfDirExpiry)
+        check(shelfStoreExpiry.items.contains(where: { $0.id == shelfStaleItem.id }),
+              "Shelf: expiry — a 1-hour-old item is kept across load when expiryInterval is nil")
+        // `expiryInterval`'s `didSet` fix: assigning the property alone — no
+        // explicit `sweepExpired()` call anywhere below — must be enough to
+        // drop the now-expired item. Before the fix, a freshly-configured
+        // auto-clear interval only took effect the next time `init`/
+        // `add(urls:)` happened to run, so a shelf nobody was actively
+        // dropping into again would never tidy itself after being configured.
+        shelfStoreExpiry.expiryInterval = 60 // 1 minute — the stale item is an hour old
+        check(!shelfStoreExpiry.items.contains(where: { $0.id == shelfStaleItem.id }),
+              "Shelf: expiry — assigning expiryInterval alone sweeps a now-expired item via didSet, with no explicit sweepExpired() call")
+
+        // Batch sweep: several expired items alongside one fresh survivor.
+        // `sweepExpired()` partitions/deletes/persists in one shot rather
+        // than calling `remove(_:)` per item — asserting *how many times* the
+        // manifest was written would be a fragile way to verify that (mtimes,
+        // buffering, etc.), so this instead only checks observable
+        // correctness: every expired item is gone (files and manifest), the
+        // fresh one survives, and nothing else was disturbed. The explicit
+        // `sweepExpired()` call below is redundant with the `didSet`-driven
+        // sweep the `expiryInterval` assignment just triggered — kept anyway
+        // to assert that calling it directly afterward stays safe/idempotent.
+        let shelfDirBatch = makeShelfTempDir()
+        let staleBatch1 = ShelfItem(fileName: "stale1.txt", addedAt: Date().addingTimeInterval(-3_600))
+        let staleBatch2 = ShelfItem(fileName: "stale2.txt", addedAt: Date().addingTimeInterval(-7_200))
+        let freshBatch = ShelfItem(fileName: "fresh.txt", addedAt: Date())
+        for item in [staleBatch1, staleBatch2, freshBatch] {
+            writeShelfStoredFile(for: item, in: shelfDirBatch)
+        }
+        if let batchManifest = try? JSONEncoder().encode([staleBatch1, staleBatch2, freshBatch]) {
+            try? batchManifest.write(to: shelfDirBatch.appendingPathComponent("manifest.json"))
+        }
+        let shelfStoreBatch = ShelfStore(directory: shelfDirBatch)
+        shelfStoreBatch.expiryInterval = 60
+        shelfStoreBatch.sweepExpired()
+        check(!shelfStoreBatch.items.contains(where: { $0.id == staleBatch1.id }) &&
+              !shelfStoreBatch.items.contains(where: { $0.id == staleBatch2.id }),
+              "Shelf: batch sweepExpired() removes every expired item in one pass, not just the first")
+        check(shelfStoreBatch.items.contains(where: { $0.id == freshBatch.id }),
+              "Shelf: batch sweepExpired() leaves a non-expired item untouched")
+        check(!FileManager.default.fileExists(atPath: staleBatch1.storedURL(in: shelfDirBatch).path) &&
+              !FileManager.default.fileExists(atPath: staleBatch2.storedURL(in: shelfDirBatch).path),
+              "Shelf: batch sweepExpired() deletes every expired item's stored file")
+        let batchManifestAfter = (try? Data(contentsOf: shelfDirBatch.appendingPathComponent("manifest.json")))
+            .flatMap { try? JSONDecoder().decode([ShelfItem].self, from: $0) } ?? []
+        check(batchManifestAfter.count == 1 && batchManifestAfter.first?.id == freshBatch.id,
+              "Shelf: batch sweepExpired() persists a single post-sweep manifest write with only the survivor")
+
+        // Lazy thumbnails: a freshly-loaded store (nothing added/opened yet)
+        // starts with no thumbnails at all — the eager per-item generation
+        // loop that used to run in `init` is gone — and `ensureThumbnails()`
+        // (what `ShelfWidget.willPresent()` calls) is safe to call without
+        // crashing even though `QLThumbnailGenerator`'s result arrives
+        // asynchronously and can't be awaited deterministically here.
+        check(shelfStoreBatch.thumbnails.isEmpty,
+              "Shelf: a store with items freshly loaded from a manifest (not added, not presented) starts with no thumbnails — generation is lazy")
+        shelfStoreBatch.ensureThumbnails()
+
+        for shelfDir in [shelfSourceDir, shelfDirA, shelfDirExpiry, shelfDirBatch] {
+            try? FileManager.default.removeItem(at: shelfDir)
+        }
+
+        // --- Notch: drag-flag lifecycle (dragEntered/dragExited/dragCompleted) ---
+        // Uses the same `SelfTestWidget` stub as the transition-table tests
+        // above so this exercises the real `NotchViewModel`, not a mock.
+        let dragRegistry = NotchWidgetRegistry()
+        let dragShelfWidget = SelfTestWidget(id: .shelf)
+        dragRegistry.register(dragShelfWidget)
+        dragRegistry.order = [.shelf]
+        let dragVM = NotchViewModel(registry: dragRegistry, activities: LiveActivityCenter())
+
+        // A drag entering the collapsed notch auto-expands to the shelf...
+        dragVM.dragEntered()
+        check(dragVM.state == .expanded(.shelf),
+              "Drag: dragEntered() auto-expands from collapsed to the shelf widget")
+
+        // ...and dragExited() (the drag left without a drop) collapses it
+        // back, since this exact drag is the one that opened it.
+        dragVM.dragExited()
+        check(dragVM.state == .collapsed,
+              "Drag: dragExited() collapses a shelf that this same drag auto-expanded")
+
+        // A drag entering when the shelf isn't registered/enabled at all is
+        // a no-op — nothing to auto-expand to.
+        let noShelfRegistry = NotchWidgetRegistry()
+        let noShelfWidget = SelfTestWidget(id: .nowPlaying)
+        noShelfRegistry.register(noShelfWidget)
+        noShelfRegistry.order = [.nowPlaying]
+        let noShelfVM = NotchViewModel(registry: noShelfRegistry, activities: LiveActivityCenter())
+        noShelfVM.dragEntered()
+        check(noShelfVM.state == .collapsed,
+              "Drag: dragEntered() is a no-op when no shelf widget is registered/enabled")
+
+        // A drop landing instead just clears the auto-expand flag and leaves
+        // the shelf open — a later, stray dragExited() (another drag session
+        // merely passing near the already-open shelf) must not close it.
+        dragVM.dragEntered()
+        check(dragVM.state == .expanded(.shelf), "Drag: setup — re-enter for the dragCompleted() case")
+        dragVM.dragCompleted()
+        dragVM.dragExited()
+        check(dragVM.state == .expanded(.shelf),
+              "Drag: dragCompleted() clears the auto-expand flag, so a later dragExited() leaves the still-open shelf alone")
+        dragVM.collapse()
+
+        // If the state machine lands on `.collapsed` via any OTHER path
+        // (not `dragExited()` itself) while a drag had auto-expanded the
+        // shelf, that must also clear the flag — otherwise it could survive
+        // to misfire against whatever the user does next.
+        dragVM.dragEntered()
+        check(dragVM.state == .expanded(.shelf), "Drag: setup — auto-expanded again")
+        dragVM.collapse() // an ordinary collapse, not dragExited()
+        check(dragVM.state == .collapsed, "Drag: setup — collapsed via collapse(), not dragExited()")
+        dragVM.expand(.shelf) // the user reopens it themselves
+        check(dragVM.state == .expanded(.shelf), "Drag: setup — user reopens the shelf themselves")
+        dragVM.dragExited()
+        check(dragVM.state == .expanded(.shelf),
+              "Drag: transition(to:) clearing dragAutoExpanded on the earlier collapse() means a stray dragExited() can't close a panel the user reopened themselves")
+
+        // --- Notch: NotchWindowController.shouldAcceptDrag — the pure
+        // predicate behind the window-level drag destination's accept/decline
+        // decision, testable without a real window, screen, or drag session ---
+        check(NotchWindowController.shouldAcceptDrag(state: .collapsed, pointInNotch: true, shelfEnabled: true),
+              "Drag accept: collapsed + inside the (slop-padded) notch + shelf enabled accepts")
+        check(!NotchWindowController.shouldAcceptDrag(state: .collapsed, pointInNotch: true, shelfEnabled: false),
+              "Drag accept: collapsed but the shelf widget is disabled declines")
+        check(!NotchWindowController.shouldAcceptDrag(state: .collapsed, pointInNotch: false, shelfEnabled: true),
+              "Drag accept: collapsed but the point is outside the notch declines")
+        check(NotchWindowController.shouldAcceptDrag(state: .expanded(.shelf), pointInNotch: true, shelfEnabled: true),
+              "Drag accept: already expanded to the shelf + inside its bounds accepts (keeps the window accepting after auto-expand)")
+        check(!NotchWindowController.shouldAcceptDrag(state: .expanded(.shelf), pointInNotch: false, shelfEnabled: true),
+              "Drag accept: expanded to the shelf but the point left its bounds declines")
+        check(!NotchWindowController.shouldAcceptDrag(state: .expanded(.nowPlaying), pointInNotch: true, shelfEnabled: true),
+              "Drag accept: expanded to a different widget (not the shelf) declines even if the point is inside")
+        check(!NotchWindowController.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true),
+              "Drag accept: a live activity showing declines")
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }

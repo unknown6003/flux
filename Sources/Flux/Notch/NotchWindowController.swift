@@ -34,6 +34,31 @@ final class NotchWindowController {
         didSet { refreshRootView() }
     }
 
+    /// Set by the wiring agent to actually add dropped files to whatever
+    /// backs the shelf widget (a `ShelfStore`) and report how many were newly
+    /// added, so `handlePerformDrag` can post an accurate `.shelfDrop`
+    /// LiveActivity. `NotchWindowController` deliberately never references
+    /// the store type directly — that keeps this UI-shell file free of any
+    /// dependency on `Services/Shelf`.
+    var onShelfDrop: (([URL]) -> Int)?
+
+    /// Slop added around the settled, collapsed `interactiveRect` (the
+    /// physical notch's own footprint) when deciding whether an incoming file
+    /// drag counts as "over the notch" — generous enough that a drag merely
+    /// approaching the notch, not pixel-perfect over the tiny camera-housing
+    /// pixels, still triggers the auto-expand.
+    private static let dragSlop: CGFloat = 20
+
+    /// Guards `viewModel.dragEntered()` against being called on every one of
+    /// a single drag session's many `draggingUpdated` deliveries — set the
+    /// first time this session actually triggers the collapsed→auto-expand
+    /// path, cleared in `draggingExited`/`performDragOperation` so the
+    /// *next* drag session starts fresh. (`dragEntered()` is itself
+    /// idempotent — it only acts while `state == .collapsed` — so this isn't
+    /// load-bearing for correctness, just for not re-entering the view model
+    /// on every pixel of movement.)
+    private var dragSessionEntered = false
+
     private var panel: NotchPanel?
     private var hostingView: NotchHostingView?
     private var isEnabled = false
@@ -207,6 +232,7 @@ final class NotchWindowController {
         let hosting = NotchHostingView(viewModel: viewModel, rootView: makeRootView(notchSize: .zero))
         panel.contentView = hosting
         hostingView = hosting
+        wireDragHandlers(to: panel)
         return panel
     }
 
@@ -322,5 +348,133 @@ final class NotchWindowController {
     private func handleMonitoredClick(at location: NSPoint) {
         guard let rect = NSScreen.builtInNotchedScreen?.notchRect, rect.contains(location) else { return }
         viewModel.clicked()
+    }
+
+    // MARK: - Drag-and-drop, collapsed and expanded (M2: file shelf)
+
+    /// Points `panel`'s window-level drag-destination closures (see
+    /// `NotchPanel`'s own doc comment) back at this controller. Called once,
+    /// right after each panel is built — a fresh panel is created on every
+    /// screen change, so this has to be re-wired there rather than only once.
+    private func wireDragHandlers(to panel: NotchPanel) {
+        panel.onDraggingMoved = { [weak self] location in self?.handleDraggingUpdate(at: location) ?? [] }
+        panel.onDraggingExited = { [weak self] in self?.handleDraggingExited() }
+        panel.onPerformDragOperation = { [weak self] pasteboard in self?.handlePerformDrag(pasteboard) ?? false }
+    }
+
+    /// Pure predicate behind `handleDraggingUpdate`'s accept/decline
+    /// decision — split out so `--selftest` can drive every
+    /// state/geometry/enabled combination headlessly, without a real window,
+    /// screen, or drag session. `pointInNotch` is pre-computed by the caller
+    /// against whichever rect is actually relevant for `state` (see
+    /// `handleDraggingUpdate`): this function has no window-coordinate
+    /// geometry of its own to test against.
+    ///
+    /// This is the SOLE gate for accepting a file drag, in either of the two
+    /// states a drag can ever be accepted in:
+    /// - `.collapsed`: only if the shelf widget is enabled *and* the point is
+    ///   over the notch (with slop) — an incoming drag must not auto-expand
+    ///   to a widget that's off, or before it's actually over the notch.
+    /// - `.expanded(.shelf)`: only if the point is still within the shelf's
+    ///   own bounds — this is what keeps the window accepting *after* a
+    ///   `.collapsed` drag auto-expanded it, so `performDragOperation` is
+    ///   actually delivered instead of the session being declined the
+    ///   instant the state flips out from under it.
+    ///
+    /// Every other state (a live activity, or a different expanded widget)
+    /// declines unconditionally — an incoming drag must never preempt
+    /// something else the user is already looking at.
+    static func shouldAcceptDrag(state: NotchState, pointInNotch: Bool, shelfEnabled: Bool) -> Bool {
+        switch state {
+        case .collapsed:
+            return shelfEnabled && pointInNotch
+        case .expanded(.shelf):
+            return pointInNotch
+        default:
+            return false
+        }
+    }
+
+    /// Shared by `draggingEntered`/`draggingUpdated` (now unified into
+    /// `NotchPanel.onDraggingMoved` — see that property's doc comment for
+    /// why). Computes the one piece of geometry `shouldAcceptDrag` needs —
+    /// whether the drag's point falls inside whichever rect matters for the
+    /// *current* state — then defers the actual accept/decline call to that
+    /// pure function.
+    ///
+    /// Reuses `viewModel.interactiveRect` rather than re-deriving the
+    /// physical notch's screen geometry from `NSScreen`: while `.collapsed`
+    /// (and settled — see `NotchRootView.updateInteractiveRect`), that rect
+    /// *is* exactly the physical notch's footprint; while `.expanded(.shelf)`,
+    /// it's the full open shelf panel's bounds. Converting the drag's
+    /// window-space location into that same space and testing containment
+    /// (with slop only in the collapsed case) is both correct and avoids a
+    /// second, easily-drifting copy of the same geometry.
+    private func handleDraggingUpdate(at windowLocation: NSPoint) -> NSDragOperation {
+        guard let hostingView else { return [] }
+        let localPoint = hostingView.convert(windowLocation, from: nil)
+        let shelfEnabled = registry.enabledWidgets.contains { $0.id == .shelf }
+
+        let pointInNotch: Bool
+        switch viewModel.state {
+        case .collapsed:
+            pointInNotch = viewModel.interactiveRect.insetBy(dx: -Self.dragSlop, dy: -Self.dragSlop).contains(localPoint)
+        case .expanded(.shelf):
+            pointInNotch = viewModel.interactiveRect.contains(localPoint)
+        default:
+            pointInNotch = false
+        }
+
+        guard Self.shouldAcceptDrag(state: viewModel.state, pointInNotch: pointInNotch, shelfEnabled: shelfEnabled) else {
+            return []
+        }
+
+        if viewModel.state == .collapsed, !dragSessionEntered {
+            dragSessionEntered = true
+            viewModel.dragEntered()
+        }
+        return .copy
+    }
+
+    /// The drag session left without a drop landing — resets the
+    /// once-per-session guard alongside telling the view model, so the
+    /// *next* session (collapsed→hover-in again, say) starts fresh.
+    private func handleDraggingExited() {
+        dragSessionEntered = false
+        viewModel.dragExited()
+    }
+
+    /// Reads dropped file URLs off the pasteboard, hands them to the wiring
+    /// agent's `onShelfDrop` to actually add them to the shelf, and — on a
+    /// successful add — posts a brief `.shelfDrop` LiveActivity so the user
+    /// gets feedback even if the panel doesn't stay open (e.g. the cursor
+    /// immediately moves off after the drop, closing an auto-expanded shelf
+    /// via the usual hover-out path). Gated on the shelf still being enabled
+    /// — `handleDraggingUpdate` already requires this to have accepted the
+    /// drag in the first place, but the widget could in principle have been
+    /// disabled in the narrow window between accept and drop.
+    private func handlePerformDrag(_ pasteboard: NSPasteboard) -> Bool {
+        defer {
+            dragSessionEntered = false
+            viewModel.dragCompleted()
+        }
+        guard registry.enabledWidgets.contains(where: { $0.id == .shelf }) else { return false }
+        guard let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !urls.isEmpty else {
+            return false
+        }
+
+        let added = onShelfDrop?(urls) ?? 0
+        guard added > 0 else { return false }
+
+        activities.post(LiveActivity(
+            kind: .shelfDrop,
+            leading: .icon(systemName: "tray.and.arrow.down.fill"),
+            trailing: .text("Added \(added)"),
+            duration: 2.5,
+            priority: 120))
+        return true
     }
 }

@@ -11,11 +11,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateTimer: Timer?
 
     // Notch suite: one panel/state-machine controller plus the Now Playing
-    // service + widget it hosts for M1.
+    // service + widget it hosts for M1, and the File Shelf store + widget
+    // added in M2.
     private let notchWindow = NotchWindowController()
     private let nowPlayingService = NowPlayingService()
     private lazy var nowPlayingWidget = NowPlayingWidget(
         service: nowPlayingService, isEnabled: settings.notchNowPlayingEnabled)
+    private let shelfStore = ShelfStore()
+    private lazy var shelfWidget = ShelfWidget(
+        store: shelfStore, isEnabled: settings.notchShelfEnabled)
 
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, updater: updater, nowPlaying: nowPlayingService)
@@ -44,7 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.launchAtLogin = LoginItemManager.setEnabled(settings.launchAtLogin)
 
         notchWindow.registry.register(nowPlayingWidget)
+        notchWindow.registry.register(shelfWidget)
         notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
+        // A file dropped on the *collapsed* notch is caught at the window
+        // level (see `NotchPanel`/`NotchWindowController`), which has no
+        // knowledge of `ShelfStore` itself — this is the one place that
+        // knowledge gap is bridged.
+        notchWindow.onShelfDrop = { [weak self] urls in self?.shelfStore.add(urls: urls).count ?? 0 }
         // A tap on the overflow indicator's wings should open Arrange Mode,
         // same as the legacy `NotchHighlightWindowController` glow's
         // `onActivate` — not toggle the notch panel itself, which is what a
@@ -150,6 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
+        notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
+        shelfStore.expiryInterval = settings.notchShelfExpiryInterval
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
     }
@@ -190,6 +202,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchNowPlayingEnabled
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.nowPlaying, value) }
+            .store(in: &cancellables)
+
+        settings.$notchShelfEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.shelf, value) }
+            .store(in: &cancellables)
+
+        settings.$notchShelfExpiryDays
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.shelfStore.expiryInterval = self.settings.notchShelfExpiryInterval
+            }
             .store(in: &cancellables)
 
         settings.$notchHotkey

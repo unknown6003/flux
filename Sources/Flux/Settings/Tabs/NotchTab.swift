@@ -2,9 +2,10 @@ import SwiftUI
 import AppKit
 import Foundation
 
-/// Notch feature settings for M1: master enable, how it opens, hover timing,
-/// fullscreen visibility, and the (only, for now) Now Playing widget's own
-/// enable toggle plus a live status row.
+/// Notch feature settings: master enable, how it opens, hover timing,
+/// fullscreen visibility, and per-widget controls — Now Playing's enable
+/// toggle plus a live status row (M1), and File Shelf's enable toggle plus
+/// an auto-clear picker (M2).
 struct NotchTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var nowPlaying: NowPlayingService
@@ -96,6 +97,61 @@ struct NotchTab: View {
             RowText(title: "Source", subtitle: nowPlaying.activeSourceName)
                 .padding(.vertical, 11)
                 .padding(.horizontal, 14)
+            RowDivider()
+            ToggleRow(title: "File Shelf",
+                      subtitle: "Drag files onto the notch to hold them; drag back out, AirDrop, or open anytime.",
+                      isOn: $settings.notchShelfEnabled)
+            if settings.notchShelfEnabled {
+                RowDivider()
+                shelfExpiryRow
+            }
+        }
+    }
+
+    /// Never (`0`), 1/3/7 days — mapped onto `notchShelfExpiryDays`'s raw
+    /// `Double` via `ShelfExpiryOption`. Falls back to `.never` for any
+    /// persisted value that isn't one of these four (there's no drift path
+    /// that should produce one, but a stray value silently coercing to
+    /// "never" is safer than the picker showing no selection at all).
+    private var shelfExpiryRow: some View {
+        HStack(spacing: 12) {
+            RowText(title: "Auto-clear",
+                    subtitle: "Automatically remove shelf items after a delay.")
+            Spacer(minLength: 12)
+            Picker("", selection: Binding(
+                get: { ShelfExpiryOption(rawValue: settings.notchShelfExpiryDays) ?? .never },
+                set: { settings.notchShelfExpiryDays = $0.rawValue }
+            )) {
+                ForEach(ShelfExpiryOption.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 110)
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 14)
+    }
+}
+
+/// The "auto-clear" picker's discrete choices — a small, settings-UI-only
+/// wrapper around the raw day counts `SettingsStore.notchShelfExpiryDays`
+/// persists (and `ShelfStore.expiryInterval` ultimately consumes, converted
+/// to seconds by the wiring agent).
+private enum ShelfExpiryOption: Double, CaseIterable, Identifiable {
+    case never = 0
+    case oneDay = 1
+    case threeDays = 3
+    case sevenDays = 7
+
+    var id: Double { rawValue }
+
+    var title: String {
+        switch self {
+        case .never: return "Never"
+        case .oneDay: return "1 day"
+        case .threeDays: return "3 days"
+        case .sevenDays: return "7 days"
         }
     }
 }
