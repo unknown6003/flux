@@ -83,13 +83,20 @@ arrangement across launches.
   out to Finder/Mail/Slack/etc., or use the tile's context menu for AirDrop,
   "Show in Finder", or "Copy". An optional auto-clear (never / 1 / 3 / 7 days)
   in Settings → Notch tidies the shelf on its own.
-- **Live Activities** — brief wings around the notch for battery and
-  Bluetooth events: a wing when you plug in, unplug, or cross below 20%
+- **Calendar** — your upcoming events (Today/Tomorrow), with a colored dot
+  per calendar, time range, and location, right in the notch. Needs Calendar
+  access; Settings → Notch shows the live grant/denied status and a button
+  to request access or jump straight to System Settings if it's off. A wing
+  appears automatically when an event is starting within 10 minutes — no
+  repeating timer, just a single scheduled check for the next event's own
+  threshold.
+- **Live Activities** — brief wings around the notch for battery, Bluetooth,
+  and calendar events: a wing when you plug in, unplug, or cross below 20%
   battery unplugged (tinted to read as urgent, re-arming once you're back
-  above 25% or plugged in), and a wing when AirPods or another Bluetooth
+  above 25% or plugged in), a wing when AirPods or another Bluetooth
   audio/HID accessory connects or disconnects, with a best-effort battery
-  reading when the OS reports one. Each is independently toggled in
-  Settings → Notch.
+  reading when the OS reports one, and a wing when a calendar event is about
+  to start. Each is independently toggled in Settings → Notch.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
@@ -101,6 +108,14 @@ arrangement across launches.
 Grab the latest **`Flux.dmg`** from the [Releases](../../releases) page, open it, and
 drag **Flux** into **Applications**. On first launch, right-click the app → **Open**
 (it's ad-hoc signed, not notarized). A **‹** chevron appears near your clock.
+
+**A note on permissions:** Flux is ad-hoc signed rather than notarized with a paid
+Developer ID, which means macOS can — and sometimes does — treat an update as a new,
+untrusted binary and quietly drop a previously granted TCC permission (Calendar today;
+Accessibility and Camera in later versions). If a permission-gated widget suddenly
+shows its "access needed" state after updating Flux, that's why — Settings → Notch
+shows the live grant/denied status for each permission and a button to re-request it
+or jump straight to the right System Settings pane.
 
 ## Build & run
 
@@ -159,14 +174,17 @@ Sources/Flux/
     LiveActivitySources.swift  # NotchActivityRouter — single home for every activity producer
     Widgets/NowPlayingWidget.swift
     Widgets/ShelfWidget.swift  # tiles, drag in/out, AirDrop/Finder/Copy
+    Widgets/CalendarWidget.swift # agenda, permission states
   Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
+  Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
   Services/BluetoothMonitor.swift  # IOBluetooth connect/disconnect + IORegistry battery
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
   Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults
   Hotkey/HotkeyRecorderView.swift # click-to-record shortcut field
+  Support/PermissionCenter.swift  # unified TCC status/request for Calendar/Camera/Accessibility
   Support/                       # logging, app info, render/snapshot/selftest
 ```
 
@@ -174,8 +192,8 @@ Sources/Flux/
 
 - **Per-app list control** and a searchable **drawer** popover (needs Accessibility +
   ScreenCaptureKit — deliberately deferred to keep the MVP resource-light).
-- More notch widgets (Calendar, Mirror, Timers, Clipboard) beyond Now Playing
-  and File Shelf shipped so far.
+- More notch widgets (Mirror, Timers, Clipboard) beyond Now Playing, File
+  Shelf, and Calendar shipped so far.
 - Custom hotkey recording, profiles, triggers (show on update/active).
 
 ## License

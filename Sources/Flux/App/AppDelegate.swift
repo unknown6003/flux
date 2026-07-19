@@ -20,22 +20,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let shelfStore = ShelfStore()
     private lazy var shelfWidget = ShelfWidget(
         store: shelfStore, isEnabled: settings.notchShelfEnabled)
+    // Unified TCC status/request center — first consumer is Calendar (M4);
+    // M5 (Accessibility) and M6 (Camera) reuse the same instance.
+    private let permissionCenter = PermissionCenter()
+    // EventKit is owned here, shared between `calendarWidget` (the agenda
+    // UI, read-only) and `notchActivityRouter` (the event-soon live
+    // activity, and the SOLE caller of `start()`/`stop()` — see
+    // `CalendarService`'s own doc comment on that ownership fix).
+    private let calendarService = CalendarService()
+    private lazy var calendarWidget = CalendarWidget(
+        service: calendarService, permissions: permissionCenter, isEnabled: settings.notchCalendarEnabled)
     // Single home for every live-activity *producer* (menu-bar overflow,
-    // battery, Bluetooth) — see `NotchActivityRouter`'s own doc comment for
-    // why this replaced the ad hoc per-producer Combine sink that used to
-    // live directly on this class. `lazy` (like the widgets above) because
-    // its initializer reads sibling instance properties (`notchWindow`,
-    // `settings`, `arranger`), which isn't possible from a plain stored
+    // battery, Bluetooth, calendar) — see `NotchActivityRouter`'s own doc
+    // comment for why this replaced the ad hoc per-producer Combine sink
+    // that used to live directly on this class. `lazy` (like the widgets
+    // above) because its initializer reads sibling instance properties
+    // (`notchWindow`, `settings`, `arranger`, `calendarService`,
+    // `permissionCenter`), which isn't possible from a plain stored
     // property's default-value expression; forced into existence at launch
     // via the `_ = notchActivityRouter` touch in `configureNotch()`, since
     // nothing else naturally accesses it the way `nowPlayingWidget` is
     // forced via `registry.register(...)`.
+    //
+    // `viewModel`/`presentation` replace the old `isPresentationAvailable`/
+    // `isCalendarWidgetPresented` closures — the router now observes
+    // `notchWindow.viewModel.$state` and `notchWindow.$isPresenting`
+    // directly (see the router's own doc comment on that M4 fix).
     private lazy var notchActivityRouter = NotchActivityRouter(
         activities: notchWindow.activities, settings: settings, arranger: arranger,
-        isPresentationAvailable: { [weak self] in self?.notchWindow.isPresenting ?? false })
+        calendar: calendarService, permissions: permissionCenter, viewModel: notchWindow.viewModel,
+        presentation: notchWindow.$isPresenting.eraseToAnyPublisher())
 
     private lazy var settingsWindow = SettingsWindowController(
-        settings: settings, arranger: arranger, updater: updater, nowPlaying: nowPlayingService)
+        settings: settings, arranger: arranger, updater: updater,
+        nowPlaying: nowPlayingService, permissions: permissionCenter)
     private lazy var arrangeHint = ArrangeHintWindowController(
         arranger: arranger,
         showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
@@ -61,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         notchWindow.registry.register(nowPlayingWidget)
         notchWindow.registry.register(shelfWidget)
+        notchWindow.registry.register(calendarWidget)
         notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
         // A file dropped on the *collapsed* notch is caught at the window
         // level (see `NotchPanel`/`NotchWindowController`), which has no
@@ -78,11 +97,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Screen changes (external display connect/disconnect, clamshell
         // open/close) flip `notchWindow.isPresenting` independently of every
-        // settings toggle `notchActivityRouter` already reacts to — re-apply
-        // its monitor start/stop decision whenever that happens, so the
-        // battery/Bluetooth monitors don't keep running with nowhere left to
-        // show a wing (or stay idle once a notched screen reappears).
-        notchWindow.onPresentationChanged = { [weak self] in self?.notchActivityRouter.presentationDidChange() }
+        // settings toggle `notchActivityRouter` already reacts to.
+        // `notchActivityRouter` observes `notchWindow.$isPresenting` directly
+        // (injected at construction above), so no explicit wiring is needed
+        // here anymore — it re-applies its monitor start/stop decision (and
+        // the calendar-event activity gating) on its own whenever
+        // presentation changes, keeping the battery/Bluetooth monitors from
+        // running with nowhere left to show a wing (or sitting idle once a
+        // notched screen reappears).
 
         configureHotkey()
         configureNotch()
@@ -180,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
+        notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
@@ -231,6 +254,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchShelfEnabled
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.shelf, value) }
+            .store(in: &cancellables)
+
+        settings.$notchCalendarEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.calendar, value) }
             .store(in: &cancellables)
 
         settings.$notchShelfExpiryDays

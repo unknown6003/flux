@@ -40,6 +40,85 @@ struct ToggleRow: View {
     }
 }
 
+/// A permission's live status (badge) plus the one action that helps —
+/// "Grant Access" while undetermined, "Open System Settings" once denied/
+/// restricted, nothing once granted (or on a status this app can't act on).
+/// Introduced in M4 for Calendar; written generically over `PermissionKind`
+/// so M5 (Accessibility) and M6 (Camera) reuse this exact row rather than
+/// each hand-rolling their own — see `PermissionCenter`'s doc comment for why
+/// a grant here can't be assumed permanent (ad-hoc signing).
+struct PermissionRow: View {
+    let kind: PermissionKind
+    let title: String
+    @ObservedObject var permissions: PermissionCenter
+
+    private var status: PermissionStatus { permissions.statuses[kind] ?? .notDetermined }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            RowText(title: title, subtitle: subtitle)
+            Spacer(minLength: 12)
+            badge
+            actionButton
+        }
+        .padding(.vertical, 11)
+        .padding(.horizontal, 14)
+    }
+
+    private var subtitle: String {
+        switch status {
+        case .notDetermined: return "Not yet requested."
+        case .granted: return "Granted."
+        case .denied: return "Denied — re-enable it in System Settings to use this feature."
+        case .restricted: return "Restricted by a device policy."
+        case .unavailable: return "Unavailable on this Mac."
+        }
+    }
+
+    private var badge: some View {
+        Text(badgeText)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(badgeColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(badgeColor.opacity(0.15)))
+    }
+
+    private var badgeText: String {
+        switch status {
+        case .notDetermined: return "Not Determined"
+        case .granted: return "Granted"
+        case .denied: return "Denied"
+        case .restricted: return "Restricted"
+        case .unavailable: return "Unavailable"
+        }
+    }
+
+    private var badgeColor: Color {
+        switch status {
+        case .granted: return Theme.accentColor
+        case .denied, .restricted: return Theme.warningColor
+        case .notDetermined, .unavailable: return Theme.textSecondaryColor
+        }
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        switch status {
+        case .notDetermined:
+            Button("Grant Access") { permissions.request(kind) }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accentColor)
+        case .denied, .restricted:
+            Button("Open System Settings") { permissions.openSystemSettings(kind) }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accentColor)
+        case .granted, .unavailable:
+            EmptyView()
+        }
+    }
+}
+
 struct SliderRow: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
