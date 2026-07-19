@@ -222,11 +222,14 @@ final class CameraService: ObservableObject {
     private func observeSessionNotifications() {
         let center = NotificationCenter.default
 
-        let interrupted = center.addObserver(forName: .AVCaptureSessionWasInterrupted, object: session, queue: .main) { [weak self] note in
+        // `AVCaptureSessionInterruptionReasonKey`/`AVCaptureSession.InterruptionReason`
+        // are iOS-only (`API_UNAVAILABLE(macos)` on the SDK) — macOS's own
+        // `userInfo` for this notification carries no decodable reason at
+        // all, so there's nothing further to extract here beyond the fact of
+        // the interruption itself.
+        let interrupted = center.addObserver(forName: .AVCaptureSessionWasInterrupted, object: session, queue: .main) { [weak self] _ in
             self?.isRunning = false
-            let reasonValue = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
-            let reason = reasonValue.flatMap(AVCaptureSession.InterruptionReason.init(rawValue:))
-            cameraLog.notice("CameraService: session interrupted (reason: \(String(describing: reason), privacy: .public)) — the camera likely became unavailable (another app claimed it, the device was disconnected, etc.)")
+            cameraLog.notice("CameraService: session interrupted — the camera likely became unavailable (another app claimed it, the device was disconnected, etc.)")
         }
 
         let runtimeError = center.addObserver(forName: .AVCaptureSessionRuntimeError, object: session, queue: .main) { [weak self] note in
