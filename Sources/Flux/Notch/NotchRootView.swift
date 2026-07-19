@@ -241,11 +241,12 @@ struct NotchRootView: View {
     /// The two wings either side of the (blank, reserved) physical notch
     /// area, showing the current live activity's leading/trailing content.
     private var activityContent: some View {
-        HStack(spacing: 0) {
-            content(for: viewModel.activities.current?.leading ?? .none)
+        let tint = viewModel.activities.current?.tint ?? .normal
+        return HStack(spacing: 0) {
+            content(for: viewModel.activities.current?.leading ?? .none, tint: tint)
                 .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
             Spacer(minLength: notchSize.width)
-            content(for: viewModel.activities.current?.trailing ?? .none)
+            content(for: viewModel.activities.current?.trailing ?? .none, tint: tint)
                 .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
         }
         .frame(width: containerSize.width, height: containerSize.height)
@@ -281,26 +282,32 @@ struct NotchRootView: View {
     }
 
     /// Renders one `LiveActivity.Content` value with Theme tokens. The single
-    /// place that turns the data-only activity model into pixels.
+    /// place that turns the data-only activity model into pixels. `tint`
+    /// (from the owning `LiveActivity`, forwarded by `activityContent`) only
+    /// affects the cases actually shown in the collapsed wings (`icon` /
+    /// `iconText`/ `text`) — `gauge` and `artwork` are HUD/Now-Playing-only
+    /// content that never carries a warning tint in practice, so they keep
+    /// their fixed Theme colors unconditionally.
     @ViewBuilder
-    private func content(for value: LiveActivity.Content) -> some View {
+    private func content(for value: LiveActivity.Content, tint: LiveActivity.ActivityTint = .normal) -> some View {
+        let tintColor = tint == .warning ? Theme.warningColor : Theme.accentColor
         switch value {
         case .none:
             EmptyView()
         case .icon(let systemName):
             Image(systemName: systemName)
-                .foregroundStyle(Theme.accentColor)
+                .foregroundStyle(tintColor)
         case .text(let text):
             Text(text)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(tint == .warning ? tintColor : .white)
                 .lineLimit(1)
         case .iconText(let systemName, let text):
             HStack(spacing: 4) {
                 Image(systemName: systemName)
                 Text(text).font(.system(size: 11, weight: .semibold)).lineLimit(1)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(tint == .warning ? tintColor : .white)
         case .gauge(let value, let systemName):
             HStack(spacing: 4) {
                 Image(systemName: systemName)

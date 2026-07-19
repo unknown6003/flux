@@ -20,6 +20,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let shelfStore = ShelfStore()
     private lazy var shelfWidget = ShelfWidget(
         store: shelfStore, isEnabled: settings.notchShelfEnabled)
+    // Single home for every live-activity *producer* (menu-bar overflow,
+    // battery, Bluetooth) — see `NotchActivityRouter`'s own doc comment for
+    // why this replaced the ad hoc per-producer Combine sink that used to
+    // live directly on this class. `lazy` (like the widgets above) because
+    // its initializer reads sibling instance properties (`notchWindow`,
+    // `settings`, `arranger`), which isn't possible from a plain stored
+    // property's default-value expression; forced into existence at launch
+    // via the `_ = notchActivityRouter` touch in `configureNotch()`, since
+    // nothing else naturally accesses it the way `nowPlayingWidget` is
+    // forced via `registry.register(...)`.
+    private lazy var notchActivityRouter = NotchActivityRouter(
+        activities: notchWindow.activities, settings: settings, arranger: arranger)
 
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, updater: updater, nowPlaying: nowPlayingService)
@@ -31,7 +43,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Only used when the notch panel itself is disabled — see
     // `configureNotchOverflowCoexistence`.
     private var notchHighlight: NotchHighlightWindowController?
-    private var notchOverflowActivityCancellable: AnyCancellable?
 
     private var cancellables = Set<AnyCancellable>()
     private var settingsVisible = false
@@ -164,6 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
+        // Force the lazy router into existence — see its property doc
+        // comment for why nothing else naturally touches it. Its own `init`
+        // reads the live activity toggles directly, so no further settings
+        // plumbing is needed here.
+        _ = notchActivityRouter
     }
 
     private func observeNotchSettings() {
@@ -248,43 +264,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// panel's own live-activity glow both exist to say "icons are clipped
     /// behind the notch" — showing both at once would double up over the
     /// same physical notch. When the notch panel is enabled, the overflow
-    /// warning rides as a `LiveActivity` in its wings instead; the legacy
-    /// floating overlay is only (re)created when the notch panel is off.
+    /// warning rides as a `LiveActivity` in its wings instead (posted by
+    /// `notchActivityRouter`, which reacts to `notchEnabled` on its own); the
+    /// legacy floating overlay is only (re)created when the notch panel is
+    /// off. This method now only owns that overlay's lifecycle — the
+    /// live-activity side of this coexistence moved to `NotchActivityRouter`
+    /// (see its doc comment for why).
     private func configureNotchOverflowCoexistence() {
         if settings.notchEnabled {
             notchHighlight = nil
-            observeNotchOverflowActivity()
-        } else {
-            notchOverflowActivityCancellable = nil
-            notchWindow.activities.dismiss(kind: .menuBarOverflow)
-            if notchHighlight == nil {
-                notchHighlight = NotchHighlightWindowController(
-                    arranger: arranger,
-                    onActivate: { [arranger] in arranger.setArranging(true) }
-                )
-            }
+        } else if notchHighlight == nil {
+            notchHighlight = NotchHighlightWindowController(
+                arranger: arranger,
+                onActivate: { [arranger] in arranger.setArranging(true) }
+            )
         }
-    }
-
-    private func observeNotchOverflowActivity() {
-        guard notchOverflowActivityCancellable == nil else { return }
-        notchOverflowActivityCancellable = arranger.$notchOverflow
-            .combineLatest(arranger.$overflowIconCount)
-            .removeDuplicates { $0 == $1 }
-            .receive(on: RunLoop.main)
-            .sink { [weak self] overflowing, count in
-                guard let self else { return }
-                if overflowing {
-                    self.notchWindow.activities.post(LiveActivity(
-                        kind: .menuBarOverflow,
-                        leading: .icon(systemName: "exclamationmark.triangle.fill"),
-                        trailing: count > 0 ? .text("\(count)") : .none,
-                        duration: nil,
-                        priority: 150))
-                } else {
-                    self.notchWindow.activities.dismiss(kind: .menuBarOverflow)
-                }
-            }
     }
 
     // MARK: Software update

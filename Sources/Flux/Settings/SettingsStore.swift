@@ -40,6 +40,8 @@ final class SettingsStore: ObservableObject {
         self.notchNowPlayingEnabled = defaults.bool(forKey: Keys.notchNowPlayingEnabled)
         self.notchShelfEnabled = defaults.bool(forKey: Keys.notchShelfEnabled)
         self.notchShelfExpiryDays = defaults.double(forKey: Keys.notchShelfExpiryDays)
+        self.notchActivityBatteryEnabled = defaults.bool(forKey: Keys.notchActivityBatteryEnabled)
+        self.notchActivityBluetoothEnabled = defaults.bool(forKey: Keys.notchActivityBluetoothEnabled)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
@@ -169,6 +171,19 @@ final class SettingsStore: ObservableObject {
         notchShelfExpiryDays > 0 ? notchShelfExpiryDays * 86400 : nil
     }
 
+    /// Whether `PowerMonitor` runs and posts `.battery` live activities —
+    /// read by `NotchActivityRouter`, which also requires `notchEnabled`
+    /// before actually starting the monitor.
+    @Published var notchActivityBatteryEnabled: Bool {
+        didSet { defaults.set(notchActivityBatteryEnabled, forKey: Keys.notchActivityBatteryEnabled) }
+    }
+
+    /// Whether `BluetoothMonitor` runs and posts `.bluetoothDevice` live
+    /// activities — same gating as `notchActivityBatteryEnabled`.
+    @Published var notchActivityBluetoothEnabled: Bool {
+        didSet { defaults.set(notchActivityBluetoothEnabled, forKey: Keys.notchActivityBluetoothEnabled) }
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
@@ -204,6 +219,8 @@ final class SettingsStore: ObservableObject {
         Keys.notchNowPlayingEnabled: true,
         Keys.notchShelfEnabled: true,
         Keys.notchShelfExpiryDays: 0.0,
+        Keys.notchActivityBatteryEnabled: true,
+        Keys.notchActivityBluetoothEnabled: true,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
@@ -227,6 +244,8 @@ final class SettingsStore: ObservableObject {
         static let notchNowPlayingEnabled = "flux.notch.nowPlayingEnabled"
         static let notchShelfEnabled = "flux.notch.shelf.enabled"
         static let notchShelfExpiryDays = "flux.notch.shelf.expiryDays"
+        static let notchActivityBatteryEnabled = "flux.notch.activities.battery"
+        static let notchActivityBluetoothEnabled = "flux.notch.activities.bluetooth"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }
