@@ -30,6 +30,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let calendarService = CalendarService()
     private lazy var calendarWidget = CalendarWidget(
         service: calendarService, permissions: permissionCenter, isEnabled: settings.notchCalendarEnabled)
+    // M6: Mirror owns `CameraService.start()`/`stop()` itself (see that
+    // widget's own doc comment on why its lifecycle needs no shared router
+    // the way Calendar's does) — `permissionCenter` above is reused rather
+    // than a second instance.
+    private let cameraService = CameraService()
+    private lazy var mirrorWidget = MirrorWidget(
+        service: cameraService, permissions: permissionCenter, isEnabled: settings.notchMirrorEnabled)
+    // M6: `ClipboardMonitor.start()`/`stop()` is settings-driven (see its own
+    // doc comment) rather than tied to `ClipboardWidget`'s presentation — the
+    // whole point of a history is that it keeps accumulating while the
+    // widget itself is closed. Wired from `configureClipboardMonitor()` below.
+    private let clipboardMonitor = ClipboardMonitor()
+    private lazy var clipboardWidget = ClipboardWidget(
+        monitor: clipboardMonitor, isEnabled: settings.notchClipboardEnabled)
+    // M6: `TimerService` has no start/stop lifecycle at all (a single
+    // cancellable boundary `Task`, rearmed on mutation — see its own doc
+    // comment), so unlike every other notch-suite service there's nothing
+    // for either `TimersWidget` or `notchActivityRouter` to start/stop here;
+    // both just consume this one shared instance.
+    private let timerService = TimerService()
+    private lazy var timersWidget = TimersWidget(
+        service: timerService, isEnabled: settings.notchTimersEnabled)
+    // M6: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment. Gated
+    // from `configureLockScreenPresenter()` below; `currentActivityLine` is
+    // wired to `timersWidget`'s own nearest-remaining-timer line in
+    // `configureNotch()`.
+    private let lockScreenPresenter = LockScreenPresenter()
     // Single home for every live-activity *producer* (menu-bar overflow,
     // battery, Bluetooth, calendar, volume/brightness HUD) — see
     // `NotchActivityRouter`'s own doc comment for why this replaced the ad
@@ -50,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var notchActivityRouter = NotchActivityRouter(
         activities: notchWindow.activities, settings: settings, arranger: arranger,
         calendar: calendarService, permissions: permissionCenter, viewModel: notchWindow.viewModel,
+        timers: timerService,
         presentation: notchWindow.$isPresenting.eraseToAnyPublisher())
 
     private lazy var settingsWindow = SettingsWindowController(
@@ -81,6 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.register(nowPlayingWidget)
         notchWindow.registry.register(shelfWidget)
         notchWindow.registry.register(calendarWidget)
+        notchWindow.registry.register(mirrorWidget)
+        notchWindow.registry.register(timersWidget)
+        notchWindow.registry.register(clipboardWidget)
         notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
         // A file dropped on the *collapsed* notch is caught at the window
         // level (see `NotchPanel`/`NotchWindowController`), which has no
@@ -204,14 +235,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
         notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
+        notchWindow.registry.setEnabled(.mirror, settings.notchMirrorEnabled)
+        notchWindow.registry.setEnabled(.timers, settings.notchTimersEnabled)
+        notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
+        // Read fresh every time the lock screen actually locks, not cached —
+        // see `LockScreenPresenter.currentActivityLine`'s own doc comment.
+        lockScreenPresenter.currentActivityLine = { [weak self] in self?.timersWidget.nearestRemainingLine(at: Date()) }
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
+        configureClipboardMonitor()
+        configureLockScreenPresenter()
         // Force the lazy router into existence — see its property doc
         // comment for why nothing else naturally touches it. Its own `init`
         // reads the live activity toggles directly, so no further settings
         // plumbing is needed here.
         _ = notchActivityRouter
+    }
+
+    /// Clipboard history collection follows both its OWN toggle and the
+    /// master notch switch — a disabled notch feature means "off" everywhere,
+    /// including a background monitor with nothing to actually show its
+    /// history in (see `ClipboardMonitor`'s own doc comment on why its
+    /// lifecycle is settings-, not presentation-, driven).
+    private func configureClipboardMonitor() {
+        if settings.notchEnabled && settings.notchClipboardEnabled {
+            clipboardMonitor.start()
+        } else {
+            clipboardMonitor.stop()
+        }
+    }
+
+    /// EXPERIMENTAL — same "both this feature's own toggle AND the master
+    /// notch switch" gating as `configureClipboardMonitor`, for the same
+    /// reason: a disabled notch feature means off everywhere.
+    private func configureLockScreenPresenter() {
+        lockScreenPresenter.setEnabled(settings.notchEnabled && settings.notchLockScreenExperimentEnabled)
     }
 
     private func observeNotchSettings() {
@@ -260,6 +319,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchCalendarEnabled
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.calendar, value) }
+            .store(in: &cancellables)
+
+        settings.$notchMirrorEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.mirror, value) }
+            .store(in: &cancellables)
+
+        settings.$notchTimersEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.timers, value) }
+            .store(in: &cancellables)
+
+        settings.$notchClipboardEnabled
+            .dropFirst()
+            .sink { [weak self] value in
+                self?.notchWindow.registry.setEnabled(.clipboard, value)
+                self?.configureClipboardMonitor()
+            }
+            .store(in: &cancellables)
+
+        settings.$notchLockScreenExperimentEnabled
+            .dropFirst()
+            .sink { [weak self] _ in self?.configureLockScreenPresenter() }
             .store(in: &cancellables)
 
         settings.$notchShelfExpiryDays

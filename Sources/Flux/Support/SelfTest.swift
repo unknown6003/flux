@@ -1072,6 +1072,7 @@ enum SelfTest {
             let testBluetooth = BluetoothMonitor()
             let testCalendar = CalendarService()
             let testPermissions = PermissionCenter()
+            let testTimers = TimerService()
             // A plain, headless `NotchViewModel` — the router only reads its
             // `$state`, never anything screen/panel-related, so this needs no
             // `NotchWindowController` (which would need a real notch screen
@@ -1098,6 +1099,7 @@ enum SelfTest {
             let router = NotchActivityRouter(activities: routerActivities, settings: routerSettings,
                                               arranger: routerArranger, calendar: testCalendar,
                                               permissions: testPermissions, viewModel: routerViewModel,
+                                              timers: testTimers,
                                               power: testPower, bluetooth: testBluetooth, startsMonitors: false)
 
             // `withExtendedLifetime` keeps `router` (and its Combine
@@ -1586,6 +1588,7 @@ enum SelfTest {
             let hudArranger = MenuBarArranger()
             let hudCalendar = CalendarService()
             let hudPermissions = PermissionCenter()
+            let hudTimers = TimerService()
             let hudViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
             let hudVolume = VolumeMonitor()
             let hudBrightness = BrightnessMonitor()
@@ -1597,6 +1600,7 @@ enum SelfTest {
             let hudRouter = NotchActivityRouter(activities: hudActivities, settings: hudSettings,
                                                  arranger: hudArranger, calendar: hudCalendar,
                                                  permissions: hudPermissions, viewModel: hudViewModel,
+                                                 timers: hudTimers,
                                                  volume: hudVolume, brightness: hudBrightness,
                                                  interceptor: hudInterceptor, startsMonitors: false)
 
@@ -1712,6 +1716,215 @@ enum SelfTest {
             check(accessibilityPermCenter.statuses[.accessibility] == (AXIsProcessTrusted() ? .granted : .denied),
                   "PermissionCenter: the accessibility.api distributed notification refreshes .accessibility without crashing")
         }
+
+        // --- M6: NotchTimer — pure countdown math, driven entirely by
+        // injected `at`/`after` instants (never `Date()` internally), so
+        // pause/resume/overdue can all be pinned deterministically. ---
+        let ntNow = Date()
+        let ntRunning = NotchTimer(label: "Running", duration: 60, startedAt: ntNow.addingTimeInterval(-30))
+        check(abs(ntRunning.remaining(at: ntNow) - 30) < 0.01,
+              "NotchTimer: remaining(at:) reflects duration minus elapsed")
+        check(!ntRunning.isFinished(at: ntNow), "NotchTimer: not finished with 30s left")
+        check(ntRunning.isFinished(at: ntRunning.endDate), "NotchTimer: isFinished is true exactly at endDate")
+        check(ntRunning.isFinished(at: ntRunning.endDate.addingTimeInterval(5)),
+              "NotchTimer: an overdue timer (past its endDate) still reads as finished")
+
+        var ntPausable = NotchTimer(label: "Pausable", duration: 60, startedAt: ntNow.addingTimeInterval(-10))
+        let ntPauseInstant = ntNow
+        ntPausable.pausedAt = ntPauseInstant
+        let ntRemainingAtPause = ntPausable.remaining(at: ntPauseInstant)
+        check(abs(ntRemainingAtPause - 50) < 0.01,
+              "NotchTimer: remaining at the moment of pausing reflects elapsed-before-pause (10s in of a 60s timer → 50s left)")
+        let ntMuchLater = ntPauseInstant.addingTimeInterval(120)
+        check(abs(ntPausable.remaining(at: ntMuchLater) - ntRemainingAtPause) < 0.01,
+              "NotchTimer: remaining stays frozen at the pause instant's value no matter how much later `now` is queried")
+
+        // Resuming folds the elapsed pause span into `accumulatedPause` and
+        // clears `pausedAt` — the countdown should pick up exactly where it
+        // was frozen, then keep draining normally from there.
+        ntPausable.accumulatedPause += ntMuchLater.timeIntervalSince(ntPauseInstant)
+        ntPausable.pausedAt = nil
+        check(abs(ntPausable.remaining(at: ntMuchLater) - ntRemainingAtPause) < 0.01,
+              "NotchTimer: resuming preserves the frozen remaining time at the instant of resume")
+        check(abs(ntPausable.remaining(at: ntMuchLater.addingTimeInterval(5)) - (ntRemainingAtPause - 5)) < 0.01,
+              "NotchTimer: after resuming, remaining ticks down again from the frozen value")
+
+        // TimerService.nextDeadline(in:after:) — the pure core `rescheduleBoundary`
+        // arms its single boundary Task against: earliest UNPAUSED endDate,
+        // skipping a paused timer even when its own nominal endDate is earlier.
+        let ntA = NotchTimer(label: "A", duration: 60, startedAt: ntNow.addingTimeInterval(-50)) // endDate = now+10
+        let ntB = NotchTimer(label: "B", duration: 60, startedAt: ntNow.addingTimeInterval(-55), pausedAt: ntNow) // endDate = now+5, but PAUSED
+        let ntC = NotchTimer(label: "C", duration: 300, startedAt: ntNow) // endDate = now+300
+        check(TimerService.nextDeadline(in: [ntA, ntB, ntC], after: ntNow) == ntA.endDate,
+              "TimerService: nextDeadline(in:after:) picks the earliest UNPAUSED timer's endDate, correctly skipping a paused one with an earlier nominal endDate")
+        check(TimerService.nextDeadline(in: [ntB], after: ntNow) == nil,
+              "TimerService: nextDeadline(in:after:) is nil when every timer is paused")
+        check(TimerService.nextDeadline(in: [], after: ntNow) == nil,
+              "TimerService: nextDeadline(in:after:) is nil with no timers at all")
+
+        // --- M6: TimersWidget — nearestRemainingLine/formatCountdown formatting ---
+        let trRunning = NotchTimer(label: "Focus", duration: 125, startedAt: ntNow) // 125s left
+        let trPaused = NotchTimer(label: "Paused", duration: 10, startedAt: ntNow.addingTimeInterval(-5), pausedAt: ntNow)
+        check(TimersWidget.nearestRemainingLine(timers: [trPaused], at: ntNow) == nil,
+              "TimersWidget: nearestRemainingLine is nil when every timer is paused")
+        check(TimersWidget.nearestRemainingLine(timers: [trRunning, trPaused], at: ntNow) == "2:05",
+              "TimersWidget: nearestRemainingLine picks the soonest-to-finish RUNNING timer, ignoring a paused one entirely")
+        check(TimersWidget.nearestRemainingLine(timers: [], at: ntNow) == nil,
+              "TimersWidget: nearestRemainingLine is nil with no timers at all")
+        check(TimersWidget.formatCountdown(65) == "1:05", "TimersWidget: formatCountdown renders m:ss with zero-padded seconds")
+        check(TimersWidget.formatCountdown(5) == "0:05", "TimersWidget: formatCountdown zero-pads seconds under 10")
+        check(TimersWidget.formatCountdown(-3) == "0:00", "TimersWidget: formatCountdown never shows a negative value")
+        check(TimersWidget.formatCountdown(.infinity) == "0:00", "TimersWidget: formatCountdown guards a non-finite input")
+
+        // --- M6: ClipboardMonitor.classify — the text-vs-URL seam extracted
+        // out of `capture(from:)` so this is testable against a plain
+        // `String`, with no real `NSPasteboard` content involved. ---
+        check(ClipboardMonitor.classify(string: "https://example.com/path") == .url,
+              "ClipboardMonitor: classify recognizes a full URL (scheme + host) as .url")
+        check(ClipboardMonitor.classify(string: "hello world") == .text,
+              "ClipboardMonitor: classify treats a plain string as .text")
+        check(ClipboardMonitor.classify(string: "mailto:nobody@example.com") == .text,
+              "ClipboardMonitor: classify treats a scheme-only string with no host as .text, not .url")
+        check(ClipboardMonitor.classify(string: "just some text: with a colon in it") == .text,
+              "ClipboardMonitor: classify doesn't misfire on a string that merely contains a colon")
+
+        // --- M6 smoke tests: CameraService/ClipboardMonitor/LockScreenPresenter
+        // construct and tear down safely on a headless CI runner with no
+        // guaranteed camera hardware, real pasteboard writes, or lock-screen
+        // session. Mirrors M5's BrightnessMonitor/VolumeMonitor smoke tests. ---
+        do {
+            let cameraProbe = CameraService()
+            check(!cameraProbe.isRunning, "CameraService: isRunning starts false")
+            cameraProbe.stop() // must be safe even though never started
+            check(!cameraProbe.isRunning, "CameraService: stop() before any start() is a safe no-op")
+        }
+        do {
+            let clipboardProbe = ClipboardMonitor(pasteboard: .general)
+            check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: starts with empty history")
+            clipboardProbe.stop() // must be safe even though never started
+            check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: stop() before start() is a safe no-op")
+        }
+        do {
+            let lockScreenProbe = LockScreenPresenter()
+            check(!lockScreenProbe.isPresentingOnLockScreen, "LockScreenPresenter: starts not presenting")
+            lockScreenProbe.setEnabled(true)
+            lockScreenProbe.setEnabled(true) // idempotent — a repeated identical call is a no-op
+            lockScreenProbe.setEnabled(false)
+            check(!lockScreenProbe.isPresentingOnLockScreen,
+                  "LockScreenPresenter: disabling tears everything down — nothing left presenting")
+        }
+
+        // --- M6: NotchActivityRouter — timer completion/ambient translation,
+        // driven purely through a real (but headless) TimerService's own
+        // `completions`/`timers` — no NSSound actually needs to play
+        // successfully on a headless runner for this to pass; only the
+        // posted LiveActivity content is asserted. ---
+        do {
+            let timerRouterSuiteName = "flux.selftest.timerrouter"
+            let timerRouterSuite = UserDefaults(suiteName: timerRouterSuiteName)!
+            timerRouterSuite.removePersistentDomain(forName: timerRouterSuiteName)
+            let timerRouterSettings = SettingsStore(defaults: timerRouterSuite)
+            let timerRouterActivities = LiveActivityCenter()
+            let timerRouterArranger = MenuBarArranger()
+            let timerRouterCalendar = CalendarService()
+            let timerRouterPermissions = PermissionCenter()
+            let timerRouterTimers = TimerService()
+            let timerRouterViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
+            let timerRouter = NotchActivityRouter(activities: timerRouterActivities, settings: timerRouterSettings,
+                                                   arranger: timerRouterArranger, calendar: timerRouterCalendar,
+                                                   permissions: timerRouterPermissions, viewModel: timerRouterViewModel,
+                                                   timers: timerRouterTimers, startsMonitors: false)
+
+            withExtendedLifetime(timerRouter) {
+                // Starting a timer posts the ambient sticky wing.
+                let started = timerRouterTimers.start(duration: 120, label: "Focus")
+                check(timerRouterActivities.current?.kind == .timer,
+                      "NotchActivityRouter: a running timer posts an ambient .timer live activity")
+                check(timerRouterActivities.current?.priority == 110,
+                      "NotchActivityRouter: the ambient timer wing posts at priority 110 — below menu-bar overflow's 150")
+                check(timerRouterActivities.current?.duration == nil,
+                      "NotchActivityRouter: the ambient timer wing is STICKY (no duration) while a timer is running")
+                // Not asserting an exact "2:00" here: some non-zero (if
+                // tiny) real time always elapses between `start()` capturing
+                // `startedAt` and this synchronous recompute reading the
+                // countdown, so the truncated seconds digit can legitimately
+                // read one tick under a round value — the precise formatting
+                // is already pinned deterministically by the
+                // `TimersWidget.nearestRemainingLine`/`formatCountdown` checks
+                // above; this only needs to confirm the router actually
+                // surfaces SOME countdown text, not re-verify its exact value.
+                if case .text(let ambientLine)? = timerRouterActivities.current?.trailing {
+                    check(ambientLine == "2:00" || ambientLine == "1:59",
+                          "NotchActivityRouter: the ambient wing shows the nearest remaining timer's countdown text (got \(ambientLine))")
+                } else {
+                    check(false, "NotchActivityRouter: the ambient wing's trailing content should be countdown .text")
+                }
+
+                // Cancelling the only running timer dismisses the ambient wing.
+                timerRouterTimers.cancel(started.id)
+                check(timerRouterActivities.current?.kind != .timer,
+                      "NotchActivityRouter: cancelling the only running timer dismisses the ambient wing")
+
+                // A completion event posts a transient, higher-priority notice.
+                let completionTimer = NotchTimer(label: "Tea", duration: 1, startedAt: Date().addingTimeInterval(-1))
+                timerRouterTimers.completions.send(completionTimer)
+                check(timerRouterActivities.current?.kind == .timer,
+                      "NotchActivityRouter: a completion event posts a .timer live activity")
+                check(timerRouterActivities.current?.priority == 250,
+                      "NotchActivityRouter: a completion notice posts at priority 250 — above the ambient wing's 110")
+                check(timerRouterActivities.current?.trailing == .text("Tea done"),
+                      "NotchActivityRouter: the completion notice reads '<label> done'")
+                check(timerRouterActivities.current?.duration == 10,
+                      "NotchActivityRouter: the completion notice is transient (10s), not sticky")
+
+                // Settings gating: the timer-activity toggle off suppresses
+                // both further completion posts and the ambient wing.
+                timerRouterActivities.dismiss(kind: .timer)
+                timerRouterSettings.notchActivityTimerEnabled = false
+                timerRouterTimers.completions.send(completionTimer)
+                check(timerRouterActivities.current?.kind != .timer,
+                      "NotchActivityRouter: the timer-activity toggle off suppresses completion posts")
+                _ = timerRouterTimers.start(duration: 60, label: "Ignored")
+                check(timerRouterActivities.current?.kind != .timer,
+                      "NotchActivityRouter: the timer-activity toggle off also suppresses the ambient wing for a newly started timer")
+            }
+            timerRouterSuite.removePersistentDomain(forName: timerRouterSuiteName)
+        }
+
+        // --- M6: SettingsStore — fresh-install defaults for every new key,
+        // including the widget-order extension (mirror/timers/clipboard
+        // appended after calendar). Mirrors the "Hotkey" section's own
+        // fresh-suite-defaults pattern earlier in this file. ---
+        do {
+            let m6SettingsSuiteName = "flux.selftest.m6settings"
+            UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
+            let m6Settings = SettingsStore(defaults: UserDefaults(suiteName: m6SettingsSuiteName)!)
+            check(m6Settings.notchMirrorEnabled, "SettingsStore: notchMirrorEnabled defaults to true")
+            check(!m6Settings.notchClipboardEnabled,
+                  "SettingsStore: notchClipboardEnabled defaults to false — clipboard history collection is opt-in")
+            check(m6Settings.notchTimersEnabled, "SettingsStore: notchTimersEnabled defaults to true")
+            check(m6Settings.notchActivityTimerEnabled, "SettingsStore: notchActivityTimerEnabled defaults to true")
+            check(!m6Settings.notchLockScreenExperimentEnabled,
+                  "SettingsStore: notchLockScreenExperimentEnabled (EXPERIMENTAL) defaults to false")
+            check(m6Settings.notchWidgetOrder == [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue,
+                                                   WidgetID.calendar.rawValue, WidgetID.mirror.rawValue,
+                                                   WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
+                  "SettingsStore: the default notchWidgetOrder appends mirror/timers/clipboard after calendar")
+            UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
+        }
+
+        // --- M6: NotchWidgetRegistry — every one of the app's 6 WidgetIDs
+        // registers and orders correctly (nowPlaying, shelf, calendar,
+        // mirror, timers, clipboard). ---
+        check(WidgetID.allCases.count == 6,
+              "WidgetID: exactly 6 widgets exist in the notch suite (nowPlaying, shelf, calendar, mirror, timers, clipboard)")
+        let sixRegistry = NotchWidgetRegistry()
+        let sixWidgets = WidgetID.allCases.map { SelfTestWidget(id: $0) }
+        for widget in sixWidgets { sixRegistry.register(widget) }
+        sixRegistry.order = WidgetID.allCases
+        check(sixRegistry.widgets.count == 6, "NotchWidgetRegistry: all 6 WidgetIDs register successfully")
+        check(sixRegistry.enabledWidgets.map(\.id) == WidgetID.allCases,
+              "NotchWidgetRegistry: all 6 widgets appear, in order, when every one is enabled")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

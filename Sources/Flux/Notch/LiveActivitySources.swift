@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -44,6 +45,16 @@ final class NotchActivityRouter {
     /// `statuses`; `request`/`openSystemSettings` are Settings-UI actions the
     /// Calendar widget itself owns.
     private let permissions: PermissionCenter
+    /// M6: shared with `TimersWidget` — like `calendar`, this router isn't
+    /// the countdown machinery's only consumer, so it's injected rather than
+    /// default-constructed. Unlike `calendar`, this router never calls
+    /// `start()`/`stop()` on it: `TimerService` has no such lifecycle at all
+    /// (see its own doc comment — a single cancellable boundary `Task`, never
+    /// a repeating timer, so there's nothing to gate on presentation the way
+    /// Calendar's EventKit fetch needs to be). This router only turns its
+    /// `completions` events and live `timers` into `.timer` live-activity
+    /// wings.
+    private let timers: TimerService
     /// The notch's state machine — read directly (`viewModel.state`) rather
     /// than through a bespoke closure, so `calendarServiceShouldRun` always
     /// sees the live value, and `observeNotchState()` can subscribe to
@@ -115,6 +126,7 @@ final class NotchActivityRouter {
          calendar: CalendarService,
          permissions: PermissionCenter,
          viewModel: NotchViewModel,
+         timers: TimerService,
          power: PowerMonitor? = nil,
          bluetooth: BluetoothMonitor? = nil,
          volume: VolumeMonitor? = nil,
@@ -128,6 +140,7 @@ final class NotchActivityRouter {
         self.calendar = calendar
         self.permissions = permissions
         self.viewModel = viewModel
+        self.timers = timers
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? BluetoothMonitor()
         self.volume = volume ?? VolumeMonitor()
@@ -149,16 +162,20 @@ final class NotchActivityRouter {
         observeOverflow()
         observeOverflowGating()
         observeCalendar()
+        observeTimers()
         observeMonitorGating()
         observeHUDGating()
+        observeTimerGating()
         observeNotchState()
         observePresentation(presentation)
         applyMonitorState()
         applyHUDState()
+        recomputeTimerActivity()
     }
 
     deinit {
         calendarThresholdTask?.cancel()
+        timerRefreshTask?.cancel()
     }
 
     // MARK: - Battery
@@ -532,6 +549,18 @@ final class NotchActivityRouter {
             .store(in: &cancellables)
     }
 
+    /// Re-applies `recomputeTimerActivity` whenever the notch master switch or
+    /// the timer-activity toggle changes — mirrors `observeHUDGating`'s exact
+    /// shape. `dropFirst` skips the redundant initial delivery; `init` already
+    /// calls `recomputeTimerActivity()` once directly.
+    private func observeTimerGating() {
+        settings.$notchEnabled
+            .combineLatest(settings.$notchActivityTimerEnabled)
+            .dropFirst()
+            .sink { [weak self] _, _ in self?.recomputeTimerActivity() }
+            .store(in: &cancellables)
+    }
+
     /// Re-applies `applyMonitorState` whenever the notch's own state machine
     /// changes — specifically so the Calendar widget becoming (or stopping
     /// being) the currently-`.expanded` widget is re-evaluated the same tick,
@@ -823,6 +852,7 @@ final class NotchActivityRouter {
                 self.applyMonitorState()
                 self.recomputeCalendarActivity()
                 self.applyHUDState()
+                self.recomputeTimerActivity()
             }
             .store(in: &cancellables)
     }
@@ -908,5 +938,138 @@ final class NotchActivityRouter {
         guard permissionGranted, notchPresenting else { return false }
         let widgetOpen = widgetEnabled && state == .expanded(.calendar)
         return widgetOpen || activityToggleOn
+    }
+
+    // MARK: - Timers (M6)
+    //
+    // Two producers share the single `.timer` `LiveActivity.Kind`, matching
+    // how observe/intercept mode share `.hudVolume`/`.hudBrightness` above:
+    //   - `handleTimerCompletion`: a transient (10s), higher-priority (250)
+    //     "<label> done" notice the instant `TimerService.completions` fires,
+    //     plus a system sound — gated only on the settings toggle, not on
+    //     presentation, since a finished timer is worth a sound even if
+    //     there's nowhere to show a wing right now (posting to `activities`
+    //     with nowhere to render it is harmless; matches how
+    //     `handlePowerEvent`/`handleBluetoothEvent` above gate purely on their
+    //     own toggle too, leaning on their monitors only running while
+    //     presenting instead of re-checking it per event — this event source
+    //     has no such lifecycle to lean on, see `timers`'s own doc comment,
+    //     so the sound plays regardless).
+    //   - `recomputeTimerActivity`: a sticky (lower-priority, 110) ambient
+    //     countdown wing shown for as long as some timer is actually counting
+    //     down, refreshed on a boundary `Task` (never a repeating `Timer`)
+    //     rather than a live per-second tick — that per-second cadence is
+    //     `TimersExpandedView`'s own concern, gated on the widget actually
+    //     being presented.
+    //
+    // `LiveActivityCenter.post`'s own same-kind supersession means posting the
+    // completion notice while the ambient wing is showing simply replaces it
+    // (the completion's higher priority would win regardless); once the
+    // completion's own expiry dismisses it, `armTimerRefresh` — scheduled
+    // right alongside the completion post — re-evaluates so a still-running
+    // OTHER timer's ambient wing reappears instead of staying dismissed with
+    // nothing left to notice `$timers` didn't change during that window.
+
+    private func observeTimers() {
+        timers.completions
+            .sink { [weak self] timer in self?.handleTimerCompletion(timer) }
+            .store(in: &cancellables)
+        timers.$timers
+            .sink { [weak self] _ in self?.recomputeTimerActivity() }
+            .store(in: &cancellables)
+    }
+
+    private func handleTimerCompletion(_ timer: NotchTimer) {
+        guard settings.notchActivityTimerEnabled else { return }
+        activities.post(Self.timerCompletionActivity(label: timer.label))
+        NSSound(named: "Glass")?.play()
+        armTimerRefresh(after: Self.timerCompletionDuration + 0.1)
+    }
+
+    static let timerCompletionDuration: TimeInterval = 10
+    static let timerCompletionPriority = 250
+    static let timerAmbientPriority = 110
+
+    static func timerCompletionActivity(label: String) -> LiveActivity {
+        LiveActivity(kind: .timer,
+                     leading: .icon(systemName: "timer"),
+                     trailing: .text("\(label) done"),
+                     duration: timerCompletionDuration,
+                     priority: timerCompletionPriority)
+    }
+
+    /// Re-evaluates the ambient countdown wing against `timers`'s current
+    /// live state and re-arms the next refresh — called from every trigger
+    /// that could change the answer: `timers.$timers` (a start/pause/resume/
+    /// cancel/completion-reap), the settings/presentation gating sinks below,
+    /// `init`'s final call, and its own scheduled refresh task.
+    private func recomputeTimerActivity() {
+        timerRefreshTask?.cancel()
+        timerRefreshTask = nil
+        let now = Date()
+        guard Self.timerActivityShouldRun(toggleOn: settings.notchActivityTimerEnabled,
+                                           notchPresenting: settings.notchEnabled && isPresenting,
+                                           hasRunningTimer: timers.nextDeadline(after: now) != nil),
+              let deadline = timers.nextDeadline(after: now),
+              let line = TimersWidget.nearestRemainingLine(timers: timers.timers, at: now)
+        else {
+            activities.dismiss(kind: .timer)
+            return
+        }
+        activities.post(LiveActivity(kind: .timer,
+                                      leading: .icon(systemName: "timer"),
+                                      trailing: .text(line),
+                                      duration: nil,
+                                      priority: Self.timerAmbientPriority))
+        armTimerRefresh(after: max(Self.nextTimerRefreshBoundary(deadline: deadline, now: now).timeIntervalSince(now), 0))
+    }
+
+    /// The single cancellable refresh task backing the ambient wing's text —
+    /// matches `calendarThresholdTask`'s "exactly one deadline in flight"
+    /// shape. Also reused by `handleTimerCompletion` to re-check once the
+    /// transient completion notice's own expiry passes (see this section's
+    /// doc comment).
+    private var timerRefreshTask: Task<Void, Never>?
+
+    private func armTimerRefresh(after delay: TimeInterval) {
+        timerRefreshTask?.cancel()
+        timerRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.recomputeTimerActivity()
+        }
+    }
+
+    /// Whether the ambient countdown wing should be showing right now — a
+    /// pure function of exactly the causes that decide it, matching
+    /// `intendedHUDMode`'s/`calendarServiceShouldRun`'s shape so `--selftest`
+    /// can drive every combination directly.
+    static func timerActivityShouldRun(toggleOn: Bool, notchPresenting: Bool, hasRunningTimer: Bool) -> Bool {
+        toggleOn && notchPresenting && hasRunningTimer
+    }
+
+    /// The next instant the ambient wing's displayed countdown text should
+    /// refresh: once a minute while a minute or more remains (matching
+    /// `nextMinuteBoundary`'s cadence for the calendar wing), or every 10
+    /// seconds once under a minute remains — fine enough to feel current
+    /// without waking every second the way the expanded widget's own
+    /// `TimelineView` does while actually presented. Also wakes at the exact
+    /// instant the countdown crosses under a minute, so the cadence switch
+    /// itself doesn't wait up to a full minute late.
+    static func nextTimerRefreshBoundary(deadline: Date, now: Date) -> Date {
+        let remaining = deadline.timeIntervalSince(now)
+        let tick = remaining > 60 ? nextMinuteBoundary(after: now) : nextTickBoundary(after: now, every: 10)
+        let crossover = deadline.addingTimeInterval(-60)
+        return crossover > now ? min(tick, crossover) : tick
+    }
+
+    /// The next wall-clock instant strictly after `now` that's an even
+    /// multiple of `interval` seconds since the reference date — the general
+    /// form of `nextMinuteBoundary`'s `interval == 60` case, used here for
+    /// the under-a-minute 10s refresh cadence.
+    static func nextTickBoundary(after now: Date, every interval: TimeInterval) -> Date {
+        let epoch = now.timeIntervalSinceReferenceDate
+        let nextEpoch = (epoch / interval).rounded(.down) * interval + interval
+        return Date(timeIntervalSinceReferenceDate: nextEpoch)
     }
 }

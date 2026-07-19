@@ -81,3 +81,53 @@ drag-and-drop, hover, or click/mouse pass-through.
       outputs) and confirm Flux doesn't misbehave — no wing showing a
       nonsensical level, no crash from `VolumeMonitor`'s per-channel
       fallback path.
+
+## M6 — Mirror, Clipboard, Timers, Lock Screen
+
+- [ ] **Mirror start/stop + permission**: with Camera access NOT yet granted,
+      open the Mirror widget and confirm the permission explainer shows (no
+      camera indicator light, no preview). Grant access from that same panel
+      (or while it's open, from System Settings) and confirm the preview
+      starts within the same presentation — no need to close and reopen. Then
+      collapse the notch (or swipe to another widget) and confirm the camera
+      indicator light turns off immediately.
+- [ ] **Camera session torn down on collapse**: with Mirror open and the
+      preview running, collapse the notch several different ways (mouse-out,
+      click, swipe up, disabling the notch panel in Settings) and confirm the
+      camera indicator light goes off every single time — never left lit
+      after the panel is no longer visible.
+- [ ] **Clipboard capture**: turn on the Clipboard toggle in Settings → Notch,
+      copy a few different things (plain text, a URL, a file in Finder, an
+      image), open the Clipboard widget, and confirm each shows up with the
+      right icon/preview, newest first.
+- [ ] **Clipboard concealed/transient skip**: copy a password out of a real
+      password manager (1Password, Bitwarden, or Safari's own password
+      autofill) and confirm it does NOT appear in the clipboard history at
+      all — not even as a redacted entry.
+- [ ] **Clipboard copy-back**: click a history entry and confirm it's written
+      back to the pasteboard (paste it somewhere to verify) with a brief
+      checkmark confirmation, and that the very next poll tick does NOT
+      re-capture it as a duplicate new entry.
+- [ ] **Clipboard collection follows both toggles**: turn the Clipboard
+      setting off and confirm no new copies are captured even with the
+      widget itself still enabled in the cycle order; also confirm disabling
+      the notch panel entirely (master switch) stops capture even with the
+      Clipboard toggle left on.
+- [ ] **Timer run/pause/complete + activity**: start a short (under a
+      minute) custom timer, confirm the ambient countdown wing appears with
+      the remaining time, pause it from the expanded widget and confirm the
+      wing's countdown freezes, resume it, then let it run out and confirm a
+      "<label> done" wing appears along with a sound, replacing the ambient
+      wing, and that the ambient wing reappears afterward if another timer is
+      still running.
+- [ ] **Timer alerts toggle**: turn off "Timer alerts" in Settings → Notch,
+      start a timer, and confirm neither the ambient countdown wing nor the
+      completion wing/sound appears — the Timers widget itself still works
+      for starting/pausing/cancelling.
+- [ ] **Lock-screen show/hide**: turn on "Show on the lock screen" in
+      Settings → Notch → Experimental, lock the screen, and confirm a small
+      notch silhouette appears (captioned with a running timer's remaining
+      time, if one is running) without interfering with actually typing your
+      password to unlock. Unlock and confirm the silhouette disappears.
+      Turning the toggle off (or disabling the notch panel entirely) while
+      locked should also make it disappear.

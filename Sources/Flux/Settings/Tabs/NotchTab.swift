@@ -22,6 +22,7 @@ struct NotchTab: View {
                 widgetsCard
                 liveActivitiesCard
                 hudCard
+                experimentalCard
             }
         }
         .padding(20)
@@ -116,6 +117,22 @@ struct NotchTab: View {
                 RowDivider()
                 PermissionRow(kind: .calendar, title: "Calendar access", permissions: permissions)
             }
+            RowDivider()
+            ToggleRow(title: "Mirror",
+                      subtitle: "A quick camera preview in the notch — the camera only ever runs while it's open.",
+                      isOn: $settings.notchMirrorEnabled)
+            if settings.notchMirrorEnabled {
+                RowDivider()
+                PermissionRow(kind: .camera, title: "Camera access", permissions: permissions)
+            }
+            RowDivider()
+            ToggleRow(title: "Timers",
+                      subtitle: "Quick countdown timers, right in the notch.",
+                      isOn: $settings.notchTimersEnabled)
+            RowDivider()
+            ToggleRow(title: "Clipboard",
+                      subtitle: "Keep a short history of what you copy, in memory only — never written to disk. Off by default; turn on to opt in.",
+                      isOn: $settings.notchClipboardEnabled)
         }
     }
 
@@ -135,6 +152,10 @@ struct NotchTab: View {
             ToggleRow(title: "Upcoming event alerts",
                       subtitle: "Show a wing when a calendar event is starting within 10 minutes.",
                       isOn: $settings.notchActivityCalendarEventEnabled)
+            RowDivider()
+            ToggleRow(title: "Timer alerts",
+                      subtitle: "Show a wing (and play a sound) when a timer finishes, plus an ambient countdown while one's running.",
+                      isOn: $settings.notchActivityTimerEnabled)
         }
     }
 
@@ -169,6 +190,22 @@ struct NotchTab: View {
                 RowDivider()
                 PermissionRow(kind: .accessibility, title: "Accessibility access", permissions: permissions)
             }
+        }
+    }
+
+    /// A dumping ground for spikes that ride on undocumented macOS behavior —
+    /// kept visually and structurally separate (its own card, at the very
+    /// bottom) from every other notch feature above, which are all built on
+    /// documented, stable APIs. Right now that's just the lock-screen
+    /// silhouette (see `LockScreenPresenter`'s own doc comment on exactly
+    /// what it leans on and why it could break); a future spike would join
+    /// it here rather than being folded into `widgetsCard`/`liveActivitiesCard`
+    /// as if it carried the same stability guarantee.
+    private var experimentalCard: some View {
+        FluxCard(title: "Experimental") {
+            ToggleRow(title: "Show on the lock screen",
+                      subtitle: "⚠️ A minimal notch silhouette while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
+                      isOn: $settings.notchLockScreenExperimentEnabled)
         }
     }
 
