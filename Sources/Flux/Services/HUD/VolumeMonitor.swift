@@ -120,6 +120,20 @@ final class VolumeMonitor {
         return (level, Self.readMute(device: device) ?? false)
     }
 
+    /// Whether the default output device currently exposes a software-
+    /// settable volume scalar at all — `false` for several digital/HDMI
+    /// outputs and some external DACs, which only ever publish a fixed or
+    /// read-only level. `MediaKeyInterceptor`'s `volumeControllable` closure
+    /// (wired by `NotchActivityRouter`) consults this so the volume keys
+    /// pass through to the system instead of being silently swallowed with
+    /// nothing this app can actually do about them — mirroring
+    /// `brightnessAvailable`'s existing pass-through for brightness keys.
+    var hasVolumeControl: Bool {
+        let device = resolvedDeviceID()
+        guard device != kAudioObjectUnknown else { return false }
+        return Self.hasSettableVolume(device: device)
+    }
+
     /// Clamps to 0...1 before writing.
     func setVolume(_ level: Float) {
         let device = resolvedDeviceID()
@@ -298,6 +312,26 @@ final class VolumeMonitor {
         return AudioObjectHasProperty(device, &address)
     }
 
+    /// Whether `device` has a volume property this monitor could actually
+    /// write to — same virtual-main-volume-first, per-channel-fallback shape
+    /// as `readVolume`/`writeVolume`, but checking settability rather than
+    /// reading or writing a value. Backs `hasVolumeControl`.
+    private nonisolated static func hasSettableVolume(device: AudioObjectID) -> Bool {
+        if hasVirtualMainVolume(device: device) {
+            var address = volumeAddress
+            return isSettable(device, &address)
+        }
+        var left = channelVolumeAddress(channel: 1)
+        var right = channelVolumeAddress(channel: 2)
+        return isSettable(device, &left) || isSettable(device, &right)
+    }
+
+    private nonisolated static func isSettable(_ device: AudioObjectID, _ address: inout AudioObjectPropertyAddress) -> Bool {
+        guard AudioObjectHasProperty(device, &address) else { return false }
+        var settable: DarwinBoolean = false
+        return AudioObjectIsPropertySettable(device, &address, &settable) == noErr && settable.boolValue
+    }
+
     /// Reads the device's volume, preferring the "virtual main volume"
     /// convenience property CoreAudio provides on most devices; falling back
     /// to averaging the per-channel scalar volume (elements 1/2) for the
@@ -361,9 +395,7 @@ final class VolumeMonitor {
     }
 
     private nonisolated static func writeFloat32(_ device: AudioObjectID, _ address: inout AudioObjectPropertyAddress, _ value: Float) -> Bool {
-        guard AudioObjectHasProperty(device, &address) else { return false }
-        var isSettable: DarwinBoolean = false
-        guard AudioObjectIsPropertySettable(device, &address, &isSettable) == noErr, isSettable.boolValue else { return false }
+        guard isSettable(device, &address) else { return false }
         var v = value
         let size = UInt32(MemoryLayout<Float32>.size)
         return AudioObjectSetPropertyData(device, &address, 0, nil, size, &v) == noErr

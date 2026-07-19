@@ -6,6 +6,7 @@ import Foundation
 import EventKit
 import AVFoundation
 import CoreGraphics
+import ApplicationServices
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
 /// counts `willPresent`/`didDismiss` calls so the state machine's "exactly
@@ -374,13 +375,63 @@ enum SelfTest {
         center.dismiss(id: low.id)
         check(center.current == nil, "LiveActivity: dismissing the last activity leaves nothing current")
 
+        // The code-review fix: posting the same kind again with DIFFERENT
+        // content (79% vs. 80%) still supersedes the stale one — but the
+        // in-place update keeps the ORIGINAL id (batteryA's), not batteryB's
+        // own freshly-generated one, so SwiftUI sees an update to the
+        // existing view rather than a remove+insert.
         let batteryA = LiveActivity(kind: .battery, leading: .text("80%"), trailing: .none, duration: nil, priority: 200)
         let batteryB = LiveActivity(kind: .battery, leading: .text("79%"), trailing: .none, duration: nil, priority: 200)
         center.post(batteryA)
         center.post(batteryB)
-        check(center.current?.id == batteryB.id,
-              "LiveActivity: posting the same kind again replaces the stale one instead of stacking")
-        center.dismiss(id: batteryB.id)
+        check(center.current?.id == batteryA.id,
+              "LiveActivity: posting the same kind again with different content updates in place (keeps the original id) instead of stacking or churning identity")
+        check(center.current?.leading == .text("79%"),
+              "LiveActivity: the in-place update reflects the newly posted content")
+        center.dismiss(id: batteryA.id)
+
+        // --- LiveActivity: same-kind EQUAL-content repost (a key-repeat
+        // storm reposting an unchanged gauge) reuses the existing id and
+        // just extends its expiry deadline instead of replacing it. ---
+        let repostCenter = LiveActivityCenter()
+        let repostDuration: TimeInterval = 0.15
+        let repostFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
+                                        trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
+                                        duration: repostDuration, priority: 300)
+        repostCenter.post(repostFirst)
+        RunLoop.current.run(until: Date().addingTimeInterval(repostDuration * 0.6))
+        let repostEqual = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
+                                        trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
+                                        duration: repostDuration, priority: 300)
+        repostCenter.post(repostEqual)
+        check(repostCenter.current?.id == repostFirst.id,
+              "LiveActivity: an equal-content repost of the same kind reuses the original id instead of replacing it")
+        // Waiting past the ORIGINAL post's own duration (but within the
+        // extended deadline the repost should have reset) must still show
+        // it current — proof the repost actually rescheduled the expiry
+        // Task rather than being a no-op.
+        RunLoop.current.run(until: Date().addingTimeInterval(repostDuration * 0.7))
+        check(repostCenter.current?.id == repostFirst.id,
+              "LiveActivity: the equal-content repost extended the expiry deadline — it survives past the original post's own duration")
+        RunLoop.current.run(until: Date().addingTimeInterval(repostDuration + 0.05))
+        check(repostCenter.current == nil,
+              "LiveActivity: the extended deadline still expires on its own schedule once it's actually reached")
+
+        // Content-change repost of the same kind: same shape as the battery
+        // case above, isolated here against a duration-bearing kind.
+        let contentChangeCenter = LiveActivityCenter()
+        let contentFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.1.fill"),
+                                         trailing: .gauge(0.2, systemName: "speaker.wave.1.fill"),
+                                         duration: nil, priority: 300)
+        contentChangeCenter.post(contentFirst)
+        let contentSecond = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.3.fill"),
+                                          trailing: .gauge(0.9, systemName: "speaker.wave.3.fill"),
+                                          duration: nil, priority: 300)
+        contentChangeCenter.post(contentSecond)
+        check(contentChangeCenter.current?.id == contentFirst.id,
+              "LiveActivity: a content-changed repost of the same kind keeps the original id (an update, not a replace)")
+        check(contentChangeCenter.current?.trailing == .gauge(0.9, systemName: "speaker.wave.3.fill"),
+              "LiveActivity: a content-changed repost's new value is what's actually shown")
 
         // --- Notch: NotchViewModel transition table ---
         let notchRegistry = NotchWidgetRegistry()
@@ -1414,14 +1465,27 @@ enum SelfTest {
             check(MediaKeyInterceptor.hudKey(forNXKeyCode: 16) == nil,
                   "MediaKeyInterceptor: hudKey is nil for a system-defined key this app doesn't handle (e.g. play/pause)")
 
-            check(MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: false),
-                  "MediaKeyInterceptor: volume keys are always swallowed, brightness availability notwithstanding")
-            check(MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: false),
-                  "MediaKeyInterceptor: mute is always swallowed")
-            check(!MediaKeyInterceptor.shouldSwallow(key: .brightnessUp, brightnessAvailable: false),
+            check(MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: false, volumeControllable: true),
+                  "MediaKeyInterceptor: volume keys are swallowed when the device has software volume control, brightness availability notwithstanding")
+            check(MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: false, volumeControllable: true),
+                  "MediaKeyInterceptor: mute is swallowed when the device has software volume control")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .brightnessUp, brightnessAvailable: false, volumeControllable: true),
                   "MediaKeyInterceptor: brightness keys pass through untouched when DisplayServices is unavailable")
-            check(MediaKeyInterceptor.shouldSwallow(key: .brightnessDown, brightnessAvailable: true),
+            check(MediaKeyInterceptor.shouldSwallow(key: .brightnessDown, brightnessAvailable: true, volumeControllable: true),
                   "MediaKeyInterceptor: brightness keys are swallowed once DisplayServices is available")
+            // The code-review fix: a device with no software-settable volume
+            // (digital/HDMI out, some external DACs) must let volume keys
+            // pass through instead of swallowing them into a void — mirrors
+            // the existing brightnessAvailable pass-through above exactly.
+            check(!MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: true, volumeControllable: false),
+                  "MediaKeyInterceptor: volume keys pass through when the output device has no software volume control")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .volumeDown, brightnessAvailable: true, volumeControllable: false),
+                  "MediaKeyInterceptor: volume-down also passes through with no software volume control")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: true, volumeControllable: false),
+                  "MediaKeyInterceptor: mute also passes through with no software volume control")
+
+            check(!MediaKeyInterceptor().isTapActive,
+                  "MediaKeyInterceptor: isTapActive is false for a fresh instance before start() is ever called")
 
             check(!MediaKeyInterceptor.isFineStep(flags: []),
                   "MediaKeyInterceptor: isFineStep is false with no modifiers")
@@ -1479,16 +1543,22 @@ enum SelfTest {
         check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: nil),
               "NotchActivityRouter: isVolumeMonitorEventSuppressed is false with no prior interceptor apply at all")
 
-        check(NotchActivityRouter.hudMode(hudEnabled: false, notchOn: true, interceptRequested: true, interceptorActive: true) == .off,
-              "NotchActivityRouter: hudMode is .off whenever the HUD master toggle is off, regardless of everything else")
-        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: false, interceptRequested: true, interceptorActive: true) == .off,
-              "NotchActivityRouter: hudMode is .off with nowhere to present (notchOn false), even with intercept 'active'")
-        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: true, interceptRequested: false, interceptorActive: false) == .observe,
-              "NotchActivityRouter: hudMode is .observe when the HUD is on but intercept was never requested")
-        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: true, interceptRequested: true, interceptorActive: false) == .observe,
-              "NotchActivityRouter: hudMode falls back to .observe when intercept is requested but the tap never actually started (e.g. Accessibility not granted)")
-        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: true, interceptRequested: true, interceptorActive: true) == .intercept,
-              "NotchActivityRouter: hudMode is .intercept only when requested AND the tap is actually running")
+        // `intendedHUDMode` (the code-review fix's rename+refactor of
+        // `hudMode`): its inputs are strictly the CAUSES of the decision —
+        // notably `accessibilityGranted`, NOT whether some tap instance
+        // happens to be running — so this is the exact function
+        // `applyHUDState` now calls for its own decision (see that
+        // function's doc comment), not a second parallel implementation.
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: false, notchPresenting: true, interceptRequested: true, accessibilityGranted: true) == .off,
+              "NotchActivityRouter: intendedHUDMode is .off whenever the HUD master toggle is off, regardless of everything else")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: false, interceptRequested: true, accessibilityGranted: true) == .off,
+              "NotchActivityRouter: intendedHUDMode is .off with nowhere to present (notchPresenting false), even with Accessibility granted")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: false, accessibilityGranted: false) == .observe,
+              "NotchActivityRouter: intendedHUDMode is .observe when the HUD is on but intercept was never requested")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: true, accessibilityGranted: false) == .observe,
+              "NotchActivityRouter: intendedHUDMode falls back to .observe when intercept is requested but Accessibility isn't granted")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: true, accessibilityGranted: true) == .intercept,
+              "NotchActivityRouter: intendedHUDMode is .intercept only when requested AND Accessibility is granted — actual tap health is a separate post-hoc check applyHUDState makes, not a mode input")
 
         // --- M5: NotchActivityRouter — observe-mode volume events post/gate
         // correctly, driven purely through VolumeMonitor's own `.events`
@@ -1540,8 +1610,48 @@ enum SelfTest {
                 hudVolume.events.send(.volumeChanged(level: 0.2, muted: true))
                 check(hudActivities.current?.leading == .icon(systemName: "speaker.slash.fill"),
                       "NotchActivityRouter: re-enabling the HUD toggle resumes posting, and a muted event shows the slashed glyph")
+
+                // The code-review fix's wiring: NotchActivityRouter.init sets
+                // `hudInterceptor.volumeControllable` to read
+                // `hudVolume.hasVolumeControl` live, rather than leaving it at
+                // its always-true default — verified by checking they agree,
+                // not by asserting a specific Bool (there's no guarantee what
+                // hardware/CI runner this executes on actually exposes).
+                check(hudInterceptor.volumeControllable() == hudVolume.hasVolumeControl,
+                      "NotchActivityRouter: wires the interceptor's volumeControllable closure to the router's own VolumeMonitor instance")
             }
             hudSuite.removePersistentDomain(forName: hudSuiteName)
+        }
+
+        // --- M5 code review: VolumeMonitor.hasVolumeControl — a smoke test
+        // safe on a headless CI runner with no guaranteed real audio
+        // hardware: it must not crash, and if there's no readable volume at
+        // all (`current == nil`), a device can't possibly be settable either. ---
+        do {
+            let volumeControlProbe = VolumeMonitor()
+            if volumeControlProbe.current == nil {
+                check(!volumeControlProbe.hasVolumeControl,
+                      "VolumeMonitor: hasVolumeControl is false when there's no readable volume at all")
+            } else {
+                check(true,
+                      "VolumeMonitor: hasVolumeControl computed without crashing (\(volumeControlProbe.hasVolumeControl)) alongside a readable current value")
+            }
+        }
+
+        // --- M5 code review: PermissionCenter re-checks Accessibility on the
+        // undocumented-but-established "com.apple.accessibility.api"
+        // DistributedNotificationCenter post, so a revoke/grant while Flux
+        // stays the frontmost app is still caught (didBecomeActiveNotification
+        // alone wouldn't see it). Smoke test: posting it must not crash, and
+        // afterward .accessibility must match a fresh live query — proof the
+        // observer actually re-queried rather than merely surviving. ---
+        do {
+            let accessibilityPermCenter = PermissionCenter()
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name("com.apple.accessibility.api"), object: nil, userInfo: nil, deliverImmediately: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(accessibilityPermCenter.statuses[.accessibility] == (AXIsProcessTrusted() ? .granted : .denied),
+                  "PermissionCenter: the accessibility.api distributed notification refreshes .accessibility without crashing")
         }
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")

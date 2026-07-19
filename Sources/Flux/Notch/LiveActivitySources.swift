@@ -62,17 +62,13 @@ final class NotchActivityRouter {
     private let brightness: BrightnessMonitor
     /// M5: the Accessibility-gated `CGEventTap` that, when running, swallows
     /// volume/brightness keys instead of letting the system bezel handle
-    /// them. `interceptorActive` (below) tracks whether `start()` actually
-    /// succeeded — the toggle being on and the tap being *live* are two
-    /// different things (see `applyHUDState`).
+    /// them. Whether it's actually live right now is read fresh from
+    /// `interceptor.isTapActive` every time `applyHUDState` runs (the code
+    /// review fix that replaced a stored `interceptorActive` flag, which
+    /// could go stale-true forever if the tap died underneath it — see
+    /// `MediaKeyInterceptor.isTapActive`'s own doc comment) rather than
+    /// cached here.
     private let interceptor: MediaKeyInterceptor
-    /// Whether `interceptor.start()` last reported success. Distinct from
-    /// `settings.notchHudInterceptEnabled` (the user's *request*) because a
-    /// missing Accessibility grant — or the tap simply failing to create —
-    /// means the request can't currently be honored; `applyHUDState` only
-    /// calls `interceptor.stop()` when this is `true`, so it never touches an
-    /// already-stopped/never-started tap.
-    private var interceptorActive = false
     /// Last time `applyVolumeKey` applied a volume/mute change through the
     /// interceptor pipeline — the memory behind
     /// `isVolumeMonitorEventSuppressed`'s dedupe window (see that function's
@@ -138,6 +134,13 @@ final class NotchActivityRouter {
         self.brightness = brightness ?? BrightnessMonitor()
         self.interceptor = interceptor ?? MediaKeyInterceptor()
         self.startsMonitors = startsMonitors
+
+        // Wired once, here — not re-wired per `applyHUDState` call — because
+        // it's a closure: `MediaKeyInterceptor` re-invokes it live on every
+        // swallow decision, so it always sees whatever the CURRENT default
+        // output device's capability is, even if that changes while the tap
+        // stays running.
+        self.interceptor.volumeControllable = { [weak self] in self?.volume.hasVolumeControl ?? true }
 
         observePower()
         observeBluetooth()
@@ -689,14 +692,23 @@ final class NotchActivityRouter {
     }
 
     /// Which of the two M5 modes is (or would be) active — a pure function of
-    /// the three inputs that decide it, kept separate from `interceptorActive`
-    /// (a stored fact about whether the tap is *actually* running right now)
-    /// so `--selftest` can drive every combination directly.
+    /// exactly the CAUSES that decide it (the HUD master toggle, whether
+    /// there's anywhere to present, the user's intercept request, and a live
+    /// Accessibility grant), so `--selftest` can drive every combination
+    /// directly. The code-review fix this replaced had a second, subtly
+    /// different decision inlined into `applyHUDState` itself (using
+    /// `interceptorActive`/`isTapActive` — an EFFECT of a previous decision —
+    /// as an input rather than a cause), so the selftest coverage of the old
+    /// `hudMode` was exercising logic production didn't actually run;
+    /// `applyHUDState` below now calls this exact function for its decision,
+    /// then only separately asks "is the tap I want already live" as a
+    /// health check on the way to actuating it (see `MediaKeyInterceptor.isTapActive`).
     enum HUDMode: Equatable { case off, observe, intercept }
 
-    static func hudMode(hudEnabled: Bool, notchOn: Bool, interceptRequested: Bool, interceptorActive: Bool) -> HUDMode {
-        guard notchOn, hudEnabled else { return .off }
-        return (interceptRequested && interceptorActive) ? .intercept : .observe
+    static func intendedHUDMode(hudEnabled: Bool, notchPresenting: Bool, interceptRequested: Bool,
+                                 accessibilityGranted: Bool) -> HUDMode {
+        guard notchPresenting, hudEnabled else { return .off }
+        return (interceptRequested && accessibilityGranted) ? .intercept : .observe
     }
 
     /// Starts/stops `volume`/`interceptor` to match the current settings —
@@ -706,37 +718,44 @@ final class NotchActivityRouter {
     /// call `applyMonitorState`, for the same reasons). Also gated on
     /// `startsMonitors`, like `applyMonitorState`.
     ///
-    /// `volume.start()` runs whenever the HUD is on at all — observe mode
-    /// needs it directly for its own posts, and intercept mode needs it too
-    /// (`applyVolumeKey` calls `volume.adjustVolume`/`toggleMute`). Only
-    /// `interceptor.start()` is additionally gated on the intercept toggle
-    /// AND a live Accessibility grant — attempting it without the grant would
-    /// just fail every time (`MediaKeyInterceptor.start()` returns `false`),
-    /// so this checks first rather than relying on that failure alone.
+    /// The decision itself is entirely `intendedHUDMode`'s — this function
+    /// only actuates it. `volume.start()`/`stop()` follows `.off` vs.
+    /// not-`.off` (observe mode needs it directly for its own posts, and
+    /// intercept mode needs it too — `applyVolumeKey` calls
+    /// `volume.adjustVolume`/`toggleMute`). `interceptor`'s start/stop is the
+    /// one place `isTapActive` is consulted — as a live health check, not a
+    /// mode input: a `.intercept` decision with the tap already live is a
+    /// no-op, a `.intercept` decision with a DEAD tap (Accessibility revoked
+    /// mid-session, or a timeout that didn't recover) re-arms it, and
+    /// anything else stops a tap that's still (unexpectedly) live. This is
+    /// what makes a revoked-then-re-granted Accessibility permission recover
+    /// on its own: the permission sink below calls `applyHUDState()` again,
+    /// `intendedHUDMode` now sees `accessibilityGranted: true`, and this
+    /// re-arms the tap.
     private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil, hudInterceptEnabled: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
-        let hudOn = notchOn && (hudEnabled ?? settings.notchHudEnabled)
+        let mode = Self.intendedHUDMode(
+            hudEnabled: hudEnabled ?? settings.notchHudEnabled,
+            notchPresenting: notchOn,
+            interceptRequested: hudInterceptEnabled ?? settings.notchHudInterceptEnabled,
+            accessibilityGranted: MediaKeyInterceptor.isAccessibilityGranted(permissions))
 
-        if hudOn {
-            volume.start()
-        } else {
+        switch mode {
+        case .off:
             volume.stop()
             activities.dismiss(kind: .hudVolume)
             activities.dismiss(kind: .hudBrightness)
-        }
-
-        let wantsIntercept = hudOn
-            && (hudInterceptEnabled ?? settings.notchHudInterceptEnabled)
-            && MediaKeyInterceptor.isAccessibilityGranted(permissions)
-        if wantsIntercept {
-            if !interceptorActive {
+            if interceptor.isTapActive { interceptor.stop() }
+        case .observe:
+            volume.start()
+            if interceptor.isTapActive { interceptor.stop() }
+        case .intercept:
+            volume.start()
+            if !interceptor.isTapActive {
                 interceptor.brightnessAvailable = brightness.isAvailable
-                interceptorActive = interceptor.start()
+                interceptor.start()
             }
-        } else if interceptorActive {
-            interceptor.stop()
-            interceptorActive = false
         }
     }
 

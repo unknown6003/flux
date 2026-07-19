@@ -110,9 +110,25 @@ struct PermissionRow: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentColor)
         case .denied, .restricted:
-            Button("Open System Settings") { permissions.openSystemSettings(kind) }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accentColor)
+            HStack(spacing: 12) {
+                // Accessibility never reports `.notDetermined` — `AXIsProcessTrusted()`
+                // only ever answers granted-or-not, so the `.notDetermined`
+                // branch above is unreachable for this one kind, and
+                // `request(.accessibility)`'s `AXIsProcessTrustedWithOptions`
+                // prompt (which is what actually registers this app in the
+                // TCC list at all) would otherwise never be reachable from
+                // this row once denied. Restricted is left alone — a device
+                // policy blocking the permission outright isn't something a
+                // re-prompt can fix.
+                if kind == .accessibility, status == .denied {
+                    Button("Grant Access") { permissions.request(kind) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.accentColor)
+                }
+                Button("Open System Settings") { permissions.openSystemSettings(kind) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accentColor)
+            }
         case .granted, .unavailable:
             EmptyView()
         }

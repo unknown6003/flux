@@ -62,6 +62,7 @@ final class PermissionCenter: ObservableObject {
             statuses[kind] = Self.currentStatus(for: kind, eventStore: self.eventStore)
         }
         observeAppActivation()
+        observeAccessibilityChanges()
     }
 
     /// Catches the user coming back from System Settings (or from a system
@@ -74,6 +75,29 @@ final class PermissionCenter: ObservableObject {
                 guard let self else { return }
                 for kind in PermissionKind.allCases { self.refresh(kind) }
             }
+            .store(in: &cancellables)
+    }
+
+    /// `didBecomeActiveNotification` alone misses one case: Accessibility
+    /// being revoked (or re-granted) in System Settings while Flux stays the
+    /// active app the whole time isn't possible through the System Settings
+    /// UI itself, but *is* possible the moment the tap dies mid-session for
+    /// any other reason this app didn't cause — and, more importantly, TCC
+    /// itself broadcasts `"com.apple.accessibility.api"` on
+    /// `DistributedNotificationCenter` for every accessibility-trust change
+    /// system-wide, independent of which app is frontmost. This is
+    /// undocumented but long-established (every accessibility-permission-
+    /// aware utility on macOS observes it the same way) — Apple has never
+    /// publicly documented the name or payload, so this treats it as a pure
+    /// "something changed, go re-check" nudge: no assumption about
+    /// `userInfo`'s shape, and a spurious or entirely absent post (e.g. some
+    /// future macOS silently dropping it) just means this falls back to
+    /// `observeAppActivation`'s own re-check on next activation — never a
+    /// crash or a stuck status either way.
+    private func observeAccessibilityChanges() {
+        DistributedNotificationCenter.default()
+            .publisher(for: Notification.Name("com.apple.accessibility.api"))
+            .sink { [weak self] _ in self?.refresh(.accessibility) }
             .store(in: &cancellables)
     }
 

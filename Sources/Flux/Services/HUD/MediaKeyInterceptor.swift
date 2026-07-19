@@ -72,6 +72,21 @@ final class MediaKeyInterceptor {
     /// `NotchActivityRouter` sets this right after a successful `start()`.
     var brightnessAvailable = false
 
+    /// Whether the CURRENT default output device can actually have its
+    /// volume changed at all — `false` for several digital/HDMI outputs and
+    /// some external DACs, which expose no software-settable volume scalar.
+    /// Consulted by `shouldSwallow` the same way `brightnessAvailable` gates
+    /// brightness keys: swallowing a volume key this app then can't act on
+    /// would silently take away the user's only volume control, with no
+    /// system bezel to fall back on. Defaults to `{ true }` (the pre-fix,
+    /// always-swallow behavior) so an interceptor built without this wired
+    /// — e.g. directly in a test — behaves exactly as before; `NotchActivityRouter`
+    /// wires this to `VolumeMonitor.hasVolumeControl` in production. A closure
+    /// rather than a stored `Bool` because the answer can change out from
+    /// under a live tap (the default output device switching to one with a
+    /// different capability) without anything re-wiring this property.
+    var volumeControllable: () -> Bool = { true }
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
@@ -129,6 +144,21 @@ final class MediaKeyInterceptor {
         return true
     }
 
+    /// Whether the tap is actually live right now — non-`nil` AND still
+    /// enabled, rather than just "we successfully called `start()` at some
+    /// point in the past." `CGEvent.tapCreate`'s tap can go dark later
+    /// without this object ever hearing about it directly (a revoked
+    /// Accessibility grant, or the timeout path that `handleTapEvent`
+    /// usually — but not unconditionally — recovers from); `NotchActivityRouter`
+    /// re-derives its own `interceptorActive` reasoning from this rather than
+    /// trusting a stored flag set only at the moment `start()` last returned,
+    /// so a dead tap is noticed and cleaned up instead of permanently
+    /// blocking re-arm.
+    var isTapActive: Bool {
+        guard let eventTap else { return false }
+        return CGEvent.tapIsEnabled(tap: eventTap)
+    }
+
     func stop() {
         guard let eventTap else { return }
         CGEvent.tapEnable(tap: eventTap, enable: false)
@@ -162,6 +192,18 @@ final class MediaKeyInterceptor {
             return Unmanaged.passRetained(cgEvent)
         }
 
+        // Reviewed and accepted: bridging to `NSEvent` per tap event (rather
+        // than reading `data1`/`subtype` straight off `CGEvent` via
+        // `CGEventField`) is the established parse path for `NX_SYSDEFINED`
+        // every media-key utility on macOS uses — SlimHUD and its many
+        // relatives included — precisely because `data1`/`subtype` have no
+        // public `CGEventField` at all; `NSEvent(cgEvent:)` is the only
+        // documented bridge that surfaces them. Direct `CGEventField`
+        // access to the underlying NX data would mean poking at the same
+        // private layout through an even less-sanctioned path for no
+        // measured benefit — revisit only if profiling ever shows the
+        // per-event bridge itself (as opposed to the tap overall) costing
+        // something on the callback's hot path.
         guard type.rawValue == Self.nxSystemDefinedRawValue,
               let nsEvent = NSEvent(cgEvent: cgEvent),
               nsEvent.subtype.rawValue == Self.auxControlButtonsSubtype
@@ -173,7 +215,9 @@ final class MediaKeyInterceptor {
         guard let key = Self.hudKey(forNXKeyCode: parsed.keyCode) else {
             return Unmanaged.passRetained(cgEvent)
         }
-        guard Self.shouldSwallow(key: key, brightnessAvailable: brightnessAvailable) else {
+        guard Self.shouldSwallow(key: key, brightnessAvailable: brightnessAvailable,
+                                  volumeControllable: volumeControllable())
+        else {
             return Unmanaged.passRetained(cgEvent)
         }
 
@@ -221,16 +265,17 @@ final class MediaKeyInterceptor {
         }
     }
 
-    /// Volume keys are always swallowed once the tap is active — there is no
-    /// "unavailable" state for CoreAudio the way there is for the private
-    /// DisplayServices brightness API. Brightness keys are only swallowed
-    /// when `brightnessAvailable`; otherwise letting them pass straight
-    /// through is strictly better than swallowing a key this app then can't
-    /// actually act on, which would silently break brightness control
-    /// entirely.
-    static func shouldSwallow(key: HUDKey, brightnessAvailable: Bool) -> Bool {
+    /// Volume keys are swallowed only when `volumeControllable` — some
+    /// digital/HDMI outputs and external DACs expose no software volume
+    /// control at all, and swallowing the key anyway would take away the
+    /// user's only way to adjust volume with zero feedback (no system bezel,
+    /// no app response either). Brightness keys are only swallowed when
+    /// `brightnessAvailable`, for the exact same reason on the DisplayServices
+    /// side; otherwise letting either pass straight through is strictly
+    /// better than swallowing a key this app then can't actually act on.
+    static func shouldSwallow(key: HUDKey, brightnessAvailable: Bool, volumeControllable: Bool) -> Bool {
         switch key {
-        case .volumeUp, .volumeDown, .mute: return true
+        case .volumeUp, .volumeDown, .mute: return volumeControllable
         case .brightnessUp, .brightnessDown: return brightnessAvailable
         }
     }
