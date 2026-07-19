@@ -50,12 +50,43 @@ final class NotchActivityRouter {
     /// `viewModel.$state` for change notifications the same way
     /// `observeCalendar()` subscribes to `calendar.$upcoming`.
     private let viewModel: NotchViewModel
-    /// Gates every real `power.start()`/`bluetooth.start()` call (see
-    /// `applyMonitorState`) — `false` only for `--selftest`, which feeds
-    /// synthetic events straight through `power.events`/`bluetooth.events`
-    /// (wired unconditionally by `observePower`/`observeBluetooth` above) and
-    /// must never let this router's normal settings-driven lifecycle touch
-    /// real IOKit/IOBluetooth on a headless CI runner.
+    /// M5: the CoreAudio-backed observe-mode volume source, also the thing
+    /// `applyVolumeKey` calls to actually change volume/mute in intercept
+    /// mode. Owned outright, like `power`/`bluetooth` — this router is its
+    /// only consumer.
+    private let volume: VolumeMonitor
+    /// M5: private-DisplayServices brightness reader/writer. No lifecycle of
+    /// its own (no `start()`/`stop()` — see its doc comment on why brightness
+    /// has no observe mode); only ever called from `applyBrightnessKey`, in
+    /// response to an already-intercepted key.
+    private let brightness: BrightnessMonitor
+    /// M5: the Accessibility-gated `CGEventTap` that, when running, swallows
+    /// volume/brightness keys instead of letting the system bezel handle
+    /// them. `interceptorActive` (below) tracks whether `start()` actually
+    /// succeeded — the toggle being on and the tap being *live* are two
+    /// different things (see `applyHUDState`).
+    private let interceptor: MediaKeyInterceptor
+    /// Whether `interceptor.start()` last reported success. Distinct from
+    /// `settings.notchHudInterceptEnabled` (the user's *request*) because a
+    /// missing Accessibility grant — or the tap simply failing to create —
+    /// means the request can't currently be honored; `applyHUDState` only
+    /// calls `interceptor.stop()` when this is `true`, so it never touches an
+    /// already-stopped/never-started tap.
+    private var interceptorActive = false
+    /// Last time `applyVolumeKey` applied a volume/mute change through the
+    /// interceptor pipeline — the memory behind
+    /// `isVolumeMonitorEventSuppressed`'s dedupe window (see that function's
+    /// doc comment for why the CoreAudio listener fire this same change
+    /// triggers needs suppressing).
+    private var lastInterceptorVolumeApplyAt: Date?
+    /// Gates every real `power.start()`/`bluetooth.start()`/`volume.start()`/
+    /// `interceptor.start()` call (see `applyMonitorState`/`applyHUDState`) —
+    /// `false` only for `--selftest`, which feeds synthetic events straight
+    /// through `power.events`/`bluetooth.events`/`volume.events`/
+    /// `interceptor.events` (wired unconditionally by `observePower`/
+    /// `observeBluetooth`/`observeVolume`/`observeInterceptor` above) and must
+    /// never let this router's normal settings-driven lifecycle touch real
+    /// IOKit/IOBluetooth/CoreAudio/a real event tap on a headless CI runner.
     private let startsMonitors: Bool
     /// The latest value delivered by the injected `presentation` publisher —
     /// whether there's currently anywhere to actually show a wing. Cached
@@ -66,12 +97,13 @@ final class NotchActivityRouter {
 
     private var cancellables = Set<AnyCancellable>()
 
-    // `power`/`bluetooth` take optionals defaulting to `nil` — rather than
-    // defaulting directly to `PowerMonitor()`/`BluetoothMonitor()` — because
-    // default-argument expressions are evaluated in a nonisolated context,
-    // and both types' initializers are `@MainActor`-isolated. Constructing
-    // them here in the init body (which *is* MainActor-isolated, since this
-    // whole class is) sidesteps that.
+    // `power`/`bluetooth`/`volume`/`brightness`/`interceptor` take optionals
+    // defaulting to `nil` — rather than defaulting directly to
+    // `PowerMonitor()`/`BluetoothMonitor()`/etc. — because default-argument
+    // expressions are evaluated in a nonisolated context, and every one of
+    // these types' initializers is `@MainActor`-isolated. Constructing them
+    // here in the init body (which *is* MainActor-isolated, since this whole
+    // class is) sidesteps that.
     //
     // `presentation` replaces the old `isPresentationAvailable`/
     // `isCalendarWidgetPresented` bespoke closures (see the M4 code-review
@@ -89,6 +121,9 @@ final class NotchActivityRouter {
          viewModel: NotchViewModel,
          power: PowerMonitor? = nil,
          bluetooth: BluetoothMonitor? = nil,
+         volume: VolumeMonitor? = nil,
+         brightness: BrightnessMonitor? = nil,
+         interceptor: MediaKeyInterceptor? = nil,
          startsMonitors: Bool = true,
          presentation: AnyPublisher<Bool, Never> = Just(true).eraseToAnyPublisher()) {
         self.activities = activities
@@ -99,17 +134,24 @@ final class NotchActivityRouter {
         self.viewModel = viewModel
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? BluetoothMonitor()
+        self.volume = volume ?? VolumeMonitor()
+        self.brightness = brightness ?? BrightnessMonitor()
+        self.interceptor = interceptor ?? MediaKeyInterceptor()
         self.startsMonitors = startsMonitors
 
         observePower()
         observeBluetooth()
+        observeVolume()
+        observeInterceptor()
         observeOverflow()
         observeOverflowGating()
         observeCalendar()
         observeMonitorGating()
+        observeHUDGating()
         observeNotchState()
         observePresentation(presentation)
         applyMonitorState()
+        applyHUDState()
     }
 
     deinit {
@@ -477,6 +519,12 @@ final class NotchActivityRouter {
             .sink { [weak self] _ in
                 self?.applyMonitorState()
                 self?.recomputeCalendarActivity()
+                // Accessibility can be granted or revoked independently of
+                // every HUD settings toggle — re-evaluate whether intercept
+                // mode can actually run whenever permission itself changes,
+                // the same "grant-while-open" reasoning `recomputeCalendarActivity`
+                // above already applies to Calendar.
+                self?.applyHUDState()
             }
             .store(in: &cancellables)
     }
@@ -491,6 +539,218 @@ final class NotchActivityRouter {
     private func observeNotchState() {
         viewModel.$state
             .sink { [weak self] _ in self?.applyMonitorState() }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - HUD (volume/brightness, M5)
+    //
+    // Two data sources feed the same `.hudVolume`/`.hudBrightness` activity
+    // kinds, matching the M5 design's two modes:
+    //   - Observe mode: `VolumeMonitor`'s CoreAudio listeners fire for every
+    //     volume/mute change regardless of who caused it (a hardware key, a
+    //     Control Center slider drag, or this router's own intercept-mode
+    //     write) — see `handleVolumeEvent`. There is no brightness observe
+    //     mode at all (see `BrightnessMonitor`'s doc comment on why);
+    //     `.hudBrightness` only ever posts from intercept mode.
+    //   - Intercept mode: `MediaKeyInterceptor` swallows the key at the OS
+    //     level and hands this router a parsed `HUDKeyEvent`; this router
+    //     applies the actual volume/brightness change itself
+    //     (`applyVolumeKey`/`applyBrightnessKey`) and posts the activity with
+    //     the resulting value, rather than waiting for a listener to fire.
+    //
+    // Applying a volume change through `VolumeMonitor.setVolume`/
+    // `adjustVolume`/`toggleMute` also fires CoreAudio's own listener a
+    // moment later — `isVolumeMonitorEventSuppressed` is what keeps that from
+    // double-posting the same change.
+
+    private func observeVolume() {
+        volume.events
+            .sink { [weak self] event in self?.handleVolumeEvent(event) }
+            .store(in: &cancellables)
+    }
+
+    private func handleVolumeEvent(_ event: VolumeEvent) {
+        guard settings.notchHudEnabled else { return }
+        guard !Self.isVolumeMonitorEventSuppressed(now: Date(), lastInterceptorApplyAt: lastInterceptorVolumeApplyAt)
+        else { return }
+        switch event {
+        case .volumeChanged(let level, let muted):
+            activities.post(Self.volumeActivity(level: level, muted: muted))
+        }
+    }
+
+    private func observeInterceptor() {
+        interceptor.events
+            .sink { [weak self] event in self?.handleInterceptorEvent(event) }
+            .store(in: &cancellables)
+    }
+
+    private func handleInterceptorEvent(_ event: HUDKeyEvent) {
+        guard settings.notchHudEnabled else { return }
+        switch event {
+        case .key(let key, isRepeat: _, fine: let fine):
+            switch key {
+            case .volumeUp, .volumeDown, .mute:
+                applyVolumeKey(key, fine: fine)
+            case .brightnessUp, .brightnessDown:
+                applyBrightnessKey(key, fine: fine)
+            }
+        }
+    }
+
+    /// The standard per-key-press step, matching the system's own volume/
+    /// brightness key increment; halved to a much finer nudge under the
+    /// Shift+Option modifier, mirroring macOS's own built-in behavior for
+    /// these same keys.
+    private static let hudStep: Float = 1.0 / 16.0
+    private static let hudFineStep: Float = 1.0 / 64.0
+
+    private func applyVolumeKey(_ key: HUDKey, fine: Bool) {
+        switch key {
+        case .mute:
+            volume.toggleMute()
+        case .volumeUp, .volumeDown:
+            let step = fine ? Self.hudFineStep : Self.hudStep
+            volume.adjustVolume(by: key == .volumeUp ? step : -step)
+        case .brightnessUp, .brightnessDown:
+            return
+        }
+        // Recorded BEFORE reading `volume.current` back, not after — the
+        // CoreAudio listener this write triggers can fire synchronously
+        // within `adjustVolume`/`toggleMute` itself (observed on some
+        // devices), and `lastInterceptorVolumeApplyAt` must already be set by
+        // the time `handleVolumeEvent` runs for `isVolumeMonitorEventSuppressed`
+        // to actually suppress it.
+        lastInterceptorVolumeApplyAt = Date()
+        guard let current = volume.current else { return }
+        activities.post(Self.volumeActivity(level: current.level, muted: current.muted))
+    }
+
+    private func applyBrightnessKey(_ key: HUDKey, fine: Bool) {
+        let step = fine ? Self.hudFineStep : Self.hudStep
+        let delta = key == .brightnessUp ? step : -step
+        guard let level = brightness.adjust(by: delta) else { return }
+        activities.post(Self.brightnessActivity(level: level))
+    }
+
+    static func volumeActivity(level: Float, muted: Bool) -> LiveActivity {
+        let symbol = volumeSymbol(level: level, muted: muted)
+        return LiveActivity(kind: .hudVolume,
+                             leading: .icon(systemName: symbol),
+                             trailing: .gauge(Double(level), systemName: symbol),
+                             duration: 1.5,
+                             priority: 300)
+    }
+
+    static func brightnessActivity(level: Float) -> LiveActivity {
+        let symbol = brightnessSymbol(level: level)
+        return LiveActivity(kind: .hudBrightness,
+                             leading: .icon(systemName: symbol),
+                             trailing: .gauge(Double(level), systemName: symbol),
+                             duration: 1.5,
+                             priority: 300)
+    }
+
+    /// SF Symbol for the wing icon — muted (or a literal 0 level) always
+    /// reads as the slashed glyph regardless of the last non-zero level.
+    static func volumeSymbol(level: Float, muted: Bool) -> String {
+        guard !muted, level > 0 else { return "speaker.slash.fill" }
+        switch level {
+        case ..<(1.0 / 3.0): return "speaker.wave.1.fill"
+        case ..<(2.0 / 3.0): return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
+        }
+    }
+
+    static func brightnessSymbol(level: Float) -> String {
+        level <= 0.5 ? "sun.min.fill" : "sun.max.fill"
+    }
+
+    /// The dedupe window after an intercept-mode write during which a
+    /// `VolumeMonitor` observe-mode event for the SAME change is suppressed
+    /// rather than posted a second time. `applyVolumeKey` already posts its
+    /// own activity with the authoritative post-write value the instant it
+    /// applies a change; the CoreAudio listener firing a moment later for
+    /// that identical change would otherwise re-post an equivalent (or,
+    /// worse, very slightly stale — read-back timing) duplicate activity,
+    /// restarting its 1.5s expiry for no reason. 300ms comfortably covers
+    /// CoreAudio's own notification latency (typically well under 50ms)
+    /// without silently swallowing a *genuinely separate* change (e.g. the
+    /// user immediately dragging Control Center's slider right after a key
+    /// press) — the plan's explicitly chosen tradeoff over the simpler
+    /// "ignore every VolumeMonitor event while intercept mode is on"
+    /// alternative, which would also hide changes made via Control Center or
+    /// a menu-bar slider while intercept mode is active.
+    static let interceptorApplyDedupeWindow: TimeInterval = 0.3
+
+    static func isVolumeMonitorEventSuppressed(now: Date, lastInterceptorApplyAt: Date?) -> Bool {
+        guard let lastInterceptorApplyAt else { return false }
+        return now.timeIntervalSince(lastInterceptorApplyAt) < interceptorApplyDedupeWindow
+    }
+
+    /// Which of the two M5 modes is (or would be) active — a pure function of
+    /// the three inputs that decide it, kept separate from `interceptorActive`
+    /// (a stored fact about whether the tap is *actually* running right now)
+    /// so `--selftest` can drive every combination directly.
+    enum HUDMode: Equatable { case off, observe, intercept }
+
+    static func hudMode(hudEnabled: Bool, notchOn: Bool, interceptRequested: Bool, interceptorActive: Bool) -> HUDMode {
+        guard notchOn, hudEnabled else { return .off }
+        return (interceptRequested && interceptorActive) ? .intercept : .observe
+    }
+
+    /// Starts/stops `volume`/`interceptor` to match the current settings —
+    /// called from every trigger that could change the answer: `init`'s
+    /// final call, `observeHUDGating`'s settings sink, and the permission/
+    /// presentation/notch-state sinks above (mirroring exactly which sinks
+    /// call `applyMonitorState`, for the same reasons). Also gated on
+    /// `startsMonitors`, like `applyMonitorState`.
+    ///
+    /// `volume.start()` runs whenever the HUD is on at all — observe mode
+    /// needs it directly for its own posts, and intercept mode needs it too
+    /// (`applyVolumeKey` calls `volume.adjustVolume`/`toggleMute`). Only
+    /// `interceptor.start()` is additionally gated on the intercept toggle
+    /// AND a live Accessibility grant — attempting it without the grant would
+    /// just fail every time (`MediaKeyInterceptor.start()` returns `false`),
+    /// so this checks first rather than relying on that failure alone.
+    private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil, hudInterceptEnabled: Bool? = nil) {
+        guard startsMonitors else { return }
+        let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
+        let hudOn = notchOn && (hudEnabled ?? settings.notchHudEnabled)
+
+        if hudOn {
+            volume.start()
+        } else {
+            volume.stop()
+            activities.dismiss(kind: .hudVolume)
+            activities.dismiss(kind: .hudBrightness)
+        }
+
+        let wantsIntercept = hudOn
+            && (hudInterceptEnabled ?? settings.notchHudInterceptEnabled)
+            && MediaKeyInterceptor.isAccessibilityGranted(permissions)
+        if wantsIntercept {
+            if !interceptorActive {
+                interceptor.brightnessAvailable = brightness.isAvailable
+                interceptorActive = interceptor.start()
+            }
+        } else if interceptorActive {
+            interceptor.stop()
+            interceptorActive = false
+        }
+    }
+
+    /// Re-applies `applyHUDState` whenever the notch master switch or either
+    /// HUD toggle changes. `dropFirst` skips the redundant initial delivery,
+    /// same as `observeMonitorGating` — `init` already calls `applyHUDState()`
+    /// once directly.
+    private func observeHUDGating() {
+        settings.$notchEnabled
+            .combineLatest(settings.$notchHudEnabled, settings.$notchHudInterceptEnabled)
+            .dropFirst()
+            .sink { [weak self] notchEnabled, hudEnabled, interceptEnabled in
+                self?.applyHUDState(notchEnabled: notchEnabled, hudEnabled: hudEnabled, hudInterceptEnabled: interceptEnabled)
+            }
             .store(in: &cancellables)
     }
 
@@ -515,6 +775,7 @@ final class NotchActivityRouter {
                 self.isPresenting = value
                 self.applyMonitorState()
                 self.recomputeCalendarActivity()
+                self.applyHUDState()
             }
             .store(in: &cancellables)
     }

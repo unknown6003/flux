@@ -5,6 +5,7 @@ import Combine
 import Foundation
 import EventKit
 import AVFoundation
+import CoreGraphics
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
 /// counts `willPresent`/`didDismiss` calls so the state machine's "exactly
@@ -1379,6 +1380,159 @@ enum SelfTest {
                 permissionGranted: true, notchPresenting: true, widgetEnabled: false,
                 state: .expanded(.calendar), activityToggleOn: false),
               "NotchActivityRouter: calendarServiceShouldRun requires widgetEnabled true for the widget-open condition to count, even if state somehow still reads .expanded(.calendar)")
+
+        // --- M5: MediaKeyInterceptor — NX_SYSDEFINED data1 parsing + decision
+        // logic, all pure (no real CGEventTap is ever created here) ---
+        do {
+            // data1 layout: bits 16-31 = NX_KEYTYPE_* key code, bits 8-15 of the
+            // low word = key state (0xA down / 0xB up), bit 0 = autorepeat.
+            let volUpDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000A00)
+            check(volUpDown.keyCode == 0 && volUpDown.keyDown && !volUpDown.isRepeat,
+                  "MediaKeyInterceptor: parseKeyEvent decodes a plain key-down (NX_KEYTYPE_SOUND_UP, non-repeat)")
+
+            let keyUp = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000B00)
+            check(!keyUp.keyDown, "MediaKeyInterceptor: parseKeyEvent decodes a key-up (state 0xB) as NOT keyDown")
+
+            let repeatDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000A01)
+            check(repeatDown.keyDown && repeatDown.isRepeat,
+                  "MediaKeyInterceptor: parseKeyEvent decodes the autorepeat bit")
+
+            let brightnessDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00020A00)
+            check(brightnessDown.keyCode == 2 && brightnessDown.keyDown,
+                  "MediaKeyInterceptor: parseKeyEvent decodes a non-zero key code out of the high 16 bits (NX_KEYTYPE_BRIGHTNESS_UP)")
+
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 0) == .volumeUp,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_SOUND_UP (0) to .volumeUp")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 1) == .volumeDown,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_SOUND_DOWN (1) to .volumeDown")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 7) == .mute,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_MUTE (7) to .mute")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 2) == .brightnessUp,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_BRIGHTNESS_UP (2) to .brightnessUp")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 3) == .brightnessDown,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_BRIGHTNESS_DOWN (3) to .brightnessDown")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 16) == nil,
+                  "MediaKeyInterceptor: hudKey is nil for a system-defined key this app doesn't handle (e.g. play/pause)")
+
+            check(MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: false),
+                  "MediaKeyInterceptor: volume keys are always swallowed, brightness availability notwithstanding")
+            check(MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: false),
+                  "MediaKeyInterceptor: mute is always swallowed")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .brightnessUp, brightnessAvailable: false),
+                  "MediaKeyInterceptor: brightness keys pass through untouched when DisplayServices is unavailable")
+            check(MediaKeyInterceptor.shouldSwallow(key: .brightnessDown, brightnessAvailable: true),
+                  "MediaKeyInterceptor: brightness keys are swallowed once DisplayServices is available")
+
+            check(!MediaKeyInterceptor.isFineStep(flags: []),
+                  "MediaKeyInterceptor: isFineStep is false with no modifiers")
+            check(!MediaKeyInterceptor.isFineStep(flags: .maskShift),
+                  "MediaKeyInterceptor: isFineStep requires BOTH Shift and Option, not Shift alone")
+            check(!MediaKeyInterceptor.isFineStep(flags: .maskAlternate),
+                  "MediaKeyInterceptor: isFineStep requires BOTH Shift and Option, not Option alone")
+            check(MediaKeyInterceptor.isFineStep(flags: [.maskShift, .maskAlternate]),
+                  "MediaKeyInterceptor: isFineStep is true with Shift+Option together")
+        }
+
+        // --- M5: NotchActivityRouter — HUD symbol pickers, activity shape,
+        // dedupe window, and mode derivation, all pure ---
+        check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: true) == "speaker.slash.fill",
+              "NotchActivityRouter: volumeSymbol shows the slashed glyph whenever muted, regardless of level")
+        check(NotchActivityRouter.volumeSymbol(level: 0, muted: false) == "speaker.slash.fill",
+              "NotchActivityRouter: volumeSymbol shows the slashed glyph at a literal 0 level too")
+        check(NotchActivityRouter.volumeSymbol(level: 0.1, muted: false) == "speaker.wave.1.fill",
+              "NotchActivityRouter: volumeSymbol picks the low-wave glyph in the bottom third")
+        check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: false) == "speaker.wave.2.fill",
+              "NotchActivityRouter: volumeSymbol picks the mid-wave glyph in the middle third")
+        check(NotchActivityRouter.volumeSymbol(level: 0.9, muted: false) == "speaker.wave.3.fill",
+              "NotchActivityRouter: volumeSymbol picks the full-wave glyph in the top third")
+
+        check(NotchActivityRouter.brightnessSymbol(level: 0.2) == "sun.min.fill",
+              "NotchActivityRouter: brightnessSymbol shows the dim glyph at or below half brightness")
+        check(NotchActivityRouter.brightnessSymbol(level: 0.8) == "sun.max.fill",
+              "NotchActivityRouter: brightnessSymbol shows the bright glyph above half brightness")
+
+        let m5VolumeActivity = NotchActivityRouter.volumeActivity(level: 0.4, muted: false)
+        check(m5VolumeActivity.kind == .hudVolume && m5VolumeActivity.priority == 300 && m5VolumeActivity.duration == 1.5,
+              "NotchActivityRouter: volumeActivity posts at kind .hudVolume, priority 300, duration 1.5s")
+        check(m5VolumeActivity.trailing == .gauge(0.4, systemName: "speaker.wave.2.fill"),
+              "NotchActivityRouter: volumeActivity's trailing content is a gauge carrying the exact level and matching icon")
+
+        let m5BrightnessActivity = NotchActivityRouter.brightnessActivity(level: 0.9)
+        check(m5BrightnessActivity.kind == .hudBrightness && m5BrightnessActivity.priority == 300,
+              "NotchActivityRouter: brightnessActivity posts at kind .hudBrightness, priority 300 (same tier as volume)")
+
+        let dedupeNow = Date()
+        check(NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: dedupeNow.addingTimeInterval(-0.1)),
+              "NotchActivityRouter: isVolumeMonitorEventSuppressed is true just after an interceptor apply (inside the 300ms window)")
+        check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: dedupeNow.addingTimeInterval(-0.5)),
+              "NotchActivityRouter: isVolumeMonitorEventSuppressed is false once the dedupe window has elapsed")
+        check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: nil),
+              "NotchActivityRouter: isVolumeMonitorEventSuppressed is false with no prior interceptor apply at all")
+
+        check(NotchActivityRouter.hudMode(hudEnabled: false, notchOn: true, interceptRequested: true, interceptorActive: true) == .off,
+              "NotchActivityRouter: hudMode is .off whenever the HUD master toggle is off, regardless of everything else")
+        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: false, interceptRequested: true, interceptorActive: true) == .off,
+              "NotchActivityRouter: hudMode is .off with nowhere to present (notchOn false), even with intercept 'active'")
+        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: true, interceptRequested: false, interceptorActive: false) == .observe,
+              "NotchActivityRouter: hudMode is .observe when the HUD is on but intercept was never requested")
+        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: true, interceptRequested: true, interceptorActive: false) == .observe,
+              "NotchActivityRouter: hudMode falls back to .observe when intercept is requested but the tap never actually started (e.g. Accessibility not granted)")
+        check(NotchActivityRouter.hudMode(hudEnabled: true, notchOn: true, interceptRequested: true, interceptorActive: true) == .intercept,
+              "NotchActivityRouter: hudMode is .intercept only when requested AND the tap is actually running")
+
+        // --- M5: NotchActivityRouter — observe-mode volume events post/gate
+        // correctly, driven purely through VolumeMonitor's own `.events`
+        // subject. `hudVolume`/`hudBrightness`/`hudInterceptor` below are real
+        // instances (constructor seams, matching `testPower`/`testBluetooth`
+        // above), but `start()`/`adjustVolume()`/`toggleMute()`/`adjust(by:)`
+        // are never called on any of them here — only synthetic
+        // `VolumeEvent`s are fed in, so this never touches real CoreAudio or
+        // creates a real event tap on the CI runner. ---
+        do {
+            let hudSuiteName = "flux.selftest.hud"
+            let hudSuite = UserDefaults(suiteName: hudSuiteName)!
+            hudSuite.removePersistentDomain(forName: hudSuiteName)
+            let hudSettings = SettingsStore(defaults: hudSuite)
+            let hudActivities = LiveActivityCenter()
+            let hudArranger = MenuBarArranger()
+            let hudCalendar = CalendarService()
+            let hudPermissions = PermissionCenter()
+            let hudViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
+            let hudVolume = VolumeMonitor()
+            let hudBrightness = BrightnessMonitor()
+            let hudInterceptor = MediaKeyInterceptor()
+            // `startsMonitors: false` — see this file's identical note on the
+            // M3 router block above; must never let the router's real
+            // settings-driven lifecycle call `volume.start()`/
+            // `interceptor.start()` for real on a headless CI runner.
+            let hudRouter = NotchActivityRouter(activities: hudActivities, settings: hudSettings,
+                                                 arranger: hudArranger, calendar: hudCalendar,
+                                                 permissions: hudPermissions, viewModel: hudViewModel,
+                                                 volume: hudVolume, brightness: hudBrightness,
+                                                 interceptor: hudInterceptor, startsMonitors: false)
+
+            withExtendedLifetime(hudRouter) {
+                hudVolume.events.send(.volumeChanged(level: 0.6, muted: false))
+                check(hudActivities.current?.kind == .hudVolume,
+                      "NotchActivityRouter: a VolumeEvent posts a .hudVolume live activity in observe mode")
+                check(hudActivities.current?.priority == 300,
+                      "NotchActivityRouter: HUD activities post at priority 300 — above battery (200)")
+                check(hudActivities.current?.duration == 1.5,
+                      "NotchActivityRouter: HUD activities expire after 1.5s")
+
+                hudSettings.notchHudEnabled = false
+                hudActivities.dismiss(kind: .hudVolume)
+                hudVolume.events.send(.volumeChanged(level: 0.8, muted: false))
+                check(hudActivities.current?.kind != .hudVolume,
+                      "NotchActivityRouter: the HUD master toggle off suppresses further volume posts")
+
+                hudSettings.notchHudEnabled = true
+                hudVolume.events.send(.volumeChanged(level: 0.2, muted: true))
+                check(hudActivities.current?.leading == .icon(systemName: "speaker.slash.fill"),
+                      "NotchActivityRouter: re-enabling the HUD toggle resumes posting, and a muted event shows the slashed glyph")
+            }
+            hudSuite.removePersistentDomain(forName: hudSuiteName)
+        }
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

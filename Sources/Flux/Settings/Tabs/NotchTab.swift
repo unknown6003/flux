@@ -21,6 +21,7 @@ struct NotchTab: View {
                 behaviorCard
                 widgetsCard
                 liveActivitiesCard
+                hudCard
             }
         }
         .padding(20)
@@ -134,6 +135,31 @@ struct NotchTab: View {
             ToggleRow(title: "Upcoming event alerts",
                       subtitle: "Show a wing when a calendar event is starting within 10 minutes.",
                       isOn: $settings.notchActivityCalendarEventEnabled)
+        }
+    }
+
+    /// M5: the volume/brightness HUD. `notchHudEnabled` is observe mode —
+    /// CoreAudio-driven wings posted alongside whatever system bezel macOS
+    /// still shows, needing no permission — and stays on by default.
+    /// `notchHudInterceptEnabled` escalates to swallowing the keys outright
+    /// (`MediaKeyInterceptor`) so only the notch HUD appears; it's disabled
+    /// in the UI until Accessibility is actually granted, since turning it on
+    /// without the permission would just mean `NotchActivityRouter` silently
+    /// keeps falling back to observe mode anyway (see `applyHUDState`).
+    private var hudCard: some View {
+        FluxCard(title: "Volume & Brightness HUD") {
+            ToggleRow(title: "Show in the notch",
+                      subtitle: "Flash a volume/brightness wing in the notch when either changes.",
+                      isOn: $settings.notchHudEnabled)
+            if settings.notchHudEnabled {
+                RowDivider()
+                ToggleRow(title: "Replace the system overlay",
+                          subtitle: "Take over the volume/brightness keys so only the notch HUD appears — never the system bezel. Requires Accessibility below.",
+                          isOn: $settings.notchHudInterceptEnabled)
+                    .disabled(permissions.statuses[.accessibility] != .granted)
+                RowDivider()
+                PermissionRow(kind: .accessibility, title: "Accessibility access", permissions: permissions)
+            }
         }
     }
 

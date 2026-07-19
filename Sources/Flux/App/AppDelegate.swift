@@ -31,9 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var calendarWidget = CalendarWidget(
         service: calendarService, permissions: permissionCenter, isEnabled: settings.notchCalendarEnabled)
     // Single home for every live-activity *producer* (menu-bar overflow,
-    // battery, Bluetooth, calendar) — see `NotchActivityRouter`'s own doc
-    // comment for why this replaced the ad hoc per-producer Combine sink
-    // that used to live directly on this class. `lazy` (like the widgets
+    // battery, Bluetooth, calendar, volume/brightness HUD) — see
+    // `NotchActivityRouter`'s own doc comment for why this replaced the ad
+    // hoc per-producer Combine sink that used to live directly on this
+    // class. `lazy` (like the widgets
     // above) because its initializer reads sibling instance properties
     // (`notchWindow`, `settings`, `arranger`, `calendarService`,
     // `permissionCenter`), which isn't possible from a plain stored

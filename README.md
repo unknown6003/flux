@@ -97,6 +97,15 @@ arrangement across launches.
   audio/HID accessory connects or disconnects, with a best-effort battery
   reading when the OS reports one, and a wing when a calendar event is about
   to start. Each is independently toggled in Settings → Notch.
+- **Volume & brightness HUD** — flashes a wing in the notch when either
+  changes. Works permission-free out of the box (**observe mode**: CoreAudio
+  reports volume/mute changes, alongside whatever bezel macOS still shows).
+  Opt in to **intercept mode** in Settings → Notch to take the system's
+  volume/brightness keys over entirely, so only the notch HUD ever appears —
+  this needs Accessibility, since swallowing a key system-wide requires it.
+  Brightness is intercept-mode only: macOS has no change notification for
+  display brightness to observe, so there's nothing to show without the
+  keys themselves being captured.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
@@ -111,8 +120,8 @@ drag **Flux** into **Applications**. On first launch, right-click the app → **
 
 **A note on permissions:** Flux is ad-hoc signed rather than notarized with a paid
 Developer ID, which means macOS can — and sometimes does — treat an update as a new,
-untrusted binary and quietly drop a previously granted TCC permission (Calendar today;
-Accessibility and Camera in later versions). If a permission-gated widget suddenly
+untrusted binary and quietly drop a previously granted TCC permission (Calendar and
+Accessibility today; Camera in a later version). If a permission-gated widget suddenly
 shows its "access needed" state after updating Flux, that's why — Settings → Notch
 shows the live grant/denied status for each permission and a button to re-request it
 or jump straight to the right System Settings pane.
@@ -180,6 +189,9 @@ Sources/Flux/
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
   Services/BluetoothMonitor.swift  # IOBluetooth connect/disconnect + IORegistry battery
+  Services/HUD/VolumeMonitor.swift        # CoreAudio volume/mute listener + setter (observe + intercept)
+  Services/HUD/BrightnessMonitor.swift    # dlopen'd DisplayServices brightness get/set (intercept-only)
+  Services/HUD/MediaKeyInterceptor.swift  # CGEventTap swallowing volume/brightness keys (Accessibility)
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
   Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults

@@ -37,3 +37,47 @@ drag-and-drop, hover, or click/mouse pass-through.
       question flagged in `NotchPanel`'s drag-and-drop doc comment — if this
       regresses, the accept region (`interactiveRect` +
       `NotchWindowController.dragSlop`) needs to shrink further.
+
+## M5 — Volume/brightness HUD
+
+- [ ] **Observe mode, no permission granted**: with Accessibility NOT
+      granted, press a volume key. Confirm the notch shows a `.hudVolume`
+      wing AND the system's own volume bezel still appears (observe mode
+      never suppresses it — see `VolumeMonitor`'s doc comment). Repeat for
+      mute.
+- [ ] **Intercept mode swallows the system bezel**: grant Accessibility,
+      turn on "Replace the system overlay" in Settings → Notch, then press
+      volume/mute/brightness keys. Confirm ONLY the notch HUD appears —
+      no system bezel at all — and that the actual volume/mute/brightness
+      state genuinely changes (not just the wing's displayed number).
+- [ ] **Held-key repeat**: hold a volume or brightness key down in intercept
+      mode and confirm the notch HUD updates continuously/smoothly as the
+      level ramps, matching the system bezel's own held-key cadence.
+- [ ] **Shift+Option fine step**: in intercept mode, hold Shift+Option while
+      pressing a volume or brightness key and confirm the level moves in
+      much smaller increments than a plain key press.
+- [ ] **No double-post**: in intercept mode, press a volume key once and
+      confirm exactly ONE `.hudVolume` wing appears — not two overlapping/
+      back-to-back posts (the CoreAudio listener firing for the same
+      programmatic change this app just made is the dedupe this checks —
+      see `NotchActivityRouter.isVolumeMonitorEventSuppressed`).
+- [ ] **Control Center slider still works in intercept mode**: with intercept
+      mode on, drag the volume slider in Control Center (not a keyboard key)
+      and confirm the notch HUD still reflects it — this path is NOT
+      swallowed by the event tap (only hardware keys are), so it must still
+      flow through observe mode's CoreAudio listener.
+- [ ] **Accessibility revoked mid-session**: with intercept mode on, revoke
+      Accessibility for Flux in System Settings, then press a volume key.
+      Confirm Flux falls back to observe mode (system bezel returns) rather
+      than silently doing nothing, and that the Settings toggle's row
+      reflects the revoked permission.
+- [ ] **Non-notched external display + brightness**: on a setup with only an
+      external monitor active (built-in lid closed or no notch), confirm
+      brightness intercept simply does nothing harmful (no crash, no
+      dangling tap) — there is no built-in notched screen for
+      `BrightnessMonitor` to target.
+- [ ] **A device with no settable volume**: switch the default output device
+      to one that exposes no software volume control (some digital/HDMI
+      outputs) and confirm Flux doesn't misbehave — no wing showing a
+      nonsensical level, no crash from `VolumeMonitor`'s per-channel
+      fallback path.
