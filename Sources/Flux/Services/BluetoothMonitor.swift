@@ -9,13 +9,28 @@ import OSLog
 /// since this is a self-contained M3 subsystem the notch suite owns.
 let bluetoothLog = Logger(subsystem: "com.flux.menubar", category: "bluetooth")
 
+/// Coarse device-class bucket for `NotchActivityRouter.deviceSymbol` — IOKit
+/// hands back a device-class *major* value, which is exactly this
+/// granularity (audio vs. HID peripheral vs. anything else); the finer
+/// keyboard/mouse/game-controller split within `.peripheral` is still a
+/// name-based guess (IOBluetooth's minor-class constants are far less
+/// consistently populated across accessories than the major class is).
+enum BluetoothDeviceCategory: Equatable {
+    case audio
+    case peripheral
+    case other
+}
+
 /// A discrete Bluetooth connect/disconnect worth surfacing as a live
 /// activity. `batteryPercent` is best-effort (see
 /// `BluetoothMonitor.batteryPercent(for:)`) — `nil` just means "not
-/// reported," not an error.
+/// reported," not an error. `category` carries the device's class major
+/// through from `IOBluetoothDevice` so `NotchActivityRouter.deviceSymbol`
+/// doesn't have to fall back to a name-only guess for every non-AirPods
+/// device (see that function's doc comment).
 enum BluetoothEvent: Equatable {
-    case connected(name: String, batteryPercent: Int?)
-    case disconnected(name: String)
+    case connected(name: String, batteryPercent: Int?, category: BluetoothDeviceCategory)
+    case disconnected(name: String, category: BluetoothDeviceCategory)
 }
 
 /// Watches `IOBluetoothDevice` connect/disconnect notifications for
@@ -130,7 +145,7 @@ final class BluetoothMonitor: NSObject {
         }
 
         guard shouldEmit(address: address) else { return }
-        events.send(.connected(name: name, batteryPercent: Self.batteryPercent(for: device)))
+        events.send(.connected(name: name, batteryPercent: Self.batteryPercent(for: device), category: Self.category(for: device)))
     }
 
     @objc private func deviceDisconnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
@@ -141,7 +156,7 @@ final class BluetoothMonitor: NSObject {
 
         guard isRelevant(device) else { return }
         guard shouldEmit(address: address) else { return }
-        events.send(.disconnected(name: name))
+        events.send(.disconnected(name: name, category: Self.category(for: device)))
     }
 
     // MARK: - Filtering
@@ -152,6 +167,20 @@ final class BluetoothMonitor: NSObject {
     private func isRelevant(_ device: IOBluetoothDevice) -> Bool {
         let major = device.deviceClassMajor
         return major == kBluetoothDeviceClassMajorAudio || major == kBluetoothDeviceClassMajorPeripheral
+    }
+
+    /// Maps IOBluetooth's device-class *major* value onto the coarse
+    /// `BluetoothDeviceCategory` bucket `NotchActivityRouter.deviceSymbol`
+    /// switches on. `isRelevant` already filters everything down to audio or
+    /// peripheral before either callback ever reaches this, but `.other` is
+    /// kept as a defensive fallback rather than force-mapping every
+    /// unexpected major class onto one of the two real buckets.
+    private static func category(for device: IOBluetoothDevice) -> BluetoothDeviceCategory {
+        switch device.deviceClassMajor {
+        case kBluetoothDeviceClassMajorAudio: return .audio
+        case kBluetoothDeviceClassMajorPeripheral: return .peripheral
+        default: return .other
+        }
     }
 
     /// Records this address's event time and reports whether it should

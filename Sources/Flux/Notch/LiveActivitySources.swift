@@ -33,6 +33,22 @@ final class NotchActivityRouter {
     private let arranger: MenuBarArranger
     private let power: PowerMonitor
     private let bluetooth: BluetoothMonitor
+    /// Gates every real `power.start()`/`bluetooth.start()` call (see
+    /// `applyMonitorState`) — `false` only for `--selftest`, which feeds
+    /// synthetic events straight through `power.events`/`bluetooth.events`
+    /// (wired unconditionally by `observePower`/`observeBluetooth` above) and
+    /// must never let this router's normal settings-driven lifecycle touch
+    /// real IOKit/IOBluetooth on a headless CI runner.
+    private let startsMonitors: Bool
+    /// Whether there's currently anywhere to actually show a wing — wired by
+    /// the app to `NotchWindowController.isPresenting`. Checked alongside the
+    /// notch/activity settings toggles in `applyMonitorState`: running the
+    /// battery/Bluetooth monitors while no notched panel is presenting (an
+    /// external-only clamshell setup, or the notch's screen momentarily lost)
+    /// burns IOKit/IOBluetooth resources for activities that can never
+    /// render. Defaults to `{ true }` so call sites that don't care about
+    /// presentation (like `--selftest`) don't have to wire anything.
+    private let isPresentationAvailable: () -> Bool
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -46,12 +62,16 @@ final class NotchActivityRouter {
          settings: SettingsStore,
          arranger: MenuBarArranger,
          power: PowerMonitor? = nil,
-         bluetooth: BluetoothMonitor? = nil) {
+         bluetooth: BluetoothMonitor? = nil,
+         startsMonitors: Bool = true,
+         isPresentationAvailable: @escaping () -> Bool = { true }) {
         self.activities = activities
         self.settings = settings
         self.arranger = arranger
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? BluetoothMonitor()
+        self.startsMonitors = startsMonitors
+        self.isPresentationAvailable = isPresentationAvailable
 
         observePower()
         observeBluetooth()
@@ -134,33 +154,49 @@ final class NotchActivityRouter {
     private func handleBluetoothEvent(_ event: BluetoothEvent) {
         guard settings.notchActivityBluetoothEnabled else { return }
         switch event {
-        case .connected(let name, let batteryPercent):
+        case .connected(let name, let batteryPercent, let category):
             let trailing: LiveActivity.Content = batteryPercent.map {
                 .iconText(systemName: Self.batterySymbol(percent: $0, charging: false), text: "\($0)%")
             } ?? .text(name)
             activities.post(LiveActivity(kind: .bluetoothDevice,
-                                          leading: .icon(systemName: Self.deviceSymbol(name: name)),
+                                          leading: .icon(systemName: Self.deviceSymbol(name: name, category: category)),
                                           trailing: trailing,
                                           duration: 4,
                                           priority: 100))
-        case .disconnected(let name):
+        case .disconnected(let name, let category):
             activities.post(LiveActivity(kind: .bluetoothDevice,
-                                          leading: .icon(systemName: Self.deviceSymbol(name: name)),
+                                          leading: .icon(systemName: Self.deviceSymbol(name: name, category: category)),
                                           trailing: .text("Disconnected"),
                                           duration: 4,
                                           priority: 100))
         }
     }
 
-    /// Name-based heuristic for which SF Symbol reads as "this device" —
-    /// IOBluetooth exposes no product-line identifier beyond the device's
-    /// own advertised name, so this is inherently best-effort. Every Apple
-    /// AirPods product name ("AirPods", "AirPods Pro", "AirPods Max", ...)
-    /// contains "airpods"; everything else falls back to a generic
-    /// headphones glyph, which still reads correctly for the audio/HID-only
-    /// devices `BluetoothMonitor` filters to in the first place.
-    static func deviceSymbol(name: String) -> String {
-        name.lowercased().contains("airpods") ? "airpodspro" : "headphones"
+    /// Which SF Symbol reads as "this device." `category` (the device's
+    /// IOKit class major, threaded through by `BluetoothMonitor`) does the
+    /// coarse audio-vs-HID split; IOBluetooth exposes no further product-line
+    /// identifier beyond that and the device's own advertised name, so
+    /// picking the specific HID glyph (keyboard / mouse / game controller)
+    /// within `.peripheral` is still a name-based best-effort guess. Every
+    /// Apple AirPods product name ("AirPods", "AirPods Pro", "AirPods Max",
+    /// ...) contains "airpods"; every other audio accessory (or anything
+    /// IOKit didn't class as HID either) falls back to a generic headphones
+    /// glyph, which still reads correctly for the audio devices
+    /// `BluetoothMonitor` actually filters to.
+    static func deviceSymbol(name: String, category: BluetoothDeviceCategory) -> String {
+        guard category == .peripheral else {
+            return name.lowercased().contains("airpods") ? "airpodspro" : "headphones"
+        }
+        let lower = name.lowercased()
+        if lower.contains("mouse") { return "computermouse" }
+        if lower.contains("keyboard") { return "keyboard" }
+        if lower.contains("controller") || lower.contains("gamepad") || lower.contains("joystick") {
+            return "gamecontroller"
+        }
+        // An HID peripheral IOKit classed as such, but whose name doesn't
+        // hint at which kind — a generic accessory glyph beats mislabeling it
+        // "headphones."
+        return "cable.connector"
     }
 
     // MARK: - Menu-bar overflow (moved from AppDelegate — see type doc comment)
@@ -240,37 +276,69 @@ final class NotchActivityRouter {
     /// either activity toggle changes. `dropFirst` skips the redundant
     /// initial delivery each of these `@Published` properties makes at
     /// subscription time — `init` already calls `applyMonitorState()` once
-    /// directly for that.
+    /// directly for that. Passes the emitted tuple straight into
+    /// `applyMonitorState` rather than letting it re-read `settings` itself —
+    /// this sink already has the exact values that changed in hand.
     private func observeMonitorGating() {
         settings.$notchEnabled
             .combineLatest(settings.$notchActivityBatteryEnabled, settings.$notchActivityBluetoothEnabled)
             .dropFirst()
-            .sink { [weak self] _ in self?.applyMonitorState() }
+            .sink { [weak self] notchEnabled, batteryEnabled, bluetoothEnabled in
+                self?.applyMonitorState(notchEnabled: notchEnabled,
+                                        batteryEnabled: batteryEnabled,
+                                        bluetoothEnabled: bluetoothEnabled)
+            }
             .store(in: &cancellables)
     }
 
     /// The battery/Bluetooth monitors only run when their own settings
-    /// toggle is on *and* the notch panel itself is enabled — there is
-    /// nowhere to show their wings otherwise, so idling them saves the
-    /// IOKit run-loop source / IOBluetooth notifications for nothing.
-    /// `start()`/`stop()` on both monitors are no-ops when already in the
-    /// requested state, so this can be called freely on every settings tick
-    /// without worrying about double-registration.
-    private func applyMonitorState() {
-        let notchOn = settings.notchEnabled
+    /// toggle is on *and* the notch panel itself is enabled *and* there's
+    /// somewhere to actually show a wing (`isPresentationAvailable()`) — an
+    /// external-only clamshell setup, or a moment where the notch's screen
+    /// has been lost, leaves nowhere for either activity to render, so idling
+    /// the monitors there saves the IOKit run-loop source / IOBluetooth
+    /// notifications for nothing. `start()`/`stop()` on both monitors are
+    /// no-ops when already in the requested state, so this can be called
+    /// freely on every settings tick (or presentation change) without
+    /// worrying about double-registration.
+    ///
+    /// The three `Bool?` parameters default to `nil`, in which case the
+    /// current value is read straight from `settings` — used by every caller
+    /// that isn't reacting to one specific emitted change (`init`'s initial
+    /// call, and the presentation-change callback wired in by the app, which
+    /// has no settings tuple of its own to hand in). `observeMonitorGating`'s
+    /// sink is the one caller that always supplies all three explicitly.
+    ///
+    /// Also gated on `startsMonitors` — `false` only for `--selftest` (see
+    /// its doc comment) — so a headless test run never touches real
+    /// IOKit/IOBluetooth state no matter how many settings toggles it flips.
+    private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil, bluetoothEnabled: Bool? = nil) {
+        guard startsMonitors else { return }
+        let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresentationAvailable()
 
-        if notchOn && settings.notchActivityBatteryEnabled {
+        if notchOn && (batteryEnabled ?? settings.notchActivityBatteryEnabled) {
             power.start()
         } else {
             power.stop()
             activities.dismiss(kind: .battery)
         }
 
-        if notchOn && settings.notchActivityBluetoothEnabled {
+        if notchOn && (bluetoothEnabled ?? settings.notchActivityBluetoothEnabled) {
             bluetooth.start()
         } else {
             bluetooth.stop()
             activities.dismiss(kind: .bluetoothDevice)
         }
+    }
+
+    /// Re-syncs the monitor start/stop decision after something *outside*
+    /// the settings toggles changed whether there's anywhere to present a
+    /// wing — specifically, `NotchWindowController.onPresentationChanged`
+    /// firing on a screen-configuration change (external display connect,
+    /// clamshell open/close). Public because that wiring lives in the app
+    /// layer (`AppDelegate`), not this file — see `isPresentationAvailable`'s
+    /// doc comment.
+    func presentationDidChange() {
+        applyMonitorState()
     }
 }

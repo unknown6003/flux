@@ -119,7 +119,7 @@ struct NotchTab: View {
                       isOn: $settings.notchActivityBatteryEnabled)
             RowDivider()
             ToggleRow(title: "Bluetooth devices",
-                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect.",
+                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect.",
                       isOn: $settings.notchActivityBluetoothEnabled)
         }
     }

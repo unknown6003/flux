@@ -113,12 +113,19 @@ final class PowerMonitor {
     /// Tears the run-loop source down and forgets the last-seen state, so a
     /// later `start()` begins with a clean baseline (a stale `previousState`
     /// diffed against a fresh first read could otherwise fire a bogus event
-    /// for a transition that happened entirely while stopped).
+    /// for a transition that happened entirely while stopped). Also resets
+    /// the low-battery hysteresis (`lowBatteryArmed`) back to its armed
+    /// default — without this, stopping while disarmed (i.e. right after a
+    /// `.lowBattery` fired, before it recovered) and later restarting would
+    /// keep the monitor silently disarmed against a `previousState` it no
+    /// longer has any memory of, missing the very first recovery crossing
+    /// (`.batteryRecovered`) it should have caught after coming back up.
     func stop() {
         guard let runLoopSource else { return }
         CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         self.runLoopSource = nil
         previousState = nil
+        lowBatteryArmed = true
     }
 
     deinit {

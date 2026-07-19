@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // nothing else naturally accesses it the way `nowPlayingWidget` is
     // forced via `registry.register(...)`.
     private lazy var notchActivityRouter = NotchActivityRouter(
-        activities: notchWindow.activities, settings: settings, arranger: arranger)
+        activities: notchWindow.activities, settings: settings, arranger: arranger,
+        isPresentationAvailable: { [weak self] in self?.notchWindow.isPresenting ?? false })
 
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, updater: updater, nowPlaying: nowPlayingService)
@@ -75,6 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arranger.setArranging(true)
             return true
         }
+        // Screen changes (external display connect/disconnect, clamshell
+        // open/close) flip `notchWindow.isPresenting` independently of every
+        // settings toggle `notchActivityRouter` already reacts to — re-apply
+        // its monitor start/stop decision whenever that happens, so the
+        // battery/Bluetooth monitors don't keep running with nowhere left to
+        // show a wing (or stay idle once a notched screen reappears).
+        notchWindow.onPresentationChanged = { [weak self] in self?.notchActivityRouter.presentationDidChange() }
 
         configureHotkey()
         configureNotch()

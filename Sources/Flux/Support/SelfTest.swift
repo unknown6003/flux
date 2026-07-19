@@ -981,10 +981,18 @@ enum SelfTest {
               "NotchActivityRouter: percent rounds DOWN to the nearest SF Symbol step (74% -> 50, never up to 75)")
         check(NotchActivityRouter.batterySymbol(percent: 50, charging: true) == "battery.50.bolt",
               "NotchActivityRouter: charging adds the .bolt variant")
-        check(NotchActivityRouter.deviceSymbol(name: "Ammar's AirPods Pro") == "airpodspro",
+        check(NotchActivityRouter.deviceSymbol(name: "Ammar's AirPods Pro", category: .audio) == "airpodspro",
               "NotchActivityRouter: AirPods-named devices map to the airpodspro glyph")
-        check(NotchActivityRouter.deviceSymbol(name: "Sony WH-1000XM4") == "headphones",
-              "NotchActivityRouter: unrecognized device names fall back to a generic headphones glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Sony WH-1000XM4", category: .audio) == "headphones",
+              "NotchActivityRouter: unrecognized audio-category device names fall back to a generic headphones glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Magic Keyboard", category: .peripheral) == "keyboard",
+              "NotchActivityRouter: a peripheral-category device named 'Keyboard' maps to the keyboard glyph, not headphones")
+        check(NotchActivityRouter.deviceSymbol(name: "Magic Mouse", category: .peripheral) == "computermouse",
+              "NotchActivityRouter: a peripheral-category device named 'Mouse' maps to the computermouse glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Xbox Wireless Controller", category: .peripheral) == "gamecontroller",
+              "NotchActivityRouter: a peripheral-category device named 'Controller' maps to the gamecontroller glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Some HID Gadget", category: .peripheral) == "cable.connector",
+              "NotchActivityRouter: a peripheral-category device whose name hints at no specific kind falls back to a generic accessory glyph, not headphones")
 
         // --- M3: NotchActivityRouter — event-to-LiveActivity translation and
         // settings gating, with real PowerMonitor/BluetoothMonitor instances
@@ -999,8 +1007,17 @@ enum SelfTest {
             let routerArranger = MenuBarArranger()
             let testPower = PowerMonitor()
             let testBluetooth = BluetoothMonitor()
+            // `startsMonitors: false` — this test drives `testPower`/
+            // `testBluetooth` purely by feeding synthetic events straight
+            // through their `.events` subjects (below); it must never let the
+            // router's real settings-driven lifecycle call `start()` on
+            // either monitor, which would register real IOKit/IOBluetooth
+            // run-loop sources and notifications on the CI runner (flaky and
+            // slow in a headless environment with no real battery/Bluetooth
+            // hardware to speak of).
             let router = NotchActivityRouter(activities: routerActivities, settings: routerSettings,
-                                              arranger: routerArranger, power: testPower, bluetooth: testBluetooth)
+                                              arranger: routerArranger, power: testPower, bluetooth: testBluetooth,
+                                              startsMonitors: false)
 
             // `withExtendedLifetime` keeps `router` (and its Combine
             // subscriptions on `testPower`/`testBluetooth`) alive for the
@@ -1048,7 +1065,7 @@ enum SelfTest {
                 // as `current` rather than the still-queued battery activity.
                 routerActivities.dismiss(kind: .battery)
 
-                testBluetooth.events.send(.connected(name: "AirPods Pro", batteryPercent: 80))
+                testBluetooth.events.send(.connected(name: "AirPods Pro", batteryPercent: 80, category: .audio))
                 check(routerActivities.current?.kind == .bluetoothDevice,
                       "NotchActivityRouter: a BluetoothEvent posts a .bluetoothDevice live activity")
                 check(routerActivities.current?.priority == 100,
@@ -1056,7 +1073,7 @@ enum SelfTest {
                 check(routerActivities.current?.trailing == .iconText(systemName: "battery.75", text: "80%"),
                       "NotchActivityRouter: a reported battery percent shows as icon+text using the real batterySymbol picker (80% -> the 75% SF Symbol step, not a hardcoded battery.100)")
 
-                testBluetooth.events.send(.connected(name: "Sony WH-1000XM4", batteryPercent: nil))
+                testBluetooth.events.send(.connected(name: "Sony WH-1000XM4", batteryPercent: nil, category: .audio))
                 check(routerActivities.current?.trailing == .text("Sony WH-1000XM4"),
                       "NotchActivityRouter: no battery reading falls back to showing the device name")
 
@@ -1068,7 +1085,7 @@ enum SelfTest {
                 check(routerActivities.current?.kind != .battery,
                       "NotchActivityRouter: the battery toggle off suppresses new battery posts")
 
-                testBluetooth.events.send(.disconnected(name: "AirPods Pro"))
+                testBluetooth.events.send(.disconnected(name: "AirPods Pro", category: .audio))
                 check(routerActivities.current?.kind == .bluetoothDevice,
                       "NotchActivityRouter: the bluetooth toggle (still on) keeps posting independently of the battery toggle")
 
@@ -1079,6 +1096,15 @@ enum SelfTest {
                 // genuine change, so a static "still overflowing" condition
                 // would otherwise never republish through it.
                 routerArranger.setOverflow(arrange: false, notch: true, iconCount: 5)
+                // `observeOverflow()` delivers on `.receive(on: RunLoop.main)`
+                // (like several other sinks in this codebase — the hotkey
+                // shortcut and arrange-hint ones in `AppDelegate`, e.g.) —
+                // deliberately deferred, not synchronous, so a plain `check`
+                // straight after `setOverflow()` would race the scheduled
+                // delivery and see the *previous* activity. Spin the run loop
+                // briefly first, the same way the hover/focus sinks earlier
+                // in this file do.
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
                 check(routerActivities.current?.kind == .menuBarOverflow,
                       "NotchActivityRouter: a real menu-bar overflow posts a .menuBarOverflow live activity")
                 routerSettings.notchEnabled = false
