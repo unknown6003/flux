@@ -320,7 +320,7 @@ final class ShelfStore: ObservableObject {
     /// laziness exists to avoid.
     func ensureThumbnails() {
         if items.count > 100 {
-            shelfLog.notice("Shelf has \(items.count) items — only generating thumbnails for the 100 newest")
+            shelfLog.notice("Shelf has \(self.items.count) items — only generating thumbnails for the 100 newest")
         }
         let candidates = items.count > 100 ? items.prefix(100) : items[...]
         for item in candidates where thumbnails[item.id] == nil {
