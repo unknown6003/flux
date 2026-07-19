@@ -974,8 +974,17 @@ final class NotchActivityRouter {
         timers.completions
             .sink { [weak self] timer in self?.handleTimerCompletion(timer) }
             .store(in: &cancellables)
+        // Takes the emitted array directly (`liveTimers`) rather than
+        // re-reading `timers.timers` from inside the sink — `@Published`
+        // delivers to subscribers from `willSet`, BEFORE its own backing
+        // storage is actually updated, so a synchronous read of
+        // `timers.timers` here would see the value from BEFORE this exact
+        // mutation (e.g., still empty the instant a first timer is
+        // `start()`-ed). The emitted parameter itself carries the real,
+        // up-to-date array, so `recomputeTimerActivity` is written to accept
+        // it explicitly for this one call site.
         timers.$timers
-            .sink { [weak self] _ in self?.recomputeTimerActivity() }
+            .sink { [weak self] liveTimers in self?.recomputeTimerActivity(timers: liveTimers) }
             .store(in: &cancellables)
     }
 
@@ -998,20 +1007,24 @@ final class NotchActivityRouter {
                      priority: timerCompletionPriority)
     }
 
-    /// Re-evaluates the ambient countdown wing against `timers`'s current
-    /// live state and re-arms the next refresh — called from every trigger
-    /// that could change the answer: `timers.$timers` (a start/pause/resume/
-    /// cancel/completion-reap), the settings/presentation gating sinks below,
-    /// `init`'s final call, and its own scheduled refresh task.
-    private func recomputeTimerActivity() {
+    /// Re-evaluates the ambient countdown wing and re-arms the next refresh —
+    /// called from every trigger that could change the answer: `timers.$timers`
+    /// (a start/pause/resume/cancel/completion-reap — passing its OWN emitted
+    /// array explicitly, see `observeTimers`'s doc comment on why), the
+    /// settings/presentation gating sinks below, `init`'s final call, and its
+    /// own scheduled refresh task (these last few pass `nil`, since none of
+    /// them run from inside a `$timers` willSet callback — reading
+    /// `timers.timers` directly at those call sites is safe and current).
+    private func recomputeTimerActivity(timers liveTimers: [NotchTimer]? = nil) {
         timerRefreshTask?.cancel()
         timerRefreshTask = nil
         let now = Date()
+        let currentTimers = liveTimers ?? timers.timers
         guard Self.timerActivityShouldRun(toggleOn: settings.notchActivityTimerEnabled,
                                            notchPresenting: settings.notchEnabled && isPresenting,
-                                           hasRunningTimer: timers.nextDeadline(after: now) != nil),
-              let deadline = timers.nextDeadline(after: now),
-              let line = TimersWidget.nearestRemainingLine(timers: timers.timers, at: now)
+                                           hasRunningTimer: TimerService.nextDeadline(in: currentTimers, after: now) != nil),
+              let deadline = TimerService.nextDeadline(in: currentTimers, after: now),
+              let line = TimersWidget.nearestRemainingLine(timers: currentTimers, at: now)
         else {
             activities.dismiss(kind: .timer)
             return
