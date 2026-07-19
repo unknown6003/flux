@@ -1994,73 +1994,42 @@ enum SelfTest {
             clipboardProbe.stop()
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: start()/stop() cycles alone never capture anything")
         }
-        do {
-            // --- M6 fix: suppressedChangeCount is captured as the EXACT
-            // pasteboard changeCount copyBack(_:) itself produces, and a
-            // poll only ever skips that precise value — a genuinely external
-            // copy that lands before the very next poll tick (even one that
-            // arrives in the same ~1s window as the copy-back write, so its
-            // changeCount is the only one poll ever actually observes) must
-            // still be captured, not silently swallowed the way the old
-            // bare-boolean skipNextCapture would have. ---
-            let scPasteboard = NSPasteboard.general
-            scPasteboard.clearContents()
-            let scMonitor = ClipboardMonitor(pasteboard: scPasteboard)
-            scMonitor.start()
-            // Written AFTER start() (which re-baselines lastChangeCount to
-            // whatever's on the pasteboard AT THAT MOMENT) — not before
-            // constructing the monitor, which would already be reflected in
-            // that baseline and so never look like a "change" to the first
-            // poll at all.
-            scPasteboard.setString("flux-selftest-clipboard-seed", forType: .string)
-            RunLoop.current.run(until: Date().addingTimeInterval(1.15)) // let the first 1s poll capture the seed
-            check(scMonitor.entries.count == 1 && scMonitor.entries.first?.fullString == "flux-selftest-clipboard-seed",
-                  "ClipboardMonitor: an ordinary external copy is captured normally")
+        // --- M6 fix: ClipboardMonitor.shouldSuppressCapture — the pure
+        // decision core behind suppressedChangeCount, split out of poll()
+        // (mirroring classify(string:)'s own split, for the identical
+        // reason: this suite's CI runner doesn't reliably support live
+        // NSPasteboard read/write round-tripping — changeCount can simply
+        // never advance no matter what's written on a headless runner with
+        // no window-server session — so the actual code-review fix has to
+        // be tested through a pasteboard-free seam). Only a poll tick whose
+        // changeCount is the EXACT value copyBack(_:) produced is skipped;
+        // any other value (an external copy that bumped the count further,
+        // or no suppression pending at all) is captured normally. ---
+        check(ClipboardMonitor.shouldSuppressCapture(currentChangeCount: 42, suppressedChangeCount: 42),
+              "ClipboardMonitor: shouldSuppressCapture skips a tick whose changeCount exactly matches copyBack's own")
+        check(!ClipboardMonitor.shouldSuppressCapture(currentChangeCount: 43, suppressedChangeCount: 42),
+              "ClipboardMonitor: shouldSuppressCapture does NOT skip a tick whose changeCount is anything other than the exact suppressed value — a genuinely external copy landing right after copyBack's own write is still captured normally")
+        check(!ClipboardMonitor.shouldSuppressCapture(currentChangeCount: 42, suppressedChangeCount: nil),
+              "ClipboardMonitor: shouldSuppressCapture never skips when nothing is currently suppressed")
 
-            if let seedID = scMonitor.entries.first?.id {
-                scMonitor.copyBack(seedID) // writes the same string back — bumps changeCount to N
-                // A genuinely external copy landing immediately after,
-                // BEFORE the run loop ever spins again — so by the time the
-                // next poll tick looks, the pasteboard's changeCount already
-                // reflects this write, not copyBack's own N.
-                scPasteboard.clearContents()
-                scPasteboard.setString("flux-selftest-clipboard-external", forType: .string)
-                RunLoop.current.run(until: Date().addingTimeInterval(1.15))
-                check(scMonitor.entries.count == 2 && scMonitor.entries.first?.fullString == "flux-selftest-clipboard-external",
-                      "ClipboardMonitor: an external copy landing right after copyBack's own write (before the next poll tick) is still captured — suppression is by the EXACT changeCount copyBack produced, not a blanket 'skip whatever changed next'")
-            } else {
-                check(false, "ClipboardMonitor: the seeded entry should have captured with an id to copy back")
-            }
-            scMonitor.stop()
-            scPasteboard.clearContents()
-        }
-        do {
-            // --- M6 fix: ClipboardEntry.fullString is capped at
-            // ClipboardMonitor.fullStringCap characters (100_000), with a
-            // trailing "…" truncation marker — an unbounded-length copy no
-            // longer retains its entire payload across up to historyLimit
-            // (50) history entries at once. ---
-            let capPasteboard = NSPasteboard.general
-            capPasteboard.clearContents()
-            let capMonitor = ClipboardMonitor(pasteboard: capPasteboard)
-            capMonitor.start()
-            // Written AFTER start(), same reasoning as the suppressedChangeCount
-            // test above — otherwise start()'s own re-baseline already
-            // reflects this write and the first poll sees no change at all.
-            let hugeString = String(repeating: "a", count: ClipboardMonitor.fullStringCap + 500)
-            capPasteboard.setString(hugeString, forType: .string)
-            RunLoop.current.run(until: Date().addingTimeInterval(1.15))
-            capMonitor.stop()
-            if let captured = capMonitor.entries.first?.fullString {
-                check(captured.count == ClipboardMonitor.fullStringCap + 1,
-                      "ClipboardMonitor: an over-cap copy's fullString is truncated to fullStringCap characters plus one trailing marker character")
-                check(captured.hasSuffix("…"),
-                      "ClipboardMonitor: a truncated fullString ends with an ellipsis marker")
-            } else {
-                check(false, "ClipboardMonitor: an over-cap copy should still be captured (truncated), not dropped entirely")
-            }
-            capPasteboard.clearContents()
-        }
+        // --- M6 fix: ClipboardMonitor.cappedFullString — the pure
+        // truncation core behind the fullStringCap bound, made non-private
+        // (like classify(string:)) for the same CI-testability reason
+        // above. ---
+        let underCapString = String(repeating: "x", count: 10)
+        check(ClipboardMonitor.cappedFullString(underCapString) == underCapString,
+              "ClipboardMonitor: cappedFullString leaves an under-cap string completely untouched, with no marker appended")
+        let exactlyAtCapString = String(repeating: "x", count: ClipboardMonitor.fullStringCap)
+        check(ClipboardMonitor.cappedFullString(exactlyAtCapString) == exactlyAtCapString,
+              "ClipboardMonitor: cappedFullString leaves a string sitting EXACTLY at the cap untouched — truncation only kicks in strictly OVER it")
+        let overCapString = String(repeating: "x", count: ClipboardMonitor.fullStringCap + 500)
+        let cappedResult = ClipboardMonitor.cappedFullString(overCapString)
+        check(cappedResult.count == ClipboardMonitor.fullStringCap + 1,
+              "ClipboardMonitor: cappedFullString truncates an over-cap string to fullStringCap characters plus one trailing marker character")
+        check(cappedResult.hasSuffix("…"),
+              "ClipboardMonitor: a truncated fullString ends with an ellipsis marker")
+        check(cappedResult.hasPrefix(String(repeating: "x", count: 100)),
+              "ClipboardMonitor: a truncated fullString still starts with the original content, not just the marker")
         do {
             // --- M6 fix: ClipboardEntry.filePaths carries each captured file
             // path as its own array element — unlike the old newline-joined-

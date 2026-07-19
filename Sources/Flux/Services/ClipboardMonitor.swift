@@ -186,17 +186,34 @@ final class ClipboardMonitor: ObservableObject {
         lastChangeCount = current
 
         // Consumed (cleared) on this very next look regardless of whether it
-        // matches — `changeCount` only ever increases, so once `current` has
-        // moved past a previously-suppressed value, that value can never be
-        // seen again; there's nothing left for a stale, no-longer-relevant
-        // `suppressedChangeCount` to accidentally suppress later.
-        if let suppressed = suppressedChangeCount {
-            suppressedChangeCount = nil
-            if current == suppressed { return }
-        }
+        // matches — see `shouldSuppressCapture`'s own doc comment.
+        let suppressed = suppressedChangeCount
+        suppressedChangeCount = nil
+        guard !Self.shouldSuppressCapture(currentChangeCount: current, suppressedChangeCount: suppressed) else { return }
+
         guard !isConcealedOrTransient else { return }
         guard let entry = Self.capture(from: pasteboard) else { return }
         record(entry)
+    }
+
+    /// Pure decision core of the suppression check above — split out of
+    /// `poll()`, the same way `classify(string:)` is split out of
+    /// `capture(from:)`, so `--selftest` can drive this directly with plain
+    /// `Int`/`Int?` values. Real `NSPasteboard` read/write round-tripping
+    /// isn't reliable on every CI runner this suite has to pass on (a
+    /// headless runner without a full window-server session can leave
+    /// `changeCount` never actually advancing no matter what's written), so
+    /// the suppression logic itself — the actual code-review fix — needs a
+    /// pasteboard-free seam to be testable at all. `changeCount` only ever
+    /// increases, so once `currentChangeCount` has moved past a
+    /// previously-suppressed value, that value can never be seen again —
+    /// there's nothing left for a stale, no-longer-relevant
+    /// `suppressedChangeCount` to accidentally suppress later; that's why
+    /// `poll()` clears its stored value on this very call regardless of
+    /// whether this returns `true` or `false`.
+    static func shouldSuppressCapture(currentChangeCount: Int, suppressedChangeCount: Int?) -> Bool {
+        guard let suppressedChangeCount else { return false }
+        return currentChangeCount == suppressedChangeCount
     }
 
     private var isConcealedOrTransient: Bool {
@@ -296,8 +313,12 @@ final class ClipboardMonitor: ObservableObject {
     /// comment for why this bound exists at all. Below the cap, `string` is
     /// returned completely untouched (no marker appended) — copy-back must
     /// stay byte-for-byte exact for the overwhelming common case of
-    /// ordinary-sized copies.
-    private static func cappedFullString(_ string: String) -> String {
+    /// ordinary-sized copies. Not `private` — like `classify(string:)`, so
+    /// `--selftest` can drive both the under-cap and over-cap cases directly
+    /// against a plain `String`, with no real `NSPasteboard` round-trip
+    /// involved (see `shouldSuppressCapture`'s doc comment on why that
+    /// matters on this suite's CI runner).
+    static func cappedFullString(_ string: String) -> String {
         guard string.count > fullStringCap else { return string }
         return String(string.prefix(fullStringCap)) + "…"
     }
