@@ -100,7 +100,7 @@ final class VolumeMonitor {
         }
         if let defaultDeviceListenerBlock {
             var address = Self.defaultDeviceAddress
-            AudioObjectRemovePropertyListenerBlock(kAudioObjectSystemObject, &address, DispatchQueue.main, defaultDeviceListenerBlock)
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, defaultDeviceListenerBlock)
         }
     }
 
@@ -159,13 +159,13 @@ final class VolumeMonitor {
         }
         defaultDeviceListenerBlock = block
         var address = Self.defaultDeviceAddress
-        AudioObjectAddPropertyListenerBlock(kAudioObjectSystemObject, &address, DispatchQueue.main, block)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
     }
 
     private func removeDefaultDeviceListener() {
         guard let block = defaultDeviceListenerBlock else { return }
         var address = Self.defaultDeviceAddress
-        AudioObjectRemovePropertyListenerBlock(kAudioObjectSystemObject, &address, DispatchQueue.main, block)
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
         defaultDeviceListenerBlock = nil
     }
 
@@ -238,38 +238,62 @@ final class VolumeMonitor {
     }
 
     // MARK: - Pure CoreAudio plumbing (addresses + get/set primitives)
+    //
+    // Every member below is `nonisolated` — pure struct construction and
+    // plain C CoreAudio calls with no dependency on this instance's actor
+    // state — deliberately so `deinit` (which, like every class `deinit`,
+    // cannot itself be actor-isolated) can call `Self.defaultDeviceAddress`
+    // directly without the compiler treating that as crossing an isolation
+    // boundary. Without this, the same call from `deinit` that's perfectly
+    // fine from any other (MainActor-isolated) instance method below is a
+    // hard compile error.
 
-    private static let outputScope = kAudioDevicePropertyScopeOutput
+    private nonisolated static let outputScope = kAudioDevicePropertyScopeOutput
 
-    private static var defaultDeviceAddress: AudioObjectPropertyAddress {
+    private nonisolated static var defaultDeviceAddress: AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
                                     mScope: kAudioObjectPropertyScopeGlobal,
                                     mElement: kAudioObjectPropertyElementMain)
     }
 
-    private static var volumeAddress: AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalarVirtualMainVolume,
+    /// The device's overall ("main"/element-0) scalar volume — what most
+    /// built-in outputs expose directly, sparing this monitor from having to
+    /// average per-channel values itself. There is no separate "virtual main
+    /// volume" property selector in CoreAudio's `AudioObjectPropertyAddress`
+    /// vocabulary (that convenience belongs to the different, deprecated
+    /// `AudioHardwareService` API, which this monitor doesn't use) — the
+    /// plain `kAudioDevicePropertyVolumeScalar` selector addressed at
+    /// `kAudioObjectPropertyElementMain` (element 0) is CoreAudio's actual
+    /// "master volume" address; `channelVolumeAddress` below is the exact
+    /// same selector at an explicit per-channel element instead.
+    private nonisolated static var volumeAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
                                     mScope: outputScope, mElement: kAudioObjectPropertyElementMain)
     }
 
-    private static var muteAddress: AudioObjectPropertyAddress {
+    private nonisolated static var muteAddress: AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyMute,
                                     mScope: outputScope, mElement: kAudioObjectPropertyElementMain)
     }
 
-    private static func channelVolumeAddress(channel: UInt32) -> AudioObjectPropertyAddress {
+    private nonisolated static func channelVolumeAddress(channel: UInt32) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar, mScope: outputScope, mElement: channel)
     }
 
-    private static func defaultOutputDevice() -> AudioObjectID {
+    private nonisolated static func defaultOutputDevice() -> AudioObjectID {
         var address = defaultDeviceAddress
         var deviceID = kAudioObjectUnknown
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = AudioObjectGetPropertyData(kAudioObjectSystemObject, &address, 0, nil, &size, &deviceID)
+        // `kAudioObjectSystemObject` imports as a bare `Int32` (it's declared
+        // as an untyped C enum case, not a `CF_ENUM(AudioObjectID, ...)`) —
+        // a real, widely-hit CoreAudio/Swift interop gotcha distinct from
+        // every other constant here, which is why only this one needs an
+        // explicit `AudioObjectID(...)` conversion.
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
         return status == noErr ? deviceID : kAudioObjectUnknown
     }
 
-    private static func hasVirtualMainVolume(device: AudioObjectID) -> Bool {
+    private nonisolated static func hasVirtualMainVolume(device: AudioObjectID) -> Bool {
         var address = volumeAddress
         return AudioObjectHasProperty(device, &address)
     }
@@ -279,7 +303,7 @@ final class VolumeMonitor {
     /// to averaging the per-channel scalar volume (elements 1/2) for the
     /// devices that don't expose it — notably several USB/HDMI outputs,
     /// which only ever publish independently settable per-channel volumes.
-    private static func readVolume(device: AudioObjectID) -> Float? {
+    private nonisolated static func readVolume(device: AudioObjectID) -> Float? {
         guard device != kAudioObjectUnknown else { return nil }
         if hasVirtualMainVolume(device: device) {
             var address = volumeAddress
@@ -297,7 +321,7 @@ final class VolumeMonitor {
         }
     }
 
-    private static func writeVolume(device: AudioObjectID, level: Float) -> Bool {
+    private nonisolated static func writeVolume(device: AudioObjectID, level: Float) -> Bool {
         let clamped = min(max(level, 0), 1)
         if hasVirtualMainVolume(device: device) {
             var address = volumeAddress
@@ -310,7 +334,7 @@ final class VolumeMonitor {
         return leftOK || rightOK
     }
 
-    private static func readMute(device: AudioObjectID) -> Bool? {
+    private nonisolated static func readMute(device: AudioObjectID) -> Bool? {
         guard device != kAudioObjectUnknown else { return nil }
         var address = muteAddress
         guard AudioObjectHasProperty(device, &address) else { return nil }
@@ -320,7 +344,7 @@ final class VolumeMonitor {
         return status == noErr ? value != 0 : nil
     }
 
-    private static func writeMute(device: AudioObjectID, muted: Bool) -> Bool {
+    private nonisolated static func writeMute(device: AudioObjectID, muted: Bool) -> Bool {
         var address = muteAddress
         guard AudioObjectHasProperty(device, &address) else { return false }
         var value: UInt32 = muted ? 1 : 0
@@ -328,7 +352,7 @@ final class VolumeMonitor {
         return AudioObjectSetPropertyData(device, &address, 0, nil, size, &value) == noErr
     }
 
-    private static func readFloat32(_ device: AudioObjectID, _ address: inout AudioObjectPropertyAddress) -> Float? {
+    private nonisolated static func readFloat32(_ device: AudioObjectID, _ address: inout AudioObjectPropertyAddress) -> Float? {
         guard AudioObjectHasProperty(device, &address) else { return nil }
         var value: Float32 = 0
         var size = UInt32(MemoryLayout<Float32>.size)
@@ -336,7 +360,7 @@ final class VolumeMonitor {
         return status == noErr ? value : nil
     }
 
-    private static func writeFloat32(_ device: AudioObjectID, _ address: inout AudioObjectPropertyAddress, _ value: Float) -> Bool {
+    private nonisolated static func writeFloat32(_ device: AudioObjectID, _ address: inout AudioObjectPropertyAddress, _ value: Float) -> Bool {
         guard AudioObjectHasProperty(device, &address) else { return false }
         var isSettable: DarwinBoolean = false
         guard AudioObjectIsPropertySettable(device, &address, &isSettable) == noErr, isSettable.boolValue else { return false }
