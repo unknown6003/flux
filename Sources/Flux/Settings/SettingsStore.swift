@@ -44,6 +44,8 @@ final class SettingsStore: ObservableObject {
         self.notchActivityBatteryEnabled = defaults.bool(forKey: Keys.notchActivityBatteryEnabled)
         self.notchActivityBluetoothEnabled = defaults.bool(forKey: Keys.notchActivityBluetoothEnabled)
         self.notchActivityCalendarEventEnabled = defaults.bool(forKey: Keys.notchActivityCalendarEventEnabled)
+        self.notchHudEnabled = defaults.bool(forKey: Keys.notchHudEnabled)
+        self.notchHudInterceptEnabled = defaults.bool(forKey: Keys.notchHudInterceptEnabled)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
@@ -200,6 +202,26 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityCalendarEventEnabled, forKey: Keys.notchActivityCalendarEventEnabled) }
     }
 
+    /// Master on/off for the M5 volume/brightness HUD — governs both modes.
+    /// Defaults to `true`: observe mode (`VolumeMonitor`'s CoreAudio
+    /// listeners posting alongside the system bezel) needs no permission and
+    /// costs nothing at idle, so there's no reason to make a user opt in to
+    /// it the way `notchHudInterceptEnabled` requires.
+    @Published var notchHudEnabled: Bool {
+        didSet { defaults.set(notchHudEnabled, forKey: Keys.notchHudEnabled) }
+    }
+
+    /// Opt-in escalation from observe mode to intercept mode — swallowing
+    /// volume/brightness keys via `MediaKeyInterceptor` so only the notch HUD
+    /// appears, never the system bezel. Defaults to `false`: this needs
+    /// Accessibility, an unavoidably scary-looking grant, so it stays off
+    /// until the user deliberately turns it on (`NotchActivityRouter` also
+    /// independently requires the permission to actually be granted before
+    /// honoring this toggle — see `applyHUDState`).
+    @Published var notchHudInterceptEnabled: Bool {
+        didSet { defaults.set(notchHudInterceptEnabled, forKey: Keys.notchHudInterceptEnabled) }
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
@@ -239,6 +261,8 @@ final class SettingsStore: ObservableObject {
         Keys.notchActivityBatteryEnabled: true,
         Keys.notchActivityBluetoothEnabled: true,
         Keys.notchActivityCalendarEventEnabled: true,
+        Keys.notchHudEnabled: true,
+        Keys.notchHudInterceptEnabled: false,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
@@ -266,6 +290,8 @@ final class SettingsStore: ObservableObject {
         static let notchActivityBatteryEnabled = "flux.notch.activities.battery"
         static let notchActivityBluetoothEnabled = "flux.notch.activities.bluetooth"
         static let notchActivityCalendarEventEnabled = "flux.notch.activities.calendarEvent"
+        static let notchHudEnabled = "flux.notch.hud.enabled"
+        static let notchHudInterceptEnabled = "flux.notch.hud.intercept"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }

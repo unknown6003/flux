@@ -86,14 +86,49 @@ final class LiveActivityCenter: ObservableObject {
     private var queue: [LiveActivity] = []
     private var expiryTasks: [UUID: Task<Void, Never>] = [:]
 
-    /// Post a new activity. Any already-queued activity of the same `kind` is
-    /// dismissed first (a fresh event supersedes the stale one), then priority
-    /// is re-resolved.
+    /// Post a new activity. An already-queued activity of the same `kind` is
+    /// superseded — but exactly how depends on whether the new content is
+    /// actually different:
+    /// - Equal content (leading/trailing/tint/priority/duration, ignoring
+    ///   `id`): this is a key-repeat storm (a HUD gauge reposting the same
+    ///   value every ~30ms while a volume key is held) or an equivalent
+    ///   no-op re-post — the existing activity's `id` is kept as-is and only
+    ///   its expiry deadline is reset (cancel + reschedule the one `Task`).
+    ///   Nothing about `current`/`queue` identity changes, so this never
+    ///   costs a SwiftUI remove+insert on a view that's already showing.
+    /// - Different content (e.g. the gauge actually moved): the queued entry
+    ///   is replaced, but — the same fix — the OLD entry's `id` is kept on
+    ///   the REPLACEMENT rather than adopting the freshly-constructed
+    ///   activity's own `id`, so SwiftUI still sees this as an update to the
+    ///   existing `Identifiable` view rather than a remove+insert of a new
+    ///   one.
+    /// Only when no activity of this `kind` is queued at all does the new
+    /// activity's own `id` get used verbatim.
     func post(_ activity: LiveActivity) {
-        dismiss(kind: activity.kind)
+        if let index = queue.firstIndex(where: { $0.kind == activity.kind }) {
+            let existing = queue[index]
+            if Self.hasEqualContent(existing, activity) {
+                scheduleExpiry(for: existing)
+                return
+            }
+            let replacement = LiveActivity(id: existing.id, kind: activity.kind, leading: activity.leading,
+                                            trailing: activity.trailing, duration: activity.duration,
+                                            priority: activity.priority, tint: activity.tint)
+            queue[index] = replacement
+            scheduleExpiry(for: replacement)
+            recomputeCurrent()
+            return
+        }
         queue.append(activity)
         scheduleExpiry(for: activity)
         recomputeCurrent()
+    }
+
+    /// Same `kind` plus every field but `id` — the equality `post` uses to
+    /// tell a genuine no-op repost apart from a real content change.
+    private static func hasEqualContent(_ a: LiveActivity, _ b: LiveActivity) -> Bool {
+        a.kind == b.kind && a.leading == b.leading && a.trailing == b.trailing
+            && a.duration == b.duration && a.priority == b.priority && a.tint == b.tint
     }
 
     /// Dismiss one activity by id — used when the thing driving it (a widget,
@@ -105,8 +140,12 @@ final class LiveActivityCenter: ObservableObject {
         recomputeCurrent()
     }
 
-    /// Dismiss every queued activity of a kind (also used internally by
-    /// `post` to de-duplicate before inserting the replacement).
+    /// Dismiss every queued activity of a kind — used by the producer side
+    /// (`NotchActivityRouter` et al.) when a whole category of activity
+    /// should go away outright (HUD toggled off, permission revoked), not by
+    /// `post` itself: `post`'s own same-kind supersession (see its doc
+    /// comment) updates the existing entry in place rather than dismissing
+    /// and re-inserting it.
     func dismiss(kind: LiveActivity.Kind) {
         let ids = queue.filter { $0.kind == kind }.map(\.id)
         guard !ids.isEmpty else { return }
@@ -128,9 +167,15 @@ final class LiveActivityCenter: ObservableObject {
     // MARK: - Expiry
 
     private func scheduleExpiry(for activity: LiveActivity) {
-        guard let duration = activity.duration else { return } // nil = sticky, no deadline
         let id = activity.id
+        // Cancel any previously scheduled deadline for this id unconditionally
+        // — including when the new `duration` is `nil` — so an activity that
+        // transitions from timed to sticky on a same-id repost/replace
+        // (`post`'s dedupe/update paths) doesn't leave a stale timer that
+        // dismisses it out from under the sticky state.
         expiryTasks[id]?.cancel()
+        expiryTasks[id] = nil
+        guard let duration = activity.duration else { return } // nil = sticky, no deadline
         expiryTasks[id] = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled else { return }

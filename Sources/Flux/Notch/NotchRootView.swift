@@ -309,13 +309,30 @@ struct NotchRootView: View {
             }
             .foregroundStyle(tint == .warning ? tintColor : .white)
         case .gauge(let value, let systemName):
+            let clamped = min(max(value, 0), 1)
             HStack(spacing: 4) {
                 Image(systemName: systemName)
-                ProgressView(value: min(max(value, 0), 1))
-                    .frame(width: 28)
+                    .font(.system(size: 11))
+                    .frame(width: 12)
+                // A hand-drawn thin capsule rather than `ProgressView` — the
+                // default macOS bar style reads as a chunky, inset control at
+                // this width; a flush 3pt-tall capsule track/fill matches the
+                // rest of the wing content (icons/text) at a glance. The fill
+                // width (not the whole gauge) is what's animated, and only on
+                // value changes — no continuous/repeating animation, matching
+                // this app's 0%-idle-CPU contract.
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.25))
+                    GeometryReader { geometry in
+                        Capsule()
+                            .fill(Theme.accentColor)
+                            .frame(width: geometry.size.width * clamped)
+                    }
+                }
+                .frame(width: 28, height: 3)
+                .animation(.easeOut(duration: 0.15), value: clamped)
             }
             .foregroundStyle(.white)
-            .tint(Theme.accentColor)
         case .artwork:
             if let image = artworkProvider?() {
                 Image(nsImage: image)

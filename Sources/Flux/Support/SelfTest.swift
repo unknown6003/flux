@@ -5,6 +5,8 @@ import Combine
 import Foundation
 import EventKit
 import AVFoundation
+import CoreGraphics
+import ApplicationServices
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
 /// counts `willPresent`/`didDismiss` calls so the state machine's "exactly
@@ -373,13 +375,72 @@ enum SelfTest {
         center.dismiss(id: low.id)
         check(center.current == nil, "LiveActivity: dismissing the last activity leaves nothing current")
 
+        // The code-review fix: posting the same kind again with DIFFERENT
+        // content (79% vs. 80%) still supersedes the stale one — but the
+        // in-place update keeps the ORIGINAL id (batteryA's), not batteryB's
+        // own freshly-generated one, so SwiftUI sees an update to the
+        // existing view rather than a remove+insert.
         let batteryA = LiveActivity(kind: .battery, leading: .text("80%"), trailing: .none, duration: nil, priority: 200)
         let batteryB = LiveActivity(kind: .battery, leading: .text("79%"), trailing: .none, duration: nil, priority: 200)
         center.post(batteryA)
         center.post(batteryB)
-        check(center.current?.id == batteryB.id,
-              "LiveActivity: posting the same kind again replaces the stale one instead of stacking")
-        center.dismiss(id: batteryB.id)
+        check(center.current?.id == batteryA.id,
+              "LiveActivity: posting the same kind again with different content updates in place (keeps the original id) instead of stacking or churning identity")
+        check(center.current?.leading == .text("79%"),
+              "LiveActivity: the in-place update reflects the newly posted content")
+        center.dismiss(id: batteryA.id)
+
+        // --- LiveActivity: same-kind EQUAL-content repost (a key-repeat
+        // storm reposting an unchanged gauge) reuses the existing id and
+        // just extends its expiry deadline instead of replacing it. ---
+        //
+        // Timing is deliberately generous (hundreds of ms, ~150ms margins on
+        // every side) rather than tight fractions of a short duration — a
+        // loaded CI runner's real scheduling jitter is easily tens of ms, and
+        // this needs to reliably land BEFORE one deadline and AFTER another
+        // rather than merely after some elapsed time (unlike e.g.
+        // `hoverOpenDelay + 0.15`'s simpler "wait comfortably past" checks
+        // elsewhere in this file).
+        let repostCenter = LiveActivityCenter()
+        let repostDuration: TimeInterval = 0.6
+        let repostGapBeforeRepost: TimeInterval = 0.3 // comfortably < repostDuration
+        let repostFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
+                                        trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
+                                        duration: repostDuration, priority: 300)
+        repostCenter.post(repostFirst) // deadline at t≈0.6
+        RunLoop.current.run(until: Date().addingTimeInterval(repostGapBeforeRepost)) // t≈0.3, well before 0.6
+        let repostEqual = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
+                                        trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
+                                        duration: repostDuration, priority: 300)
+        repostCenter.post(repostEqual) // resets the deadline to t≈0.3+0.6=0.9
+        check(repostCenter.current?.id == repostFirst.id,
+              "LiveActivity: an equal-content repost of the same kind reuses the original id instead of replacing it")
+        // t≈0.75: past the ORIGINAL post's own deadline (0.6) — proof the
+        // repost actually rescheduled the expiry Task rather than being a
+        // no-op — but comfortably before the extended one (0.9).
+        RunLoop.current.run(until: Date().addingTimeInterval(0.45))
+        check(repostCenter.current?.id == repostFirst.id,
+              "LiveActivity: the equal-content repost extended the expiry deadline — it survives past the original post's own duration")
+        // t≈1.1: comfortably past the extended deadline (0.9) too.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        check(repostCenter.current == nil,
+              "LiveActivity: the extended deadline still expires on its own schedule once it's actually reached")
+
+        // Content-change repost of the same kind: same shape as the battery
+        // case above, isolated here against a duration-bearing kind.
+        let contentChangeCenter = LiveActivityCenter()
+        let contentFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.1.fill"),
+                                         trailing: .gauge(0.2, systemName: "speaker.wave.1.fill"),
+                                         duration: nil, priority: 300)
+        contentChangeCenter.post(contentFirst)
+        let contentSecond = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.3.fill"),
+                                          trailing: .gauge(0.9, systemName: "speaker.wave.3.fill"),
+                                          duration: nil, priority: 300)
+        contentChangeCenter.post(contentSecond)
+        check(contentChangeCenter.current?.id == contentFirst.id,
+              "LiveActivity: a content-changed repost of the same kind keeps the original id (an update, not a replace)")
+        check(contentChangeCenter.current?.trailing == .gauge(0.9, systemName: "speaker.wave.3.fill"),
+              "LiveActivity: a content-changed repost's new value is what's actually shown")
 
         // --- Notch: NotchViewModel transition table ---
         let notchRegistry = NotchWidgetRegistry()
@@ -1379,6 +1440,278 @@ enum SelfTest {
                 permissionGranted: true, notchPresenting: true, widgetEnabled: false,
                 state: .expanded(.calendar), activityToggleOn: false),
               "NotchActivityRouter: calendarServiceShouldRun requires widgetEnabled true for the widget-open condition to count, even if state somehow still reads .expanded(.calendar)")
+
+        // --- M5: MediaKeyInterceptor — NX_SYSDEFINED data1 parsing + decision
+        // logic, all pure (no real CGEventTap is ever created here) ---
+        do {
+            // data1 layout: bits 16-31 = NX_KEYTYPE_* key code, bits 8-15 of the
+            // low word = key state (0xA down / 0xB up), bit 0 = autorepeat.
+            let volUpDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000A00)
+            check(volUpDown.keyCode == 0 && volUpDown.keyDown && !volUpDown.isRepeat,
+                  "MediaKeyInterceptor: parseKeyEvent decodes a plain key-down (NX_KEYTYPE_SOUND_UP, non-repeat)")
+
+            let keyUp = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000B00)
+            check(!keyUp.keyDown, "MediaKeyInterceptor: parseKeyEvent decodes a key-up (state 0xB) as NOT keyDown")
+
+            let repeatDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000A01)
+            check(repeatDown.keyDown && repeatDown.isRepeat,
+                  "MediaKeyInterceptor: parseKeyEvent decodes the autorepeat bit")
+
+            let brightnessDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00020A00)
+            check(brightnessDown.keyCode == 2 && brightnessDown.keyDown,
+                  "MediaKeyInterceptor: parseKeyEvent decodes a non-zero key code out of the high 16 bits (NX_KEYTYPE_BRIGHTNESS_UP)")
+
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 0) == .volumeUp,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_SOUND_UP (0) to .volumeUp")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 1) == .volumeDown,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_SOUND_DOWN (1) to .volumeDown")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 7) == .mute,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_MUTE (7) to .mute")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 2) == .brightnessUp,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_BRIGHTNESS_UP (2) to .brightnessUp")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 3) == .brightnessDown,
+                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_BRIGHTNESS_DOWN (3) to .brightnessDown")
+            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 16) == nil,
+                  "MediaKeyInterceptor: hudKey is nil for a system-defined key this app doesn't handle (e.g. play/pause)")
+
+            check(MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: false, volumeControllable: true),
+                  "MediaKeyInterceptor: volume keys are swallowed when the device has software volume control, brightness availability notwithstanding")
+            check(MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: false, volumeControllable: true),
+                  "MediaKeyInterceptor: mute is swallowed when the device has software volume control")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .brightnessUp, brightnessAvailable: false, volumeControllable: true),
+                  "MediaKeyInterceptor: brightness keys pass through untouched when DisplayServices is unavailable")
+            check(MediaKeyInterceptor.shouldSwallow(key: .brightnessDown, brightnessAvailable: true, volumeControllable: true),
+                  "MediaKeyInterceptor: brightness keys are swallowed once DisplayServices is available")
+            // The code-review fix: a device with no software-settable volume
+            // (digital/HDMI out, some external DACs) must let volume keys
+            // pass through instead of swallowing them into a void — mirrors
+            // the existing brightnessAvailable pass-through above exactly.
+            check(!MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: true, volumeControllable: false),
+                  "MediaKeyInterceptor: volume keys pass through when the output device has no software volume control")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .volumeDown, brightnessAvailable: true, volumeControllable: false),
+                  "MediaKeyInterceptor: volume-down also passes through with no software volume control")
+            check(!MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: true, volumeControllable: false),
+                  "MediaKeyInterceptor: mute also passes through with no software volume control")
+
+            check(!MediaKeyInterceptor().isTapActive,
+                  "MediaKeyInterceptor: isTapActive is false for a fresh instance before start() is ever called")
+
+            check(!MediaKeyInterceptor.isFineStep(flags: []),
+                  "MediaKeyInterceptor: isFineStep is false with no modifiers")
+            check(!MediaKeyInterceptor.isFineStep(flags: .maskShift),
+                  "MediaKeyInterceptor: isFineStep requires BOTH Shift and Option, not Shift alone")
+            check(!MediaKeyInterceptor.isFineStep(flags: .maskAlternate),
+                  "MediaKeyInterceptor: isFineStep requires BOTH Shift and Option, not Option alone")
+            check(MediaKeyInterceptor.isFineStep(flags: [.maskShift, .maskAlternate]),
+                  "MediaKeyInterceptor: isFineStep is true with Shift+Option together")
+        }
+
+        // --- M5: NotchActivityRouter — HUD symbol pickers, activity shape,
+        // dedupe window, and mode derivation, all pure ---
+        check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: true) == "speaker.slash.fill",
+              "NotchActivityRouter: volumeSymbol shows the slashed glyph whenever muted, regardless of level")
+        check(NotchActivityRouter.volumeSymbol(level: 0, muted: false) == "speaker.slash.fill",
+              "NotchActivityRouter: volumeSymbol shows the slashed glyph at a literal 0 level too")
+        check(NotchActivityRouter.volumeSymbol(level: 0.1, muted: false) == "speaker.wave.1.fill",
+              "NotchActivityRouter: volumeSymbol picks the low-wave glyph in the bottom third")
+        check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: false) == "speaker.wave.2.fill",
+              "NotchActivityRouter: volumeSymbol picks the mid-wave glyph in the middle third")
+        check(NotchActivityRouter.volumeSymbol(level: 0.9, muted: false) == "speaker.wave.3.fill",
+              "NotchActivityRouter: volumeSymbol picks the full-wave glyph in the top third")
+
+        check(NotchActivityRouter.brightnessSymbol(level: 0.2) == "sun.min.fill",
+              "NotchActivityRouter: brightnessSymbol shows the dim glyph at or below half brightness")
+        check(NotchActivityRouter.brightnessSymbol(level: 0.8) == "sun.max.fill",
+              "NotchActivityRouter: brightnessSymbol shows the bright glyph above half brightness")
+
+        let m5VolumeActivity = NotchActivityRouter.volumeActivity(level: 0.4, muted: false)
+        check(m5VolumeActivity.kind == .hudVolume && m5VolumeActivity.priority == 300 && m5VolumeActivity.duration == 1.5,
+              "NotchActivityRouter: volumeActivity posts at kind .hudVolume, priority 300, duration 1.5s")
+        // Not a plain `==` against `.gauge(0.4, ...)`: `volumeActivity` stores
+        // `Double(level)` where `level` is a `Float`, and widening a `Float`
+        // 0.4 to `Double` (~0.4000000059604645) doesn't bit-for-bit match the
+        // `Double` literal `0.4` — an epsilon compare on the unwrapped value
+        // is the correct check, not a red herring to "fix" by chasing exact
+        // equality.
+        if case let .gauge(value, systemName) = m5VolumeActivity.trailing {
+            check(abs(value - 0.4) < 0.0001 && systemName == "speaker.wave.2.fill",
+                  "NotchActivityRouter: volumeActivity's trailing content is a gauge carrying the exact level and matching icon")
+        } else {
+            check(false, "NotchActivityRouter: volumeActivity's trailing content is a gauge (got \(m5VolumeActivity.trailing))")
+        }
+
+        let m5BrightnessActivity = NotchActivityRouter.brightnessActivity(level: 0.9)
+        check(m5BrightnessActivity.kind == .hudBrightness && m5BrightnessActivity.priority == 300,
+              "NotchActivityRouter: brightnessActivity posts at kind .hudBrightness, priority 300 (same tier as volume)")
+
+        let dedupeNow = Date()
+        check(NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: dedupeNow.addingTimeInterval(-0.1)),
+              "NotchActivityRouter: isVolumeMonitorEventSuppressed is true just after an interceptor apply (inside the 300ms window)")
+        check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: dedupeNow.addingTimeInterval(-0.5)),
+              "NotchActivityRouter: isVolumeMonitorEventSuppressed is false once the dedupe window has elapsed")
+        check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: nil),
+              "NotchActivityRouter: isVolumeMonitorEventSuppressed is false with no prior interceptor apply at all")
+
+        // `intendedHUDMode` (the code-review fix's rename+refactor of
+        // `hudMode`): its inputs are strictly the CAUSES of the decision —
+        // notably `accessibilityGranted`, NOT whether some tap instance
+        // happens to be running — so this is the exact function
+        // `applyHUDState` now calls for its own decision (see that
+        // function's doc comment), not a second parallel implementation.
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: false, notchPresenting: true, interceptRequested: true, accessibilityGranted: true) == .off,
+              "NotchActivityRouter: intendedHUDMode is .off whenever the HUD master toggle is off, regardless of everything else")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: false, interceptRequested: true, accessibilityGranted: true) == .off,
+              "NotchActivityRouter: intendedHUDMode is .off with nowhere to present (notchPresenting false), even with Accessibility granted")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: false, accessibilityGranted: false) == .observe,
+              "NotchActivityRouter: intendedHUDMode is .observe when the HUD is on but intercept was never requested")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: true, accessibilityGranted: false) == .observe,
+              "NotchActivityRouter: intendedHUDMode falls back to .observe when intercept is requested but Accessibility isn't granted")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: true, accessibilityGranted: true) == .intercept,
+              "NotchActivityRouter: intendedHUDMode is .intercept only when requested AND Accessibility is granted — actual tap health is a separate post-hoc check applyHUDState makes, not a mode input")
+
+        // --- M5: NotchActivityRouter — observe-mode volume events post/gate
+        // correctly, driven purely through VolumeMonitor's own `.events`
+        // subject. `hudVolume`/`hudBrightness`/`hudInterceptor` below are real
+        // instances (constructor seams, matching `testPower`/`testBluetooth`
+        // above), but `start()`/`adjustVolume()`/`toggleMute()`/`adjust(by:)`
+        // are never called on any of them here — only synthetic
+        // `VolumeEvent`s are fed in, so this never touches real CoreAudio or
+        // creates a real event tap on the CI runner. ---
+        do {
+            let hudSuiteName = "flux.selftest.hud"
+            let hudSuite = UserDefaults(suiteName: hudSuiteName)!
+            hudSuite.removePersistentDomain(forName: hudSuiteName)
+            let hudSettings = SettingsStore(defaults: hudSuite)
+            let hudActivities = LiveActivityCenter()
+            let hudArranger = MenuBarArranger()
+            let hudCalendar = CalendarService()
+            let hudPermissions = PermissionCenter()
+            let hudViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
+            let hudVolume = VolumeMonitor()
+            let hudBrightness = BrightnessMonitor()
+            let hudInterceptor = MediaKeyInterceptor()
+            // `startsMonitors: false` — see this file's identical note on the
+            // M3 router block above; must never let the router's real
+            // settings-driven lifecycle call `volume.start()`/
+            // `interceptor.start()` for real on a headless CI runner.
+            let hudRouter = NotchActivityRouter(activities: hudActivities, settings: hudSettings,
+                                                 arranger: hudArranger, calendar: hudCalendar,
+                                                 permissions: hudPermissions, viewModel: hudViewModel,
+                                                 volume: hudVolume, brightness: hudBrightness,
+                                                 interceptor: hudInterceptor, startsMonitors: false)
+
+            withExtendedLifetime(hudRouter) {
+                hudVolume.events.send(.volumeChanged(level: 0.6, muted: false))
+                check(hudActivities.current?.kind == .hudVolume,
+                      "NotchActivityRouter: a VolumeEvent posts a .hudVolume live activity in observe mode")
+                check(hudActivities.current?.priority == 300,
+                      "NotchActivityRouter: HUD activities post at priority 300 — above battery (200)")
+                check(hudActivities.current?.duration == 1.5,
+                      "NotchActivityRouter: HUD activities expire after 1.5s")
+
+                hudSettings.notchHudEnabled = false
+                hudActivities.dismiss(kind: .hudVolume)
+                hudVolume.events.send(.volumeChanged(level: 0.8, muted: false))
+                check(hudActivities.current?.kind != .hudVolume,
+                      "NotchActivityRouter: the HUD master toggle off suppresses further volume posts")
+
+                hudSettings.notchHudEnabled = true
+                hudVolume.events.send(.volumeChanged(level: 0.2, muted: true))
+                check(hudActivities.current?.leading == .icon(systemName: "speaker.slash.fill"),
+                      "NotchActivityRouter: re-enabling the HUD toggle resumes posting, and a muted event shows the slashed glyph")
+
+                // The code-review fix's wiring: NotchActivityRouter.init sets
+                // `hudInterceptor.volumeControllable` to read
+                // `hudVolume.hasVolumeControl` live, rather than leaving it at
+                // its always-true default — verified by checking they agree,
+                // not by asserting a specific Bool (there's no guarantee what
+                // hardware/CI runner this executes on actually exposes).
+                check(hudInterceptor.volumeControllable() == hudVolume.hasVolumeControl,
+                      "NotchActivityRouter: wires the interceptor's volumeControllable closure to the router's own VolumeMonitor instance")
+            }
+            hudSuite.removePersistentDomain(forName: hudSuiteName)
+        }
+
+        // --- M5 code review: VolumeMonitor.hasVolumeControl — a smoke test
+        // safe on a headless CI runner with no guaranteed real audio
+        // hardware: it must not crash, and if there's no readable volume at
+        // all (`current == nil`), a device can't possibly be settable either. ---
+        do {
+            let volumeControlProbe = VolumeMonitor()
+            if volumeControlProbe.current == nil {
+                check(!volumeControlProbe.hasVolumeControl,
+                      "VolumeMonitor: hasVolumeControl is false when there's no readable volume at all")
+            } else {
+                check(true,
+                      "VolumeMonitor: hasVolumeControl computed without crashing (\(volumeControlProbe.hasVolumeControl)) alongside a readable current value")
+            }
+        }
+
+        // --- M5 bot-review fix: VolumeMonitor.perChannelTargets — the pure
+        // per-channel delta math backing `adjustVolume`'s no-virtual-main-
+        // volume fallback. The bug this replaced: the old fallback read the
+        // shared AVERAGE of the two channels, added `delta` once, and wrote
+        // that single result back to BOTH channels — flattening any existing
+        // left/right balance to identical values the very first time a
+        // volume key was pressed. Applying `delta` to each channel
+        // independently (verified here) preserves whatever gap already
+        // existed between them instead. ---
+        do {
+            let balanced = VolumeMonitor.perChannelTargets(left: 0.3, right: 0.5, delta: 0.1)
+            check(balanced.left.map { abs($0 - 0.4) < 0.0001 } == true,
+                  "VolumeMonitor: perChannelTargets applies delta to the left channel independently")
+            check(balanced.right.map { abs($0 - 0.6) < 0.0001 } == true,
+                  "VolumeMonitor: perChannelTargets applies delta to the right channel independently, preserving the existing left/right gap rather than collapsing both to a shared average")
+
+            let clampedHigh = VolumeMonitor.perChannelTargets(left: 0.95, right: 0.95, delta: 0.5)
+            check(clampedHigh.left == 1.0 && clampedHigh.right == 1.0,
+                  "VolumeMonitor: perChannelTargets clamps each channel at 1.0")
+
+            let clampedLow = VolumeMonitor.perChannelTargets(left: 0.05, right: 0.05, delta: -0.5)
+            check(clampedLow.left == 0.0 && clampedLow.right == 0.0,
+                  "VolumeMonitor: perChannelTargets clamps each channel at 0.0")
+
+            let missingChannel = VolumeMonitor.perChannelTargets(left: 0.4, right: nil, delta: 0.1)
+            check(missingChannel.left != nil && missingChannel.right == nil,
+                  "VolumeMonitor: perChannelTargets leaves an unreadable channel nil rather than fabricating a value for it")
+        }
+
+        // --- M5 bot-review fix: BrightnessMonitor.canChangeBrightness — a
+        // smoke test safe on a headless CI runner with no guaranteed real
+        // display brightness support: must not crash, and can never be true
+        // when `isAvailable` itself is false (missing DisplayServices symbols
+        // leaves nothing that could possibly change anything). This is the
+        // gate `NotchActivityRouter.applyHUDState` now wires into
+        // `interceptor.brightnessAvailable` instead of the weaker bare
+        // `isAvailable` (see that call site's doc comment) — `shouldSwallow`
+        // itself is unchanged (still a pure function of whatever Bool it's
+        // handed), so only the caller's choice of Bool needed new coverage. ---
+        do {
+            let brightnessProbe = BrightnessMonitor()
+            if !brightnessProbe.isAvailable {
+                check(!brightnessProbe.canChangeBrightness,
+                      "BrightnessMonitor: canChangeBrightness is false whenever isAvailable is false")
+            } else {
+                check(true,
+                      "BrightnessMonitor: canChangeBrightness computed without crashing (\(brightnessProbe.canChangeBrightness)) alongside isAvailable == true")
+            }
+        }
+
+        // --- M5 code review: PermissionCenter re-checks Accessibility on the
+        // undocumented-but-established "com.apple.accessibility.api"
+        // DistributedNotificationCenter post, so a revoke/grant while Flux
+        // stays the frontmost app is still caught (didBecomeActiveNotification
+        // alone wouldn't see it). Smoke test: posting it must not crash, and
+        // afterward .accessibility must match a fresh live query — proof the
+        // observer actually re-queried rather than merely surviving. ---
+        do {
+            let accessibilityPermCenter = PermissionCenter()
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name("com.apple.accessibility.api"), object: nil, userInfo: nil, deliverImmediately: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(accessibilityPermCenter.statuses[.accessibility] == (AXIsProcessTrusted() ? .granted : .denied),
+                  "PermissionCenter: the accessibility.api distributed notification refreshes .accessibility without crashing")
+        }
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
