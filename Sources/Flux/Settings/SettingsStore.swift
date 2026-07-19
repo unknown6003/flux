@@ -40,8 +40,10 @@ final class SettingsStore: ObservableObject {
         self.notchNowPlayingEnabled = defaults.bool(forKey: Keys.notchNowPlayingEnabled)
         self.notchShelfEnabled = defaults.bool(forKey: Keys.notchShelfEnabled)
         self.notchShelfExpiryDays = defaults.double(forKey: Keys.notchShelfExpiryDays)
+        self.notchCalendarEnabled = defaults.bool(forKey: Keys.notchCalendarEnabled)
         self.notchActivityBatteryEnabled = defaults.bool(forKey: Keys.notchActivityBatteryEnabled)
         self.notchActivityBluetoothEnabled = defaults.bool(forKey: Keys.notchActivityBluetoothEnabled)
+        self.notchActivityCalendarEventEnabled = defaults.bool(forKey: Keys.notchActivityCalendarEventEnabled)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
@@ -151,6 +153,11 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchShelfEnabled, forKey: Keys.notchShelfEnabled) }
     }
 
+    /// Whether the Calendar widget is enabled in the notch's cycle.
+    @Published var notchCalendarEnabled: Bool {
+        didSet { defaults.set(notchCalendarEnabled, forKey: Keys.notchCalendarEnabled) }
+    }
+
     /// How long a shelved file survives before auto-clearing, in days. `0`
     /// means never — mirrors `ShelfStore.expiryInterval` (`nil` there), which
     /// is derived from this value by the wiring agent (`AppDelegate`) rather
@@ -184,6 +191,15 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityBluetoothEnabled, forKey: Keys.notchActivityBluetoothEnabled) }
     }
 
+    /// Whether `CalendarService`'s upcoming events post the "starting soon"
+    /// live activity — read by `NotchActivityRouter`, which also requires
+    /// `notchEnabled` and Calendar permission before actually starting the
+    /// service on this toggle's behalf (see `CalendarService`'s doc comment
+    /// on its two independent owners).
+    @Published var notchActivityCalendarEventEnabled: Bool {
+        didSet { defaults.set(notchActivityCalendarEventEnabled, forKey: Keys.notchActivityCalendarEventEnabled) }
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
@@ -215,12 +231,14 @@ final class SettingsStore: ObservableObject {
         Keys.notchHoverOpenDelay: 0.15,
         Keys.notchHoverCloseDelay: 0.40,
         Keys.notchShowInFullscreen: true,
-        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue],
+        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue],
         Keys.notchNowPlayingEnabled: true,
         Keys.notchShelfEnabled: true,
         Keys.notchShelfExpiryDays: 0.0,
+        Keys.notchCalendarEnabled: true,
         Keys.notchActivityBatteryEnabled: true,
         Keys.notchActivityBluetoothEnabled: true,
+        Keys.notchActivityCalendarEventEnabled: true,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
@@ -244,8 +262,10 @@ final class SettingsStore: ObservableObject {
         static let notchNowPlayingEnabled = "flux.notch.nowPlayingEnabled"
         static let notchShelfEnabled = "flux.notch.shelf.enabled"
         static let notchShelfExpiryDays = "flux.notch.shelf.expiryDays"
+        static let notchCalendarEnabled = "flux.notch.calendar.enabled"
         static let notchActivityBatteryEnabled = "flux.notch.activities.battery"
         static let notchActivityBluetoothEnabled = "flux.notch.activities.bluetooth"
+        static let notchActivityCalendarEventEnabled = "flux.notch.activities.calendarEvent"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }

@@ -33,6 +33,16 @@ final class NotchActivityRouter {
     private let arranger: MenuBarArranger
     private let power: PowerMonitor
     private let bluetooth: BluetoothMonitor
+    /// Shared with `CalendarWidget` — unlike `power`/`bluetooth` (whose only
+    /// consumer is this router), this instance is also the Calendar widget's
+    /// own data source, so it's injected rather than default-constructed
+    /// here. See `CalendarService`'s own doc comment for how its `start()`/
+    /// `stop()` stays correct with two independent owners.
+    private let calendar: CalendarService
+    /// Read-only here — this router only ever calls `refresh`/reads
+    /// `statuses`; `request`/`openSystemSettings` are Settings-UI actions the
+    /// Calendar widget itself owns.
+    private let permissions: PermissionCenter
     /// Gates every real `power.start()`/`bluetooth.start()` call (see
     /// `applyMonitorState`) — `false` only for `--selftest`, which feeds
     /// synthetic events straight through `power.events`/`bluetooth.events`
@@ -49,6 +59,20 @@ final class NotchActivityRouter {
     /// render. Defaults to `{ true }` so call sites that don't care about
     /// presentation (like `--selftest`) don't have to wire anything.
     private let isPresentationAvailable: () -> Bool
+    /// Whether `CalendarWidget` is the notch's currently *expanded* widget —
+    /// wired by the app to `NotchWindowController.viewModel.state`. Consulted
+    /// only on the "should this router stop the shared `CalendarService`?"
+    /// side of `applyMonitorState`'s calendar branch: while the widget itself
+    /// is open, it owns starting/stopping the service via its own
+    /// `willPresent`/`didDismiss` (see `CalendarService`'s doc comment on the
+    /// two independent owners), so this router must never pull the service
+    /// out from under it just because its own settings-driven condition
+    /// happens to be false at that moment (e.g. the event-soon toggle gets
+    /// flipped off, or a routine permission re-check runs on app activation,
+    /// while the widget is on screen). Defaults to `{ false }` so callers
+    /// that don't care (like `--selftest`) don't have to wire anything — the
+    /// router simply falls back to its own settings-only decision.
+    private let isCalendarWidgetPresented: () -> Bool
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -61,24 +85,35 @@ final class NotchActivityRouter {
     init(activities: LiveActivityCenter,
          settings: SettingsStore,
          arranger: MenuBarArranger,
+         calendar: CalendarService,
+         permissions: PermissionCenter,
          power: PowerMonitor? = nil,
          bluetooth: BluetoothMonitor? = nil,
          startsMonitors: Bool = true,
-         isPresentationAvailable: @escaping () -> Bool = { true }) {
+         isPresentationAvailable: @escaping () -> Bool = { true },
+         isCalendarWidgetPresented: @escaping () -> Bool = { false }) {
         self.activities = activities
         self.settings = settings
         self.arranger = arranger
+        self.calendar = calendar
+        self.permissions = permissions
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? BluetoothMonitor()
         self.startsMonitors = startsMonitors
         self.isPresentationAvailable = isPresentationAvailable
+        self.isCalendarWidgetPresented = isCalendarWidgetPresented
 
         observePower()
         observeBluetooth()
         observeOverflow()
         observeOverflowGating()
+        observeCalendar()
         observeMonitorGating()
         applyMonitorState()
+    }
+
+    deinit {
+        calendarThresholdTask?.cancel()
     }
 
     // MARK: - Battery
@@ -199,6 +234,95 @@ final class NotchActivityRouter {
         return "cable.connector"
     }
 
+    // MARK: - Calendar (M4: event-soon activity)
+
+    /// One cancellable deadline task, armed for the next moment the
+    /// event-soon decision could change (either a threshold crossing or an
+    /// event's own start passing) — see `scheduleNextCalendarBoundary`'s doc
+    /// comment. Mirrors `LiveActivityCenter.expiryTasks`'s single-deadline
+    /// shape: no repeating timer anywhere in this pipeline.
+    private var calendarThresholdTask: Task<Void, Never>?
+
+    private func observeCalendar() {
+        calendar.$upcoming
+            .sink { [weak self] _ in self?.recomputeCalendarActivity() }
+            .store(in: &cancellables)
+    }
+
+    /// Re-evaluates the event-soon `LiveActivity` against the current
+    /// `upcoming` list and gating (settings toggle + calendar permission),
+    /// then arms the next boundary task. Called whenever `upcoming` changes,
+    /// whenever the gating settings change (`observeMonitorGating`, extended
+    /// below to include the calendar toggle), and by the boundary task
+    /// itself once its deadline arrives.
+    private func recomputeCalendarActivity() {
+        calendarThresholdTask?.cancel()
+        calendarThresholdTask = nil
+
+        guard settings.notchActivityCalendarEventEnabled,
+              permissions.statuses[.calendar] == .granted
+        else {
+            activities.dismiss(kind: .calendarEvent)
+            return
+        }
+
+        let now = Date()
+        if let activity = Self.calendarEventSoonActivity(events: calendar.upcoming, now: now) {
+            activities.post(activity)
+        } else {
+            activities.dismiss(kind: .calendarEvent)
+        }
+        scheduleNextCalendarBoundary(now: now)
+    }
+
+    /// No repeating timer: computes the single next instant this decision
+    /// could flip — either an event crossing *into* the 10-minute window, or
+    /// the soonest-showing event's own start passing (so the wing comes down
+    /// the moment it's no longer "soon," not up to a full tick late) — and
+    /// sleeps exactly until then before re-evaluating. Cancelled/replaced on
+    /// every recompute (including by itself, at the top of
+    /// `recomputeCalendarActivity`) so only the most recently scheduled
+    /// boundary can ever fire, the same pattern `NotchRootView`'s
+    /// `interactiveRectSettleTask` and `LiveActivityCenter`'s expiry tasks use.
+    private func scheduleNextCalendarBoundary(now: Date) {
+        let boundaries = calendar.upcoming
+            .flatMap { [$0.start.addingTimeInterval(-Self.calendarSoonThreshold), $0.start] }
+            .filter { $0 > now }
+        guard let next = boundaries.min() else { return }
+
+        calendarThresholdTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(next.timeIntervalSince(now)))
+            guard !Task.isCancelled else { return }
+            self?.recomputeCalendarActivity()
+        }
+    }
+
+    /// How far ahead of an event's start the sticky wing appears.
+    static let calendarSoonThreshold: TimeInterval = 10 * 60
+
+    /// Pure core of the event-soon decision: the earliest not-yet-started
+    /// event whose start falls within `calendarSoonThreshold` of `now`
+    /// becomes a sticky (`duration: nil`, dismissed explicitly once it's no
+    /// longer soon) wing; anything else yields `nil` so the caller dismisses
+    /// instead. Priority 120 sits between menu-bar overflow (150, a layout
+    /// problem) and Bluetooth (100, a routine connect/disconnect blip) — an
+    /// upcoming event is more actionable than "a device connected" but isn't
+    /// the "something needs your attention right now" tier `.warning`/300
+    /// HUD activities occupy.
+    static func calendarEventSoonActivity(events: [CalendarEvent], now: Date) -> LiveActivity? {
+        guard let next = events
+            .filter({ $0.start >= now && $0.start.timeIntervalSince(now) <= calendarSoonThreshold })
+            .min(by: { $0.start < $1.start })
+        else { return nil }
+
+        let minutes = max(0, Int((next.start.timeIntervalSince(now) / 60).rounded()))
+        return LiveActivity(kind: .calendarEvent,
+                             leading: .icon(systemName: "calendar"),
+                             trailing: .text("\(next.title) in \(minutes)m"),
+                             duration: nil,
+                             priority: 120)
+    }
+
     // MARK: - Menu-bar overflow (moved from AppDelegate — see type doc comment)
 
     /// Identical behavior to the pre-M3 `AppDelegate.observeNotchOverflowActivity`:
@@ -281,12 +405,34 @@ final class NotchActivityRouter {
     /// this sink already has the exact values that changed in hand.
     private func observeMonitorGating() {
         settings.$notchEnabled
-            .combineLatest(settings.$notchActivityBatteryEnabled, settings.$notchActivityBluetoothEnabled)
+            .combineLatest(settings.$notchActivityBatteryEnabled, settings.$notchActivityBluetoothEnabled,
+                           settings.$notchActivityCalendarEventEnabled)
             .dropFirst()
-            .sink { [weak self] notchEnabled, batteryEnabled, bluetoothEnabled in
+            .sink { [weak self] notchEnabled, batteryEnabled, bluetoothEnabled, calendarEnabled in
                 self?.applyMonitorState(notchEnabled: notchEnabled,
                                         batteryEnabled: batteryEnabled,
-                                        bluetoothEnabled: bluetoothEnabled)
+                                        bluetoothEnabled: bluetoothEnabled,
+                                        calendarEnabled: calendarEnabled)
+                // The settings toggle also directly gates whether the
+                // event-soon activity itself may show — re-evaluate it here
+                // too, not just the underlying service's start/stop, so
+                // switching the toggle off dismisses an already-showing wing
+                // immediately rather than waiting for `upcoming` to next
+                // change.
+                self?.recomputeCalendarActivity()
+            }
+            .store(in: &cancellables)
+
+        // Permission can change independently of every settings toggle above
+        // (the user grants/revokes Calendar access in System Settings) —
+        // `PermissionCenter.refresh` picks that up on app activation, and
+        // this re-applies both the service's start/stop and the activity's
+        // own gating whenever it does.
+        permissions.$statuses
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.applyMonitorState()
+                self?.recomputeCalendarActivity()
             }
             .store(in: &cancellables)
     }
@@ -302,17 +448,25 @@ final class NotchActivityRouter {
     /// freely on every settings tick (or presentation change) without
     /// worrying about double-registration.
     ///
-    /// The three `Bool?` parameters default to `nil`, in which case the
+    /// The four `Bool?` parameters default to `nil`, in which case the
     /// current value is read straight from `settings` — used by every caller
     /// that isn't reacting to one specific emitted change (`init`'s initial
     /// call, and the presentation-change callback wired in by the app, which
     /// has no settings tuple of its own to hand in). `observeMonitorGating`'s
-    /// sink is the one caller that always supplies all three explicitly.
+    /// sink is the one caller that always supplies all four explicitly.
     ///
     /// Also gated on `startsMonitors` — `false` only for `--selftest` (see
     /// its doc comment) — so a headless test run never touches real
-    /// IOKit/IOBluetooth state no matter how many settings toggles it flips.
-    private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil, bluetoothEnabled: Bool? = nil) {
+    /// IOKit/IOBluetooth/EventKit state no matter how many settings toggles
+    /// it flips.
+    ///
+    /// Calendar's `start()` call here is this router's own vote, idempotent
+    /// alongside `CalendarWidget`'s own — but its `stop()` is conditional on
+    /// `isCalendarWidgetPresented()` (see that property's doc comment): this
+    /// router only tears the shared service down when it's sure the widget
+    /// itself isn't also relying on it being up.
+    private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil,
+                                    bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresentationAvailable()
 
@@ -329,6 +483,17 @@ final class NotchActivityRouter {
             bluetooth.stop()
             activities.dismiss(kind: .bluetoothDevice)
         }
+
+        let calendarShouldRun = notchOn && (calendarEnabled ?? settings.notchActivityCalendarEventEnabled)
+            && permissions.statuses[.calendar] == .granted
+        if calendarShouldRun {
+            calendar.start()
+        } else {
+            activities.dismiss(kind: .calendarEvent)
+            if !isCalendarWidgetPresented() {
+                calendar.stop()
+            }
+        }
     }
 
     /// Re-syncs the monitor start/stop decision after something *outside*
@@ -340,5 +505,6 @@ final class NotchActivityRouter {
     /// doc comment.
     func presentationDidChange() {
         applyMonitorState()
+        recomputeCalendarActivity()
     }
 }

@@ -10,7 +10,7 @@ struct LiveActivity: Identifiable, Equatable {
     /// new activity of a kind already queued replaces the old one instead of
     /// stacking (e.g. a fresh battery-percent tick supersedes the stale one).
     enum Kind: Equatable {
-        case battery, bluetoothDevice, hudVolume, hudBrightness, timer, shelfDrop, menuBarOverflow, nowPlaying
+        case battery, bluetoothDevice, hudVolume, hudBrightness, timer, shelfDrop, menuBarOverflow, nowPlaying, calendarEvent
     }
 
     /// What to draw in a wing. Deliberately data-only (no SwiftUI types) so

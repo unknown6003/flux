@@ -9,6 +9,7 @@ import Foundation
 struct NotchTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var nowPlaying: NowPlayingService
+    @EnvironmentObject private var permissions: PermissionCenter
 
     var body: some View {
         VStack(spacing: 18) {
@@ -106,6 +107,14 @@ struct NotchTab: View {
                 RowDivider()
                 shelfExpiryRow
             }
+            RowDivider()
+            ToggleRow(title: "Calendar",
+                      subtitle: "Show your upcoming events, grouped into Today and Tomorrow.",
+                      isOn: $settings.notchCalendarEnabled)
+            if settings.notchCalendarEnabled {
+                RowDivider()
+                PermissionRow(kind: .calendar, title: "Calendar access", permissions: permissions)
+            }
         }
     }
 
@@ -121,6 +130,10 @@ struct NotchTab: View {
             ToggleRow(title: "Bluetooth devices",
                       subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect.",
                       isOn: $settings.notchActivityBluetoothEnabled)
+            RowDivider()
+            ToggleRow(title: "Upcoming event alerts",
+                      subtitle: "Show a wing when a calendar event is starting within 10 minutes.",
+                      isOn: $settings.notchActivityCalendarEventEnabled)
         }
     }
 

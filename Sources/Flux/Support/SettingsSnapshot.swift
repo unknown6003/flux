@@ -27,6 +27,7 @@ enum SettingsSnapshot {
             .environmentObject(arranger)
             .environmentObject(UpdateChecker())
             .environmentObject(NowPlayingService())
+            .environmentObject(PermissionCenter())
             .environment(\.colorScheme, dark ? .dark : .light)
 
         // Settings' width is fixed; only the height needs to fit the tab's

@@ -3,6 +3,8 @@ import Carbon.HIToolbox
 import SwiftUI
 import Combine
 import Foundation
+import EventKit
+import AVFoundation
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
 /// counts `willPresent`/`didDismiss` calls so the state machine's "exactly
@@ -1007,6 +1009,8 @@ enum SelfTest {
             let routerArranger = MenuBarArranger()
             let testPower = PowerMonitor()
             let testBluetooth = BluetoothMonitor()
+            let testCalendar = CalendarService()
+            let testPermissions = PermissionCenter()
             // `startsMonitors: false` — this test drives `testPower`/
             // `testBluetooth` purely by feeding synthetic events straight
             // through their `.events` subjects (below); it must never let the
@@ -1014,10 +1018,13 @@ enum SelfTest {
             // either monitor, which would register real IOKit/IOBluetooth
             // run-loop sources and notifications on the CI runner (flaky and
             // slow in a headless environment with no real battery/Bluetooth
-            // hardware to speak of).
+            // hardware to speak of). Same reasoning extends `testCalendar`/
+            // `testPermissions`: this block only exercises the event-soon
+            // pure translation logic (below), never a real EventKit fetch.
             let router = NotchActivityRouter(activities: routerActivities, settings: routerSettings,
-                                              arranger: routerArranger, power: testPower, bluetooth: testBluetooth,
-                                              startsMonitors: false)
+                                              arranger: routerArranger, calendar: testCalendar,
+                                              permissions: testPermissions, power: testPower,
+                                              bluetooth: testBluetooth, startsMonitors: false)
 
             // `withExtendedLifetime` keeps `router` (and its Combine
             // subscriptions on `testPower`/`testBluetooth`) alive for the
@@ -1116,6 +1123,149 @@ enum SelfTest {
             }
             routerSuite.removePersistentDomain(forName: routerSuiteName)
         }
+
+        // --- M4: PermissionCenter — EKAuthorizationStatus/AVAuthorizationStatus
+        // mapping is pure and testable without any real TCC state ---
+        check(PermissionCenter.mapCalendarStatus(.notDetermined) == .notDetermined,
+              "PermissionCenter: EKAuthorizationStatus.notDetermined maps to .notDetermined")
+        check(PermissionCenter.mapCalendarStatus(.restricted) == .restricted,
+              "PermissionCenter: EKAuthorizationStatus.restricted maps to .restricted")
+        check(PermissionCenter.mapCalendarStatus(.denied) == .denied,
+              "PermissionCenter: EKAuthorizationStatus.denied maps to .denied")
+        check(PermissionCenter.mapCalendarStatus(.fullAccess) == .granted,
+              "PermissionCenter: EKAuthorizationStatus.fullAccess maps to .granted")
+        check(PermissionCenter.mapCalendarStatus(.writeOnly) == .denied,
+              "PermissionCenter: EKAuthorizationStatus.writeOnly maps to .denied — write-only access is as useless to Flux's read-only agenda/live-activity as no access at all")
+
+        check(PermissionCenter.mapCameraStatus(.notDetermined) == .notDetermined,
+              "PermissionCenter: AVAuthorizationStatus.notDetermined maps to .notDetermined")
+        check(PermissionCenter.mapCameraStatus(.authorized) == .granted,
+              "PermissionCenter: AVAuthorizationStatus.authorized maps to .granted")
+        check(PermissionCenter.mapCameraStatus(.denied) == .denied,
+              "PermissionCenter: AVAuthorizationStatus.denied maps to .denied")
+        check(PermissionCenter.mapCameraStatus(.restricted) == .restricted,
+              "PermissionCenter: AVAuthorizationStatus.restricted maps to .restricted")
+
+        let permissionCenterSelfTest = PermissionCenter()
+        check(PermissionKind.allCases.allSatisfy { permissionCenterSelfTest.statuses[$0] != nil },
+              "PermissionCenter: every PermissionKind has a status populated at init")
+        permissionCenterSelfTest.refresh(.calendar)
+        check(permissionCenterSelfTest.statuses[.calendar] != nil,
+              "PermissionCenter: refresh(_:) re-populates a status without crashing")
+
+        // --- M4: CalendarService — pure display helpers, testable without a real EKEventStore ---
+        func makeCalendarTestEvent(id: String, title: String, start: Date, end: Date,
+                                    isAllDay: Bool = false, location: String? = nil) -> CalendarEvent {
+            CalendarEvent(id: id, title: title, start: start, end: end,
+                          isAllDay: isAllDay, calendarColor: nil, location: location)
+        }
+
+        let calNow = Date()
+        let calCalendar = Calendar.current
+
+        // nextEventLine: minutes / hours / now boundaries.
+        let eventIn5Min = makeCalendarTestEvent(id: "a", title: "Standup",
+            start: calNow.addingTimeInterval(5 * 60), end: calNow.addingTimeInterval(35 * 60))
+        check(CalendarService.nextEventLine(events: [eventIn5Min], now: calNow) == "Standup in 5m",
+              "CalendarService: nextEventLine renders a same-hour event in minutes")
+
+        let eventIn2Hours = makeCalendarTestEvent(id: "b", title: "Review",
+            start: calNow.addingTimeInterval(2 * 3600), end: calNow.addingTimeInterval(3 * 3600))
+        check(CalendarService.nextEventLine(events: [eventIn2Hours], now: calNow) == "Review in 2h",
+              "CalendarService: nextEventLine renders an hours-away event in hours")
+
+        let eventInProgress = makeCalendarTestEvent(id: "c", title: "Focus Block",
+            start: calNow.addingTimeInterval(-10 * 60), end: calNow.addingTimeInterval(20 * 60))
+        check(CalendarService.nextEventLine(events: [eventInProgress], now: calNow) == "Focus Block now",
+              "CalendarService: nextEventLine renders an already-started, not-yet-ended event as 'now'")
+
+        let eventEnded = makeCalendarTestEvent(id: "d", title: "Past Meeting",
+            start: calNow.addingTimeInterval(-3600), end: calNow.addingTimeInterval(-1800))
+        check(CalendarService.nextEventLine(events: [eventEnded], now: calNow) == nil,
+              "CalendarService: nextEventLine is nil when every event has already ended")
+        check(CalendarService.nextEventLine(events: [], now: calNow) == nil,
+              "CalendarService: nextEventLine is nil for an empty list")
+        check(CalendarService.nextEventLine(events: [eventIn2Hours, eventIn5Min], now: calNow) == "Standup in 5m",
+              "CalendarService: nextEventLine picks the earliest-starting qualifying event regardless of list order")
+
+        // groupByDay: boundary at midnight, all-day events.
+        let startOfToday = calCalendar.startOfDay(for: calNow)
+        let startOfTomorrow = calCalendar.date(byAdding: .day, value: 1, to: startOfToday)!
+        let startOfDayAfterTomorrow = calCalendar.date(byAdding: .day, value: 1, to: startOfTomorrow)!
+
+        let todayEvent = makeCalendarTestEvent(id: "e", title: "Today Meeting",
+            start: startOfToday.addingTimeInterval(3600), end: startOfToday.addingTimeInterval(7200))
+        let tomorrowEvent = makeCalendarTestEvent(id: "f", title: "Tomorrow Meeting",
+            start: startOfTomorrow.addingTimeInterval(3600), end: startOfTomorrow.addingTimeInterval(7200))
+        let dayAfterEvent = makeCalendarTestEvent(id: "g", title: "Day After",
+            start: startOfDayAfterTomorrow.addingTimeInterval(3600), end: startOfDayAfterTomorrow.addingTimeInterval(7200))
+        let allDayToday = makeCalendarTestEvent(id: "h", title: "All-day Today",
+            start: startOfToday, end: startOfTomorrow, isAllDay: true)
+        let midnightBoundaryEvent = makeCalendarTestEvent(id: "i", title: "Midnight Tomorrow",
+            start: startOfTomorrow, end: startOfTomorrow.addingTimeInterval(1800))
+
+        let groups = CalendarService.groupByDay(
+            events: [todayEvent, tomorrowEvent, dayAfterEvent, allDayToday, midnightBoundaryEvent],
+            now: calNow, calendar: calCalendar)
+        check(groups.today.map(\.id).sorted() == ["e", "h"],
+              "CalendarService: groupByDay puts today's timed event and today's all-day event in 'today'")
+        check(groups.tomorrow.map(\.id).sorted() == ["f", "i"],
+              "CalendarService: groupByDay puts tomorrow's event AND an event starting exactly at tomorrow's midnight boundary in 'tomorrow' (inclusive lower bound)")
+        check(!groups.today.contains(where: { $0.id == "g" }) && !groups.tomorrow.contains(where: { $0.id == "g" }),
+              "CalendarService: groupByDay excludes an event starting the day after tomorrow from both sections")
+
+        let emptyGroups = CalendarService.groupByDay(events: [], now: calNow, calendar: calCalendar)
+        check(emptyGroups.today.isEmpty && emptyGroups.tomorrow.isEmpty,
+              "CalendarService: groupByDay is empty/empty for an empty list")
+
+        // start()/stop() are plain, idempotent booleans (mirroring PowerMonitor's shape).
+        let lifecycleCalendar = CalendarService()
+        lifecycleCalendar.start()
+        lifecycleCalendar.start() // idempotent — must not crash or double-subscribe
+        lifecycleCalendar.stop()
+        lifecycleCalendar.stop() // idempotent
+        check(true, "CalendarService: start()/stop() are safely idempotent when called repeatedly")
+
+        // --- M4: NotchActivityRouter.calendarEventSoonActivity — pure event-soon translation ---
+        let soonNow = Date()
+        let eventSoonIn3Min = makeCalendarTestEvent(id: "soon1", title: "1:1",
+            start: soonNow.addingTimeInterval(3 * 60), end: soonNow.addingTimeInterval(30 * 60))
+        let eventSoonActivity = NotchActivityRouter.calendarEventSoonActivity(events: [eventSoonIn3Min], now: soonNow)
+        check(eventSoonActivity?.kind == .calendarEvent,
+              "NotchActivityRouter: an event starting within 10 minutes produces a .calendarEvent activity")
+        check(eventSoonActivity?.duration == nil,
+              "NotchActivityRouter: the event-soon activity is sticky (duration nil) — dismissed explicitly once no longer 'soon', not auto-expired")
+        check(eventSoonActivity?.priority == 120,
+              "NotchActivityRouter: the event-soon activity posts at priority 120 (between menu-bar overflow's 150 and Bluetooth's 100)")
+        check(eventSoonActivity?.trailing == .text("1:1 in 3m"),
+              "NotchActivityRouter: the event-soon activity's trailing text is '<title> in Nm'")
+        check(eventSoonActivity?.leading == .icon(systemName: "calendar"),
+              "NotchActivityRouter: the event-soon activity's leading content is a calendar icon")
+
+        let eventFarAway = makeCalendarTestEvent(id: "far", title: "Later",
+            start: soonNow.addingTimeInterval(20 * 60), end: soonNow.addingTimeInterval(50 * 60))
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [eventFarAway], now: soonNow) == nil,
+              "NotchActivityRouter: an event more than 10 minutes away produces no activity")
+
+        let eventAlreadyStarted = makeCalendarTestEvent(id: "started", title: "In Progress",
+            start: soonNow.addingTimeInterval(-5 * 60), end: soonNow.addingTimeInterval(25 * 60))
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [eventAlreadyStarted], now: soonNow) == nil,
+              "NotchActivityRouter: an event that has already started produces no activity — only the approach to its start counts as 'soon'")
+
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [], now: soonNow) == nil,
+              "NotchActivityRouter: no activity for an empty event list")
+
+        let eventRightAtStart = makeCalendarTestEvent(id: "atstart", title: "Now",
+            start: soonNow, end: soonNow.addingTimeInterval(1800))
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [eventRightAtStart], now: soonNow)?.trailing == .text("Now in 0m"),
+              "NotchActivityRouter: an event starting exactly now still qualifies (inclusive lower bound) and rounds to 0m")
+
+        let eventSoonIn12Min = makeCalendarTestEvent(id: "soon2", title: "Too Far",
+            start: soonNow.addingTimeInterval(12 * 60), end: soonNow.addingTimeInterval(40 * 60))
+        let multiEventActivity = NotchActivityRouter.calendarEventSoonActivity(
+            events: [eventFarAway, eventSoonIn3Min, eventSoonIn12Min], now: soonNow)
+        check(multiEventActivity?.trailing == .text("1:1 in 3m"),
+              "NotchActivityRouter: with a mix of qualifying/non-qualifying events, the earliest-starting qualifying one wins")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

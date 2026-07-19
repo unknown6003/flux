@@ -19,6 +19,7 @@ enum SettingsRenderer {
             .environmentObject(MenuBarArranger())
             .environmentObject(UpdateChecker())
             .environmentObject(NowPlayingService())
+            .environmentObject(PermissionCenter())
             .environment(\.colorScheme, isDark ? .dark : .light)
 
         // Resolve system colors (controlBackgroundColor, etc.) against the
