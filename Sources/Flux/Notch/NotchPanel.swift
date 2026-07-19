@@ -195,12 +195,32 @@ final class NotchPanel: NSPanel {
     var onDraggingMoved: ((NSPoint) -> NSDragOperation)?
     var onDraggingExited: (() -> Void)?
     var onPerformDragOperation: ((NSPasteboard) -> Bool)?
+}
 
-    // No `override`: `NSWindow` only implements `NSDraggingDestination`
-    // informally (an Objective-C category, not declared in its Swift-visible
-    // class interface), so these are plain methods AppKit's drag machinery
-    // finds and invokes by selector at runtime, not statically-dispatched
-    // overrides of a superclass declaration.
+// No `override`: `NSWindow` only implements `NSDraggingDestination`
+// informally (an Objective-C category, not declared in its Swift-visible
+// class interface), so these four methods aren't overrides of any
+// superclass declaration. But AppKit's drag machinery still finds and
+// invokes them purely by Objective-C selector — and a plain Swift method
+// with no formal protocol conformance anywhere is NOT automatically
+// exposed to the Objective-C runtime that lookup relies on. Writing the
+// four methods as ordinary members of the `NotchPanel` class body (as a
+// previous version of this file did, reasoning only about `override`) would
+// silently compile and never once be called: nothing makes them visible by
+// selector.
+//
+// Declaring the conformance here, on this extension, is what actually fixes
+// that. `NotchPanel` inherits from `NSPanel`/`NSWindow`, which is an
+// `NSObject` subclass, and `NSDraggingDestination` is an `@objc` protocol —
+// for an `NSObject` subclass, methods that satisfy an `@objc` protocol's
+// requirements are implicitly exposed via `@objc` (and thus reachable by
+// selector) purely *because* they're protocol witnesses, with no explicit
+// `@objc` attribute needed. The methods themselves must stay physically
+// inside this conformance block for that inference to apply to them; moving
+// them back onto the class itself (even leaving this `extension NotchPanel:
+// NSDraggingDestination {}` as an empty marker elsewhere) does not retroactively
+// make the class-body methods @objc.
+extension NotchPanel: NSDraggingDestination {
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         onDraggingMoved?(sender.draggingLocation) ?? []
     }

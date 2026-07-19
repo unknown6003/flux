@@ -42,7 +42,24 @@ final class ShelfStore: ObservableObject {
 
     /// `nil` = keep shelved files forever. Set from settings; not persisted
     /// by this type itself (the settings layer owns that).
-    var expiryInterval: TimeInterval?
+    ///
+    /// `didSet` re-sweeps immediately whenever the value actually changes
+    /// (guarded against redundant work when an assignment happens to repeat
+    /// the current value). Without this, a store created with no
+    /// `expiryInterval` yet — which is every store, at `init`, since it's
+    /// only assigned afterward by the settings layer — would sweep nothing
+    /// at launch, and then only tidy itself the next time `add(urls:)`
+    /// happens to run. A shelf nobody's actively dropping into again could
+    /// go a very long time (arguably forever, across relaunches) without
+    /// ever re-checking expiry once configured, defeating "auto-clear after
+    /// N days" as a feature for exactly the shelf it matters most for: one
+    /// that's sitting there unused.
+    var expiryInterval: TimeInterval? {
+        didSet {
+            guard expiryInterval != oldValue else { return }
+            sweepExpired()
+        }
+    }
 
     /// Storage directory — created on init if missing.
     let directory: URL
@@ -62,8 +79,8 @@ final class ShelfStore: ObservableObject {
         let loaded = Self.loadManifest(at: manifestURL)
         let reconciled = Self.reconcile(loaded, directory: self.directory, fileManager: fileManager)
         self.items = reconciled.sorted { $0.addedAt > $1.addedAt }
-        Self.logStrayFiles(knownNames: Set(reconciled.map(\.storedFileName)),
-                            directory: self.directory, fileManager: fileManager)
+        Self.logStrayEntries(knownDirectoryNames: Set(reconciled.map { $0.id.uuidString }),
+                              directory: self.directory, fileManager: fileManager)
 
         // Persist immediately if reconciliation actually dropped anything, so
         // a manifest full of dangling entries doesn't keep re-surfacing them
@@ -99,10 +116,11 @@ final class ShelfStore: ObservableObject {
     /// the notch can't freeze the main actor for the whole copy.
     private static let backgroundCopyThreshold: Int64 = 64 * 1024 * 1024
 
-    /// Copies each URL's file into the shelf directory under a fresh,
-    /// collision-proof stored name. Sources that fail to copy (permissions,
-    /// already gone, source disappeared mid-drag, etc.) are logged and
-    /// skipped rather than aborting the whole batch.
+    /// Copies each URL's file into a fresh, collision-proof per-item
+    /// subdirectory of the shelf directory (see
+    /// `ShelfItem.storedDirectoryURL(in:)`). Sources that fail to copy
+    /// (permissions, already gone, source disappeared mid-drag, etc.) are
+    /// logged and skipped rather than aborting the whole batch.
     ///
     /// Small files (see `backgroundCopyThreshold`) copy synchronously and are
     /// part of this call's returned array — the fast path, kept synchronous
@@ -116,8 +134,8 @@ final class ShelfStore: ObservableObject {
     /// since it isn't ready yet; `items` publishing its arrival once the
     /// background copy finishes is how the UI (and any in-flight toast) find
     /// out. A background copy can safely run concurrently with anything
-    /// else touching the store: the fresh UUID-prefixed `storedFileName` is
-    /// already collision-proof against every other add, in flight or not.
+    /// else touching the store: the fresh `id`-named subdirectory is already
+    /// collision-proof against every other add, in flight or not.
     @discardableResult
     func add(urls: [URL]) -> [ShelfItem] {
         sweepExpired()
@@ -125,22 +143,32 @@ final class ShelfStore: ObservableObject {
         var added: [ShelfItem] = []
         for source in urls {
             let displayName = source.lastPathComponent
-            let storedName = "\(UUID().uuidString)-\(displayName)"
-            let dest = directory.appendingPathComponent(storedName)
+            let item = ShelfItem(fileName: displayName, addedAt: Date())
+            let destDir = item.storedDirectoryURL(in: directory)
+            let dest = item.storedURL(in: directory)
             let sourceSize = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init)
 
             if let sourceSize, sourceSize <= Self.backgroundCopyThreshold {
                 do {
+                    // The per-item subdirectory is created fresh for every
+                    // add — `item.id` is a brand-new UUID, so this can never
+                    // collide with an existing item's directory.
+                    try fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
                     // `copyItem` recurses automatically when the source is a
                     // directory, so directories are supported for free.
                     try fileManager.copyItem(at: source, to: dest)
                 } catch {
                     shelfLog.error("Failed to copy \(displayName, privacy: .public) onto the shelf: \(error.localizedDescription, privacy: .public)")
+                    // Best-effort cleanup: don't let a copy that failed
+                    // partway (e.g. a large directory that died mid-recurse)
+                    // leave an orphaned, manifest-less subdirectory consuming
+                    // disk forever.
+                    try? fileManager.removeItem(at: destDir)
                     continue
                 }
-                added.append(ShelfItem(fileName: displayName, storedFileName: storedName, addedAt: Date()))
+                added.append(item)
             } else {
-                copyInBackground(source: source, dest: dest, storedName: storedName, displayName: displayName)
+                copyInBackground(source: source, item: item, destDir: destDir, dest: dest, displayName: displayName)
             }
         }
 
@@ -159,18 +187,23 @@ final class ShelfStore: ObservableObject {
 
     /// The slow path `add(urls:)` hands large/unknown-size sources to — see
     /// that method's doc comment for the full reasoning.
-    private func copyInBackground(source: URL, dest: URL, storedName: String, displayName: String) {
+    private func copyInBackground(source: URL, item: ShelfItem, destDir: URL, dest: URL, displayName: String) {
         let fileManager = self.fileManager
         Task.detached { [weak self] in
             do {
+                try fileManager.createDirectory(at: destDir, withIntermediateDirectories: true)
                 try fileManager.copyItem(at: source, to: dest)
             } catch {
                 shelfLog.error("Failed to copy \(displayName, privacy: .public) onto the shelf: \(error.localizedDescription, privacy: .public)")
+                // Same best-effort cleanup as the synchronous path in
+                // `add(urls:)` — a copy that dies partway through (large
+                // file/directory, source disappears mid-copy, disk full)
+                // shouldn't leave an orphaned subdirectory behind.
+                try? fileManager.removeItem(at: destDir)
                 return
             }
             await MainActor.run {
                 guard let self else { return }
-                let item = ShelfItem(fileName: displayName, storedFileName: storedName, addedAt: Date())
                 self.items.append(item)
                 self.items.sort { $0.addedAt > $1.addedAt }
                 self.saveManifest()
@@ -179,8 +212,10 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    /// Removes one item: deletes its stored file, drops its manifest entry
-    /// and thumbnail, and persists. A missing/already-gone stored file is
+    /// Removes one item: deletes its whole per-item subdirectory (not just
+    /// its stored file — see `ShelfItem.storedDirectoryURL(in:)`, so an empty
+    /// `<id>/` doesn't linger behind), drops its manifest entry and
+    /// thumbnail, and persists. A missing/already-gone subdirectory is
     /// logged but doesn't stop the manifest entry from being dropped — the
     /// user asked for it gone either way.
     func remove(_ id: UUID) {
@@ -188,7 +223,7 @@ final class ShelfStore: ObservableObject {
         let item = items[index]
 
         do {
-            try fileManager.removeItem(at: item.storedURL(in: directory))
+            try fileManager.removeItem(at: item.storedDirectoryURL(in: directory))
         } catch {
             shelfLog.error("Failed to delete stored file for \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
@@ -200,7 +235,7 @@ final class ShelfStore: ObservableObject {
 
     func removeAll() {
         for item in items {
-            try? fileManager.removeItem(at: item.storedURL(in: directory))
+            try? fileManager.removeItem(at: item.storedDirectoryURL(in: directory))
         }
         items.removeAll()
         thumbnails.removeAll()
@@ -240,7 +275,7 @@ final class ShelfStore: ObservableObject {
 
         for item in expired {
             do {
-                try fileManager.removeItem(at: item.storedURL(in: directory))
+                try fileManager.removeItem(at: item.storedDirectoryURL(in: directory))
             } catch {
                 shelfLog.error("Failed to delete expired stored file for \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
@@ -291,16 +326,17 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    /// Files that exist in the shelf directory but aren't referenced by any
-    /// manifest entry are left alone — deleting unrecognized files
-    /// automatically would risk destroying user data over a bug or a manifest
-    /// that simply failed to save. They're only logged, as a breadcrumb for
-    /// diagnosing how they got there.
-    private static func logStrayFiles(knownNames: Set<String>, directory: URL, fileManager: FileManager) {
+    /// Entries (per-item subdirectories, named by `id`) that exist in the
+    /// shelf directory but aren't referenced by any manifest entry are left
+    /// alone — deleting unrecognized entries automatically would risk
+    /// destroying user data over a bug or a manifest that simply failed to
+    /// save. They're only logged, as a breadcrumb for diagnosing how they
+    /// got there.
+    private static func logStrayEntries(knownDirectoryNames: Set<String>, directory: URL, fileManager: FileManager) {
         guard let contents = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
         for url in contents where url.lastPathComponent != "manifest.json" {
-            if !knownNames.contains(url.lastPathComponent) {
-                shelfLog.notice("Stray file in shelf directory not referenced by the manifest — left in place: \(url.lastPathComponent, privacy: .public)")
+            if !knownDirectoryNames.contains(url.lastPathComponent) {
+                shelfLog.notice("Stray entry in shelf directory not referenced by the manifest — left in place: \(url.lastPathComponent, privacy: .public)")
             }
         }
     }

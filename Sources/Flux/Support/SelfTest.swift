@@ -692,6 +692,17 @@ enum SelfTest {
             try? contents.write(to: url, atomically: true, encoding: .utf8)
             return url
         }
+        /// Writes `item`'s stored file directly into its per-item
+        /// subdirectory, bypassing `ShelfStore.add(urls:)` — for tests that
+        /// need to seed on-disk state (alongside a hand-written manifest) as
+        /// if a previous launch had already added the item, matching the
+        /// `<directory>/<id>/<fileName>` layout `ShelfItem.storedURL(in:)`
+        /// now expects.
+        func writeShelfStoredFile(for item: ShelfItem, in directory: URL, contents: String = "x") {
+            let url = item.storedURL(in: directory)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? contents.write(to: url, atomically: true, encoding: .utf8)
+        }
 
         let shelfSourceDir = makeShelfTempDir()
         let shelfDirA = makeShelfTempDir()
@@ -712,13 +723,22 @@ enum SelfTest {
                   "Shelf: the added item's stored copy exists on disk")
             check(FileManager.default.fileExists(atPath: shelfManifestURLA.path),
                   "Shelf: adding writes manifest.json")
+            // Storage layout fix: each item lives in its own `<id>/`
+            // subdirectory rather than a UUID-prefixed on-disk file name, so
+            // the URL handed out for every export (drag-out, AirDrop, Copy)
+            // keeps the original basename verbatim — no "2F…-hello.txt"
+            // leaking into whatever app receives it.
+            check(shelfStore1.url(for: shelfItem1.id)?.lastPathComponent == "hello.txt",
+                  "Shelf: the exported URL's last path component is exactly the original file name, not a UUID-prefixed stand-in")
 
-            // Remove: stored file gone, item gone, manifest updated.
+            // Remove: whole per-item subdirectory gone, item gone, manifest updated.
             shelfStore1.remove(shelfItem1.id)
             check(!shelfStore1.items.contains(where: { $0.id == shelfItem1.id }),
                   "Shelf: remove() drops the item from items")
             check(!FileManager.default.fileExists(atPath: shelfItem1.storedURL(in: shelfDirA).path),
                   "Shelf: remove() deletes the stored file")
+            check(!FileManager.default.fileExists(atPath: shelfItem1.storedDirectoryURL(in: shelfDirA).path),
+                  "Shelf: remove() deletes the whole per-item subdirectory, not just the file inside it")
             let shelfManifestAfterRemove = (try? Data(contentsOf: shelfManifestURLA))
                 .flatMap { try? JSONDecoder().decode([ShelfItem].self, from: $0) } ?? []
             check(!shelfManifestAfterRemove.contains(where: { $0.id == shelfItem1.id }),
@@ -750,37 +770,40 @@ enum SelfTest {
         // Expiry: an item older than expiryInterval is swept once it's set,
         // but left alone while expiryInterval is nil.
         let shelfDirExpiry = makeShelfTempDir()
-        let shelfStaleItem = ShelfItem(fileName: "stale.txt", storedFileName: "stale-stored.txt",
-                                        addedAt: Date().addingTimeInterval(-3_600))
-        try? "stale".write(to: shelfDirExpiry.appendingPathComponent(shelfStaleItem.storedFileName),
-                           atomically: true, encoding: .utf8)
+        let shelfStaleItem = ShelfItem(fileName: "stale.txt", addedAt: Date().addingTimeInterval(-3_600))
+        writeShelfStoredFile(for: shelfStaleItem, in: shelfDirExpiry, contents: "stale")
         if let shelfExpiryManifest = try? JSONEncoder().encode([shelfStaleItem]) {
             try? shelfExpiryManifest.write(to: shelfDirExpiry.appendingPathComponent("manifest.json"))
         }
         let shelfStoreExpiry = ShelfStore(directory: shelfDirExpiry)
         check(shelfStoreExpiry.items.contains(where: { $0.id == shelfStaleItem.id }),
               "Shelf: expiry — a 1-hour-old item is kept across load when expiryInterval is nil")
+        // `expiryInterval`'s `didSet` fix: assigning the property alone — no
+        // explicit `sweepExpired()` call anywhere below — must be enough to
+        // drop the now-expired item. Before the fix, a freshly-configured
+        // auto-clear interval only took effect the next time `init`/
+        // `add(urls:)` happened to run, so a shelf nobody was actively
+        // dropping into again would never tidy itself after being configured.
         shelfStoreExpiry.expiryInterval = 60 // 1 minute — the stale item is an hour old
-        shelfStoreExpiry.sweepExpired()
         check(!shelfStoreExpiry.items.contains(where: { $0.id == shelfStaleItem.id }),
-              "Shelf: expiry — sweepExpired() removes an item older than expiryInterval once it's set")
+              "Shelf: expiry — assigning expiryInterval alone sweeps a now-expired item via didSet, with no explicit sweepExpired() call")
 
         // Batch sweep: several expired items alongside one fresh survivor.
-        // `sweepExpired()` now partitions/deletes/persists in one shot rather
+        // `sweepExpired()` partitions/deletes/persists in one shot rather
         // than calling `remove(_:)` per item — asserting *how many times* the
         // manifest was written would be a fragile way to verify that (mtimes,
         // buffering, etc.), so this instead only checks observable
         // correctness: every expired item is gone (files and manifest), the
-        // fresh one survives, and nothing else was disturbed.
+        // fresh one survives, and nothing else was disturbed. The explicit
+        // `sweepExpired()` call below is redundant with the `didSet`-driven
+        // sweep the `expiryInterval` assignment just triggered — kept anyway
+        // to assert that calling it directly afterward stays safe/idempotent.
         let shelfDirBatch = makeShelfTempDir()
-        let staleBatch1 = ShelfItem(fileName: "stale1.txt", storedFileName: "stale1-stored.txt",
-                                    addedAt: Date().addingTimeInterval(-3_600))
-        let staleBatch2 = ShelfItem(fileName: "stale2.txt", storedFileName: "stale2-stored.txt",
-                                    addedAt: Date().addingTimeInterval(-7_200))
-        let freshBatch = ShelfItem(fileName: "fresh.txt", storedFileName: "fresh-stored.txt", addedAt: Date())
+        let staleBatch1 = ShelfItem(fileName: "stale1.txt", addedAt: Date().addingTimeInterval(-3_600))
+        let staleBatch2 = ShelfItem(fileName: "stale2.txt", addedAt: Date().addingTimeInterval(-7_200))
+        let freshBatch = ShelfItem(fileName: "fresh.txt", addedAt: Date())
         for item in [staleBatch1, staleBatch2, freshBatch] {
-            try? "x".write(to: shelfDirBatch.appendingPathComponent(item.storedFileName),
-                           atomically: true, encoding: .utf8)
+            writeShelfStoredFile(for: item, in: shelfDirBatch)
         }
         if let batchManifest = try? JSONEncoder().encode([staleBatch1, staleBatch2, freshBatch]) {
             try? batchManifest.write(to: shelfDirBatch.appendingPathComponent("manifest.json"))

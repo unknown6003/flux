@@ -4,36 +4,42 @@ import Foundation
 /// `ShelfStore.directory`) rather than merely referencing the original, so a
 /// shelved file survives the source being moved, renamed, ejected, or deleted.
 ///
-/// `fileName` (what the user sees) and `storedFileName` (what's actually on
-/// disk) are deliberately separate: two files both called "Screenshot.png"
-/// must be able to sit on the shelf at once, so the on-disk name is always
-/// prefixed with a fresh UUID to guarantee uniqueness, while the display name
-/// stays exactly what the user recognizes.
+/// Two files both called "Screenshot.png" must be able to sit on the shelf at
+/// once, so each item gets its own `id`-named subdirectory
+/// (`<directory>/<id>/`) rather than mangling the on-disk file name to force
+/// uniqueness. That keeps `fileName` — the *only* name stored — exactly the
+/// original basename, so every export (drag-out, AirDrop, Copy) hands out a
+/// URL whose last path component is precisely what the user dropped, never a
+/// UUID-prefixed stand-in leaking into the destination app.
 struct ShelfItem: Identifiable, Codable, Equatable {
     let id: UUID
-    /// Name shown in the UI — the original file's last path component.
+    /// Name shown in the UI *and* the on-disk file name inside this item's
+    /// subdirectory — the original file's last path component, unmodified.
     var fileName: String
-    /// Unique on-disk name inside `ShelfStore.directory`, of the form
-    /// `<uuid>-<fileName>`. The UUID prefix is what makes it collision-proof;
-    /// the original name is kept as a suffix purely so the directory is
-    /// human-readable if anyone ever has to look at it directly (Finder,
-    /// backups, support requests).
-    var storedFileName: String
     var addedAt: Date
 
-    init(id: UUID = UUID(), fileName: String, storedFileName: String, addedAt: Date) {
+    init(id: UUID = UUID(), fileName: String, addedAt: Date) {
         self.id = id
         self.fileName = fileName
-        self.storedFileName = storedFileName
         self.addedAt = addedAt
     }
 
-    /// Where this item's copy actually lives, given the store's storage
-    /// directory. Kept as a function of `directory` (rather than a stored
-    /// absolute URL) so the whole shelf directory can move — or just resolve
-    /// to a different sandbox/App Support path across machines/backups —
-    /// without invalidating every persisted item.
+    /// This item's private subdirectory within the store's storage
+    /// directory: `<directory>/<id>/`. `id` is already guaranteed unique, so
+    /// it doubles as the collision-proof directory name with no separate
+    /// UUID bookkeeping needed. Kept as a function of `directory` (rather
+    /// than a stored absolute URL) so the whole shelf directory can move —
+    /// or just resolve to a different sandbox/App Support path across
+    /// machines/backups — without invalidating every persisted item.
+    func storedDirectoryURL(in directory: URL) -> URL {
+        directory.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    /// Where this item's copy actually lives: `<directory>/<id>/<fileName>`.
+    /// Callers that need to delete the whole item (not just its file) should
+    /// remove `storedDirectoryURL(in:)` instead, so an empty `<id>/`
+    /// directory doesn't linger on disk forever.
     func storedURL(in directory: URL) -> URL {
-        directory.appendingPathComponent(storedFileName)
+        storedDirectoryURL(in: directory).appendingPathComponent(fileName)
     }
 }
