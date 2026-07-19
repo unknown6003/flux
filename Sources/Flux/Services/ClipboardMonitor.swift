@@ -23,22 +23,27 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// and safe to render, unlike `fullString`, which can be considerably
     /// larger (or, for images, is deliberately absent entirely).
     let preview: String
-    /// What `copyBack(_:)` writes back to the pasteboard:
-    /// - `.text`/`.url`: the full captured string, verbatim.
-    /// - `.file`: every captured path, newline-joined — `copyBack(_:)` splits
-    ///   this back into `URL`s to write as real file-URL pasteboard items
-    ///   (see that method's own doc comment for why paths round-trip through
-    ///   a joined string rather than this entry carrying its own `[URL]`).
-    /// - `.image`: always `nil`. Retaining decoded image bytes for
-    ///   potentially 50 history entries at once (`historyLimit`) is a real
-    ///   RAM cost for a feature whose whole point is glanceable history, not
-    ///   an image library — so v1 deliberately shows an image entry for
-    ///   context only (`preview` describes its dimensions) with no copy-back
-    ///   and no retained pixel data at all. A future milestone that wants
-    ///   image copy-back should budget the memory cost explicitly rather
-    ///   than this type accumulating it as a side effect of history.
-    /// - `.other`: `nil` — nothing this monitor knows how to write back.
+    /// What `copyBack(_:)` writes back to the pasteboard for `.text`/`.url`/
+    /// `.other` entries: the full captured string, verbatim. Always `nil`
+    /// for `.file` entries — those round-trip through `filePaths` instead
+    /// (a newline-joined string would corrupt any path that itself contains
+    /// a newline, however rare) — and for `.image` entries, where it's `nil`
+    /// for a different reason: retaining decoded image bytes for
+    /// potentially 50 history entries at once (`historyLimit`) is a real
+    /// RAM cost for a feature whose whole point is glanceable history, not
+    /// an image library — so v1 deliberately shows an image entry for
+    /// context only (`preview` describes its dimensions) with no copy-back
+    /// and no retained pixel data at all. A future milestone that wants
+    /// image copy-back should budget the memory cost explicitly rather
+    /// than this type accumulating it as a side effect of history.
     let fullString: String?
+    /// Every captured file path, one element per file — `.file` entries
+    /// only, `nil` for every other kind. Kept as a real `[String]` (rather
+    /// than joined into `fullString`) so `copyBack(_:)` can write each path
+    /// back as its own file-URL pasteboard item without ever having to
+    /// split a joined string apart again, which would silently corrupt any
+    /// path containing a newline.
+    let filePaths: [String]?
 }
 
 /// Polls `NSPasteboard.general.changeCount` on a 1-second timer — the ONLY
@@ -100,7 +105,11 @@ final class ClipboardMonitor: ObservableObject {
     /// like any external copy would, so without this, clicking a history
     /// entry to copy it back would immediately be re-captured by the very
     /// next poll as if it were a brand-new external copy, inserting a
-    /// duplicate at the top of `entries`.
+    /// duplicate at the top of `entries`. Also reset (to `false`) by both
+    /// `start()` and `stop()`, so a flag set right before a `stop()` (e.g.
+    /// the settings toggle flips off between `copyBack(_:)` and the next
+    /// tick) can never survive into a later `start()` and silently swallow
+    /// the first real external capture after the feature is re-enabled.
     private var skipNextCapture = false
 
     init(pasteboard: NSPasteboard = .general) {
@@ -124,6 +133,7 @@ final class ClipboardMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         lastChangeCount = pasteboard.changeCount
+        skipNextCapture = false
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
@@ -132,6 +142,7 @@ final class ClipboardMonitor: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        skipNextCapture = false
     }
 
     // MARK: - Polling
@@ -210,26 +221,26 @@ final class ClipboardMonitor: ObservableObject {
 
     private static func fileEntry(urls: [URL]) -> ClipboardEntry {
         let basenames = urls.map(\.lastPathComponent).joined(separator: ", ")
-        let paths = urls.map(\.path).joined(separator: "\n")
-        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .file, preview: basenames, fullString: paths)
+        let paths = urls.map(\.path)
+        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .file, preview: basenames, fullString: nil, filePaths: paths)
     }
 
     private static func imageEntry(image: NSImage) -> ClipboardEntry {
         let size = image.size
         let preview = "Image (\(Int(size.width))×\(Int(size.height)))"
-        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview, fullString: nil)
+        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview, fullString: nil, filePaths: nil)
     }
 
     private static func urlEntry(string: String) -> ClipboardEntry {
-        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .url, preview: singleLinePreview(string), fullString: string)
+        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .url, preview: singleLinePreview(string), fullString: string, filePaths: nil)
     }
 
     private static func textEntry(string: String) -> ClipboardEntry {
-        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .text, preview: singleLinePreview(string), fullString: string)
+        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .text, preview: singleLinePreview(string), fullString: string, filePaths: nil)
     }
 
     private static func otherEntry() -> ClipboardEntry {
-        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .other, preview: "Unsupported clipboard content", fullString: nil)
+        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .other, preview: "Unsupported clipboard content", fullString: nil, filePaths: nil)
     }
 
     /// First 200 characters, collapsed to a single line (newlines/tabs
@@ -244,24 +255,24 @@ final class ClipboardMonitor: ObservableObject {
 
     // MARK: - Actions
 
-    /// Writes `id`'s captured content back to the pasteboard: text/url
-    /// entries as a plain string, file entries as real file-URL pasteboard
-    /// items (re-split from `fullString`'s newline-joined paths — see
-    /// `ClipboardEntry.fullString`'s own doc comment). A no-op for
-    /// image/other entries (`fullString == nil`, nothing to write) or an
-    /// `id` no longer present in `entries` (e.g. removed, or the list was
-    /// cleared, between the tap and this call).
+    /// Writes `id`'s captured content back to the pasteboard: text/url/other
+    /// entries as a plain string (from `fullString`), file entries as real
+    /// file-URL pasteboard items built directly from `filePaths` — no
+    /// join-then-split round trip, so a path containing a newline still
+    /// copies back correctly. A no-op for image entries (nothing captured to
+    /// write back) or an `id` no longer present in `entries` (e.g. removed,
+    /// or the list was cleared, between the tap and this call).
     ///
     /// Sets `skipNextCapture` before writing so the poll tick this write
     /// itself triggers doesn't re-capture the entry as a duplicate — see
     /// that property's own doc comment.
     func copyBack(_ id: UUID) {
-        guard let entry = entries.first(where: { $0.id == id }), let fullString = entry.fullString else { return }
+        guard let entry = entries.first(where: { $0.id == id }) else { return }
 
         switch entry.kind {
         case .file:
-            let urls = fullString.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
-            guard !urls.isEmpty else { return }
+            guard let paths = entry.filePaths, !paths.isEmpty else { return }
+            let urls = paths.map { URL(fileURLWithPath: $0) }
             skipNextCapture = true
             pasteboard.clearContents()
             // `[NSURL]` (not `[NSPasteboardWriting]`) — matches
@@ -271,6 +282,7 @@ final class ClipboardMonitor: ObservableObject {
             // protocol is expected.
             pasteboard.writeObjects(urls.map { $0 as NSURL })
         case .text, .url, .image, .other:
+            guard let fullString = entry.fullString else { return }
             skipNextCapture = true
             pasteboard.clearContents()
             pasteboard.setString(fullString, forType: .string)

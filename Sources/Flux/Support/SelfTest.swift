@@ -390,6 +390,28 @@ enum SelfTest {
               "LiveActivity: the in-place update reflects the newly posted content")
         center.dismiss(id: batteryA.id)
 
+        // --- M6 fix: LiveActivity.captionText — the generic seam
+        // `LockScreenPresenter.currentActivityLine` wires to instead of a
+        // timers-only dependency. Prefers `trailing` over `leading`, and is
+        // `nil` for icon/gauge/artwork/`.none` content on both sides. ---
+        check(LiveActivity(kind: .timer, leading: .icon(systemName: "timer"), trailing: .text("2 min"),
+                            duration: nil, priority: 110).captionText == "2 min",
+              "LiveActivity: captionText reads a .text trailing side")
+        check(LiveActivity(kind: .battery, leading: .none,
+                            trailing: .iconText(systemName: "battery.100", text: "80%"),
+                            duration: nil, priority: 200).captionText == "80%",
+              "LiveActivity: captionText reads an .iconText trailing side too")
+        check(LiveActivity(kind: .battery, leading: .text("leading fallback"), trailing: .none,
+                            duration: nil, priority: 200).captionText == "leading fallback",
+              "LiveActivity: captionText falls back to leading when trailing has no text")
+        check(LiveActivity(kind: .battery, leading: .icon(systemName: "battery.100"),
+                            trailing: .gauge(0.8, systemName: "battery.100"),
+                            duration: nil, priority: 200).captionText == nil,
+              "LiveActivity: captionText is nil when neither side carries text (icon + gauge)")
+        check(LiveActivity(kind: .nowPlaying, leading: .artwork, trailing: .none,
+                            duration: nil, priority: 50).captionText == nil,
+              "LiveActivity: captionText is nil for an artwork-only activity")
+
         // --- LiveActivity: same-kind EQUAL-content repost (a key-repeat
         // storm reposting an unchanged gauge) reuses the existing id and
         // just extends its expiry deadline instead of replacing it. ---
@@ -1767,14 +1789,47 @@ enum SelfTest {
         let trPaused = NotchTimer(label: "Paused", duration: 10, startedAt: ntNow.addingTimeInterval(-5), pausedAt: ntNow)
         check(TimersWidget.nearestRemainingLine(timers: [trPaused], at: ntNow) == nil,
               "TimersWidget: nearestRemainingLine is nil when every timer is paused")
-        check(TimersWidget.nearestRemainingLine(timers: [trRunning, trPaused], at: ntNow) == "2:05",
-              "TimersWidget: nearestRemainingLine picks the soonest-to-finish RUNNING timer, ignoring a paused one entirely")
+        check(TimersWidget.nearestRemainingLine(timers: [trRunning, trPaused], at: ntNow) == "2 min",
+              "TimersWidget: nearestRemainingLine picks the soonest-to-finish RUNNING timer (ignoring a paused one), showing whole minutes above 60s")
         check(TimersWidget.nearestRemainingLine(timers: [], at: ntNow) == nil,
               "TimersWidget: nearestRemainingLine is nil with no timers at all")
         check(TimersWidget.formatCountdown(65) == "1:05", "TimersWidget: formatCountdown renders m:ss with zero-padded seconds")
         check(TimersWidget.formatCountdown(5) == "0:05", "TimersWidget: formatCountdown zero-pads seconds under 10")
         check(TimersWidget.formatCountdown(-3) == "0:00", "TimersWidget: formatCountdown never shows a negative value")
         check(TimersWidget.formatCountdown(.infinity) == "0:00", "TimersWidget: formatCountdown guards a non-finite input")
+
+        // --- M6 fix: TimersWidget.formatAmbientRemaining — the ambient wing's
+        // own format, deliberately different from formatCountdown above:
+        // whole minutes (no seconds digit) above 60s, since the wing only
+        // refreshes once a minute there and a seconds digit would visibly
+        // freeze between refreshes; m:ss under 60s, where the wing switches
+        // to a per-second refresh instead (see LiveActivitySources.
+        // nextTimerRefreshBoundary). ---
+        check(TimersWidget.formatAmbientRemaining(125) == "2 min",
+              "TimersWidget: formatAmbientRemaining shows whole (floored) minutes above 60s")
+        check(TimersWidget.formatAmbientRemaining(61) == "1 min",
+              "TimersWidget: formatAmbientRemaining floors just above the 60s boundary rather than rounding up")
+        check(TimersWidget.formatAmbientRemaining(60) == "1:00",
+              "TimersWidget: formatAmbientRemaining switches to m:ss AT exactly 60s remaining, not just below it")
+        check(TimersWidget.formatAmbientRemaining(42) == "0:42",
+              "TimersWidget: formatAmbientRemaining shows m:ss under 60s remaining")
+        check(TimersWidget.formatAmbientRemaining(-3) == "0:00",
+              "TimersWidget: formatAmbientRemaining never shows a negative value")
+        check(TimersWidget.formatAmbientRemaining(.infinity) == "0:00",
+              "TimersWidget: formatAmbientRemaining guards a non-finite input")
+
+        // --- M6 fix: NotchActivityRouter.nextTimerRefreshBoundary — ticks
+        // once a MINUTE while more than a minute remains, but once a SECOND
+        // once inside the final minute, matching formatAmbientRemaining's
+        // own cadence switch so the displayed text is never stale. ---
+        let ntFarDeadline = ntNow.addingTimeInterval(300) // 5 minutes out
+        let ntFarBoundary = NotchActivityRouter.nextTimerRefreshBoundary(deadline: ntFarDeadline, now: ntNow)
+        check(ntFarBoundary.timeIntervalSince(ntNow) <= 60 + 0.01,
+              "NotchActivityRouter: nextTimerRefreshBoundary ticks at most a minute out while well over a minute remains")
+        let ntNearDeadline = ntNow.addingTimeInterval(42) // inside the final minute
+        let ntNearBoundary = NotchActivityRouter.nextTimerRefreshBoundary(deadline: ntNearDeadline, now: ntNow)
+        check(ntNearBoundary.timeIntervalSince(ntNow) <= 1 + 0.01,
+              "NotchActivityRouter: nextTimerRefreshBoundary ticks at most a second out once inside the final minute")
 
         // --- M6: ClipboardMonitor.classify — the text-vs-URL seam extracted
         // out of `capture(from:)` so this is testable against a plain
@@ -1797,12 +1852,52 @@ enum SelfTest {
             check(!cameraProbe.isRunning, "CameraService: isRunning starts false")
             cameraProbe.stop() // must be safe even though never started
             check(!cameraProbe.isRunning, "CameraService: stop() before any start() is a safe no-op")
+            // --- M6 fix: wantsRunning tracks the widget's last-requested
+            // lifecycle state so `.AVCaptureSessionInterruptionEnded` knows
+            // whether to restart. Not directly observable from outside (it's
+            // private), but start()/stop() cycles — including a stop() with
+            // no prior start(), and a stop() right after a start() that never
+            // got authorization on this headless CI runner — must remain
+            // crash-free and leave isRunning false, exercising exactly the
+            // code paths that flip it. ---
+            cameraProbe.start() // no camera authorization on CI — safe no-op past the guard
+            check(!cameraProbe.isRunning, "CameraService: start() without authorization never optimistically flips isRunning")
+            cameraProbe.stop()
+            check(!cameraProbe.isRunning, "CameraService: stop() after an unauthorized start() is still a safe no-op")
         }
         do {
             let clipboardProbe = ClipboardMonitor(pasteboard: .general)
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: starts with empty history")
             clipboardProbe.stop() // must be safe even though never started
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: stop() before start() is a safe no-op")
+            // --- M6 fix: skipNextCapture is reset by both start() and
+            // stop(), so it can never survive a stop()/start() cycle and eat
+            // the first real capture after re-enable. Not directly
+            // observable from outside (it's private), but repeated
+            // start()/stop() cycles must stay crash-free and leave history
+            // untouched, exercising exactly the reset code paths. ---
+            clipboardProbe.start()
+            clipboardProbe.stop()
+            clipboardProbe.start()
+            clipboardProbe.stop()
+            check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: start()/stop() cycles alone never capture anything")
+        }
+        do {
+            // --- M6 fix: ClipboardEntry.filePaths carries each captured file
+            // path as its own array element — unlike the old newline-joined-
+            // then-re-split `fullString` approach, a path that itself
+            // contains a newline round-trips intact instead of being
+            // corrupted into two paths. ---
+            let weirdPath = "/tmp/weird\nname.txt"
+            let fileEntry = ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .file,
+                                            preview: "weird\nname.txt", fullString: nil,
+                                            filePaths: [weirdPath, "/tmp/normal.txt"])
+            check(fileEntry.filePaths?.count == 2,
+                  "ClipboardEntry: filePaths keeps a path containing a newline as ONE element, not split into two")
+            check(fileEntry.filePaths?.first == weirdPath,
+                  "ClipboardEntry: filePaths preserves a newline-containing path verbatim")
+            check(fileEntry.fullString == nil,
+                  "ClipboardEntry: fullString is nil for a .file entry — file paths round-trip through filePaths only")
         }
         do {
             let lockScreenProbe = LockScreenPresenter()

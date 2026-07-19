@@ -241,7 +241,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
         // Read fresh every time the lock screen actually locks, not cached —
         // see `LockScreenPresenter.currentActivityLine`'s own doc comment.
-        lockScreenPresenter.currentActivityLine = { [weak self] in self?.timersWidget.nearestRemainingLine(at: Date()) }
+        // Wired generically to whatever the notch's CURRENT live activity is
+        // (`LiveActivity.captionText`) rather than hardcoded to timers
+        // specifically, falling back to the timers widget's own countdown
+        // line only when nothing else is currently showing (e.g. no active
+        // wing at all, or the current one is icon/gauge/artwork-only with no
+        // text of its own to caption with).
+        lockScreenPresenter.currentActivityLine = { [weak self] in
+            guard let self else { return nil }
+            return self.notchWindow.activities.current?.captionText ?? self.timersWidget.nearestRemainingLine(at: Date())
+        }
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
         configureClipboardMonitor()

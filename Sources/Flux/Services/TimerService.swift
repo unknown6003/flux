@@ -114,14 +114,13 @@ final class TimerService: ObservableObject {
     /// The single scheduled boundary task — see the type doc comment's "No
     /// repeating `Timer`, ever" section. Always cancelled and (if there's a
     /// next deadline at all) replaced on every mutation, so at most one is
-    /// ever in flight.
-    private var boundaryTask: Task<Void, Never>?
+    /// ever in flight. Backed by the shared `DeadlineTask` helper (see its
+    /// own doc comment) rather than a hand-rolled `Task<Void, Never>?` —
+    /// its own `deinit` cancels whatever's pending when this service does,
+    /// so there's nothing left for `TimerService`'s own `deinit` to do.
+    private let boundaryTask = DeadlineTask()
 
     init() {}
-
-    deinit {
-        boundaryTask?.cancel()
-    }
 
     /// Starts a new countdown timer and returns it. `label` is entirely the
     /// caller's concern (`TimersWidget` supplies something like "5 min" by
@@ -190,15 +189,8 @@ final class TimerService: ObservableObject {
     // MARK: - Boundary task
 
     private func rescheduleBoundary() {
-        boundaryTask?.cancel()
-        boundaryTask = nil
-        guard let deadline = nextDeadline(after: Date()) else { return }
-        let interval = max(deadline.timeIntervalSinceNow, 0)
-        boundaryTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(interval))
-            guard !Task.isCancelled else { return }
-            self?.handleBoundary()
-        }
+        let deadline = nextDeadline(after: Date())
+        boundaryTask.reschedule(to: deadline) { [weak self] in self?.handleBoundary() }
     }
 
     /// Reaps every unpaused timer that's actually finished as of right now,

@@ -43,12 +43,16 @@ import CoreGraphics
 ///     unlocking their own Mac (see `makePanel`'s `ignoresMouseEvents`).
 @MainActor
 final class LockScreenPresenter {
-    /// Supplies the caption line shown under the silhouette — typically the
-    /// integrator's `TimersWidget.nearestRemainingLine(at:)` (or `nil` when
-    /// there's nothing worth captioning, which renders no caption at all).
-    /// Read fresh every time a panel is built on lock, not cached at `init`
-    /// or at `setEnabled` time — a lock that happens long after launch
-    /// should caption whatever's current at THAT moment.
+    /// Supplies the caption line shown under the silhouette. The wiring
+    /// agent is expected to wire this generically to whatever the notch's
+    /// CURRENT live activity is — `notchWindow.activities.current?.captionText`
+    /// — falling back to `TimersWidget.nearestRemainingLine(at:)` only when
+    /// nothing else is currently showing, rather than hardcoding this to
+    /// timers specifically (`nil` from both means there's nothing worth
+    /// captioning, which renders no caption at all). Read fresh every time a
+    /// panel is built on lock, not cached at `init` or at `setEnabled` time —
+    /// a lock that happens long after launch should caption whatever's
+    /// current at THAT moment.
     var currentActivityLine: (() -> String?)?
 
     private var isEnabled = false
@@ -122,10 +126,26 @@ final class LockScreenPresenter {
     /// external-only clamshell setup, or a non-notch Mac, has nothing for
     /// this silhouette to sit over, so this does nothing at all rather than
     /// drawing an arbitrary rectangle somewhere on an external display.
+    ///
+    /// If a panel is ALREADY up (a second `"com.apple.screenIsLocked"`
+    /// arrives with no intervening unlock — this notification's own delivery
+    /// isn't documented as strictly one-shot per lock, and screen-lock/wake
+    /// races are exactly the kind of thing that can double-fire it), this
+    /// refreshes that existing panel's caption/position in place rather than
+    /// building a brand new one: `showPanel` unconditionally overwrites
+    /// `panel` with a fresh `NSPanel`, and dropping the old Swift reference
+    /// does NOT order the old window out — it simply orphans it, still
+    /// showing, above the lock screen shield, with nothing left able to
+    /// dismiss it on the next unlock (`dismissPanel()` only ever knows about
+    /// the CURRENT `panel`).
     private func handleLocked() {
         guard isEnabled else { return }
         guard let screen = NSScreen.builtInNotchedScreen, let notchRect = screen.notchRect else { return }
-        showPanel(on: screen, notchRect: notchRect)
+        if let panel {
+            refreshPanel(panel, on: screen, notchRect: notchRect)
+        } else {
+            showPanel(on: screen, notchRect: notchRect)
+        }
     }
 
     private func handleUnlocked() {
@@ -137,6 +157,21 @@ final class LockScreenPresenter {
     private func showPanel(on screen: NSScreen, notchRect: NSRect) {
         let panel = makePanel(notchSize: notchRect.size)
         self.panel = panel
+        position(panel, on: screen, notchRect: notchRect)
+        panel.orderFrontRegardless()
+        isPresentingOnLockScreen = true
+    }
+
+    /// Updates an already-showing panel's caption and position in place
+    /// instead of building a new one — the `handleLocked()` re-entry path.
+    /// Rebuilds just the SwiftUI root (cheap — a static silhouette plus a
+    /// `Text`) via the existing `NSHostingView`, so the underlying `NSPanel`
+    /// itself, and this presenter's `panel` reference to it, never change.
+    private func refreshPanel(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
+        let capturedLine = currentActivityLine?()
+        if let hosting = panel.contentView as? NSHostingView<LockScreenSilhouetteView> {
+            hosting.rootView = LockScreenSilhouetteView(notchSize: notchRect.size, caption: capturedLine)
+        }
         position(panel, on: screen, notchRect: notchRect)
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
@@ -173,15 +208,9 @@ final class LockScreenPresenter {
         let panel = LockScreenPanel(contentRect: .zero,
                                     styleMask: [.borderless, .nonactivatingPanel],
                                     backing: .buffered, defer: false)
-        panel.isFloatingPanel = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.level = Self.shieldedLevel
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // Shared with `NotchPanel`/`NotchHighlightWindowController` — see
+        // `OverlayPanel`'s own doc comment for the recipe this applies.
+        OverlayPanel.applyOverlayStyle(to: panel, level: Self.shieldedLevel, ignoresMouseEvents: true)
         panel.contentView = hosting
         return panel
     }
@@ -226,13 +255,16 @@ private final class LockScreenPanel: NSPanel {
 /// The static (no ticking, no animation, no interaction, no tracking areas)
 /// silhouette: the black `NotchShape` at the physical notch's own size, plus
 /// — if `caption` is non-`nil`/non-empty — a small caption line hung just
-/// below it. `caption` is captured once, at panel-build time (see
-/// `LockScreenPresenter.makePanel`), not re-read on a timer — the lock screen
-/// is a display-only surface with no controller left running to react to
-/// anything, so this deliberately shows a snapshot of "what was current the
-/// instant the screen locked" rather than continuing to update. There is no
+/// below it. `caption` is captured once per build of this view — at initial
+/// panel-build time (`LockScreenPresenter.makePanel`) or, if a lock
+/// notification fires again while a panel is already up, at that later
+/// refresh (`LockScreenPresenter.refreshPanel`) — never re-read on a timer of
+/// its own. The lock screen is a display-only surface with no controller left
+/// running to react to anything between those builds, so this deliberately
+/// shows a snapshot of "what was current the instant this view was last
+/// (re)built" rather than continuing to update on its own. There is no
 /// `@State`, `@ObservedObject`, tap gesture, or tracking area anywhere in
-/// this view — it renders once and then just sits there.
+/// this view — it renders once per build and then just sits there.
 private struct LockScreenSilhouetteView: View {
     let notchSize: CGSize
     let caption: String?

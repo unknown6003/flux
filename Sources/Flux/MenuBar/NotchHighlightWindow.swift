@@ -99,17 +99,11 @@ final class NotchHighlightWindowController {
         let root = NotchHighlightView(arranger: arranger, notchSize: notch.size, onActivate: onActivate)
         let hosting = NSHostingView(rootView: root)
 
-        let panel = NSPanel(contentRect: .zero,
-                            styleMask: [.borderless, .nonactivatingPanel],
-                            backing: .buffered, defer: false)
-        panel.isFloatingPanel = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.level = .statusBar          // sit with the menu-bar items, above app windows
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // `.statusBar` — sit with the menu-bar items, above app windows.
+        // `ignoresMouseEvents: false` — the overflow badge is a real button
+        // (`onActivate`), unlike `NotchPanel`'s collapsed state or the
+        // lock-screen silhouette.
+        let panel = OverlayPanel.make(level: .statusBar, ignoresMouseEvents: false)
         panel.contentView = hosting
         return panel
     }

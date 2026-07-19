@@ -58,6 +58,18 @@ final class CameraService: ObservableObject {
     private let device: AVCaptureDevice?
     private var isConfigured = false
 
+    /// Tracks whether the *widget* still wants the session running — set at
+    /// the top of `start()`, cleared at the top of `stop()`. This is the only
+    /// state this service has for "should I come back after an interruption
+    /// ends": it doesn't know anything about `MirrorWidget`'s presentation
+    /// state, only whether the most recent lifecycle call was a `start()`
+    /// that hasn't since been followed by a `stop()`. `.AVCaptureSessionInterruptionEnded`
+    /// checks this flag before restarting the session — an interruption that
+    /// ends after `MirrorWidget.didDismiss()` already called `stop()` (e.g.
+    /// the user closed the notch while the camera was claimed by another app)
+    /// must NOT relight the camera indicator behind the user's back.
+    private var wantsRunning = false
+
     /// Dedicated serial queue for the session itself. `startRunning()`
     /// blocks the calling thread until the session is actually up (per
     /// Apple's own documentation), so it must never run on the main actor —
@@ -147,6 +159,7 @@ final class CameraService: ObservableObject {
     /// only flipped once that call has returned and actually taken effect —
     /// never optimistically before it's known to have worked.
     func start() {
+        wantsRunning = true
         guard isAvailable, let device else { return }
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
             cameraLog.notice("CameraService.start() called without camera authorization — refusing to start")
@@ -172,6 +185,7 @@ final class CameraService: ObservableObject {
     /// `MirrorWidget.didDismiss()` calls this unconditionally, every time,
     /// per this type's own perf/privacy contract above.
     func stop() {
+        wantsRunning = false
         let session = session
         sessionQueue.async { [weak self] in
             if session.isRunning {
@@ -232,6 +246,22 @@ final class CameraService: ObservableObject {
             cameraLog.notice("CameraService: session interrupted — the camera likely became unavailable (another app claimed it, the device was disconnected, etc.)")
         }
 
+        // The counterpart to `.AVCaptureSessionWasInterrupted` above — fired
+        // when whatever claimed the camera (another app, a device
+        // reconfiguration, ...) releases it again. Without this, a Mirror
+        // widget left open across an interruption (e.g. someone opens Camera
+        // to scan a QR code, then closes it again) would sit on a
+        // permanently-stopped session and "Starting camera…" forever, even
+        // though the widget itself never called `stop()`. Only restarts if
+        // `wantsRunning` is still `true` — see that property's own doc
+        // comment for why this must not resurrect a session the widget
+        // itself already asked to stop.
+        let interruptionEnded = center.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: session, queue: .main) { [weak self] _ in
+            guard let self, self.wantsRunning else { return }
+            cameraLog.notice("CameraService: interruption ended — restarting the session since the widget still wants it running")
+            self.start()
+        }
+
         let runtimeError = center.addObserver(forName: .AVCaptureSessionRuntimeError, object: session, queue: .main) { [weak self] note in
             self?.isRunning = false
             let message = (note.userInfo?[AVCaptureSessionErrorKey] as? NSError)?.localizedDescription ?? "unknown error"
@@ -247,6 +277,6 @@ final class CameraService: ObservableObject {
             cameraLog.notice("CameraService: the camera device was disconnected")
         }
 
-        sessionNotificationObservers = [interrupted, runtimeError, disconnected]
+        sessionNotificationObservers = [interrupted, interruptionEnded, runtimeError, disconnected]
     }
 }

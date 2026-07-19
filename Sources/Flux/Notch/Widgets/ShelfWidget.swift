@@ -134,14 +134,6 @@ private struct ShelfTileView: View {
 
     @State private var isHovering = false
 
-    /// Shared rather than one-per-tile: `RelativeDateTimeFormatter` is
-    /// non-trivial to construct and every tile wants the identical style.
-    private static let ageFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
-
     var body: some View {
         VStack(spacing: 4) {
             thumbnail
@@ -151,7 +143,7 @@ private struct ShelfTileView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 64)
-            Text(Self.ageFormatter.localizedString(for: item.addedAt, relativeTo: Date()))
+            Text(Formatters.relativeAge.localizedString(for: item.addedAt, relativeTo: Date()))
                 .font(.system(size: 9))
                 .foregroundStyle(Color.white.opacity(0.4))
         }

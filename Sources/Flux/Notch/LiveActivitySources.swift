@@ -174,8 +174,10 @@ final class NotchActivityRouter {
     }
 
     deinit {
-        calendarThresholdTask?.cancel()
-        timerRefreshTask?.cancel()
+        // `calendarThresholdTask`/`timerRefreshTask` are each a `DeadlineTask`
+        // now (see their own doc comments) — its own `deinit` cancels
+        // whatever's pending when this router does, so there's nothing left
+        // to do here explicitly.
     }
 
     // MARK: - Battery
@@ -301,9 +303,10 @@ final class NotchActivityRouter {
     /// One cancellable deadline task, armed for the next moment the
     /// event-soon decision could change (either a threshold crossing or an
     /// event's own start passing) — see `scheduleNextCalendarBoundary`'s doc
-    /// comment. Mirrors `LiveActivityCenter.expiryTasks`'s single-deadline
-    /// shape: no repeating timer anywhere in this pipeline.
-    private var calendarThresholdTask: Task<Void, Never>?
+    /// comment. Backed by the shared `DeadlineTask` helper (see its own doc
+    /// comment), which `LiveActivityCenter.expiryTasks` and `TimerService.
+    /// boundaryTask` also use: no repeating timer anywhere in this pipeline.
+    private let calendarThresholdTask = DeadlineTask()
 
     private func observeCalendar() {
         calendar.$upcoming
@@ -318,8 +321,7 @@ final class NotchActivityRouter {
     /// below to include the calendar toggle), and by the boundary task
     /// itself once its deadline arrives.
     private func recomputeCalendarActivity() {
-        calendarThresholdTask?.cancel()
-        calendarThresholdTask = nil
+        calendarThresholdTask.cancel()
 
         guard settings.notchActivityCalendarEventEnabled,
               permissions.statuses[.calendar] == .granted
@@ -347,13 +349,8 @@ final class NotchActivityRouter {
     /// function below so `--selftest` can verify the countdown-tick math
     /// directly.
     private func scheduleNextCalendarBoundary(now: Date) {
-        guard let next = Self.nextCalendarBoundary(events: calendar.upcoming, now: now) else { return }
-
-        calendarThresholdTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(next.timeIntervalSince(now)))
-            guard !Task.isCancelled else { return }
-            self?.recomputeCalendarActivity()
-        }
+        let next = Self.nextCalendarBoundary(events: calendar.upcoming, now: now)
+        calendarThresholdTask.reschedule(to: next) { [weak self] in self?.recomputeCalendarActivity() }
     }
 
     /// How far ahead of an event's start the sticky wing appears.
@@ -992,7 +989,7 @@ final class NotchActivityRouter {
         guard settings.notchActivityTimerEnabled else { return }
         activities.post(Self.timerCompletionActivity(label: timer.label))
         NSSound(named: "Glass")?.play()
-        armTimerRefresh(after: Self.timerCompletionDuration + 0.1)
+        armTimerRefresh(at: Date().addingTimeInterval(Self.timerCompletionDuration + 0.1))
     }
 
     static let timerCompletionDuration: TimeInterval = 10
@@ -1016,8 +1013,7 @@ final class NotchActivityRouter {
     /// them run from inside a `$timers` willSet callback — reading
     /// `timers.timers` directly at those call sites is safe and current).
     private func recomputeTimerActivity(timers liveTimers: [NotchTimer]? = nil) {
-        timerRefreshTask?.cancel()
-        timerRefreshTask = nil
+        timerRefreshTask.cancel()
         let now = Date()
         let currentTimers = liveTimers ?? timers.timers
         guard Self.timerActivityShouldRun(toggleOn: settings.notchActivityTimerEnabled,
@@ -1034,23 +1030,19 @@ final class NotchActivityRouter {
                                       trailing: .text(line),
                                       duration: nil,
                                       priority: Self.timerAmbientPriority))
-        armTimerRefresh(after: max(Self.nextTimerRefreshBoundary(deadline: deadline, now: now).timeIntervalSince(now), 0))
+        armTimerRefresh(at: Self.nextTimerRefreshBoundary(deadline: deadline, now: now))
     }
 
     /// The single cancellable refresh task backing the ambient wing's text —
-    /// matches `calendarThresholdTask`'s "exactly one deadline in flight"
-    /// shape. Also reused by `handleTimerCompletion` to re-check once the
-    /// transient completion notice's own expiry passes (see this section's
-    /// doc comment).
-    private var timerRefreshTask: Task<Void, Never>?
+    /// backed by the shared `DeadlineTask` helper, matching
+    /// `calendarThresholdTask`'s "exactly one deadline in flight" shape. Also
+    /// reused by `handleTimerCompletion` to re-check once the transient
+    /// completion notice's own expiry passes (see this section's doc
+    /// comment).
+    private let timerRefreshTask = DeadlineTask()
 
-    private func armTimerRefresh(after delay: TimeInterval) {
-        timerRefreshTask?.cancel()
-        timerRefreshTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            self?.recomputeTimerActivity()
-        }
+    private func armTimerRefresh(at date: Date) {
+        timerRefreshTask.reschedule(to: date) { [weak self] in self?.recomputeTimerActivity() }
     }
 
     /// Whether the ambient countdown wing should be showing right now — a
@@ -1062,16 +1054,23 @@ final class NotchActivityRouter {
     }
 
     /// The next instant the ambient wing's displayed countdown text should
-    /// refresh: once a minute while a minute or more remains (matching
-    /// `nextMinuteBoundary`'s cadence for the calendar wing), or every 10
-    /// seconds once under a minute remains — fine enough to feel current
-    /// without waking every second the way the expanded widget's own
-    /// `TimelineView` does while actually presented. Also wakes at the exact
-    /// instant the countdown crosses under a minute, so the cadence switch
-    /// itself doesn't wait up to a full minute late.
+    /// refresh: once a minute while more than a minute remains (matching
+    /// `nextMinuteBoundary`'s cadence for the calendar wing, and
+    /// `TimersWidget.formatAmbientRemaining`'s whole-minutes text over that
+    /// same window), or once a SECOND once under a minute remains, matching
+    /// `formatAmbientRemaining`'s switch to `m:ss` text there — anything
+    /// coarser would show a seconds digit that visibly doesn't move between
+    /// refreshes. This is a deliberate, narrow exception to the notch suite's
+    /// no-frequent-timers perf contract: it's bounded to at most 60 wakes
+    /// (once the countdown is already inside its final minute) rather than
+    /// an open-ended per-second timer, and it only exists at all because a
+    /// countdown wing that's about to finish reads as broken if its last
+    /// minute visibly freezes. Also wakes at the exact instant the countdown
+    /// crosses under a minute, so the cadence switch itself doesn't wait up
+    /// to a full minute late.
     static func nextTimerRefreshBoundary(deadline: Date, now: Date) -> Date {
         let remaining = deadline.timeIntervalSince(now)
-        let tick = remaining > 60 ? nextMinuteBoundary(after: now) : nextTickBoundary(after: now, every: 10)
+        let tick = remaining > 60 ? nextMinuteBoundary(after: now) : nextTickBoundary(after: now, every: 1)
         let crossover = deadline.addingTimeInterval(-60)
         return crossover > now ? min(tick, crossover) : tick
     }

@@ -63,9 +63,9 @@ final class TimersWidget: NotchWidget {
     }
 
     /// The soonest-to-finish running (unpaused) timer's countdown, formatted
-    /// `mm:ss` — what a sticky `.timer` `LiveActivity`'s trailing text
-    /// (`.text(...)`) should show. `nil` when no timer is currently counting
-    /// down (none exist, or every one of them is paused).
+    /// by `formatAmbientRemaining` — what a sticky `.timer` `LiveActivity`'s
+    /// trailing text (`.text(...)`) should show. `nil` when no timer is
+    /// currently counting down (none exist, or every one of them is paused).
     func nearestRemainingLine(at now: Date) -> String? {
         Self.nearestRemainingLine(timers: service.timers, at: now)
     }
@@ -76,7 +76,28 @@ final class TimersWidget: NotchWidget {
     /// constructing a real `TimerService` or waiting on its boundary task.
     static func nearestRemainingLine(timers: [NotchTimer], at now: Date) -> String? {
         guard let nearest = timers.filter({ !$0.isPaused }).min(by: { $0.endDate < $1.endDate }) else { return nil }
-        return formatCountdown(max(nearest.remaining(at: now), 0))
+        return formatAmbientRemaining(max(nearest.remaining(at: now), 0))
+    }
+
+    /// The ambient wing's own countdown format — deliberately DIFFERENT from
+    /// `formatCountdown` above, and coupled to
+    /// `LiveActivitySources.nextTimerRefreshBoundary`'s refresh cadence:
+    /// showing `m:ss` text that's only refreshed once a minute (or once every
+    /// 10s) reads as frozen/wrong for most of that interval, since the
+    /// seconds digit implies second-level precision the refresh cadence
+    /// doesn't deliver. So the format itself changes with the cadence
+    /// instead: above 60s remaining, whole minutes only ("4 min"), matching
+    /// the once-a-minute refresh exactly — there's no seconds digit left to
+    /// go stale. Under 60s remaining, `m:ss` ("0:42") — `nextTimerRefreshBoundary`
+    /// switches to a per-second refresh for exactly this window, a deliberate,
+    /// bounded (≤60 ticks) exception to the notch suite's no-frequent-timers
+    /// perf contract, made once a countdown is in its final minute, where a
+    /// visibly live "about to finish" wing is worth the up-to-60 extra wakes.
+    static func formatAmbientRemaining(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        guard seconds > 60 else { return formatCountdown(seconds) }
+        let minutes = Int(seconds / 60)
+        return "\(minutes) min"
     }
 
     /// `m:ss`, floor-truncated — mirrors `NowPlayingExpandedView`'s own
@@ -208,26 +229,43 @@ private struct TimersExpandedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// One shared 1s tick drives every row's countdown text. This is the
-    /// perf-contract gate the milestone calls for: the `TimelineView` only
-    /// exists in the tree at all while `service.timers` is non-empty (this
-    /// branch of `content` is the only place it's built), AND this whole view
-    /// only exists while the widget itself is presented — `NotchRootView.
-    /// expandedContent` only ever calls `makeExpandedView()` for the
-    /// currently-`.expanded` widget, the same structural guarantee
-    /// `NowPlayingWidget`'s own scrubber tick and `ShelfWidget`'s doc comment
-    /// both lean on. So "active only while presented AND non-empty" holds
-    /// with no extra flag to track here.
+    /// One shared 1s tick drives every row's countdown text — but ONLY while
+    /// at least one timer is actually running. This is the perf-contract
+    /// gate the milestone calls for: the `TimelineView` only exists in the
+    /// tree at all while `service.timers` is non-empty (this branch of
+    /// `content` is the only place it's built) AND `hasRunningTimer` (below)
+    /// is `true`, AND this whole view only exists while the widget itself is
+    /// presented — `NotchRootView.expandedContent` only ever calls
+    /// `makeExpandedView()` for the currently-`.expanded` widget, the same
+    /// structural guarantee `NowPlayingWidget`'s own scrubber tick and
+    /// `ShelfWidget`'s doc comment both lean on. An all-paused list has
+    /// nothing that could change from one second to the next (`NotchTimer.
+    /// remaining` freezes at the pause instant), so ticking it every second
+    /// would just be a wasted wake with no visible effect — `rows(now:)` is
+    /// rendered once, against a single `Date()`, instead.
+    @ViewBuilder
     private var runningList: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 8) {
-                    ForEach(service.timers) { timer in
-                        TimerRow(timer: timer, now: timeline.date, service: service)
-                    }
-                }
-                .padding(.vertical, 2)
+        if hasRunningTimer {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                rows(now: timeline.date)
             }
+        } else {
+            rows(now: Date())
+        }
+    }
+
+    private var hasRunningTimer: Bool {
+        service.timers.contains { !$0.isPaused }
+    }
+
+    private func rows(now: Date) -> some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 8) {
+                ForEach(service.timers) { timer in
+                    TimerRow(timer: timer, now: now, service: service)
+                }
+            }
+            .padding(.vertical, 2)
         }
     }
 }

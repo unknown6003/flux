@@ -121,18 +121,6 @@ private struct ClipboardRow: View {
     @State private var isHovering = false
     @State private var didConfirmCopy = false
 
-    /// Shared rather than one-per-row — mirrors `ShelfTileView.ageFormatter`'s/
-    /// `EventRow.timeFormatter`'s reasoning for a formatter every row wants
-    /// identically configured. Deliberately re-declared here (a local static,
-    /// not a shared import) rather than reusing `ShelfTileView`'s private
-    /// one, per this milestone's file-ownership split — `ShelfWidget.swift`
-    /// is not a file this change touches.
-    private static let ageFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
-
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
@@ -146,7 +134,7 @@ private struct ClipboardRow: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(Self.ageFormatter.localizedString(for: entry.capturedAt, relativeTo: Date()))
+                Text(Formatters.relativeAge.localizedString(for: entry.capturedAt, relativeTo: Date()))
                     .font(.system(size: 9))
                     .foregroundStyle(Color.white.opacity(0.4))
             }
@@ -185,11 +173,12 @@ private struct ClipboardRow: View {
         }
     }
 
-    /// Image/other entries carry no `fullString` (see `ClipboardEntry`'s own
-    /// doc comment) — nothing to copy back, so tapping one of those rows is
-    /// a deliberate no-op rather than silently clearing the pasteboard.
+    /// Image/other entries carry neither `fullString` nor `filePaths` (see
+    /// `ClipboardEntry`'s own doc comments) — nothing to copy back, so
+    /// tapping one of those rows is a deliberate no-op rather than silently
+    /// clearing the pasteboard.
     private func handleTap() {
-        guard entry.fullString != nil else { return }
+        guard entry.fullString != nil || entry.filePaths != nil else { return }
         monitor.copyBack(entry.id)
         withAnimation(.easeInOut(duration: 0.15)) { didConfirmCopy = true }
         Task { @MainActor in

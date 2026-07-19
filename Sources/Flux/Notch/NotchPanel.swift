@@ -47,19 +47,14 @@ final class NotchPanel: NSPanel {
         super.init(contentRect: .zero,
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
-        isFloatingPanel = true
-        becomesKeyOnlyIfNeeded = true
-        level = .statusBar
-        hidesOnDeactivate = false
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
+        // Shared with `NotchHighlightWindowController`/`LockScreenPresenter`
+        // — see `OverlayPanel`'s own doc comment for the recipe this applies.
+        // `ignoresMouseEvents: true` here is just a safe starting point
+        // matching the state machine's own initial `.collapsed` value;
+        // `NotchWindowController` immediately re-syncs this to the live state
+        // once the panel is attached/shown.
+        OverlayPanel.applyOverlayStyle(to: self, level: .statusBar, ignoresMouseEvents: true)
         acceptsMouseMovedEvents = true
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        // Safe starting point matching the state machine's own initial
-        // `.collapsed` value; `NotchWindowController` immediately re-syncs
-        // this to the live state once the panel is attached/shown.
-        ignoresMouseEvents = true
         // See the "Drag-and-drop destination" section below for why this is
         // registered on the window itself.
         registerForDraggedTypes([.fileURL])
