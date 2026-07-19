@@ -1939,17 +1939,20 @@ enum SelfTest {
                       "NotchActivityRouter: the ambient timer wing posts at priority 110 — below menu-bar overflow's 150")
                 check(timerRouterActivities.current?.duration == nil,
                       "NotchActivityRouter: the ambient timer wing is STICKY (no duration) while a timer is running")
-                // Not asserting an exact "2:00" here: some non-zero (if
+                // Not asserting an exact "2 min" here: some non-zero (if
                 // tiny) real time always elapses between `start()` capturing
                 // `startedAt` and this synchronous recompute reading the
-                // countdown, so the truncated seconds digit can legitimately
-                // read one tick under a round value — the precise formatting
-                // is already pinned deterministically by the
-                // `TimersWidget.nearestRemainingLine`/`formatCountdown` checks
-                // above; this only needs to confirm the router actually
-                // surfaces SOME countdown text, not re-verify its exact value.
+                // countdown, so `formatAmbientRemaining`'s floored-minutes
+                // display can legitimately read one tick under a round value
+                // (a 120s timer reading as either exactly 2 minutes left, or
+                // a hair under it, floors to "1 min") — the precise
+                // formatting is already pinned deterministically by the
+                // `TimersWidget.nearestRemainingLine`/`formatAmbientRemaining`
+                // checks above; this only needs to confirm the router
+                // actually surfaces SOME countdown text, not re-verify its
+                // exact value.
                 if case .text(let ambientLine)? = timerRouterActivities.current?.trailing {
-                    check(ambientLine == "2:00" || ambientLine == "1:59",
+                    check(ambientLine == "2 min" || ambientLine == "1 min",
                           "NotchActivityRouter: the ambient wing shows the nearest remaining timer's countdown text (got \(ambientLine))")
                 } else {
                     check(false, "NotchActivityRouter: the ambient wing's trailing content should be countdown .text")
