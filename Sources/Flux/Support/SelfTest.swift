@@ -1013,6 +1013,12 @@ enum SelfTest {
                 check(routerActivities.current?.tint == .warning,
                       "NotchActivityRouter: .lowBattery posts a .warning-tinted activity")
 
+                // Battery (priority 200) outranks bluetooth (priority 100) in
+                // `LiveActivityCenter`'s priority queue by design — dismiss it
+                // here so the bluetooth checks below observe their own posts
+                // as `current` rather than the still-queued battery activity.
+                routerActivities.dismiss(kind: .battery)
+
                 testBluetooth.events.send(.connected(name: "AirPods Pro", batteryPercent: 80))
                 check(routerActivities.current?.kind == .bluetoothDevice,
                       "NotchActivityRouter: a BluetoothEvent posts a .bluetoothDevice live activity")

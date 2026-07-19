@@ -96,14 +96,8 @@ final class NotchActivityRouter {
     /// in the `.bolt` variant while charging, matching how the system's own
     /// menu-bar battery item reads.
     static func batterySymbol(percent: Int, charging: Bool) -> String {
-        let step: Int
-        switch percent {
-        case 90...: step = 100
-        case 60..<90: step = 75
-        case 35..<60: step = 50
-        case 10..<35: step = 25
-        default: step = 0
-        }
+        let clamped = max(0, min(100, percent))
+        let step = (clamped / 25) * 25
         let base = "battery.\(step)"
         return charging ? "\(base).bolt" : base
     }
