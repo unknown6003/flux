@@ -36,16 +36,22 @@ final class NotchActivityRouter {
 
     private var cancellables = Set<AnyCancellable>()
 
+    // `power`/`bluetooth` take optionals defaulting to `nil` — rather than
+    // defaulting directly to `PowerMonitor()`/`BluetoothMonitor()` — because
+    // default-argument expressions are evaluated in a nonisolated context,
+    // and both types' initializers are `@MainActor`-isolated. Constructing
+    // them here in the init body (which *is* MainActor-isolated, since this
+    // whole class is) sidesteps that.
     init(activities: LiveActivityCenter,
          settings: SettingsStore,
          arranger: MenuBarArranger,
-         power: PowerMonitor = PowerMonitor(),
-         bluetooth: BluetoothMonitor = BluetoothMonitor()) {
+         power: PowerMonitor? = nil,
+         bluetooth: BluetoothMonitor? = nil) {
         self.activities = activities
         self.settings = settings
         self.arranger = arranger
-        self.power = power
-        self.bluetooth = bluetooth
+        self.power = power ?? PowerMonitor()
+        self.bluetooth = bluetooth ?? BluetoothMonitor()
 
         observePower()
         observeBluetooth()
