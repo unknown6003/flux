@@ -29,9 +29,10 @@ enum BluetoothEvent: Equatable {
 /// takes an `Any!` target and a `Selector!`, and delivers the callback as a
 /// plain Objective-C message send to an `@objc` method on that target. That
 /// target must be an `NSObject` subclass (a bare Swift class has no
-/// Objective-C runtime identity to message), hence `BluetoothMonitor: NSObject,
-/// ObservableObject` rather than the plain `final class: ObservableObject`
-/// used elsewhere in this codebase.
+/// Objective-C runtime identity to message), hence `BluetoothMonitor: NSObject`
+/// rather than the plain `final class` used elsewhere in this codebase. (No
+/// `ObservableObject` conformance either — nothing observes this type's state;
+/// see the M3 review that dropped it.)
 ///
 /// Unlike `PowerMonitor`'s raw `@convention(c)` callback (which categorically
 /// cannot run on the main actor without an explicit assertion — see that
@@ -47,7 +48,7 @@ enum BluetoothEvent: Equatable {
 /// `start()` is only ever called from app launch on the main actor) rather
 /// than a compiler-checked guarantee.
 @MainActor
-final class BluetoothMonitor: NSObject, ObservableObject {
+final class BluetoothMonitor: NSObject {
     let events = PassthroughSubject<BluetoothEvent, Never>()
 
     /// Reconnect-storm dedupe window — see `isDuplicate(address:now:lastEventAt:)`.
@@ -97,25 +98,38 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         guard isRelevant(device) else { return }
         let name = device.name ?? "Bluetooth Device"
         let address = device.addressString ?? name
-        guard shouldEmit(address: address) else { return }
 
-        // Track this specific device's disconnect so a stale, already-
-        // unregistered notification from a previous connect session never
-        // lingers in the dictionary. `register(forDisconnectNotification:...)`
-        // returns an implicitly-unwrapped optional that IOBluetooth genuinely
-        // can hand back `nil` from (registration failure) — bound with
-        // `if let` rather than assigned straight through, since the latter
-        // would force-unwrap and crash on that failure path.
-        disconnectNotifications[address]?.unregister()
-        disconnectNotifications[address] = nil
-        if let disconnectNotification = device.register(
-            forDisconnectNotification: self,
-            selector: #selector(deviceDisconnected(_:device:))) {
-            disconnectNotifications[address] = disconnectNotification
-        } else {
-            bluetoothLog.error("Failed to register disconnect notification for a connected device")
+        // ALWAYS (re)register this device's disconnect notification, before
+        // the dedupe guard below ever gets a chance to `return` early. This
+        // registration must not be gated on `shouldEmit`: during a reconnect
+        // storm, every connect after the first is deduped out of emitting an
+        // event, but the disconnect notification `deviceDisconnected`
+        // unregisters unconditionally (regardless of dedupe) the moment the
+        // device actually disconnects — so if this connect callback skipped
+        // re-registering because it was deduped, the device would end up with
+        // no live disconnect observer at all for the rest of its session
+        // (see the M3 review that caught this).
+        //
+        // Idempotent: only register when there's no entry already, i.e. the
+        // device hasn't disconnected since it was last registered — there's
+        // nothing stale to replace, so this never churns
+        // unregister/re-register on every deduped connect in a storm.
+        if disconnectNotifications[address] == nil {
+            // `register(forDisconnectNotification:...)` returns an implicitly-
+            // unwrapped optional that IOBluetooth genuinely can hand back
+            // `nil` from (registration failure) — bound with `if let` rather
+            // than assigned straight through, since the latter would
+            // force-unwrap and crash on that failure path.
+            if let disconnectNotification = device.register(
+                forDisconnectNotification: self,
+                selector: #selector(deviceDisconnected(_:device:))) {
+                disconnectNotifications[address] = disconnectNotification
+            } else {
+                bluetoothLog.error("Failed to register disconnect notification for a connected device")
+            }
         }
 
+        guard shouldEmit(address: address) else { return }
         events.send(.connected(name: name, batteryPercent: Self.batteryPercent(for: device)))
     }
 
@@ -144,6 +158,15 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     /// actually be emitted (i.e. wasn't a duplicate) — the instance-side
     /// wrapper around the pure `isDuplicate` predicate below.
     private func shouldEmit(address: String, now: Date = Date()) -> Bool {
+        // Bound `lastEventAt`'s size: an address whose last event has already
+        // aged out of the dedupe window carries no information `isDuplicate`
+        // still needs, so it's pruned here rather than letting this
+        // dictionary grow by one entry for every distinct device address
+        // ever seen across the process's lifetime. No timer needed — this
+        // piggybacks on the same call every event already makes.
+        let cutoff = Self.dedupeWindow
+        lastEventAt = lastEventAt.filter { now.timeIntervalSince($0.value) < cutoff }
+
         guard !Self.isDuplicate(address: address, now: now, lastEventAt: lastEventAt) else { return false }
         lastEventAt[address] = now
         return true

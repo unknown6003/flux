@@ -8,9 +8,9 @@ import OSLog
 /// since this is a self-contained M3 subsystem the notch suite owns.
 let powerLog = Logger(subsystem: "com.flux.menubar", category: "power")
 
-/// What's true about the battery/AC power right now. `Equatable` so
-/// `@Published` only republishes on an actual change, and so `--selftest`
-/// can compare snapshots directly.
+/// What's true about the battery/AC power right now. `Equatable` so the
+/// internal `previousState` diff only treats an actual change as a
+/// transition, and so `--selftest` can compare snapshots directly.
 struct PowerState: Equatable {
     var percent: Int
     var isCharging: Bool
@@ -25,12 +25,21 @@ enum PowerEvent: Equatable {
     case pluggedIn(percent: Int)
     case unplugged(percent: Int)
     case lowBattery(percent: Int)
+    /// The percent climbed back above the re-arm threshold *without* a plug
+    /// event in between — e.g. a noisy read recovering, or external charging
+    /// hardware IOKit doesn't report as AC. Only fired when a `.lowBattery`
+    /// had actually been posted (see `lowBatteryEvent`'s doc comment); tells
+    /// `NotchActivityRouter` its sticky low-battery warning is stale and
+    /// should come down even though nothing plugged in to replace it.
+    case batteryRecovered(percent: Int)
 }
 
 /// Watches IOKit's power-source publisher for battery percent / charging /
-/// AC-power changes, and turns the raw stream into `PowerState` snapshots
-/// (`state`) plus discrete `PowerEvent`s (`events`) that `NotchActivityRouter`
-/// turns into live activities.
+/// AC-power changes, diffs consecutive `PowerState` snapshots internally
+/// (`previousState`), and turns that into discrete `PowerEvent`s (`events`)
+/// that `NotchActivityRouter` turns into live activities. No published
+/// snapshot of its own — nothing outside this type has ever needed one; see
+/// the M3 review that dropped the prior `@Published var state`.
 ///
 /// ## The C-callback interop
 /// `IOPSNotificationCreateRunLoopSource` takes a plain C function pointer
@@ -61,9 +70,7 @@ enum PowerEvent: Equatable {
 /// the assertion inside the callback would trap immediately instead of
 /// silently racing with the rest of this `@MainActor` class.
 @MainActor
-final class PowerMonitor: ObservableObject {
-    @Published private(set) var state: PowerState?
-
+final class PowerMonitor {
     let events = PassthroughSubject<PowerEvent, Never>()
 
     /// Fires below this percent while unplugged (and re-arms above
@@ -130,7 +137,6 @@ final class PowerMonitor: ObservableObject {
         guard let snapshot = Self.readPowerState() else { return }
         let previous = previousState
         previousState = snapshot
-        state = snapshot
 
         // First read after (re)starting: nothing to diff against yet, so no
         // event — only a real transition between two observed snapshots
@@ -148,7 +154,7 @@ final class PowerMonitor: ObservableObject {
     /// Reads the current state straight from IOKit's power-source APIs.
     /// `nil` when there is no power source to report on at all (some Mac
     /// desktops report none), which `refresh()` treats as "nothing to
-    /// update" rather than clearing `state`.
+    /// update" rather than clearing `previousState`.
     private static func readPowerState() -> PowerState? {
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef],
@@ -205,14 +211,27 @@ final class PowerMonitor: ObservableObject {
     /// `plugEvent`'s shape and leave room for a future rule that does want
     /// the prior sample (e.g. reacting to a suspiciously large single-tick
     /// drop).
+    ///
+    /// The re-arm crossing (climbing back above `lowBatteryRearmThreshold`
+    /// while still unplugged) also emits `.batteryRecovered` — but only when
+    /// `armed` was `false` going in, i.e. a `.lowBattery` had actually fired
+    /// and is presumably still showing as a sticky live activity. Without
+    /// that guard, every ordinary tick above the re-arm line (the overwhelming
+    /// common case — most of a discharge cycle never gets near 20%) would
+    /// emit a spurious "recovered" event with nothing to recover from. The
+    /// plugged-in re-arm path deliberately does NOT emit `.batteryRecovered`:
+    /// `.pluggedIn` already carries its own replacement activity of the same
+    /// `.battery` kind (see `NotchActivityRouter`), so there's nothing extra
+    /// to dismiss there.
     static func lowBatteryEvent(previous: PowerState, current: PowerState, armed: inout Bool) -> PowerEvent? {
         guard !current.onACPower else {
             armed = true
             return nil
         }
         guard current.percent <= lowBatteryRearmThreshold else {
+            let recovering = !armed
             armed = true
-            return nil
+            return recovering ? .batteryRecovered(percent: current.percent) : nil
         }
         guard armed, current.percent <= lowBatteryThreshold else { return nil }
         armed = false

@@ -24,12 +24,20 @@ struct LiveActivity: Identifiable, Equatable {
         case artwork
     }
 
-    /// A wing-level color hint, kept data-only like `Content` — `normal` is
-    /// the ordinary accent-tinted rendering every activity used before M3;
-    /// `warning` is for things that genuinely need to read as urgent (e.g. a
-    /// crossed-below-20%-unplugged low-battery notice) rather than just
-    /// another routine status update. `NotchRootView` is the only place this
-    /// turns into an actual `Color`.
+    /// A wing-level color hint, kept data-only like `Content`. The semantic
+    /// (not just visual) contract:
+    /// - `.normal` = **informational**. The ordinary accent-tinted rendering
+    ///   every activity used before M3 (Now Playing, Shelf, plug/unplug,
+    ///   Bluetooth connect/disconnect) — and, deliberately, the menu-bar
+    ///   overflow warning too. Overflow reads as amber/routine ("N icons
+    ///   behind the notch") on purpose: it's a heads-up about a layout
+    ///   problem, not an emergency, so it stays `.normal` even though it's
+    ///   posted from a type literally named "warning" in `MenuBarArranger`.
+    /// - `.warning` = **urgent**, rendered red. Reserved for things that
+    ///   actually need to interrupt — right now, only the
+    ///   crossed-below-20%-unplugged low-battery notice.
+    ///
+    /// `NotchRootView` is the only place this turns into an actual `Color`.
     enum ActivityTint: Equatable {
         case normal, warning
     }

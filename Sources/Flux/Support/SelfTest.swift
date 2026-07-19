@@ -918,22 +918,31 @@ enum SelfTest {
             var armed = true
             let ac = PowerState(percent: 50, isCharging: true, onACPower: true)
             let unplugged60 = PowerState(percent: 60, isCharging: false, onACPower: false)
+            let unplugged70 = PowerState(percent: 70, isCharging: false, onACPower: false)
             let unplugged20 = PowerState(percent: 20, isCharging: false, onACPower: false)
             let unplugged19 = PowerState(percent: 19, isCharging: false, onACPower: false)
             let unplugged26 = PowerState(percent: 26, isCharging: false, onACPower: false)
+
+            // Ordinary ticks above the re-arm line, with nothing ever having
+            // fired, must never emit `.batteryRecovered` — there's nothing to
+            // recover from, and this is by far the most common state a
+            // discharging, still-armed battery sits in.
+            var neverFired = true
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged60, current: unplugged70, armed: &neverFired) == nil,
+                  "PowerMonitor: staying above the re-arm threshold while never having fired emits nothing (no spurious .batteryRecovered)")
 
             check(PowerMonitor.lowBatteryEvent(previous: unplugged60, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
                   "PowerMonitor: crossing below 20% unplugged fires .lowBattery once")
             check(!armed, "PowerMonitor: firing disarms so the same low level doesn't refire")
             check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: unplugged19, armed: &armed) == nil,
                   "PowerMonitor: staying low while disarmed doesn't refire")
-            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged26, armed: &armed) == nil,
-                  "PowerMonitor: crossing back above the 25% re-arm threshold doesn't itself fire")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged26, armed: &armed) == .batteryRecovered(percent: 26),
+                  "PowerMonitor: crossing back above the 25% re-arm threshold after a fire posts .batteryRecovered (so the sticky warning comes down) instead of another .lowBattery")
             check(armed, "PowerMonitor: crossing above 25% re-arms")
             check(PowerMonitor.lowBatteryEvent(previous: unplugged26, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
                   "PowerMonitor: re-armed, dropping below 20% again fires again")
             check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: ac, armed: &armed) == nil,
-                  "PowerMonitor: plugging in while low never fires .lowBattery")
+                  "PowerMonitor: plugging in while low never fires .lowBattery or .batteryRecovered (`.pluggedIn` already carries its own replacement activity)")
             check(armed, "PowerMonitor: plugging in re-arms (a fresh unplug can refire immediately)")
         }
 
@@ -1012,6 +1021,26 @@ enum SelfTest {
                 testPower.events.send(.lowBattery(percent: 15))
                 check(routerActivities.current?.tint == .warning,
                       "NotchActivityRouter: .lowBattery posts a .warning-tinted activity")
+                check(routerActivities.current?.duration == nil,
+                      "NotchActivityRouter: .lowBattery posts a STICKY (duration nil) activity — a transient 4s toast is too easy to miss for a warning that matters")
+
+                // `.batteryRecovered` (percent climbed back above the re-arm
+                // threshold with no plug event) must bring the sticky warning
+                // down even though there's no replacement activity to post.
+                testPower.events.send(.batteryRecovered(percent: 30))
+                check(routerActivities.current?.kind != .battery,
+                      "NotchActivityRouter: .batteryRecovered dismisses the sticky low-battery warning with no plug event to replace it")
+
+                // Plugging in while the sticky warning is up must replace it
+                // with a transient charging activity, not leave both queued.
+                testPower.events.send(.lowBattery(percent: 10))
+                check(routerActivities.current?.duration == nil,
+                      "NotchActivityRouter: a fresh .lowBattery re-posts sticky after a prior recovery")
+                testPower.events.send(.pluggedIn(percent: 25))
+                check(routerActivities.current?.kind == .battery && routerActivities.current?.tint == .normal,
+                      "NotchActivityRouter: plugging in while the sticky low-battery warning is showing replaces it with a transient charging activity (same-kind post dedup in LiveActivityCenter)")
+                check(routerActivities.current?.duration == 4,
+                      "NotchActivityRouter: the replacement charging activity is transient (4s), not sticky")
 
                 // Battery (priority 200) outranks bluetooth (priority 100) in
                 // `LiveActivityCenter`'s priority queue by design — dismiss it
@@ -1024,8 +1053,8 @@ enum SelfTest {
                       "NotchActivityRouter: a BluetoothEvent posts a .bluetoothDevice live activity")
                 check(routerActivities.current?.priority == 100,
                       "NotchActivityRouter: bluetooth activities post at priority 100")
-                check(routerActivities.current?.trailing == .iconText(systemName: "battery.100", text: "80%"),
-                      "NotchActivityRouter: a reported battery percent shows as icon+text")
+                check(routerActivities.current?.trailing == .iconText(systemName: "battery.75", text: "80%"),
+                      "NotchActivityRouter: a reported battery percent shows as icon+text using the real batterySymbol picker (80% -> the 75% SF Symbol step, not a hardcoded battery.100)")
 
                 testBluetooth.events.send(.connected(name: "Sony WH-1000XM4", batteryPercent: nil))
                 check(routerActivities.current?.trailing == .text("Sony WH-1000XM4"),
@@ -1042,6 +1071,22 @@ enum SelfTest {
                 testBluetooth.events.send(.disconnected(name: "AirPods Pro"))
                 check(routerActivities.current?.kind == .bluetoothDevice,
                       "NotchActivityRouter: the bluetooth toggle (still on) keeps posting independently of the battery toggle")
+
+                // M3 review fix: re-enabling the notch while the menu bar is
+                // STILL overflowing must re-post the warning, even though
+                // `arranger`'s own published state never changed in between —
+                // `observeOverflow()`'s deduped subscription only fires on a
+                // genuine change, so a static "still overflowing" condition
+                // would otherwise never republish through it.
+                routerArranger.setOverflow(arrange: false, notch: true, iconCount: 5)
+                check(routerActivities.current?.kind == .menuBarOverflow,
+                      "NotchActivityRouter: a real menu-bar overflow posts a .menuBarOverflow live activity")
+                routerSettings.notchEnabled = false
+                check(routerActivities.current?.kind != .menuBarOverflow,
+                      "NotchActivityRouter: disabling the notch dismisses the overflow warning (nowhere left to show it)")
+                routerSettings.notchEnabled = true
+                check(routerActivities.current?.kind == .menuBarOverflow,
+                      "NotchActivityRouter: re-enabling the notch while still overflowing re-posts the warning even though arranger's overflow state itself never changed")
             }
             routerSuite.removePersistentDomain(forName: routerSuiteName)
         }

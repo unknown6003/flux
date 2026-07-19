@@ -62,6 +62,22 @@ final class NotchActivityRouter {
     }
 
     // MARK: - Battery
+    //
+    // Lifetime design: plug/unplug notices are transient (4s) — routine,
+    // glance-and-gone. The low-battery warning is different on purpose: a 4s
+    // toast is easy to miss entirely for a warning that actually matters (the
+    // M3 review's exact complaint), so it's posted *sticky* (`duration: nil`)
+    // and stays up until something explicitly resolves it. Two things do:
+    //   1. Plugging in. `.pluggedIn` posts its own (still transient) charging
+    //      activity of the same `.battery` kind, and `LiveActivityCenter.post`
+    //      already dismisses any existing activity of the kind it's posting
+    //      before queuing the replacement — so the sticky warning never
+    //      lingers behind the charging notice; no extra dismiss needed there.
+    //   2. The percent recovering above the re-arm threshold *without* a plug
+    //      event (`.batteryRecovered`, emitted by `PowerMonitor.lowBatteryEvent`
+    //      — see its doc comment) — handled below with an explicit
+    //      `dismiss(kind: .battery)` since there's no replacement activity to
+    //      post in that case, just a stale warning to clear.
 
     private func observePower() {
         power.events
@@ -78,14 +94,19 @@ final class NotchActivityRouter {
             activities.post(batteryActivity(percent: percent, charging: false, warning: false))
         case .lowBattery(let percent):
             activities.post(batteryActivity(percent: percent, charging: false, warning: true))
+        case .batteryRecovered:
+            activities.dismiss(kind: .battery)
         }
     }
 
+    /// `warning` activities (low battery) are sticky (`duration: nil`); every
+    /// other battery activity (plug/unplug) stays transient at 4s — see the
+    /// design note above.
     private func batteryActivity(percent: Int, charging: Bool, warning: Bool) -> LiveActivity {
         LiveActivity(kind: .battery,
                      leading: .icon(systemName: Self.batterySymbol(percent: percent, charging: charging)),
                      trailing: .text("\(percent)%"),
-                     duration: 4,
+                     duration: warning ? nil : 4,
                      priority: 200,
                      tint: warning ? .warning : .normal)
     }
@@ -115,7 +136,7 @@ final class NotchActivityRouter {
         switch event {
         case .connected(let name, let batteryPercent):
             let trailing: LiveActivity.Content = batteryPercent.map {
-                .iconText(systemName: "battery.100", text: "\($0)%")
+                .iconText(systemName: Self.batterySymbol(percent: $0, charging: false), text: "\($0)%")
             } ?? .text(name)
             activities.post(LiveActivity(kind: .bluetoothDevice,
                                           leading: .icon(systemName: Self.deviceSymbol(name: name)),
@@ -156,33 +177,60 @@ final class NotchActivityRouter {
             .combineLatest(arranger.$overflowIconCount)
             .removeDuplicates { $0 == $1 }
             .receive(on: RunLoop.main)
-            .sink { [weak self] overflowing, count in
+            .sink { [weak self] _, _ in
                 guard let self, self.settings.notchEnabled else { return }
-                if overflowing {
-                    self.activities.post(LiveActivity(
-                        kind: .menuBarOverflow,
-                        leading: .icon(systemName: "exclamationmark.triangle.fill"),
-                        trailing: count > 0 ? .text("\(count)") : .none,
-                        duration: nil,
-                        priority: 150))
-                } else {
-                    self.activities.dismiss(kind: .menuBarOverflow)
-                }
+                self.applyOverflowState()
             }
             .store(in: &cancellables)
     }
 
+    /// Posts or dismisses `.menuBarOverflow` to match `arranger`'s *current*
+    /// overflow snapshot, read directly rather than from whatever values
+    /// happened to be threaded through a subscription. Shared by
+    /// `observeOverflow()` (fires on a genuine change) and
+    /// `observeOverflowGating()` re-enabling the notch (below) — the latter
+    /// needs this because `arranger`'s state may not have changed at all
+    /// since it was gated off, so `observeOverflow`'s `removeDuplicates`
+    /// pipeline would otherwise emit nothing and the warning would just stay
+    /// missing until the overflow condition itself next changes.
+    private func applyOverflowState() {
+        if arranger.notchOverflow {
+            activities.post(LiveActivity(
+                kind: .menuBarOverflow,
+                leading: .icon(systemName: "exclamationmark.triangle.fill"),
+                trailing: arranger.overflowIconCount > 0 ? .text("\(arranger.overflowIconCount)") : .none,
+                duration: nil,
+                priority: 150))
+        } else {
+            activities.dismiss(kind: .menuBarOverflow)
+        }
+    }
+
     /// Mirrors the pre-M3 `AppDelegate.configureNotchOverflowCoexistence`'s
-    /// `else` branch: disabling the notch panel leaves no wing left to show
-    /// the overflow warning in, so its live activity (if any) is dismissed
-    /// immediately rather than waiting for `arranger`'s own state to happen
-    /// to change next (which, with the notch disabled, might never happen
-    /// again before the panel is re-enabled).
+    /// `else` branch on disable: disabling the notch panel leaves no wing
+    /// left to show the overflow warning in, so its live activity (if any) is
+    /// dismissed immediately rather than waiting for `arranger`'s own state to
+    /// happen to change next (which, with the notch disabled, might never
+    /// happen again before the panel is re-enabled).
+    ///
+    /// Also re-syncs on *re*-enable: if the notch is toggled back on while
+    /// the menu bar is still overflowing, `arranger`'s published state may
+    /// never have changed in between (an unchanging condition doesn't
+    /// republish through `observeOverflow`'s deduped pipeline), so the
+    /// permanently-subscribed sink would otherwise emit nothing and the
+    /// warning would silently stay missing — `applyOverflowState()` re-checks
+    /// the live snapshot instead of relying on that subscription to catch it.
     private func observeOverflowGating() {
         settings.$notchEnabled
             .dropFirst()
-            .filter { !$0 }
-            .sink { [weak self] _ in self?.activities.dismiss(kind: .menuBarOverflow) }
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                if enabled {
+                    self.applyOverflowState()
+                } else {
+                    self.activities.dismiss(kind: .menuBarOverflow)
+                }
+            }
             .store(in: &cancellables)
     }
 
