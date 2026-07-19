@@ -1011,6 +1011,11 @@ enum SelfTest {
             let testBluetooth = BluetoothMonitor()
             let testCalendar = CalendarService()
             let testPermissions = PermissionCenter()
+            // A plain, headless `NotchViewModel` — the router only reads its
+            // `$state`, never anything screen/panel-related, so this needs no
+            // `NotchWindowController` (which would need a real notch screen
+            // to ever become `isPresenting`) behind it at all.
+            let routerViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
             // `startsMonitors: false` — this test drives `testPower`/
             // `testBluetooth` purely by feeding synthetic events straight
             // through their `.events` subjects (below); it must never let the
@@ -1021,10 +1026,18 @@ enum SelfTest {
             // hardware to speak of). Same reasoning extends `testCalendar`/
             // `testPermissions`: this block only exercises the event-soon
             // pure translation logic (below), never a real EventKit fetch.
+            // `presentation` is left at its default (`Just(true)`) — this
+            // block doesn't exercise the M4 grant-while-open/screen-disappear
+            // fix directly; that's covered below by
+            // `NotchActivityRouter.calendarServiceShouldRun`'s own pure-logic
+            // checks instead of a live Combine simulation (see this file's
+            // M3-era note on why: a debounced/`.receive(on:)` sink needs a
+            // `RunLoop` spin to observe, which the pure function sidesteps
+            // entirely).
             let router = NotchActivityRouter(activities: routerActivities, settings: routerSettings,
                                               arranger: routerArranger, calendar: testCalendar,
-                                              permissions: testPermissions, power: testPower,
-                                              bluetooth: testBluetooth, startsMonitors: false)
+                                              permissions: testPermissions, viewModel: routerViewModel,
+                                              power: testPower, bluetooth: testBluetooth, startsMonitors: false)
 
             // `withExtendedLifetime` keeps `router` (and its Combine
             // subscriptions on `testPower`/`testBluetooth`) alive for the
@@ -1163,6 +1176,29 @@ enum SelfTest {
         let calNow = Date()
         let calCalendar = Calendar.current
 
+        // occurrenceID: the recurring-event id-collision fix — every
+        // occurrence of a recurring event shares one `eventIdentifier`, so
+        // uniqueness has to come from combining it with the occurrence's own
+        // `start`.
+        let recurringIdentifier = "recurring-series-1"
+        let occurrenceA = CalendarService.occurrenceID(eventIdentifier: recurringIdentifier, start: calNow)
+        let occurrenceB = CalendarService.occurrenceID(eventIdentifier: recurringIdentifier, start: calNow.addingTimeInterval(86400))
+        check(occurrenceA != occurrenceB,
+              "CalendarService: occurrenceID differs for two occurrences of the same recurring event once their start dates differ")
+        check(occurrenceA == CalendarService.occurrenceID(eventIdentifier: recurringIdentifier, start: calNow),
+              "CalendarService: occurrenceID is deterministic for the same identifier+start pair")
+        check(CalendarService.occurrenceID(eventIdentifier: nil, start: calNow) != CalendarService.occurrenceID(eventIdentifier: nil, start: calNow),
+              "CalendarService: occurrenceID falls back to a fresh (never-colliding) UUID when eventIdentifier is nil")
+
+        // relativeStartPhrase: the shared phrasing helper `nextEventLine` and
+        // `NotchActivityRouter.calendarEventSoonActivity` both call, so the
+        // "<title> in Nm"/"<title> in Nh"/"<title> now" wording only has to
+        // be gotten right in one place.
+        check(CalendarService.relativeStartPhrase(title: "Standup", start: calNow, now: calNow) == "Standup now",
+              "CalendarService: relativeStartPhrase says 'now' when start == now")
+        check(CalendarService.relativeStartPhrase(title: "Standup", start: calNow.addingTimeInterval(-60), now: calNow) == "Standup now",
+              "CalendarService: relativeStartPhrase says 'now' for an already-started event")
+
         // nextEventLine: minutes / hours / now boundaries.
         let eventIn5Min = makeCalendarTestEvent(id: "a", title: "Standup",
             start: calNow.addingTimeInterval(5 * 60), end: calNow.addingTimeInterval(35 * 60))
@@ -1226,6 +1262,16 @@ enum SelfTest {
         lifecycleCalendar.stop() // idempotent
         check(true, "CalendarService: start()/stop() are safely idempotent when called repeatedly")
 
+        // nextMidnight: the fix for the rolling "now → end of tomorrow" fetch
+        // window never re-fetching across a midnight rollover — pure and
+        // testable without a real clock/timer.
+        let midnightToday = calCalendar.startOfDay(for: calNow)
+        let midnightTomorrow = calCalendar.date(byAdding: .day, value: 1, to: midnightToday)!
+        check(CalendarService.nextMidnight(after: calNow, calendar: calCalendar) == midnightTomorrow,
+              "CalendarService: nextMidnight is the start of the day after the given date's own day")
+        check(CalendarService.nextMidnight(after: midnightToday, calendar: calCalendar) == midnightTomorrow,
+              "CalendarService: nextMidnight given exactly midnight still advances to the FOLLOWING midnight, not the same instant")
+
         // --- M4: NotchActivityRouter.calendarEventSoonActivity — pure event-soon translation ---
         let soonNow = Date()
         let eventSoonIn3Min = makeCalendarTestEvent(id: "soon1", title: "1:1",
@@ -1257,8 +1303,8 @@ enum SelfTest {
 
         let eventRightAtStart = makeCalendarTestEvent(id: "atstart", title: "Now",
             start: soonNow, end: soonNow.addingTimeInterval(1800))
-        check(NotchActivityRouter.calendarEventSoonActivity(events: [eventRightAtStart], now: soonNow)?.trailing == .text("Now in 0m"),
-              "NotchActivityRouter: an event starting exactly now still qualifies (inclusive lower bound) and rounds to 0m")
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [eventRightAtStart], now: soonNow)?.trailing == .text("Now now"),
+              "NotchActivityRouter: an event starting exactly now still qualifies (inclusive lower bound) and reads 'now' via the shared relativeStartPhrase helper — NOT a separate '0m' format")
 
         let eventSoonIn12Min = makeCalendarTestEvent(id: "soon2", title: "Too Far",
             start: soonNow.addingTimeInterval(12 * 60), end: soonNow.addingTimeInterval(40 * 60))
@@ -1266,6 +1312,73 @@ enum SelfTest {
             events: [eventFarAway, eventSoonIn3Min, eventSoonIn12Min], now: soonNow)
         check(multiEventActivity?.trailing == .text("1:1 in 3m"),
               "NotchActivityRouter: with a mix of qualifying/non-qualifying events, the earliest-starting qualifying one wins")
+
+        // All-day events never qualify as "starting soon" — their `start` is
+        // local midnight, which is not a meaningful countdown target (a fix
+        // for a false alert every midnight rollover). They still appear in
+        // the widget's own agenda via `groupByDay`, untouched by this filter.
+        let allDaySoon = makeCalendarTestEvent(id: "allday-soon", title: "Conference",
+            start: soonNow, end: soonNow.addingTimeInterval(86400), isAllDay: true)
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [allDaySoon], now: soonNow) == nil,
+              "NotchActivityRouter: calendarEventSoonActivity excludes all-day events even when their start falls inside the 10-minute window")
+        check(NotchActivityRouter.calendarEventSoonActivity(events: [allDaySoon, eventSoonIn3Min], now: soonNow)?.trailing == .text("1:1 in 3m"),
+              "NotchActivityRouter: an all-day event mixed in with a qualifying timed event doesn't block the timed event from winning")
+
+        // --- M4: NotchActivityRouter.nextMinuteBoundary / nextCalendarBoundary
+        // — the frozen-countdown fix, kept pure so no real Task/RunLoop is
+        // needed to verify the "when should the wing next wake up" math ---
+        let midMinute = Date(timeIntervalSinceReferenceDate: 1_000 * 60 + 47) // 47s past a minute boundary
+        check(NotchActivityRouter.nextMinuteBoundary(after: midMinute) == Date(timeIntervalSinceReferenceDate: 1_001 * 60),
+              "NotchActivityRouter: nextMinuteBoundary rounds up to the next whole minute")
+        let exactMinute = Date(timeIntervalSinceReferenceDate: 1_000 * 60)
+        check(NotchActivityRouter.nextMinuteBoundary(after: exactMinute) == Date(timeIntervalSinceReferenceDate: 1_001 * 60),
+              "NotchActivityRouter: nextMinuteBoundary advances a full minute even when `now` already lands exactly on a boundary — the scheduled task must always sleep a positive duration")
+
+        let boundaryNow = Date(timeIntervalSinceReferenceDate: 1_000 * 60 + 10) // 10s into a minute
+        let eventInsideWindow = makeCalendarTestEvent(id: "boundary1", title: "Standup",
+            start: boundaryNow.addingTimeInterval(5 * 60), end: boundaryNow.addingTimeInterval(35 * 60))
+        check(NotchActivityRouter.nextCalendarBoundary(events: [eventInsideWindow], now: boundaryNow) == NotchActivityRouter.nextMinuteBoundary(after: boundaryNow),
+              "NotchActivityRouter: nextCalendarBoundary wakes at the next minute tick while an event is inside the soon window — this is what keeps the wing's 'in Nm' text counting down instead of freezing")
+
+        let eventNotYetSoon = makeCalendarTestEvent(id: "boundary2", title: "Review",
+            start: boundaryNow.addingTimeInterval(20 * 60), end: boundaryNow.addingTimeInterval(50 * 60))
+        check(NotchActivityRouter.nextCalendarBoundary(events: [eventNotYetSoon], now: boundaryNow)
+                == eventNotYetSoon.start.addingTimeInterval(-NotchActivityRouter.calendarSoonThreshold),
+              "NotchActivityRouter: nextCalendarBoundary wakes at an event's own threshold-crossing instant when nothing is inside the soon window yet")
+
+        let allDayOnlyBoundary = makeCalendarTestEvent(id: "boundary3", title: "Holiday",
+            start: boundaryNow.addingTimeInterval(5 * 60), end: boundaryNow.addingTimeInterval(35 * 60), isAllDay: true)
+        check(NotchActivityRouter.nextCalendarBoundary(events: [allDayOnlyBoundary], now: boundaryNow) == nil,
+              "NotchActivityRouter: nextCalendarBoundary ignores all-day events entirely — no boundary, no wasted wake-up")
+        check(NotchActivityRouter.nextCalendarBoundary(events: [], now: boundaryNow) == nil,
+              "NotchActivityRouter: nextCalendarBoundary is nil with no events at all")
+
+        // --- M4: NotchActivityRouter.calendarServiceShouldRun — pure
+        // lifecycle derivation (the grant-while-open / screen-disappear fix) ---
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: false, notchPresenting: true, widgetEnabled: true,
+                state: .expanded(.calendar), activityToggleOn: true),
+              "NotchActivityRouter: calendarServiceShouldRun is false without calendar permission, no matter what else is true")
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: false, widgetEnabled: true,
+                state: .expanded(.calendar), activityToggleOn: true),
+              "NotchActivityRouter: calendarServiceShouldRun is false with nowhere to present, even with the widget 'open' and the toggle on — the screen-disappear-stops-the-service fix")
+        check(NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: true,
+                state: .expanded(.calendar), activityToggleOn: false),
+              "NotchActivityRouter: calendarServiceShouldRun is true when the Calendar widget is the one currently expanded, even with the event-soon toggle off")
+        check(NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: false,
+                state: .collapsed, activityToggleOn: true),
+              "NotchActivityRouter: calendarServiceShouldRun is true when the event-soon toggle is on, even with the widget closed/disabled — the grant-while-open fix's other half")
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: true,
+                state: .collapsed, activityToggleOn: false),
+              "NotchActivityRouter: calendarServiceShouldRun is false when neither the widget is open nor the event-soon toggle is on")
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: false,
+                state: .expanded(.calendar), activityToggleOn: false),
+              "NotchActivityRouter: calendarServiceShouldRun requires widgetEnabled true for the widget-open condition to count, even if state somehow still reads .expanded(.calendar)")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

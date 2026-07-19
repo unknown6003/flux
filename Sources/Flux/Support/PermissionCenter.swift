@@ -80,9 +80,19 @@ final class PermissionCenter: ObservableObject {
     // MARK: - Query
 
     /// Re-query one permission's live status. No prompt, cheap enough to call
-    /// freely (e.g. from a widget's `willPresent()`).
+    /// freely (e.g. from a widget's `willPresent()`). Only actually writes
+    /// `statuses[kind]` when the freshly-queried value differs from what's
+    /// already there — `statuses` is `@Published`, and this is called on
+    /// every `NSApplication.didBecomeActiveNotification` (`observeAppActivation`)
+    /// for every `PermissionKind` at once, so an unconditional write would
+    /// republish (and cascade through every downstream subscriber —
+    /// `NotchActivityRouter`'s `permissions.$statuses` sink included) on
+    /// every single app activation even when nothing about the permission
+    /// actually changed.
     func refresh(_ kind: PermissionKind) {
-        statuses[kind] = Self.currentStatus(for: kind, eventStore: eventStore)
+        let current = Self.currentStatus(for: kind, eventStore: eventStore)
+        guard statuses[kind] != current else { return }
+        statuses[kind] = current
     }
 
     private static func currentStatus(for kind: PermissionKind, eventStore: EKEventStore) -> PermissionStatus {
