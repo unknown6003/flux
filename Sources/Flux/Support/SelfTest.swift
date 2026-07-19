@@ -393,27 +393,36 @@ enum SelfTest {
         // --- LiveActivity: same-kind EQUAL-content repost (a key-repeat
         // storm reposting an unchanged gauge) reuses the existing id and
         // just extends its expiry deadline instead of replacing it. ---
+        //
+        // Timing is deliberately generous (hundreds of ms, ~150ms margins on
+        // every side) rather than tight fractions of a short duration — a
+        // loaded CI runner's real scheduling jitter is easily tens of ms, and
+        // this needs to reliably land BEFORE one deadline and AFTER another
+        // rather than merely after some elapsed time (unlike e.g.
+        // `hoverOpenDelay + 0.15`'s simpler "wait comfortably past" checks
+        // elsewhere in this file).
         let repostCenter = LiveActivityCenter()
-        let repostDuration: TimeInterval = 0.15
+        let repostDuration: TimeInterval = 0.6
+        let repostGapBeforeRepost: TimeInterval = 0.3 // comfortably < repostDuration
         let repostFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
                                         trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
                                         duration: repostDuration, priority: 300)
-        repostCenter.post(repostFirst)
-        RunLoop.current.run(until: Date().addingTimeInterval(repostDuration * 0.6))
+        repostCenter.post(repostFirst) // deadline at t≈0.6
+        RunLoop.current.run(until: Date().addingTimeInterval(repostGapBeforeRepost)) // t≈0.3, well before 0.6
         let repostEqual = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
                                         trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
                                         duration: repostDuration, priority: 300)
-        repostCenter.post(repostEqual)
+        repostCenter.post(repostEqual) // resets the deadline to t≈0.3+0.6=0.9
         check(repostCenter.current?.id == repostFirst.id,
               "LiveActivity: an equal-content repost of the same kind reuses the original id instead of replacing it")
-        // Waiting past the ORIGINAL post's own duration (but within the
-        // extended deadline the repost should have reset) must still show
-        // it current — proof the repost actually rescheduled the expiry
-        // Task rather than being a no-op.
-        RunLoop.current.run(until: Date().addingTimeInterval(repostDuration * 0.7))
+        // t≈0.75: past the ORIGINAL post's own deadline (0.6) — proof the
+        // repost actually rescheduled the expiry Task rather than being a
+        // no-op — but comfortably before the extended one (0.9).
+        RunLoop.current.run(until: Date().addingTimeInterval(0.45))
         check(repostCenter.current?.id == repostFirst.id,
               "LiveActivity: the equal-content repost extended the expiry deadline — it survives past the original post's own duration")
-        RunLoop.current.run(until: Date().addingTimeInterval(repostDuration + 0.05))
+        // t≈1.1: comfortably past the extended deadline (0.9) too.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.35))
         check(repostCenter.current == nil,
               "LiveActivity: the extended deadline still expires on its own schedule once it's actually reached")
 
