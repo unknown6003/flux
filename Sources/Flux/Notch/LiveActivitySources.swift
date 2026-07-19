@@ -987,9 +987,16 @@ final class NotchActivityRouter {
 
     private func handleTimerCompletion(_ timer: NotchTimer) {
         guard settings.notchActivityTimerEnabled else { return }
+        let expiresAt = Date().addingTimeInterval(Self.timerCompletionDuration)
+        // Recorded BEFORE posting — see `completionAlertUntil`'s own doc
+        // comment: `recomputeTimerActivity` checks this on every call, so it
+        // must already be set by the time anything downstream of `post`
+        // (there's nothing synchronous here, but the ordering is the
+        // deliberate part) could possibly race a recompute.
+        completionAlertUntil = expiresAt
         activities.post(Self.timerCompletionActivity(label: timer.label))
         NSSound(named: "Glass")?.play()
-        armTimerRefresh(at: Date().addingTimeInterval(Self.timerCompletionDuration + 0.1))
+        armTimerRefresh(at: expiresAt.addingTimeInterval(0.1))
     }
 
     static let timerCompletionDuration: TimeInterval = 10
@@ -1004,6 +1011,21 @@ final class NotchActivityRouter {
                      priority: timerCompletionPriority)
     }
 
+    /// Non-`nil` for exactly `timerCompletionDuration` seconds after
+    /// `handleTimerCompletion` posts a "<label> done" notice — the code-review
+    /// fix for a real bug: without this, ANY mutation during that 10s window
+    /// (pausing, resuming, cancelling, or starting a DIFFERENT timer — every
+    /// one of which republishes `timers.$timers`) fed straight into
+    /// `recomputeTimerActivity`, which would immediately post the ambient
+    /// wing over top of the still-showing completion notice, dismissing it
+    /// early. `recomputeTimerActivity` checks this first and, while it's in
+    /// the future, does nothing at all — not even cancels the already-armed
+    /// `timerRefreshTask` (see `handleTimerCompletion`'s own `armTimerRefresh`
+    /// call, scheduled for just past this exact expiry) — so the completion
+    /// notice is always left to run its full course and expire naturally,
+    /// then that same already-scheduled refresh re-evaluates once it does.
+    private var completionAlertUntil: Date?
+
     /// Re-evaluates the ambient countdown wing and re-arms the next refresh —
     /// called from every trigger that could change the answer: `timers.$timers`
     /// (a start/pause/resume/cancel/completion-reap — passing its OWN emitted
@@ -1013,24 +1035,44 @@ final class NotchActivityRouter {
     /// them run from inside a `$timers` willSet callback — reading
     /// `timers.timers` directly at those call sites is safe and current).
     private func recomputeTimerActivity(timers liveTimers: [NotchTimer]? = nil) {
-        timerRefreshTask.cancel()
         let now = Date()
+        // While a completion notice is still showing, this must not touch
+        // the `.timer` activity at all — see `completionAlertUntil`'s doc
+        // comment. Deliberately returns before even cancelling
+        // `timerRefreshTask`: the refresh already armed by
+        // `handleTimerCompletion` (for just past this exact expiry) is
+        // exactly what should run next, not whatever triggered this call.
+        if let completionAlertUntil, now < completionAlertUntil { return }
+        completionAlertUntil = nil
+
+        timerRefreshTask.cancel()
         let currentTimers = liveTimers ?? timers.timers
-        guard Self.timerActivityShouldRun(toggleOn: settings.notchActivityTimerEnabled,
-                                           notchPresenting: settings.notchEnabled && isPresenting,
-                                           hasRunningTimer: TimerService.nextDeadline(in: currentTimers, after: now) != nil),
-              let deadline = TimerService.nextDeadline(in: currentTimers, after: now),
-              let line = TimersWidget.nearestRemainingLine(timers: currentTimers, at: now)
-        else {
+        switch Self.timerWingState(timers: currentTimers,
+                                    toggleOn: settings.notchActivityTimerEnabled,
+                                    notchPresenting: settings.notchEnabled && isPresenting,
+                                    at: now) {
+        case .hidden:
             activities.dismiss(kind: .timer)
-            return
+        case .running(let deadline, let line):
+            activities.post(LiveActivity(kind: .timer,
+                                          leading: .icon(systemName: "timer"),
+                                          trailing: .text(line),
+                                          duration: nil,
+                                          priority: Self.timerAmbientPriority))
+            armTimerRefresh(at: Self.nextTimerRefreshBoundary(deadline: deadline, now: now))
+        case .paused(let line):
+            // No refresh armed here: a paused timer's remaining is frozen
+            // (see `NotchTimer.remaining(at:)`) — nothing about this text
+            // will change on its own, unlike a running countdown. The next
+            // recompute comes from whatever mutation changes the picture
+            // (a resume, a new timer starting, cancelling the last paused
+            // one, ...), same as every other `$timers`-driven call site.
+            activities.post(LiveActivity(kind: .timer,
+                                          leading: .icon(systemName: "pause.circle"),
+                                          trailing: .text(line),
+                                          duration: nil,
+                                          priority: Self.timerAmbientPriority))
         }
-        activities.post(LiveActivity(kind: .timer,
-                                      leading: .icon(systemName: "timer"),
-                                      trailing: .text(line),
-                                      duration: nil,
-                                      priority: Self.timerAmbientPriority))
-        armTimerRefresh(at: Self.nextTimerRefreshBoundary(deadline: deadline, now: now))
     }
 
     /// The single cancellable refresh task backing the ambient wing's text —
@@ -1045,12 +1087,37 @@ final class NotchActivityRouter {
         timerRefreshTask.reschedule(to: date) { [weak self] in self?.recomputeTimerActivity() }
     }
 
-    /// Whether the ambient countdown wing should be showing right now — a
-    /// pure function of exactly the causes that decide it, matching
-    /// `intendedHUDMode`'s/`calendarServiceShouldRun`'s shape so `--selftest`
-    /// can drive every combination directly.
-    static func timerActivityShouldRun(toggleOn: Bool, notchPresenting: Bool, hasRunningTimer: Bool) -> Bool {
-        toggleOn && notchPresenting && hasRunningTimer
+    /// What the ambient `.timer` wing should show right now — a pure function
+    /// of exactly the causes that decide it, matching `intendedHUDMode`'s/
+    /// `calendarServiceShouldRun`'s shape so `--selftest` can drive every
+    /// combination directly (including the code-review fix this adds: a
+    /// paused-but-not-empty timer list).
+    enum TimerWingState: Equatable {
+        /// Toggle off, notch not presenting, or no timers at all.
+        case hidden
+        /// At least one timer is counting down — `deadline` is the earliest
+        /// unpaused one's `endDate` (what the next refresh should arm
+        /// against), `line` its formatted remaining time.
+        case running(deadline: Date, line: String)
+        /// Timers exist, but every one of them is paused — the code-review
+        /// fix: previously this fell through to `.hidden` (`hasRunningTimer`
+        /// was `false`), dismissing the wing entirely the instant the ONLY
+        /// running timer was paused, even though there was still a paused
+        /// timer whose state was worth showing. `line` is the nearest paused
+        /// timer's frozen remaining time.
+        case paused(line: String)
+    }
+
+    static func timerWingState(timers: [NotchTimer], toggleOn: Bool, notchPresenting: Bool, at now: Date) -> TimerWingState {
+        guard toggleOn, notchPresenting, !timers.isEmpty else { return .hidden }
+        if let deadline = TimerService.nextDeadline(in: timers, after: now),
+           let line = TimersWidget.nearestRemainingLine(timers: timers, at: now) {
+            return .running(deadline: deadline, line: line)
+        }
+        if let line = TimersWidget.nearestPausedRemainingLine(timers: timers, at: now) {
+            return .paused(line: line)
+        }
+        return .hidden
     }
 
     /// The next instant the ambient wing's displayed countdown text should

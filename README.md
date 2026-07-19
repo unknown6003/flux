@@ -112,8 +112,9 @@ arrangement across launches.
   and re-request button as every other permission-gated feature.
 - **Timers** — quick-start (1/5/10/25 min) or custom countdown timers in the
   notch, with pause/resume/cancel. A wing (with a sound) announces a finished
-  timer, and an ambient countdown wing shows the nearest remaining time while
-  one's running — both independently toggled in Settings → Notch.
+  timer; an ambient countdown wing shows the nearest remaining time while
+  one's running, or a paused indicator when every timer is paused. Both wings
+  share the single **Timer alerts** toggle in Settings → Notch.
 - **Clipboard** — an in-memory-only history of what you copy, with
   click-to-copy-back, per-item removal, and Clear All. Off by default —
   history collection is opt-in, since clipboard contents routinely include

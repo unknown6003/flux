@@ -1784,6 +1784,81 @@ enum SelfTest {
         check(TimerService.nextDeadline(in: [], after: ntNow) == nil,
               "TimerService: nextDeadline(in:after:) is nil with no timers at all")
 
+        // --- M6 fix: TimerService.sweepFinished — pause()/resume()/cancel()
+        // sweep any already-overdue timer FIRST, completing it instead of
+        // mutating it. Constructed with a NEGATIVE duration so the timer is
+        // already finished (`endDate` in the past) the instant `start()`
+        // returns, and the mutator is called on the very next synchronous
+        // line — with no `await`/suspension point in between, the boundary
+        // `Task` genuinely cannot have run yet, deterministically
+        // reproducing "the deadline passed but the boundary task hasn't
+        // fired because the main actor was busy" without any real timing
+        // race or sleep. ---
+        do {
+            let overdueTimers = TimerService()
+            var overdueCompletions: [String] = []
+            let overdueSub = overdueTimers.completions.sink { overdueCompletions.append($0.label) }
+
+            let overdueForPause = overdueTimers.start(duration: -5, label: "OverduePause")
+            overdueTimers.pause(overdueForPause.id)
+            check(overdueCompletions == ["OverduePause"],
+                  "TimerService: pause() on an already-overdue timer completes it via sweepFinished rather than pausing it")
+            check(!overdueTimers.timers.contains { $0.id == overdueForPause.id },
+                  "TimerService: the swept-and-completed timer is gone from `timers`, not left behind paused")
+
+            overdueCompletions.removeAll()
+            let overdueForResume = overdueTimers.start(duration: -5, label: "OverdueResume")
+            overdueTimers.resume(overdueForResume.id)
+            check(overdueCompletions == ["OverdueResume"],
+                  "TimerService: resume() on an already-overdue timer completes it via sweepFinished rather than resuming it")
+
+            overdueCompletions.removeAll()
+            let overdueForCancel = overdueTimers.start(duration: -5, label: "OverdueCancel")
+            overdueTimers.cancel(overdueForCancel.id)
+            check(overdueCompletions == ["OverdueCancel"],
+                  "TimerService: cancel() on an already-overdue timer still reports it via sweepFinished's completion event (it's removed either way, but as a completion, not a silent cancel)")
+
+            overdueSub.cancel()
+        }
+
+        // --- M6 fix: TimerService's NSWorkspace.didWakeNotification observer
+        // — closes the "boundary Task.sleep suspended across a system sleep"
+        // gap by sweeping overdue timers (and rearming the boundary) the
+        // instant the system wakes, rather than waiting for the already-late
+        // sleeping boundary Task to eventually resume on its own.
+        //
+        // A note on what this test can and can't isolate: an overdue
+        // timer's OWN boundary task is armed with a clamped-to-zero sleep
+        // (see `DeadlineTask.reschedule`'s `max(date.timeIntervalSinceNow, 0)`),
+        // so in this synthetic (no real sleep/wake involved) scenario the
+        // ordinary boundary task races the wake observer to reap it on the
+        // very next run-loop turn regardless — there is no way to
+        // deterministically prove HERE that the wake path specifically did
+        // the reaping without mocking the system clock. What this DOES
+        // verify: the observer is wired correctly and safe to invoke (no
+        // crash with no timers at all), and that posting the notification
+        // alongside an overdue timer is never harmful — the timer still
+        // completes exactly once, not zero or twice, whichever path
+        // actually reaped it. ---
+        do {
+            let wakeTimers = TimerService()
+            // Empty-service smoke test first: the observer must not
+            // crash/misbehave when there's nothing to sweep.
+            NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            check(wakeTimers.timers.isEmpty,
+                  "TimerService: posting didWakeNotification with no timers registered is a safe no-op")
+
+            var wakeCompletions: [String] = []
+            let wakeSub = wakeTimers.completions.sink { wakeCompletions.append($0.label) }
+            _ = wakeTimers.start(duration: -5, label: "SleptThrough")
+            NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            check(wakeCompletions == ["SleptThrough"],
+                  "TimerService: an already-overdue timer is completed exactly once after a wake notification is posted (whether reaped by the wake observer, the ordinary boundary task, or both racing harmlessly)")
+            wakeSub.cancel()
+        }
+
         // --- M6: TimersWidget — nearestRemainingLine/formatCountdown formatting ---
         let trRunning = NotchTimer(label: "Focus", duration: 125, startedAt: ntNow) // 125s left
         let trPaused = NotchTimer(label: "Paused", duration: 10, startedAt: ntNow.addingTimeInterval(-5), pausedAt: ntNow)
@@ -1793,6 +1868,42 @@ enum SelfTest {
               "TimersWidget: nearestRemainingLine picks the soonest-to-finish RUNNING timer (ignoring a paused one), showing whole minutes above 60s")
         check(TimersWidget.nearestRemainingLine(timers: [], at: ntNow) == nil,
               "TimersWidget: nearestRemainingLine is nil with no timers at all")
+
+        // --- M6 fix: TimersWidget.nearestPausedRemainingLine — the paused
+        // counterpart to nearestRemainingLine, backing the ambient wing's
+        // "show a paused indicator instead of dismissing" fix below. ---
+        let trPausedSooner = NotchTimer(label: "SoonerPaused", duration: 10, startedAt: ntNow.addingTimeInterval(-5), pausedAt: ntNow) // frozen at 5s
+        let trPausedLater = NotchTimer(label: "LaterPaused", duration: 600, startedAt: ntNow.addingTimeInterval(-100), pausedAt: ntNow) // frozen at 500s
+        check(TimersWidget.nearestPausedRemainingLine(timers: [trPausedSooner, trPausedLater], at: ntNow) == "0:05",
+              "TimersWidget: nearestPausedRemainingLine picks the paused timer with the SMALLEST frozen remaining time")
+        check(TimersWidget.nearestPausedRemainingLine(timers: [trRunning], at: ntNow) == nil,
+              "TimersWidget: nearestPausedRemainingLine is nil when every timer is running (none paused)")
+        check(TimersWidget.nearestPausedRemainingLine(timers: [], at: ntNow) == nil,
+              "TimersWidget: nearestPausedRemainingLine is nil with no timers at all")
+
+        // --- M6 fix: NotchActivityRouter.timerWingState — the pure core that
+        // replaced timerActivityShouldRun, adding the .paused case: when
+        // timers exist but every one is paused, the ambient wing should show
+        // a paused indicator rather than being dismissed entirely (the old
+        // bug — pausing the ONLY running timer dismissed the wing outright,
+        // as if no timers existed at all). ---
+        check(NotchActivityRouter.timerWingState(timers: [], toggleOn: true, notchPresenting: true, at: ntNow) == .hidden,
+              "NotchActivityRouter: timerWingState is .hidden with no timers at all")
+        check(NotchActivityRouter.timerWingState(timers: [trRunning], toggleOn: false, notchPresenting: true, at: ntNow) == .hidden,
+              "NotchActivityRouter: timerWingState is .hidden when the toggle is off, even with a running timer")
+        check(NotchActivityRouter.timerWingState(timers: [trRunning], toggleOn: true, notchPresenting: false, at: ntNow) == .hidden,
+              "NotchActivityRouter: timerWingState is .hidden when the notch isn't presenting")
+        if case .running(_, let runningLine) = NotchActivityRouter.timerWingState(timers: [trRunning], toggleOn: true, notchPresenting: true, at: ntNow) {
+            check(runningLine == "2 min", "NotchActivityRouter: timerWingState's .running case carries the running timer's countdown text")
+        } else {
+            check(false, "NotchActivityRouter: timerWingState should be .running with an unpaused timer, the toggle on, and the notch presenting")
+        }
+        if case .paused(let pausedLine) = NotchActivityRouter.timerWingState(timers: [trPausedSooner], toggleOn: true, notchPresenting: true, at: ntNow) {
+            check(pausedLine == "0:05",
+                  "NotchActivityRouter: timerWingState's code-review fix — a timer list with NO running timer but at least one paused one is .paused, not .hidden, and carries its frozen remaining text")
+        } else {
+            check(false, "NotchActivityRouter: timerWingState should be .paused when every timer is paused (not empty, not hidden)")
+        }
         check(TimersWidget.formatCountdown(65) == "1:05", "TimersWidget: formatCountdown renders m:ss with zero-padded seconds")
         check(TimersWidget.formatCountdown(5) == "0:05", "TimersWidget: formatCountdown zero-pads seconds under 10")
         check(TimersWidget.formatCountdown(-3) == "0:00", "TimersWidget: formatCountdown never shows a negative value")
@@ -1870,9 +1981,10 @@ enum SelfTest {
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: starts with empty history")
             clipboardProbe.stop() // must be safe even though never started
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: stop() before start() is a safe no-op")
-            // --- M6 fix: skipNextCapture is reset by both start() and
-            // stop(), so it can never survive a stop()/start() cycle and eat
-            // the first real capture after re-enable. Not directly
+            // --- M6 fix: suppressedChangeCount is reset to nil by stop()
+            // (kept for cleanliness — compare-by-value means it's no longer
+            // load-bearing correctness the way the old skipNextCapture flag
+            // reset was, see that property's own doc comment). Not directly
             // observable from outside (it's private), but repeated
             // start()/stop() cycles must stay crash-free and leave history
             // untouched, exercising exactly the reset code paths. ---
@@ -1881,6 +1993,73 @@ enum SelfTest {
             clipboardProbe.start()
             clipboardProbe.stop()
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: start()/stop() cycles alone never capture anything")
+        }
+        do {
+            // --- M6 fix: suppressedChangeCount is captured as the EXACT
+            // pasteboard changeCount copyBack(_:) itself produces, and a
+            // poll only ever skips that precise value — a genuinely external
+            // copy that lands before the very next poll tick (even one that
+            // arrives in the same ~1s window as the copy-back write, so its
+            // changeCount is the only one poll ever actually observes) must
+            // still be captured, not silently swallowed the way the old
+            // bare-boolean skipNextCapture would have. ---
+            let scPasteboard = NSPasteboard.general
+            scPasteboard.clearContents()
+            let scMonitor = ClipboardMonitor(pasteboard: scPasteboard)
+            scMonitor.start()
+            // Written AFTER start() (which re-baselines lastChangeCount to
+            // whatever's on the pasteboard AT THAT MOMENT) — not before
+            // constructing the monitor, which would already be reflected in
+            // that baseline and so never look like a "change" to the first
+            // poll at all.
+            scPasteboard.setString("flux-selftest-clipboard-seed", forType: .string)
+            RunLoop.current.run(until: Date().addingTimeInterval(1.15)) // let the first 1s poll capture the seed
+            check(scMonitor.entries.count == 1 && scMonitor.entries.first?.fullString == "flux-selftest-clipboard-seed",
+                  "ClipboardMonitor: an ordinary external copy is captured normally")
+
+            if let seedID = scMonitor.entries.first?.id {
+                scMonitor.copyBack(seedID) // writes the same string back — bumps changeCount to N
+                // A genuinely external copy landing immediately after,
+                // BEFORE the run loop ever spins again — so by the time the
+                // next poll tick looks, the pasteboard's changeCount already
+                // reflects this write, not copyBack's own N.
+                scPasteboard.clearContents()
+                scPasteboard.setString("flux-selftest-clipboard-external", forType: .string)
+                RunLoop.current.run(until: Date().addingTimeInterval(1.15))
+                check(scMonitor.entries.count == 2 && scMonitor.entries.first?.fullString == "flux-selftest-clipboard-external",
+                      "ClipboardMonitor: an external copy landing right after copyBack's own write (before the next poll tick) is still captured — suppression is by the EXACT changeCount copyBack produced, not a blanket 'skip whatever changed next'")
+            } else {
+                check(false, "ClipboardMonitor: the seeded entry should have captured with an id to copy back")
+            }
+            scMonitor.stop()
+            scPasteboard.clearContents()
+        }
+        do {
+            // --- M6 fix: ClipboardEntry.fullString is capped at
+            // ClipboardMonitor.fullStringCap characters (100_000), with a
+            // trailing "…" truncation marker — an unbounded-length copy no
+            // longer retains its entire payload across up to historyLimit
+            // (50) history entries at once. ---
+            let capPasteboard = NSPasteboard.general
+            capPasteboard.clearContents()
+            let capMonitor = ClipboardMonitor(pasteboard: capPasteboard)
+            capMonitor.start()
+            // Written AFTER start(), same reasoning as the suppressedChangeCount
+            // test above — otherwise start()'s own re-baseline already
+            // reflects this write and the first poll sees no change at all.
+            let hugeString = String(repeating: "a", count: ClipboardMonitor.fullStringCap + 500)
+            capPasteboard.setString(hugeString, forType: .string)
+            RunLoop.current.run(until: Date().addingTimeInterval(1.15))
+            capMonitor.stop()
+            if let captured = capMonitor.entries.first?.fullString {
+                check(captured.count == ClipboardMonitor.fullStringCap + 1,
+                      "ClipboardMonitor: an over-cap copy's fullString is truncated to fullStringCap characters plus one trailing marker character")
+                check(captured.hasSuffix("…"),
+                      "ClipboardMonitor: a truncated fullString ends with an ellipsis marker")
+            } else {
+                check(false, "ClipboardMonitor: an over-cap copy should still be captured (truncated), not dropped entirely")
+            }
+            capPasteboard.clearContents()
         }
         do {
             // --- M6 fix: ClipboardEntry.filePaths carries each captured file
@@ -1958,10 +2137,22 @@ enum SelfTest {
                     check(false, "NotchActivityRouter: the ambient wing's trailing content should be countdown .text")
                 }
 
+                // --- M6 fix: pausing the ONLY running timer must show a
+                // paused indicator, not dismiss the wing entirely — the old
+                // bug read "no RUNNING timer" as "no timer at all." ---
+                timerRouterTimers.pause(started.id)
+                check(timerRouterActivities.current?.kind == .timer,
+                      "NotchActivityRouter: pausing the only running timer keeps the wing showing (a paused indicator), not dismissed")
+                check(timerRouterActivities.current?.leading == .icon(systemName: "pause.circle"),
+                      "NotchActivityRouter: the paused wing's leading content is the pause.circle icon, not the running timer icon")
+                timerRouterTimers.resume(started.id)
+                check(timerRouterActivities.current?.leading == .icon(systemName: "timer"),
+                      "NotchActivityRouter: resuming brings back the running wing's timer icon")
+
                 // Cancelling the only running timer dismisses the ambient wing.
                 timerRouterTimers.cancel(started.id)
                 check(timerRouterActivities.current?.kind != .timer,
-                      "NotchActivityRouter: cancelling the only running timer dismisses the ambient wing")
+                      "NotchActivityRouter: cancelling the only running timer dismisses the ambient wing — no timers at all is still .hidden")
 
                 // A completion event posts a transient, higher-priority notice.
                 let completionTimer = NotchTimer(label: "Tea", duration: 1, startedAt: Date().addingTimeInterval(-1))
@@ -1987,6 +2178,59 @@ enum SelfTest {
                       "NotchActivityRouter: the timer-activity toggle off also suppresses the ambient wing for a newly started timer")
             }
             timerRouterSuite.removePersistentDomain(forName: timerRouterSuiteName)
+        }
+
+        // --- M6 fix: NotchActivityRouter — completionAlertUntil guards the
+        // ambient/paused wing recompute for the full 10s a "<label> done"
+        // notice is showing. Before this fix, ANY mutation during that
+        // window (start/pause/resume/cancel of some OTHER still-running
+        // timer) republished `timers.$timers`, which fed straight into
+        // `recomputeTimerActivity` and replaced/dismissed the "done" wing
+        // early — this reproduces exactly that sequence and asserts the
+        // notice survives every one of those mutations untouched. ---
+        do {
+            let alertSuiteName = "flux.selftest.timercompletionalert"
+            let alertSuite = UserDefaults(suiteName: alertSuiteName)!
+            alertSuite.removePersistentDomain(forName: alertSuiteName)
+            let alertSettings = SettingsStore(defaults: alertSuite)
+            let alertActivities = LiveActivityCenter()
+            let alertArranger = MenuBarArranger()
+            let alertCalendar = CalendarService()
+            let alertPermissions = PermissionCenter()
+            let alertTimers = TimerService()
+            let alertViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
+            let alertRouter = NotchActivityRouter(activities: alertActivities, settings: alertSettings,
+                                                   arranger: alertArranger, calendar: alertCalendar,
+                                                   permissions: alertPermissions, viewModel: alertViewModel,
+                                                   timers: alertTimers, startsMonitors: false)
+            withExtendedLifetime(alertRouter) {
+                let running = alertTimers.start(duration: 120, label: "Kettle")
+
+                // A completion event for a separate, already-finished timer
+                // posts the transient "done" notice.
+                let finished = NotchTimer(label: "Tea", duration: 1, startedAt: Date().addingTimeInterval(-1))
+                alertTimers.completions.send(finished)
+                check(alertActivities.current?.trailing == .text("Tea done"),
+                      "NotchActivityRouter: a completion event posts the '<label> done' notice")
+
+                // Every mutation below republishes `timers.$timers`, which
+                // would (pre-fix) immediately recompute and stomp the "done"
+                // notice with the ambient wing for `running`. None of them
+                // should change what's currently posted.
+                alertTimers.pause(running.id)
+                check(alertActivities.current?.trailing == .text("Tea done"),
+                      "NotchActivityRouter: pausing another timer during an active completion alert leaves the 'done' notice untouched")
+                alertTimers.resume(running.id)
+                check(alertActivities.current?.trailing == .text("Tea done"),
+                      "NotchActivityRouter: resuming another timer during an active completion alert leaves the 'done' notice untouched")
+                _ = alertTimers.start(duration: 60, label: "Extra")
+                check(alertActivities.current?.trailing == .text("Tea done"),
+                      "NotchActivityRouter: starting a NEW timer during an active completion alert leaves the 'done' notice untouched")
+                alertTimers.cancel(running.id)
+                check(alertActivities.current?.trailing == .text("Tea done"),
+                      "NotchActivityRouter: cancelling a timer during an active completion alert leaves the 'done' notice untouched")
+            }
+            alertSuite.removePersistentDomain(forName: alertSuiteName)
         }
 
         // --- M6: SettingsStore — fresh-install defaults for every new key,

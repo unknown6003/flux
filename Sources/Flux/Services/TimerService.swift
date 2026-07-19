@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -120,7 +121,59 @@ final class TimerService: ObservableObject {
     /// so there's nothing left for `TimerService`'s own `deinit` to do.
     private let boundaryTask = DeadlineTask()
 
-    init() {}
+    /// Captured once, in `init`'s body (see the comment there on why this
+    /// class's own MainActor-isolated properties are constructed in the body
+    /// rather than as default property values) — rather than re-reading
+    /// `NSWorkspace.shared.notificationCenter` from `deinit` below. `deinit`
+    /// runs nonisolated (an object's deallocation isn't guaranteed to happen
+    /// on the MainActor even for a `@MainActor`-isolated class), and
+    /// `NSWorkspace.shared` itself is MainActor-isolated API, so touching it
+    /// from `deinit` would be invalid. `NotificationCenter` instances
+    /// themselves are safe to use from any isolation (`CameraService.deinit`
+    /// already calls `NotificationCenter.default.removeObserver` the same
+    /// way), so holding onto this ONE reference sidesteps the problem
+    /// entirely.
+    private let wakeNotificationCenter: NotificationCenter
+
+    /// The `NSWorkspace.didWakeNotification` observer — see `sweepFinished`'s
+    /// doc comment's "system sleep" case, and the wake-handling block below
+    /// where this is registered, for why a timer service needs to react to
+    /// this at all. Torn down in `deinit`, mirroring `CameraService`'s own
+    /// plain-teardown-from-a-nonisolated-`deinit` pattern for its own
+    /// notification registrations.
+    private var wakeObserver: NSObjectProtocol?
+
+    init() {
+        self.wakeNotificationCenter = NSWorkspace.shared.notificationCenter
+        // Wall-clock anchoring (`NotchTimer.endDate` is derived from
+        // `startedAt`, never from an elapsed tick count) is the deliberate
+        // "kitchen timer" semantic this whole type is built on — a 10-minute
+        // timer started at 3:00 means "done at 3:10," full stop, matching a
+        // physical kitchen timer, not "10 minutes of app-uptime." But
+        // `Task.sleep` inside `boundaryTask` is itself suspended for the
+        // duration of a system sleep, so a Mac that sleeps through a
+        // timer's deadline and wakes up afterward leaves that boundary
+        // firing late — anywhere from a few seconds to arbitrarily long
+        // after the wall-clock deadline actually passed, depending on how
+        // long the Mac was asleep. This observer is what closes that gap:
+        // the instant the system wakes, sweep for anything that's already
+        // overdue and rearm the boundary for whatever's genuinely next,
+        // rather than waiting for the (already-late) sleeping boundary task
+        // to eventually resume and catch up on its own.
+        wakeObserver = wakeNotificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.sweepFinished(at: Date())
+            self.rescheduleBoundary()
+        }
+    }
+
+    deinit {
+        if let wakeObserver {
+            wakeNotificationCenter.removeObserver(wakeObserver)
+        }
+    }
 
     /// Starts a new countdown timer and returns it. `label` is entirely the
     /// caller's concern (`TimersWidget` supplies something like "5 min" by
@@ -134,25 +187,40 @@ final class TimerService: ObservableObject {
     }
 
     /// No-op if `id` doesn't exist or is already paused — callers never need
-    /// to check either condition themselves first.
+    /// to check either condition themselves first. Sweeps overdue timers
+    /// FIRST (see `sweepFinished`'s doc comment): if `id` itself is already
+    /// past its deadline but the boundary task simply hasn't run yet (the
+    /// main actor was busy exactly at the deadline), this completes it
+    /// instead of pausing a timer that should already be gone — the
+    /// subsequent `firstIndex` lookup then correctly finds nothing to pause.
     func pause(_ id: UUID) {
-        guard let index = timers.firstIndex(where: { $0.id == id }), !timers[index].isPaused else { return }
-        timers[index].pausedAt = Date()
+        sweepFinished(at: Date())
+        if let index = timers.firstIndex(where: { $0.id == id }), !timers[index].isPaused {
+            timers[index].pausedAt = Date()
+        }
         rescheduleBoundary()
     }
 
-    /// No-op if `id` doesn't exist or isn't currently paused.
+    /// No-op if `id` doesn't exist or isn't currently paused. Sweeps overdue
+    /// timers first, same reasoning as `pause(_:)` — a paused timer can't
+    /// itself be overdue (its countdown is frozen), but another, still-running
+    /// timer might be, and this is as good a moment as any to reap it rather
+    /// than leaving it until the boundary task gets around to it.
     func resume(_ id: UUID) {
-        guard let index = timers.firstIndex(where: { $0.id == id }), let pausedAt = timers[index].pausedAt else { return }
-        timers[index].accumulatedPause += Date().timeIntervalSince(pausedAt)
-        timers[index].pausedAt = nil
+        sweepFinished(at: Date())
+        if let index = timers.firstIndex(where: { $0.id == id }), let pausedAt = timers[index].pausedAt {
+            timers[index].accumulatedPause += Date().timeIntervalSince(pausedAt)
+            timers[index].pausedAt = nil
+        }
         rescheduleBoundary()
     }
 
-    /// No-op if `id` doesn't exist — cancelling an already-finished (and
-    /// therefore already-removed) or already-cancelled timer is harmless.
+    /// Cancelling an already-finished (and therefore already-removed) or
+    /// already-cancelled `id` is harmless — `removeAll` is a no-op for an
+    /// absent id. Sweeps overdue timers first, same reasoning as `pause(_:)`/
+    /// `resume(_:)`.
     func cancel(_ id: UUID) {
-        guard timers.contains(where: { $0.id == id }) else { return }
+        sweepFinished(at: Date())
         timers.removeAll { $0.id == id }
         rescheduleBoundary()
     }
@@ -193,23 +261,38 @@ final class TimerService: ObservableObject {
         boundaryTask.reschedule(to: deadline) { [weak self] in self?.handleBoundary() }
     }
 
-    /// Reaps every unpaused timer that's actually finished as of right now,
-    /// emits one `completions` event per timer reaped, then rearms the
-    /// boundary for whatever's next. Guards against firing for nothing (a
-    /// cancelled-and-superseded task racing its own cancellation check) by
-    /// simply rearming with no completions in that case, rather than
-    /// asserting — a boundary task that wakes up to find nothing actually due
-    /// is a timing footgun to tolerate silently, not a bug to crash over.
-    private func handleBoundary() {
-        let now = Date()
+    /// Reaps every unpaused timer that's actually finished as of `now`,
+    /// emitting one `completions` event per timer reaped. The shared core
+    /// behind BOTH the boundary task (`handleBoundary`, below) and every
+    /// mutator (`pause`/`resume`/`cancel`, each of which calls this first,
+    /// before touching `timers` itself) — a timer whose deadline has already
+    /// passed but whose boundary task hasn't fired yet (the main actor was
+    /// busy right at the deadline, or the whole process was asleep — see the
+    /// wake-notification observer in `init`) must be completed the instant
+    /// ANY entry point next touches `timers`, not only the boundary task,
+    /// so a mutator never silently pauses/resumes/cancels a timer that
+    /// should already be gone. Tolerates finding nothing to reap (a
+    /// cancelled-and-superseded boundary task racing its own cancellation
+    /// check, or simply no timer being overdue right now) by doing nothing,
+    /// rather than asserting — a call that finds nothing due is a timing
+    /// footgun to tolerate silently, not a bug to crash over. Every caller
+    /// reschedules the boundary itself afterward — this function only reaps
+    /// and emits, it never re-arms anything on its own.
+    private func sweepFinished(at now: Date) {
         let finishedIDs = Set(timers.filter { !$0.isPaused && $0.isFinished(at: now) }.map(\.id))
-        guard !finishedIDs.isEmpty else {
-            rescheduleBoundary()
-            return
-        }
+        guard !finishedIDs.isEmpty else { return }
         let finished = timers.filter { finishedIDs.contains($0.id) }
         timers.removeAll { finishedIDs.contains($0.id) }
         for timer in finished { completions.send(timer) }
+    }
+
+    /// Sweeps whatever's overdue as of right now, then rearms the boundary
+    /// for whatever's next — see `sweepFinished`'s doc comment for the reap
+    /// logic itself; this is just that plus the reschedule the boundary
+    /// task's own firing always needs, regardless of whether it found
+    /// anything to reap.
+    private func handleBoundary() {
+        sweepFinished(at: Date())
         rescheduleBoundary()
     }
 }

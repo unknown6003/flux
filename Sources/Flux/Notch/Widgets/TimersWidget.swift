@@ -79,6 +79,22 @@ final class TimersWidget: NotchWidget {
         return formatAmbientRemaining(max(nearest.remaining(at: now), 0))
     }
 
+    /// The code-review fix's paused counterpart to `nearestRemainingLine`
+    /// above: when every timer is paused (so there's no running one at all),
+    /// the ambient wing should still show SOMETHING rather than disappearing
+    /// entirely — the nearest (soonest-to-finish, were it resumed right now)
+    /// paused timer's frozen remaining time. `now` is threaded through only
+    /// for parity with `nearestRemainingLine`'s signature; a paused timer's
+    /// `remaining(at:)` ignores whatever instant it's asked about and always
+    /// answers with the value frozen at `pausedAt` (see `NotchTimer.
+    /// remaining(at:)`'s own doc comment), so passing a slightly-stale `now`
+    /// here is harmless. `nil` when no timer is paused (either none exist at
+    /// all, or every existing one is currently running).
+    static func nearestPausedRemainingLine(timers: [NotchTimer], at now: Date) -> String? {
+        guard let nearest = timers.filter(\.isPaused).min(by: { $0.remaining(at: now) < $1.remaining(at: now) }) else { return nil }
+        return formatAmbientRemaining(max(nearest.remaining(at: now), 0))
+    }
+
     /// The ambient wing's own countdown format — deliberately DIFFERENT from
     /// `formatCountdown` above, and coupled to
     /// `LiveActivitySources.nextTimerRefreshBoundary`'s refresh cadence:

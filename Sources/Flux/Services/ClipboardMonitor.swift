@@ -36,6 +36,9 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// and no retained pixel data at all. A future milestone that wants
     /// image copy-back should budget the memory cost explicitly rather
     /// than this type accumulating it as a side effect of history.
+    /// Capped at `ClipboardMonitor.fullStringCap` characters (see that
+    /// constant's own doc comment) — a truncation marker is appended when
+    /// it is.
     let fullString: String?
     /// Every captured file path, one element per file — `.file` entries
     /// only, `nil` for every other kind. Kept as a real `[String]` (rather
@@ -84,6 +87,20 @@ final class ClipboardMonitor: ObservableObject {
     /// session.
     static let historyLimit = 50
 
+    /// Hard cap, in characters, on `ClipboardEntry.fullString` — the
+    /// code-review fix for an unbounded-memory footgun: `preview` is already
+    /// bounded to 200 characters (see `singleLinePreview`), but `fullString`
+    /// retains the ENTIRE captured string verbatim, and up to `historyLimit`
+    /// (50) entries are held at once. Copying something extremely large —
+    /// hundreds of KB or more of pasted text/log/JSON — would otherwise let a
+    /// single history entry (and, worst case, all 50 of them) retain that
+    /// entire payload for as long as it sits in history, degrading memory
+    /// use for a feature whose whole point is glanceable history, not a
+    /// large-text store. 100,000 characters is generous for anything a user
+    /// would plausibly want to copy back verbatim while still bounding the
+    /// worst case to a few hundred KB per entry.
+    static let fullStringCap = 100_000
+
     /// Password managers (1Password, Bitwarden, and most others) mark a
     /// copied secret with one or both of these pasteboard types, per the
     /// long-standing (if informal) `nspasteboard.org` convention that many
@@ -99,18 +116,35 @@ final class ClipboardMonitor: ObservableObject {
     private var timer: Timer?
     private var lastChangeCount: Int
 
-    /// Set right before `copyBack(_:)` writes to the pasteboard, cleared
-    /// right after the next poll tick consumes it. Writing to
-    /// `NSPasteboard` — even from this same app — bumps `changeCount` just
-    /// like any external copy would, so without this, clicking a history
-    /// entry to copy it back would immediately be re-captured by the very
-    /// next poll as if it were a brand-new external copy, inserting a
-    /// duplicate at the top of `entries`. Also reset (to `false`) by both
-    /// `start()` and `stop()`, so a flag set right before a `stop()` (e.g.
-    /// the settings toggle flips off between `copyBack(_:)` and the next
-    /// tick) can never survive into a later `start()` and silently swallow
-    /// the first real external capture after the feature is re-enabled.
-    private var skipNextCapture = false
+    /// Set to the pasteboard's `changeCount` immediately AFTER `copyBack(_:)`
+    /// finishes writing, cleared the next time `poll()` looks at it (whether
+    /// or not it actually matches). Writing to `NSPasteboard` — even from
+    /// this same app — bumps `changeCount` just like any external copy
+    /// would, so without this, clicking a history entry to copy it back
+    /// would immediately be re-captured by the very next poll as if it were
+    /// a brand-new external copy, inserting a duplicate at the top of
+    /// `entries`.
+    ///
+    /// The code-review fix this replaced was a bare `Bool` (`skipNextCapture`)
+    /// that unconditionally skipped whatever the very next poll tick saw —
+    /// which is wrong if some OTHER app manages to copy something in the
+    /// narrow window between `copyBack(_:)`'s write and the next 1s poll:
+    /// that genuinely-external copy would silently vanish, never captured at
+    /// all. Comparing by the exact `changeCount` `copyBack(_:)` itself
+    /// produced fixes that: only a poll tick that sees THAT precise value is
+    /// skipped; a poll tick that sees anything else (an external copy having
+    /// bumped the count further in the meantime) is captured normally, same
+    /// as any other change.
+    ///
+    /// Not reset by `start()` — compare-by-value makes that unnecessary
+    /// (a stale value from a previous session can never coincidentally match
+    /// a NEW pasteboard's freshly-read `changeCount`, and even if it somehow
+    /// did, `changeCount` only ever increases, so a later poll can't observe
+    /// an old, already-passed value again). Still reset to `nil` by `stop()`,
+    /// purely for cleanliness — there's no live poll left to consume it once
+    /// stopped, so leaving a stale value sitting around until the next
+    /// `start()` would be tidier torn down than not.
+    private var suppressedChangeCount: Int?
 
     init(pasteboard: NSPasteboard = .general) {
         self.pasteboard = pasteboard
@@ -133,7 +167,6 @@ final class ClipboardMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         lastChangeCount = pasteboard.changeCount
-        skipNextCapture = false
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
@@ -142,7 +175,7 @@ final class ClipboardMonitor: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
-        skipNextCapture = false
+        suppressedChangeCount = nil
     }
 
     // MARK: - Polling
@@ -152,9 +185,14 @@ final class ClipboardMonitor: ObservableObject {
         guard current != lastChangeCount else { return }
         lastChangeCount = current
 
-        guard !skipNextCapture else {
-            skipNextCapture = false
-            return
+        // Consumed (cleared) on this very next look regardless of whether it
+        // matches — `changeCount` only ever increases, so once `current` has
+        // moved past a previously-suppressed value, that value can never be
+        // seen again; there's nothing left for a stale, no-longer-relevant
+        // `suppressedChangeCount` to accidentally suppress later.
+        if let suppressed = suppressedChangeCount {
+            suppressedChangeCount = nil
+            if current == suppressed { return }
         }
         guard !isConcealedOrTransient else { return }
         guard let entry = Self.capture(from: pasteboard) else { return }
@@ -232,11 +270,11 @@ final class ClipboardMonitor: ObservableObject {
     }
 
     private static func urlEntry(string: String) -> ClipboardEntry {
-        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .url, preview: singleLinePreview(string), fullString: string, filePaths: nil)
+        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .url, preview: singleLinePreview(string), fullString: cappedFullString(string), filePaths: nil)
     }
 
     private static func textEntry(string: String) -> ClipboardEntry {
-        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .text, preview: singleLinePreview(string), fullString: string, filePaths: nil)
+        ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .text, preview: singleLinePreview(string), fullString: cappedFullString(string), filePaths: nil)
     }
 
     private static func otherEntry() -> ClipboardEntry {
@@ -253,6 +291,17 @@ final class ClipboardMonitor: ObservableObject {
         return String(collapsed.prefix(200))
     }
 
+    /// `string`, truncated to `fullStringCap` characters with a trailing "…"
+    /// marker when it's over that cap — see `fullStringCap`'s own doc
+    /// comment for why this bound exists at all. Below the cap, `string` is
+    /// returned completely untouched (no marker appended) — copy-back must
+    /// stay byte-for-byte exact for the overwhelming common case of
+    /// ordinary-sized copies.
+    private static func cappedFullString(_ string: String) -> String {
+        guard string.count > fullStringCap else { return string }
+        return String(string.prefix(fullStringCap)) + "…"
+    }
+
     // MARK: - Actions
 
     /// Writes `id`'s captured content back to the pasteboard: text/url/other
@@ -263,9 +312,12 @@ final class ClipboardMonitor: ObservableObject {
     /// write back) or an `id` no longer present in `entries` (e.g. removed,
     /// or the list was cleared, between the tap and this call).
     ///
-    /// Sets `skipNextCapture` before writing so the poll tick this write
-    /// itself triggers doesn't re-capture the entry as a duplicate — see
-    /// that property's own doc comment.
+    /// Captures `suppressedChangeCount` immediately AFTER writing — not
+    /// before, unlike the old `skipNextCapture` boolean — so the value
+    /// stored is the EXACT `changeCount` this write itself produced; see
+    /// that property's own doc comment for why comparing by that precise
+    /// value (rather than unconditionally skipping whatever the next poll
+    /// tick sees) is the fix.
     func copyBack(_ id: UUID) {
         guard let entry = entries.first(where: { $0.id == id }) else { return }
 
@@ -273,7 +325,6 @@ final class ClipboardMonitor: ObservableObject {
         case .file:
             guard let paths = entry.filePaths, !paths.isEmpty else { return }
             let urls = paths.map { URL(fileURLWithPath: $0) }
-            skipNextCapture = true
             pasteboard.clearContents()
             // `[NSURL]` (not `[NSPasteboardWriting]`) — matches
             // `ShelfTileView`'s own `writeObjects([url as NSURL])` idiom;
@@ -283,10 +334,10 @@ final class ClipboardMonitor: ObservableObject {
             pasteboard.writeObjects(urls.map { $0 as NSURL })
         case .text, .url, .image, .other:
             guard let fullString = entry.fullString else { return }
-            skipNextCapture = true
             pasteboard.clearContents()
             pasteboard.setString(fullString, forType: .string)
         }
+        suppressedChangeCount = pasteboard.changeCount
     }
 
     /// Removes one entry from history — backs `ClipboardWidget`'s per-row
