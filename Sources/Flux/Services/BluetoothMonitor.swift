@@ -175,12 +175,21 @@ final class BluetoothMonitor: NSObject {
     /// peripheral before either callback ever reaches this, but `.other` is
     /// kept as a defensive fallback rather than force-mapping every
     /// unexpected major class onto one of the two real buckets.
+    ///
+    /// Plain `if`/`else` rather than a `switch` on `deviceClassMajor` — the
+    /// `kBluetoothDeviceClassMajor*` constants come through IOBluetooth's
+    /// overlay as untyped `Int` literals, not `BluetoothDeviceClassMajor`
+    /// (`UInt32`, `device.deviceClassMajor`'s actual type), and `==` (used
+    /// the same way in `isRelevant` above) tolerates that cross-type compare
+    /// via `ExpressibleByIntegerLiteral` where `switch`'s pattern-matching
+    /// `~=` does not — `case kBluetoothDeviceClassMajorAudio:` fails to
+    /// compile with "expression pattern of type 'Int' cannot match values of
+    /// type 'BluetoothDeviceClassMajor'".
     private static func category(for device: IOBluetoothDevice) -> BluetoothDeviceCategory {
-        switch device.deviceClassMajor {
-        case kBluetoothDeviceClassMajorAudio: return .audio
-        case kBluetoothDeviceClassMajorPeripheral: return .peripheral
-        default: return .other
-        }
+        let major = device.deviceClassMajor
+        if major == kBluetoothDeviceClassMajorAudio { return .audio }
+        if major == kBluetoothDeviceClassMajorPeripheral { return .peripheral }
+        return .other
     }
 
     /// Records this address's event time and reports whether it should
