@@ -57,6 +57,12 @@ enum Theme {
     static let accentWash = dynamic(light: rgb(0xF0A400).withAlphaComponent(0.12),
                                     dark: rgb(0xFFB000).withAlphaComponent(0.15))
 
+    /// A desaturated red reserved for genuinely urgent wings (a low-battery
+    /// live activity) — deliberately outside the amber family so a warning
+    /// reads as distinct from "just another accented highlight." Fixed
+    /// across appearances, same reasoning as `zone(_:)`.
+    static let warning = rgb(0xD6524A)
+
     // MARK: - Zone marker colours
 
     /// A warm, amber-anchored ramp — gold → burnt orange → rust — that reads as
@@ -82,6 +88,7 @@ enum Theme {
     static var accentColor: Color { Color(nsColor: accent) }
     static var accentInkColor: Color { Color(nsColor: accentInk) }
     static var accentWashColor: Color { Color(nsColor: accentWash) }
+    static var warningColor: Color { Color(nsColor: warning) }
     static func zoneColor(_ section: MenuBarSection) -> Color { Color(nsColor: zone(section)) }
 
     /// The app mark fill — the true brand amber with a faint top sheen, matching

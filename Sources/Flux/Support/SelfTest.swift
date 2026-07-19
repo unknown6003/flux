@@ -912,6 +912,211 @@ enum SelfTest {
         check(!NotchWindowController.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true),
               "Drag accept: a live activity showing declines")
 
+        // --- M3: PowerMonitor.lowBatteryEvent — the low-battery hysteresis,
+        // testable as a pure function with no real IOKit power source ---
+        do {
+            var armed = true
+            let ac = PowerState(percent: 50, isCharging: true, onACPower: true)
+            let unplugged60 = PowerState(percent: 60, isCharging: false, onACPower: false)
+            let unplugged70 = PowerState(percent: 70, isCharging: false, onACPower: false)
+            let unplugged20 = PowerState(percent: 20, isCharging: false, onACPower: false)
+            let unplugged19 = PowerState(percent: 19, isCharging: false, onACPower: false)
+            let unplugged26 = PowerState(percent: 26, isCharging: false, onACPower: false)
+
+            // Ordinary ticks above the re-arm line, with nothing ever having
+            // fired, must never emit `.batteryRecovered` — there's nothing to
+            // recover from, and this is by far the most common state a
+            // discharging, still-armed battery sits in.
+            var neverFired = true
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged60, current: unplugged70, armed: &neverFired) == nil,
+                  "PowerMonitor: staying above the re-arm threshold while never having fired emits nothing (no spurious .batteryRecovered)")
+
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged60, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
+                  "PowerMonitor: crossing below 20% unplugged fires .lowBattery once")
+            check(!armed, "PowerMonitor: firing disarms so the same low level doesn't refire")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: unplugged19, armed: &armed) == nil,
+                  "PowerMonitor: staying low while disarmed doesn't refire")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged26, armed: &armed) == .batteryRecovered(percent: 26),
+                  "PowerMonitor: crossing back above the 25% re-arm threshold after a fire posts .batteryRecovered (so the sticky warning comes down) instead of another .lowBattery")
+            check(armed, "PowerMonitor: crossing above 25% re-arms")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged26, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
+                  "PowerMonitor: re-armed, dropping below 20% again fires again")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: ac, armed: &armed) == nil,
+                  "PowerMonitor: plugging in while low never fires .lowBattery or .batteryRecovered (`.pluggedIn` already carries its own replacement activity)")
+            check(armed, "PowerMonitor: plugging in re-arms (a fresh unplug can refire immediately)")
+        }
+
+        // --- M3: PowerMonitor.plugEvent — plug/unplug transition detection ---
+        do {
+            let ac = PowerState(percent: 80, isCharging: true, onACPower: true)
+            let battery = PowerState(percent: 80, isCharging: false, onACPower: false)
+            check(PowerMonitor.plugEvent(previous: battery, current: ac) == .pluggedIn(percent: 80),
+                  "PowerMonitor: an AC transition fires .pluggedIn")
+            check(PowerMonitor.plugEvent(previous: ac, current: battery) == .unplugged(percent: 80),
+                  "PowerMonitor: losing AC fires .unplugged")
+            check(PowerMonitor.plugEvent(previous: ac, current: ac) == nil,
+                  "PowerMonitor: no power-source change means no event")
+        }
+
+        // --- M3: BluetoothMonitor.isDuplicate — the reconnect-storm dedupe
+        // window, as a pure predicate over a plain address→timestamp map ---
+        do {
+            let t0 = Date()
+            var lastEventAt: [String: Date] = [:]
+            check(!BluetoothMonitor.isDuplicate(address: "AA", now: t0, lastEventAt: lastEventAt),
+                  "BluetoothMonitor: a device's first event is never a duplicate")
+            lastEventAt["AA"] = t0
+            check(BluetoothMonitor.isDuplicate(address: "AA", now: t0.addingTimeInterval(2), lastEventAt: lastEventAt),
+                  "BluetoothMonitor: a same-device event 2s later falls inside the 5s dedupe window")
+            check(!BluetoothMonitor.isDuplicate(address: "AA", now: t0.addingTimeInterval(6), lastEventAt: lastEventAt),
+                  "BluetoothMonitor: a same-device event past 5s is treated as new")
+            check(!BluetoothMonitor.isDuplicate(address: "BB", now: t0.addingTimeInterval(1), lastEventAt: lastEventAt),
+                  "BluetoothMonitor: a different device's address is never deduped by another's window")
+        }
+
+        // --- M3: NotchActivityRouter — SF Symbol choice helpers ---
+        check(NotchActivityRouter.batterySymbol(percent: 100, charging: false) == "battery.100",
+              "NotchActivityRouter: a full battery maps to battery.100")
+        check(NotchActivityRouter.batterySymbol(percent: 74, charging: false) == "battery.50",
+              "NotchActivityRouter: percent rounds DOWN to the nearest SF Symbol step (74% -> 50, never up to 75)")
+        check(NotchActivityRouter.batterySymbol(percent: 50, charging: true) == "battery.50.bolt",
+              "NotchActivityRouter: charging adds the .bolt variant")
+        check(NotchActivityRouter.deviceSymbol(name: "Ammar's AirPods Pro", category: .audio) == "airpodspro",
+              "NotchActivityRouter: AirPods-named devices map to the airpodspro glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Sony WH-1000XM4", category: .audio) == "headphones",
+              "NotchActivityRouter: unrecognized audio-category device names fall back to a generic headphones glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Magic Keyboard", category: .peripheral) == "keyboard",
+              "NotchActivityRouter: a peripheral-category device named 'Keyboard' maps to the keyboard glyph, not headphones")
+        check(NotchActivityRouter.deviceSymbol(name: "Magic Mouse", category: .peripheral) == "computermouse",
+              "NotchActivityRouter: a peripheral-category device named 'Mouse' maps to the computermouse glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Xbox Wireless Controller", category: .peripheral) == "gamecontroller",
+              "NotchActivityRouter: a peripheral-category device named 'Controller' maps to the gamecontroller glyph")
+        check(NotchActivityRouter.deviceSymbol(name: "Some HID Gadget", category: .peripheral) == "cable.connector",
+              "NotchActivityRouter: a peripheral-category device whose name hints at no specific kind falls back to a generic accessory glyph, not headphones")
+
+        // --- M3: NotchActivityRouter — event-to-LiveActivity translation and
+        // settings gating, with real PowerMonitor/BluetoothMonitor instances
+        // standing in only as event sources (their .events subjects are fed
+        // directly here — no real IOKit/IOBluetooth state is exercised) ---
+        do {
+            let routerSuiteName = "flux.selftest.router"
+            let routerSuite = UserDefaults(suiteName: routerSuiteName)!
+            routerSuite.removePersistentDomain(forName: routerSuiteName)
+            let routerSettings = SettingsStore(defaults: routerSuite)
+            let routerActivities = LiveActivityCenter()
+            let routerArranger = MenuBarArranger()
+            let testPower = PowerMonitor()
+            let testBluetooth = BluetoothMonitor()
+            // `startsMonitors: false` — this test drives `testPower`/
+            // `testBluetooth` purely by feeding synthetic events straight
+            // through their `.events` subjects (below); it must never let the
+            // router's real settings-driven lifecycle call `start()` on
+            // either monitor, which would register real IOKit/IOBluetooth
+            // run-loop sources and notifications on the CI runner (flaky and
+            // slow in a headless environment with no real battery/Bluetooth
+            // hardware to speak of).
+            let router = NotchActivityRouter(activities: routerActivities, settings: routerSettings,
+                                              arranger: routerArranger, power: testPower, bluetooth: testBluetooth,
+                                              startsMonitors: false)
+
+            // `withExtendedLifetime` keeps `router` (and its Combine
+            // subscriptions on `testPower`/`testBluetooth`) alive for the
+            // whole block — otherwise ARC would be free to deallocate an
+            // otherwise-unread local the moment after construction, silently
+            // cancelling the very subscriptions these assertions depend on.
+            withExtendedLifetime(router) {
+                testPower.events.send(.unplugged(percent: 45))
+                check(routerActivities.current?.kind == .battery,
+                      "NotchActivityRouter: a PowerEvent posts a .battery live activity")
+                check(routerActivities.current?.priority == 200,
+                      "NotchActivityRouter: battery activities post at priority 200")
+                check(routerActivities.current?.duration == 4,
+                      "NotchActivityRouter: battery activities expire after 4s")
+                check(routerActivities.current?.tint == .normal,
+                      "NotchActivityRouter: a plain unplug is untinted")
+
+                testPower.events.send(.lowBattery(percent: 15))
+                check(routerActivities.current?.tint == .warning,
+                      "NotchActivityRouter: .lowBattery posts a .warning-tinted activity")
+                check(routerActivities.current?.duration == nil,
+                      "NotchActivityRouter: .lowBattery posts a STICKY (duration nil) activity — a transient 4s toast is too easy to miss for a warning that matters")
+
+                // `.batteryRecovered` (percent climbed back above the re-arm
+                // threshold with no plug event) must bring the sticky warning
+                // down even though there's no replacement activity to post.
+                testPower.events.send(.batteryRecovered(percent: 30))
+                check(routerActivities.current?.kind != .battery,
+                      "NotchActivityRouter: .batteryRecovered dismisses the sticky low-battery warning with no plug event to replace it")
+
+                // Plugging in while the sticky warning is up must replace it
+                // with a transient charging activity, not leave both queued.
+                testPower.events.send(.lowBattery(percent: 10))
+                check(routerActivities.current?.duration == nil,
+                      "NotchActivityRouter: a fresh .lowBattery re-posts sticky after a prior recovery")
+                testPower.events.send(.pluggedIn(percent: 25))
+                check(routerActivities.current?.kind == .battery && routerActivities.current?.tint == .normal,
+                      "NotchActivityRouter: plugging in while the sticky low-battery warning is showing replaces it with a transient charging activity (same-kind post dedup in LiveActivityCenter)")
+                check(routerActivities.current?.duration == 4,
+                      "NotchActivityRouter: the replacement charging activity is transient (4s), not sticky")
+
+                // Battery (priority 200) outranks bluetooth (priority 100) in
+                // `LiveActivityCenter`'s priority queue by design — dismiss it
+                // here so the bluetooth checks below observe their own posts
+                // as `current` rather than the still-queued battery activity.
+                routerActivities.dismiss(kind: .battery)
+
+                testBluetooth.events.send(.connected(name: "AirPods Pro", batteryPercent: 80, category: .audio))
+                check(routerActivities.current?.kind == .bluetoothDevice,
+                      "NotchActivityRouter: a BluetoothEvent posts a .bluetoothDevice live activity")
+                check(routerActivities.current?.priority == 100,
+                      "NotchActivityRouter: bluetooth activities post at priority 100")
+                check(routerActivities.current?.trailing == .iconText(systemName: "battery.75", text: "80%"),
+                      "NotchActivityRouter: a reported battery percent shows as icon+text using the real batterySymbol picker (80% -> the 75% SF Symbol step, not a hardcoded battery.100)")
+
+                testBluetooth.events.send(.connected(name: "Sony WH-1000XM4", batteryPercent: nil, category: .audio))
+                check(routerActivities.current?.trailing == .text("Sony WH-1000XM4"),
+                      "NotchActivityRouter: no battery reading falls back to showing the device name")
+
+                // Settings gating: flipping a toggle off suppresses further
+                // posts of that kind, without touching the other kind.
+                routerActivities.dismiss(kind: .battery)
+                routerSettings.notchActivityBatteryEnabled = false
+                testPower.events.send(.pluggedIn(percent: 90))
+                check(routerActivities.current?.kind != .battery,
+                      "NotchActivityRouter: the battery toggle off suppresses new battery posts")
+
+                testBluetooth.events.send(.disconnected(name: "AirPods Pro", category: .audio))
+                check(routerActivities.current?.kind == .bluetoothDevice,
+                      "NotchActivityRouter: the bluetooth toggle (still on) keeps posting independently of the battery toggle")
+
+                // M3 review fix: re-enabling the notch while the menu bar is
+                // STILL overflowing must re-post the warning, even though
+                // `arranger`'s own published state never changed in between —
+                // `observeOverflow()`'s deduped subscription only fires on a
+                // genuine change, so a static "still overflowing" condition
+                // would otherwise never republish through it.
+                routerArranger.setOverflow(arrange: false, notch: true, iconCount: 5)
+                // `observeOverflow()` delivers on `.receive(on: RunLoop.main)`
+                // (like several other sinks in this codebase — the hotkey
+                // shortcut and arrange-hint ones in `AppDelegate`, e.g.) —
+                // deliberately deferred, not synchronous, so a plain `check`
+                // straight after `setOverflow()` would race the scheduled
+                // delivery and see the *previous* activity. Spin the run loop
+                // briefly first, the same way the hover/focus sinks earlier
+                // in this file do.
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+                check(routerActivities.current?.kind == .menuBarOverflow,
+                      "NotchActivityRouter: a real menu-bar overflow posts a .menuBarOverflow live activity")
+                routerSettings.notchEnabled = false
+                check(routerActivities.current?.kind != .menuBarOverflow,
+                      "NotchActivityRouter: disabling the notch dismisses the overflow warning (nowhere left to show it)")
+                routerSettings.notchEnabled = true
+                check(routerActivities.current?.kind == .menuBarOverflow,
+                      "NotchActivityRouter: re-enabling the notch while still overflowing re-posts the warning even though arranger's overflow state itself never changed")
+            }
+            routerSuite.removePersistentDomain(forName: routerSuiteName)
+        }
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }

@@ -24,6 +24,24 @@ struct LiveActivity: Identifiable, Equatable {
         case artwork
     }
 
+    /// A wing-level color hint, kept data-only like `Content`. The semantic
+    /// (not just visual) contract:
+    /// - `.normal` = **informational**. The ordinary accent-tinted rendering
+    ///   every activity used before M3 (Now Playing, Shelf, plug/unplug,
+    ///   Bluetooth connect/disconnect) — and, deliberately, the menu-bar
+    ///   overflow warning too. Overflow reads as amber/routine ("N icons
+    ///   behind the notch") on purpose: it's a heads-up about a layout
+    ///   problem, not an emergency, so it stays `.normal` even though it's
+    ///   posted from a type literally named "warning" in `MenuBarArranger`.
+    /// - `.warning` = **urgent**, rendered red. Reserved for things that
+    ///   actually need to interrupt — right now, only the
+    ///   crossed-below-20%-unplugged low-battery notice.
+    ///
+    /// `NotchRootView` is the only place this turns into an actual `Color`.
+    enum ActivityTint: Equatable {
+        case normal, warning
+    }
+
     let id: UUID
     let kind: Kind
     /// Rendered in the left wing.
@@ -34,17 +52,22 @@ struct LiveActivity: Identifiable, Equatable {
     /// until explicitly dismissed (e.g. a running timer).
     let duration: TimeInterval?
     /// Higher wins when multiple activities are queued. Suggested bands:
-    /// HUD (volume/brightness) 300 > battery 200 > bluetooth 100.
+    /// HUD (volume/brightness) 300 > battery 200 > menu-bar overflow 150 >
+    /// bluetooth 100.
     let priority: Int
+    /// Defaults to `.normal` so every pre-M3 call site (Now Playing, Shelf,
+    /// menu-bar overflow) is unaffected by this field's addition.
+    let tint: ActivityTint
 
     init(id: UUID = UUID(), kind: Kind, leading: Content, trailing: Content,
-         duration: TimeInterval?, priority: Int) {
+         duration: TimeInterval?, priority: Int, tint: ActivityTint = .normal) {
         self.id = id
         self.kind = kind
         self.leading = leading
         self.trailing = trailing
         self.duration = duration
         self.priority = priority
+        self.tint = tint
     }
 }
 

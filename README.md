@@ -83,6 +83,13 @@ arrangement across launches.
   out to Finder/Mail/Slack/etc., or use the tile's context menu for AirDrop,
   "Show in Finder", or "Copy". An optional auto-clear (never / 1 / 3 / 7 days)
   in Settings → Notch tidies the shelf on its own.
+- **Live Activities** — brief wings around the notch for battery and
+  Bluetooth events: a wing when you plug in, unplug, or cross below 20%
+  battery unplugged (tinted to read as urgent, re-arming once you're back
+  above 25% or plugged in), and a wing when AirPods or another Bluetooth
+  audio/HID accessory connects or disconnects, with a best-effort battery
+  reading when the OS reports one. Each is independently toggled in
+  Settings → Notch.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
@@ -149,10 +156,13 @@ Sources/Flux/
     NotchViewModel.swift     # collapsed/activity/expanded state machine
     NotchWidget.swift        # widget protocol + registry
     LiveActivity.swift       # priority-queued "wings" content
+    LiveActivitySources.swift  # NotchActivityRouter — single home for every activity producer
     Widgets/NowPlayingWidget.swift
     Widgets/ShelfWidget.swift  # tiles, drag in/out, AirDrop/Finder/Copy
   Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
+  Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
+  Services/BluetoothMonitor.swift  # IOBluetooth connect/disconnect + IORegistry battery
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
   Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults

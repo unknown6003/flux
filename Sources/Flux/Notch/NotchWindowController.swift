@@ -42,6 +42,18 @@ final class NotchWindowController {
     /// dependency on `Services/Shelf`.
     var onShelfDrop: (([URL]) -> Int)?
 
+    /// Fires whenever `isPresenting` actually changes value — enable/disable
+    /// (`setEnabled`) and screen-configuration changes (`resolveScreen`,
+    /// itself driven by `didChangeScreenParametersNotification`) both flow
+    /// through the `isPresenting` `didSet` below, so this is a single hook
+    /// for both. Wired by the app layer to re-apply `NotchActivityRouter`'s
+    /// monitor start/stop decision (see `isPresentationAvailable` there) —
+    /// its battery/Bluetooth monitors have nowhere to show a wing while
+    /// nothing here is presenting (external-only clamshell, or the notch's
+    /// screen momentarily lost), and that can change independently of every
+    /// settings toggle the router already reacts to.
+    var onPresentationChanged: (() -> Void)?
+
     /// Slop added around the settled, collapsed `interactiveRect` (the
     /// physical notch's own footprint) when deciding whether an incoming file
     /// drag counts as "over the notch" — generous enough that a drag merely
@@ -77,7 +89,12 @@ final class NotchWindowController {
     /// is `false` (so it starts working the instant the notch reappears),
     /// but must not drive a headless expand while it is — see
     /// `hotkeyToggled()`.
-    private(set) var isPresenting = false
+    private(set) var isPresenting = false {
+        didSet {
+            guard oldValue != isPresenting else { return }
+            onPresentationChanged?()
+        }
+    }
 
     // MARK: - Collapsed-state pass-through monitors (Finding 1)
     //

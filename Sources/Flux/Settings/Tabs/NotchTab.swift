@@ -19,6 +19,7 @@ struct NotchTab: View {
             if settings.notchEnabled {
                 behaviorCard
                 widgetsCard
+                liveActivitiesCard
             }
         }
         .padding(20)
@@ -105,6 +106,21 @@ struct NotchTab: View {
                 RowDivider()
                 shelfExpiryRow
             }
+        }
+    }
+
+    /// Battery/Bluetooth wings (M3) — separate from `widgetsCard` since these
+    /// aren't cycled widgets, they're transient activities that appear on
+    /// their own triggers (plug/unplug, low battery, device connect).
+    private var liveActivitiesCard: some View {
+        FluxCard(title: "Live Activities") {
+            ToggleRow(title: "Battery",
+                      subtitle: "Show a wing when you plug in, unplug, or run low on battery.",
+                      isOn: $settings.notchActivityBatteryEnabled)
+            RowDivider()
+            ToggleRow(title: "Bluetooth devices",
+                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect.",
+                      isOn: $settings.notchActivityBluetoothEnabled)
         }
     }
 
