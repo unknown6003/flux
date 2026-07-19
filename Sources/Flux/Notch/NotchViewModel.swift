@@ -264,6 +264,48 @@ final class NotchViewModel: ObservableObject {
         transition(to: .expanded(resolved))
     }
 
+    // MARK: - Drag and drop (M2: file shelf)
+
+    /// True exactly when the notch is `.expanded(.shelf)` *because* a file
+    /// drag entered the collapsed notch's region (`dragEntered()`), as
+    /// opposed to the user's own hover/click/hotkey/swipe. Only in that case
+    /// does `dragExited()` collapse back on its own — a drag that merely
+    /// passes near a panel the user already had open deliberately must not
+    /// close it.
+    private var dragAutoExpanded = false
+
+    /// A file-carrying drag session entered the notch's region while
+    /// collapsed — `NotchWindowController` does the actual hit-testing
+    /// against `interactiveRect` before ever calling this. Expands straight
+    /// to `.shelf`, the flagship "drag onto the notch" gesture, but only from
+    /// `.collapsed` and only while the shelf widget is enabled; any other
+    /// state (an already-open panel) is never preempted by an incoming drag.
+    func dragEntered() {
+        guard state == .collapsed else { return }
+        guard registry.enabledWidgets.contains(where: { $0.id == .shelf }) else { return }
+        dragAutoExpanded = true
+        expand(.shelf)
+    }
+
+    /// The drag session left the notch's region without a drop landing.
+    /// Collapses back only if this exact drag is the one that opened the
+    /// panel; a drag that wandered near a panel the user opened themselves
+    /// leaves it alone.
+    func dragExited() {
+        guard dragAutoExpanded else { return }
+        dragAutoExpanded = false
+        collapse()
+    }
+
+    /// The drag session ended with a drop `NotchWindowController` handled.
+    /// Clears the auto-expand flag without forcing a collapse — the shelf
+    /// stays open showing what was just added; ordinary hover-out (now live
+    /// again, since the state is `.expanded`) collapses it the moment the
+    /// cursor actually leaves.
+    func dragCompleted() {
+        dragAutoExpanded = false
+    }
+
     // MARK: - Internals
 
     private var isExpanded: Bool {

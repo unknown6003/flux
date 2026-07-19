@@ -60,6 +60,9 @@ final class NotchPanel: NSPanel {
         // `.collapsed` value; `NotchWindowController` immediately re-syncs
         // this to the live state once the panel is attached/shown.
         ignoresMouseEvents = true
+        // See the "Drag-and-drop destination" section below for why this is
+        // registered on the window itself.
+        registerForDraggedTypes([.fileURL])
     }
 
     /// Never key: taking key focus would (a) steal it from whatever app the
@@ -137,6 +140,50 @@ final class NotchPanel: NSPanel {
         default:
             break // .stationary / .mayBegin / momentum-only events: ignored
         }
+    }
+
+    // MARK: - Drag-and-drop destination (M2: file shelf)
+    //
+    // Registered on the *window* itself (`registerForDraggedTypes` above),
+    // not a subview, so a drag session carrying files can still be recognized
+    // while `ignoresMouseEvents` is `true` (i.e. while `.collapsed`). That
+    // flag only suppresses ordinary mouse-event delivery (`sendEvent`'s usual
+    // path); AppKit's drag-and-drop machinery resolves a dragging destination
+    // through a separate mechanism untouched by it. `NSWindow` conforms to
+    // `NSDraggingDestination` once registered, exactly like an `NSView` would.
+    //
+    // While collapsed, nothing in the current SwiftUI content tree has an
+    // `.onDrop` (the shelf's expanded view doesn't exist until the panel
+    // expands), so `NotchHostingView.hitTest` returning `nil` outside the
+    // tiny physical-notch `interactiveRect` means no view claims the drag
+    // either — these window-level overrides are exactly the fallback that
+    // catches it there. Once expanded, the shelf's own SwiftUI `.onDrop` sits
+    // on a real, hit-testable view covering most of the panel and takes over
+    // for drops actually landing on it; these overrides simply stop being
+    // reached for those points.
+    //
+    // All four are pure forwarding to closures `NotchWindowController` sets —
+    // this class stays free of any knowledge of `ShelfStore` or the physical
+    // notch's screen geometry.
+    var onDraggingEntered: ((NSPoint) -> NSDragOperation)?
+    var onDraggingUpdated: ((NSPoint) -> NSDragOperation)?
+    var onDraggingExited: (() -> Void)?
+    var onPerformDragOperation: ((NSPasteboard) -> Bool)?
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onDraggingEntered?(sender.draggingLocation) ?? []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onDraggingUpdated?(sender.draggingLocation) ?? []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDraggingExited?()
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onPerformDragOperation?(sender.draggingPasteboard) ?? false
     }
 }
 

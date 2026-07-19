@@ -38,6 +38,8 @@ final class SettingsStore: ObservableObject {
         self.notchShowInFullscreen = defaults.bool(forKey: Keys.notchShowInFullscreen)
         self.notchWidgetOrder = defaults.stringArray(forKey: Keys.notchWidgetOrder) ?? [WidgetID.nowPlaying.rawValue]
         self.notchNowPlayingEnabled = defaults.bool(forKey: Keys.notchNowPlayingEnabled)
+        self.notchShelfEnabled = defaults.bool(forKey: Keys.notchShelfEnabled)
+        self.notchShelfExpiryDays = defaults.double(forKey: Keys.notchShelfExpiryDays)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
@@ -142,6 +144,20 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchNowPlayingEnabled, forKey: Keys.notchNowPlayingEnabled) }
     }
 
+    /// Whether the File Shelf widget is enabled in the notch's cycle.
+    @Published var notchShelfEnabled: Bool {
+        didSet { defaults.set(notchShelfEnabled, forKey: Keys.notchShelfEnabled) }
+    }
+
+    /// How long a shelved file survives before auto-clearing, in days. `0`
+    /// means never — mirrors `ShelfStore.expiryInterval` (`nil` there), which
+    /// is derived from this value by the wiring agent (`AppDelegate`) rather
+    /// than stored redundantly here as a `TimeInterval?` — `UserDefaults`
+    /// round-trips a plain `Double` far more simply than an optional.
+    @Published var notchShelfExpiryDays: Double {
+        didSet { defaults.set(notchShelfExpiryDays, forKey: Keys.notchShelfExpiryDays) }
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
@@ -173,8 +189,10 @@ final class SettingsStore: ObservableObject {
         Keys.notchHoverOpenDelay: 0.15,
         Keys.notchHoverCloseDelay: 0.40,
         Keys.notchShowInFullscreen: true,
-        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue],
+        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue],
         Keys.notchNowPlayingEnabled: true,
+        Keys.notchShelfEnabled: true,
+        Keys.notchShelfExpiryDays: 0.0,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
@@ -196,6 +214,8 @@ final class SettingsStore: ObservableObject {
         static let notchShowInFullscreen = "flux.notch.showInFullscreen"
         static let notchWidgetOrder = "flux.notch.widgetOrder"
         static let notchNowPlayingEnabled = "flux.notch.nowPlayingEnabled"
+        static let notchShelfEnabled = "flux.notch.shelf.enabled"
+        static let notchShelfExpiryDays = "flux.notch.shelf.expiryDays"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }

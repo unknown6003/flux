@@ -34,6 +34,21 @@ final class NotchWindowController {
         didSet { refreshRootView() }
     }
 
+    /// Set by the wiring agent to actually add dropped files to whatever
+    /// backs the shelf widget (a `ShelfStore`) and report how many were newly
+    /// added, so `handlePerformDrag` can post an accurate `.shelfDrop`
+    /// LiveActivity. `NotchWindowController` deliberately never references
+    /// the store type directly — that keeps this UI-shell file free of any
+    /// dependency on `Services/Shelf`.
+    var onShelfDrop: (([URL]) -> Int)?
+
+    /// Slop added around the settled, collapsed `interactiveRect` (the
+    /// physical notch's own footprint) when deciding whether an incoming file
+    /// drag counts as "over the notch" — generous enough that a drag merely
+    /// approaching the notch, not pixel-perfect over the tiny camera-housing
+    /// pixels, still triggers the auto-expand.
+    private static let dragSlop: CGFloat = 20
+
     private var panel: NotchPanel?
     private var hostingView: NotchHostingView?
     private var isEnabled = false
@@ -207,6 +222,7 @@ final class NotchWindowController {
         let hosting = NotchHostingView(viewModel: viewModel, rootView: makeRootView(notchSize: .zero))
         panel.contentView = hosting
         hostingView = hosting
+        wireDragHandlers(to: panel)
         return panel
     }
 
@@ -322,5 +338,67 @@ final class NotchWindowController {
     private func handleMonitoredClick(at location: NSPoint) {
         guard let rect = NSScreen.builtInNotchedScreen?.notchRect, rect.contains(location) else { return }
         viewModel.clicked()
+    }
+
+    // MARK: - Drag-and-drop onto the collapsed notch (M2: file shelf)
+
+    /// Points `panel`'s window-level drag-destination closures (see
+    /// `NotchPanel`'s own doc comment) back at this controller. Called once,
+    /// right after each panel is built — a fresh panel is created on every
+    /// screen change, so this has to be re-wired there rather than only once.
+    private func wireDragHandlers(to panel: NotchPanel) {
+        panel.onDraggingEntered = { [weak self] location in self?.handleDraggingUpdate(at: location) ?? [] }
+        panel.onDraggingUpdated = { [weak self] location in self?.handleDraggingUpdate(at: location) ?? [] }
+        panel.onDraggingExited = { [weak self] in self?.viewModel.dragExited() }
+        panel.onPerformDragOperation = { [weak self] pasteboard in self?.handlePerformDrag(pasteboard) ?? false }
+    }
+
+    /// Shared by `draggingEntered`/`draggingUpdated`. Only while `.collapsed`
+    /// does a drag get to auto-expand the shelf — once anything else is
+    /// showing, this declines (`[]`) so the drag falls through to whatever
+    /// real, hit-testable SwiftUI content is under the cursor instead
+    /// (notably the expanded shelf's own `.onDrop`).
+    ///
+    /// Reuses `viewModel.interactiveRect` rather than re-deriving the
+    /// physical notch's screen geometry from `NSScreen`: while `.collapsed`
+    /// (and settled — see `NotchRootView.updateInteractiveRect`), that rect
+    /// *is* exactly the physical notch's footprint, in the hosting view's own
+    /// coordinate space. Converting the drag's window-space location into
+    /// that same space and testing containment (with slop) is both correct
+    /// and avoids a second, easily-drifting copy of the same geometry.
+    private func handleDraggingUpdate(at windowLocation: NSPoint) -> NSDragOperation {
+        guard viewModel.state == .collapsed, let hostingView else { return [] }
+        let localPoint = hostingView.convert(windowLocation, from: nil)
+        let target = viewModel.interactiveRect.insetBy(dx: -Self.dragSlop, dy: -Self.dragSlop)
+        guard target.contains(localPoint) else { return [] }
+        viewModel.dragEntered()
+        return .copy
+    }
+
+    /// Reads dropped file URLs off the pasteboard, hands them to the wiring
+    /// agent's `onShelfDrop` to actually add them to the shelf, and — on a
+    /// successful add — posts a brief `.shelfDrop` LiveActivity so the user
+    /// gets feedback even if the panel doesn't stay open (e.g. the cursor
+    /// immediately moves off after the drop, closing an auto-expanded shelf
+    /// via the usual hover-out path).
+    private func handlePerformDrag(_ pasteboard: NSPasteboard) -> Bool {
+        defer { viewModel.dragCompleted() }
+        guard let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !urls.isEmpty else {
+            return false
+        }
+
+        let added = onShelfDrop?(urls) ?? 0
+        guard added > 0 else { return false }
+
+        activities.post(LiveActivity(
+            kind: .shelfDrop,
+            leading: .icon(systemName: "tray.and.arrow.down.fill"),
+            trailing: .text("Added \(added)"),
+            duration: 2.5,
+            priority: 120))
+        return true
     }
 }
