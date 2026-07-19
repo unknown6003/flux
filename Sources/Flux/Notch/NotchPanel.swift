@@ -170,19 +170,24 @@ final class NotchPanel: NSPanel {
     var onDraggingExited: (() -> Void)?
     var onPerformDragOperation: ((NSPasteboard) -> Bool)?
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    // No `override`: `NSWindow` only implements `NSDraggingDestination`
+    // informally (an Objective-C category, not declared in its Swift-visible
+    // class interface), so these are plain methods AppKit's drag machinery
+    // finds and invokes by selector at runtime, not statically-dispatched
+    // overrides of a superclass declaration.
+    func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         onDraggingEntered?(sender.draggingLocation) ?? []
     }
 
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         onDraggingUpdated?(sender.draggingLocation) ?? []
     }
 
-    override func draggingExited(_ sender: NSDraggingInfo?) {
+    func draggingExited(_ sender: NSDraggingInfo?) {
         onDraggingExited?()
     }
 
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onPerformDragOperation?(sender.draggingPasteboard) ?? false
     }
 }
