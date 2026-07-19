@@ -29,6 +29,15 @@ final class ShelfStore: ObservableObject {
     /// Populated asynchronously as `QLThumbnailGenerator` (or its
     /// `NSWorkspace` icon fallback) finishes for each item. Absence of a key
     /// just means "not ready yet" — callers should show a placeholder.
+    ///
+    /// Memory tradeoff: every generated thumbnail is a decoded `NSImage` kept
+    /// live in memory for as long as its item is on the shelf (there's no
+    /// eviction beyond `remove(_:)`/`sweepExpired()` dropping the entry with
+    /// the item). At M2 scale (tens of items, 64pt thumbnails) that's
+    /// negligible; it's also why generation is lazy (`ensureThumbnails()`,
+    /// called from `ShelfWidget.willPresent()`) rather than eager for every
+    /// item at `init` — a shelf nobody opens shouldn't pay for thumbnails
+    /// nobody sees.
     @Published private(set) var thumbnails: [UUID: NSImage] = [:]
 
     /// `nil` = keep shelved files forever. Set from settings; not persisted
@@ -63,10 +72,10 @@ final class ShelfStore: ObservableObject {
             saveManifest()
         }
 
-        for item in items {
-            generateThumbnail(for: item)
-        }
-
+        // Deliberately no eager thumbnail generation here — see the
+        // `thumbnails` dict's own doc comment. Thumbnails are generated
+        // lazily, on `add()` for freshly-added items and via
+        // `ensureThumbnails()` once the shelf actually becomes visible.
         sweepExpired()
     }
 
@@ -81,11 +90,34 @@ final class ShelfStore: ObservableObject {
 
     // MARK: - Mutation
 
+    /// Files at or under this size copy synchronously in `add(urls:)` —
+    /// fast enough (tens of ms on local storage) not to be worth the
+    /// complexity of a background hop for the shelf's typical drop (a
+    /// screenshot, a document, a handful of KB-to-low-MB files). Anything
+    /// larger — or of unknown size, see `add(urls:)` — copies on a detached
+    /// background task instead, so dropping a large video or archive onto
+    /// the notch can't freeze the main actor for the whole copy.
+    private static let backgroundCopyThreshold: Int64 = 64 * 1024 * 1024
+
     /// Copies each URL's file into the shelf directory under a fresh,
     /// collision-proof stored name. Sources that fail to copy (permissions,
     /// already gone, source disappeared mid-drag, etc.) are logged and
-    /// skipped rather than aborting the whole batch. Returns only the items
-    /// that were actually added.
+    /// skipped rather than aborting the whole batch.
+    ///
+    /// Small files (see `backgroundCopyThreshold`) copy synchronously and are
+    /// part of this call's returned array — the fast path, kept synchronous
+    /// deliberately so ordering stays simple: the caller (e.g.
+    /// `NotchWindowController`'s "Added N" toast) can trust the count it got
+    /// back is complete. Large (or unknown-size — treated the same as
+    /// "large", since blocking on a stat that might turn out to be huge is
+    /// the wrong default) files instead copy on a `Task.detached`, then hop
+    /// back to the main actor to append the item, persist, and generate its
+    /// thumbnail — such an item is *not* part of this call's returned array,
+    /// since it isn't ready yet; `items` publishing its arrival once the
+    /// background copy finishes is how the UI (and any in-flight toast) find
+    /// out. A background copy can safely run concurrently with anything
+    /// else touching the store: the fresh UUID-prefixed `storedFileName` is
+    /// already collision-proof against every other add, in flight or not.
     @discardableResult
     func add(urls: [URL]) -> [ShelfItem] {
         sweepExpired()
@@ -95,23 +127,21 @@ final class ShelfStore: ObservableObject {
             let displayName = source.lastPathComponent
             let storedName = "\(UUID().uuidString)-\(displayName)"
             let dest = directory.appendingPathComponent(storedName)
+            let sourceSize = (try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init)
 
-            do {
-                // `copyItem` recurses automatically when the source is a
-                // directory, so directories are supported for free.
-                try fileManager.copyItem(at: source, to: dest)
-            } catch {
-                shelfLog.error("Failed to copy \(displayName, privacy: .public) onto the shelf: \(error.localizedDescription, privacy: .public)")
-                continue
+            if let sourceSize, sourceSize <= Self.backgroundCopyThreshold {
+                do {
+                    // `copyItem` recurses automatically when the source is a
+                    // directory, so directories are supported for free.
+                    try fileManager.copyItem(at: source, to: dest)
+                } catch {
+                    shelfLog.error("Failed to copy \(displayName, privacy: .public) onto the shelf: \(error.localizedDescription, privacy: .public)")
+                    continue
+                }
+                added.append(ShelfItem(fileName: displayName, storedFileName: storedName, addedAt: Date()))
+            } else {
+                copyInBackground(source: source, dest: dest, storedName: storedName, displayName: displayName)
             }
-
-            let values = try? dest.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            let isDirectory = values?.isDirectory ?? false
-            let fileSize = isDirectory ? 0 : Int64(values?.fileSize ?? 0)
-
-            let item = ShelfItem(fileName: displayName, storedFileName: storedName,
-                                  addedAt: Date(), fileSize: fileSize, originURL: source)
-            added.append(item)
         }
 
         guard !added.isEmpty else { return [] }
@@ -125,6 +155,28 @@ final class ShelfStore: ObservableObject {
         }
 
         return added
+    }
+
+    /// The slow path `add(urls:)` hands large/unknown-size sources to — see
+    /// that method's doc comment for the full reasoning.
+    private func copyInBackground(source: URL, dest: URL, storedName: String, displayName: String) {
+        let fileManager = self.fileManager
+        Task.detached { [weak self] in
+            do {
+                try fileManager.copyItem(at: source, to: dest)
+            } catch {
+                shelfLog.error("Failed to copy \(displayName, privacy: .public) onto the shelf: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            await MainActor.run {
+                guard let self else { return }
+                let item = ShelfItem(fileName: displayName, storedFileName: storedName, addedAt: Date())
+                self.items.append(item)
+                self.items.sort { $0.addedAt > $1.addedAt }
+                self.saveManifest()
+                self.generateThumbnail(for: item)
+            }
+        }
     }
 
     /// Removes one item: deletes its stored file, drops its manifest entry
@@ -172,13 +224,32 @@ final class ShelfStore: ObservableObject {
     /// (init, `add`) rather than from a repeating timer — matches the notch
     /// suite's zero-idle-CPU perf contract; a shelf nobody looks at doesn't
     /// need to prune itself on a schedule.
+    ///
+    /// Batched deliberately, unlike `remove(_:)` (kept as the single-item
+    /// path for user-initiated removal from the UI, with its own
+    /// `saveManifest()` per call): a sweep can drop many items in one shot,
+    /// and calling `remove(_:)` in a loop here would mean one manifest
+    /// write per expired item instead of one for the whole sweep. This
+    /// deletes every expired item's stored file and thumbnail as it goes,
+    /// then persists exactly once at the end.
     func sweepExpired() {
         guard let expiryInterval else { return }
         let cutoff = Date().addingTimeInterval(-expiryInterval)
-        let expiredIDs = items.filter { $0.addedAt < cutoff }.map(\.id)
-        for id in expiredIDs {
-            remove(id)
+        let expired = items.filter { $0.addedAt < cutoff }
+        guard !expired.isEmpty else { return }
+
+        for item in expired {
+            do {
+                try fileManager.removeItem(at: item.storedURL(in: directory))
+            } catch {
+                shelfLog.error("Failed to delete expired stored file for \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+            thumbnails[item.id] = nil
         }
+
+        let expiredIDs = Set(expired.map(\.id))
+        items.removeAll { expiredIDs.contains($0.id) }
+        saveManifest()
     }
 
     // MARK: - Manifest persistence
@@ -235,6 +306,27 @@ final class ShelfStore: ObservableObject {
     }
 
     // MARK: - Thumbnails
+
+    /// Generates a thumbnail for every item that doesn't have one yet.
+    /// Called from `ShelfWidget.willPresent()` — lazy rather than eager at
+    /// `init` (see the `thumbnails` dict's own doc comment) — so a shelf
+    /// that's never opened never pays for thumbnails nobody sees, and a
+    /// shelf that *is* opened only generates what's actually missing
+    /// (freshly-`add`ed items already got theirs started).
+    ///
+    /// Caps at the 100 newest items (`items` is already newest-first) if the
+    /// shelf has grown past that: thumbnailing hundreds of items on every
+    /// single `willPresent()` would itself become the perf problem this
+    /// laziness exists to avoid.
+    func ensureThumbnails() {
+        if items.count > 100 {
+            shelfLog.notice("Shelf has \(items.count) items — only generating thumbnails for the 100 newest")
+        }
+        let candidates = items.count > 100 ? items.prefix(100) : items[...]
+        for item in candidates where thumbnails[item.id] == nil {
+            generateThumbnail(for: item)
+        }
+    }
 
     /// Requests a QuickLook thumbnail at roughly 64pt (scaled for the main
     /// screen's backing scale) and hops the result to the main actor —

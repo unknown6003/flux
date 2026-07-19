@@ -1,19 +1,22 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 /// Wraps `ShelfStore` as a `NotchWidget`: a horizontal strip of recently
 /// dropped/added files with thumbnails, a drag source for dragging files back
-/// out to Finder/other apps, quick AirDrop/Finder/Copy actions, and the
-/// notch's own drag-*in* destination for a file dropped directly onto the
-/// already-expanded shelf.
+/// out to Finder/other apps, and quick AirDrop/Finder/Copy actions.
 ///
-/// Files dropped on the *collapsed* notch are a separate path: `NotchPanel`'s
-/// window-level `NSDraggingDestination` (see that file) auto-expands to this
-/// widget before the drop lands, then hands the dropped URLs to
-/// `NotchWindowController.onShelfDrop` — which the wiring agent points at
-/// `store.add(urls:)` — rather than going through this view's own `.onDrop`
-/// at all. This view's `.onDrop` only matters once the panel is already open.
+/// This widget owns no drag-*in* handling of its own — every file drop, in
+/// every state (landing on the collapsed notch and auto-expanding to this
+/// widget, or landing directly on the already-open shelf panel), is caught by
+/// `NotchPanel`'s window-level `NSDraggingDestination` (see that file's doc
+/// comment) and handed to `NotchWindowController.onShelfDrop`, which the
+/// wiring agent points at `store.add(urls:)`. An earlier revision *also* gave
+/// this view's expanded content its own SwiftUI `.onDrop` for the
+/// already-open case — a second, independent drop destination that raced the
+/// window-level one (a `draggingExited`/`draggingEntered` flicker mid-drag,
+/// and drops that could be declined right after an auto-expand). It's been
+/// removed so the window-level destination is the sole drag-and-drop path,
+/// in every state.
 ///
 /// Owns no file/thumbnail state of its own — `ShelfStore` is the single
 /// source of truth; this class only adapts it to the `NotchWidget` surface.
@@ -43,13 +46,17 @@ final class ShelfWidget: NotchWidget {
     /// once expanded (unlike Now Playing's mini artwork + equalizer).
     func makeCompactView() -> AnyView? { nil }
 
-    /// Sweep anything past `store.expiryInterval` every time the shelf
-    /// becomes visible, rather than on a running timer — matching the notch
+    /// Sweep anything past `store.expiryInterval`, then generate thumbnails
+    /// for anything still missing one — both run every time the shelf
+    /// becomes visible, rather than on a running timer, matching the notch
     /// suite's zero-idle-timer perf contract. A shelf that's never opened
-    /// simply keeps its expired items until the next time someone looks,
-    /// which is fine: expiry is a tidiness feature, not a guarantee.
+    /// simply keeps its expired items (and un-thumbnailed tiles) until the
+    /// next time someone looks, which is fine: neither is a guarantee, just
+    /// tidiness/polish. Sweeping first means an about-to-be-swept item never
+    /// gets a thumbnail generated for it needlessly.
     func willPresent() {
         store.sweepExpired()
+        store.ensureThumbnails()
     }
 
     /// `ShelfStore` holds no timers/sessions of its own (see its own doc
@@ -62,8 +69,12 @@ final class ShelfWidget: NotchWidget {
 
 private struct ShelfExpandedView: View {
     @ObservedObject var store: ShelfStore
-    @State private var isDropTargeted = false
 
+    // No `.onDrop` here — see `ShelfWidget`'s own doc comment for why every
+    // drop (whether it lands here, already open, or on the collapsed notch)
+    // is caught upstream by `NotchPanel`'s window-level
+    // `NSDraggingDestination` instead of a second, competing destination on
+    // this view.
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -74,17 +85,6 @@ private struct ShelfExpandedView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // The expanded shelf's own drop target — for a drag that's released
-        // once the panel is already open (anywhere over this view, not just
-        // the tiny physical notch pixels the collapsed-state window-level
-        // destination in `NotchPanel` cares about).
-        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            performDrop(providers)
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Theme.accentColor.opacity(isDropTargeted ? 0.6 : 0), lineWidth: 2)
-        )
     }
 
     private var header: some View {
@@ -122,48 +122,6 @@ private struct ShelfExpandedView: View {
                 }
             }
             .padding(.vertical, 2)
-        }
-    }
-
-    // MARK: Drop handling
-
-    /// Reads file URLs off each provider and adds them to the store.
-    /// `NSItemProvider.loadItem`'s completion handler isn't guaranteed to
-    /// fire on the main thread, so the loading loop runs on a plain
-    /// (non-isolated) `Task` and only hops to the main actor for the final
-    /// `store.add(urls:)` call, since `ShelfStore` is `@MainActor`-isolated.
-    private func performDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !providers.isEmpty else { return false }
-        Task {
-            var urls: [URL] = []
-            for provider in providers {
-                if let url = await Self.loadFileURL(from: provider) {
-                    urls.append(url)
-                }
-            }
-            guard !urls.isEmpty else { return }
-            await MainActor.run {
-                _ = store.add(urls: urls)
-            }
-        }
-        return true
-    }
-
-    private static func loadFileURL(from provider: NSItemProvider) async -> URL? {
-        guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { return nil }
-        return await withCheckedContinuation { continuation in
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                switch item {
-                case let data as Data:
-                    continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil))
-                case let url as URL:
-                    continuation.resume(returning: url)
-                case let nsurl as NSURL:
-                    continuation.resume(returning: nsurl as URL)
-                default:
-                    continuation.resume(returning: nil)
-                }
-            }
         }
     }
 }

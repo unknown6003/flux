@@ -161,15 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
-        shelfStore.expiryInterval = Self.shelfExpiryInterval(fromDays: settings.notchShelfExpiryDays)
+        shelfStore.expiryInterval = settings.notchShelfExpiryInterval
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
-    }
-
-    /// `0` (the "Never" setting) means keep forever — `ShelfStore.
-    /// expiryInterval` spells that as `nil` rather than a magic `0` duration.
-    private static func shelfExpiryInterval(fromDays days: Double) -> TimeInterval? {
-        days > 0 ? days * 86400 : nil
     }
 
     private func observeNotchSettings() {
@@ -217,7 +211,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchShelfExpiryDays
             .dropFirst()
-            .sink { [weak self] value in self?.shelfStore.expiryInterval = Self.shelfExpiryInterval(fromDays: value) }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.shelfStore.expiryInterval = self.settings.notchShelfExpiryInterval
+            }
             .store(in: &cancellables)
 
         settings.$notchHotkey

@@ -145,28 +145,54 @@ final class NotchPanel: NSPanel {
     // MARK: - Drag-and-drop destination (M2: file shelf)
     //
     // Registered on the *window* itself (`registerForDraggedTypes` above),
-    // not a subview, so a drag session carrying files can still be recognized
-    // while `ignoresMouseEvents` is `true` (i.e. while `.collapsed`). That
-    // flag only suppresses ordinary mouse-event delivery (`sendEvent`'s usual
-    // path); AppKit's drag-and-drop machinery resolves a dragging destination
-    // through a separate mechanism untouched by it. `NSWindow` conforms to
-    // `NSDraggingDestination` once registered, exactly like an `NSView` would.
+    // not a subview — this is the SOLE drag-and-drop path for the whole
+    // notch UI, in every state (`.collapsed`, auto-expanding to the shelf, or
+    // already `.expanded(.shelf)`). That's deliberate, not incidental: a
+    // shelf that's already open used to have its own SwiftUI `.onDrop` for
+    // drops landing directly on it — a second, independent
+    // `NSDraggingDestination` competing with this window-level one for the
+    // same drag session. Two destinations meant AppKit could hand a session
+    // back and forth between them mid-drag (a `draggingExited`/
+    // `draggingEntered` flicker as the cursor crossed the boundary between
+    // the collapsed notch's window-level rect and the expanded view's own
+    // hit-testable frame), and a drop right after the collapsed-notch
+    // auto-expand could land in the gap and be declined by both. Routing
+    // every state through these four overrides — nothing else in the
+    // SwiftUI tree claims a drag — removes that race entirely: one
+    // destination, no handoff.
     //
-    // While collapsed, nothing in the current SwiftUI content tree has an
-    // `.onDrop` (the shelf's expanded view doesn't exist until the panel
-    // expands), so `NotchHostingView.hitTest` returning `nil` outside the
-    // tiny physical-notch `interactiveRect` means no view claims the drag
-    // either — these window-level overrides are exactly the fallback that
-    // catches it there. Once expanded, the shelf's own SwiftUI `.onDrop` sits
-    // on a real, hit-testable view covering most of the panel and takes over
-    // for drops actually landing on it; these overrides simply stop being
-    // reached for those points.
+    // `ignoresMouseEvents` (`true` while `.collapsed`) only suppresses
+    // ordinary mouse-event delivery (`sendEvent`'s usual path); AppKit's
+    // drag-and-drop machinery resolves a dragging destination through a
+    // separate mechanism untouched by it. `NSWindow` conforms to
+    // `NSDraggingDestination` once registered, exactly like an `NSView`
+    // would — which is also why `NotchHostingView.hitTest` returning `nil`
+    // outside the currently-visible shape doesn't affect drag recognition at
+    // all: hit-testing and drag-destination resolution are unrelated AppKit
+    // mechanisms.
     //
     // All four are pure forwarding to closures `NotchWindowController` sets —
     // this class stays free of any knowledge of `ShelfStore` or the physical
-    // notch's screen geometry.
-    var onDraggingEntered: ((NSPoint) -> NSDragOperation)?
-    var onDraggingUpdated: ((NSPoint) -> NSDragOperation)?
+    // notch's screen geometry. `draggingEntered`/`draggingUpdated` both
+    // forward to the same `onDraggingMoved` closure rather than two separate
+    // ones: AppKit's contract for both is identical ("what operation for the
+    // point right now?"), so `NotchWindowController` making that decision
+    // once, in one place, is both simpler and rules out the two ever
+    // silently drifting apart in behavior.
+    //
+    // Open hardware question, flagged for real-hardware QA (see
+    // `docs/notch-checklist.md`) — not yet verified on a physical notched
+    // Mac: while `.collapsed`, this window is frontmost at `.statusBar`
+    // level, and `onDraggingMoved` declines (`[]`) for any point outside
+    // `interactiveRect` + `NotchWindowController.dragSlop`. Whether AppKit
+    // then retargets that declined drag session to whatever *window* sits
+    // beneath this transparent strip — the same pass-through
+    // `ignoresMouseEvents` already gives plain mouse events — or whether a
+    // frontmost `NSDraggingDestination` that merely declines still blocks
+    // the session from reaching what's underneath, is unconfirmed. If it
+    // blocks, the accept region needs to shrink further so it stops
+    // intercepting drags that were never meant for the notch at all.
+    var onDraggingMoved: ((NSPoint) -> NSDragOperation)?
     var onDraggingExited: (() -> Void)?
     var onPerformDragOperation: ((NSPasteboard) -> Bool)?
 
@@ -176,11 +202,11 @@ final class NotchPanel: NSPanel {
     // finds and invokes by selector at runtime, not statically-dispatched
     // overrides of a superclass declaration.
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        onDraggingEntered?(sender.draggingLocation) ?? []
+        onDraggingMoved?(sender.draggingLocation) ?? []
     }
 
     func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        onDraggingUpdated?(sender.draggingLocation) ?? []
+        onDraggingMoved?(sender.draggingLocation) ?? []
     }
 
     func draggingExited(_ sender: NSDraggingInfo?) {

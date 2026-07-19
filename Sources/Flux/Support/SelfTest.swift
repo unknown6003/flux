@@ -751,7 +751,7 @@ enum SelfTest {
         // but left alone while expiryInterval is nil.
         let shelfDirExpiry = makeShelfTempDir()
         let shelfStaleItem = ShelfItem(fileName: "stale.txt", storedFileName: "stale-stored.txt",
-                                        addedAt: Date().addingTimeInterval(-3_600), fileSize: 0, originURL: nil)
+                                        addedAt: Date().addingTimeInterval(-3_600))
         try? "stale".write(to: shelfDirExpiry.appendingPathComponent(shelfStaleItem.storedFileName),
                            atomically: true, encoding: .utf8)
         if let shelfExpiryManifest = try? JSONEncoder().encode([shelfStaleItem]) {
@@ -765,9 +765,129 @@ enum SelfTest {
         check(!shelfStoreExpiry.items.contains(where: { $0.id == shelfStaleItem.id }),
               "Shelf: expiry — sweepExpired() removes an item older than expiryInterval once it's set")
 
-        for shelfDir in [shelfSourceDir, shelfDirA, shelfDirExpiry] {
+        // Batch sweep: several expired items alongside one fresh survivor.
+        // `sweepExpired()` now partitions/deletes/persists in one shot rather
+        // than calling `remove(_:)` per item — asserting *how many times* the
+        // manifest was written would be a fragile way to verify that (mtimes,
+        // buffering, etc.), so this instead only checks observable
+        // correctness: every expired item is gone (files and manifest), the
+        // fresh one survives, and nothing else was disturbed.
+        let shelfDirBatch = makeShelfTempDir()
+        let staleBatch1 = ShelfItem(fileName: "stale1.txt", storedFileName: "stale1-stored.txt",
+                                    addedAt: Date().addingTimeInterval(-3_600))
+        let staleBatch2 = ShelfItem(fileName: "stale2.txt", storedFileName: "stale2-stored.txt",
+                                    addedAt: Date().addingTimeInterval(-7_200))
+        let freshBatch = ShelfItem(fileName: "fresh.txt", storedFileName: "fresh-stored.txt", addedAt: Date())
+        for item in [staleBatch1, staleBatch2, freshBatch] {
+            try? "x".write(to: shelfDirBatch.appendingPathComponent(item.storedFileName),
+                           atomically: true, encoding: .utf8)
+        }
+        if let batchManifest = try? JSONEncoder().encode([staleBatch1, staleBatch2, freshBatch]) {
+            try? batchManifest.write(to: shelfDirBatch.appendingPathComponent("manifest.json"))
+        }
+        let shelfStoreBatch = ShelfStore(directory: shelfDirBatch)
+        shelfStoreBatch.expiryInterval = 60
+        shelfStoreBatch.sweepExpired()
+        check(!shelfStoreBatch.items.contains(where: { $0.id == staleBatch1.id }) &&
+              !shelfStoreBatch.items.contains(where: { $0.id == staleBatch2.id }),
+              "Shelf: batch sweepExpired() removes every expired item in one pass, not just the first")
+        check(shelfStoreBatch.items.contains(where: { $0.id == freshBatch.id }),
+              "Shelf: batch sweepExpired() leaves a non-expired item untouched")
+        check(!FileManager.default.fileExists(atPath: staleBatch1.storedURL(in: shelfDirBatch).path) &&
+              !FileManager.default.fileExists(atPath: staleBatch2.storedURL(in: shelfDirBatch).path),
+              "Shelf: batch sweepExpired() deletes every expired item's stored file")
+        let batchManifestAfter = (try? Data(contentsOf: shelfDirBatch.appendingPathComponent("manifest.json")))
+            .flatMap { try? JSONDecoder().decode([ShelfItem].self, from: $0) } ?? []
+        check(batchManifestAfter.count == 1 && batchManifestAfter.first?.id == freshBatch.id,
+              "Shelf: batch sweepExpired() persists a single post-sweep manifest write with only the survivor")
+
+        // Lazy thumbnails: a freshly-loaded store (nothing added/opened yet)
+        // starts with no thumbnails at all — the eager per-item generation
+        // loop that used to run in `init` is gone — and `ensureThumbnails()`
+        // (what `ShelfWidget.willPresent()` calls) is safe to call without
+        // crashing even though `QLThumbnailGenerator`'s result arrives
+        // asynchronously and can't be awaited deterministically here.
+        check(shelfStoreBatch.thumbnails.isEmpty,
+              "Shelf: a store with items freshly loaded from a manifest (not added, not presented) starts with no thumbnails — generation is lazy")
+        shelfStoreBatch.ensureThumbnails()
+
+        for shelfDir in [shelfSourceDir, shelfDirA, shelfDirExpiry, shelfDirBatch] {
             try? FileManager.default.removeItem(at: shelfDir)
         }
+
+        // --- Notch: drag-flag lifecycle (dragEntered/dragExited/dragCompleted) ---
+        // Uses the same `SelfTestWidget` stub as the transition-table tests
+        // above so this exercises the real `NotchViewModel`, not a mock.
+        let dragRegistry = NotchWidgetRegistry()
+        let dragShelfWidget = SelfTestWidget(id: .shelf)
+        dragRegistry.register(dragShelfWidget)
+        dragRegistry.order = [.shelf]
+        let dragVM = NotchViewModel(registry: dragRegistry, activities: LiveActivityCenter())
+
+        // A drag entering the collapsed notch auto-expands to the shelf...
+        dragVM.dragEntered()
+        check(dragVM.state == .expanded(.shelf),
+              "Drag: dragEntered() auto-expands from collapsed to the shelf widget")
+
+        // ...and dragExited() (the drag left without a drop) collapses it
+        // back, since this exact drag is the one that opened it.
+        dragVM.dragExited()
+        check(dragVM.state == .collapsed,
+              "Drag: dragExited() collapses a shelf that this same drag auto-expanded")
+
+        // A drag entering when the shelf isn't registered/enabled at all is
+        // a no-op — nothing to auto-expand to.
+        let noShelfRegistry = NotchWidgetRegistry()
+        let noShelfWidget = SelfTestWidget(id: .nowPlaying)
+        noShelfRegistry.register(noShelfWidget)
+        noShelfRegistry.order = [.nowPlaying]
+        let noShelfVM = NotchViewModel(registry: noShelfRegistry, activities: LiveActivityCenter())
+        noShelfVM.dragEntered()
+        check(noShelfVM.state == .collapsed,
+              "Drag: dragEntered() is a no-op when no shelf widget is registered/enabled")
+
+        // A drop landing instead just clears the auto-expand flag and leaves
+        // the shelf open — a later, stray dragExited() (another drag session
+        // merely passing near the already-open shelf) must not close it.
+        dragVM.dragEntered()
+        check(dragVM.state == .expanded(.shelf), "Drag: setup — re-enter for the dragCompleted() case")
+        dragVM.dragCompleted()
+        dragVM.dragExited()
+        check(dragVM.state == .expanded(.shelf),
+              "Drag: dragCompleted() clears the auto-expand flag, so a later dragExited() leaves the still-open shelf alone")
+        dragVM.collapse()
+
+        // If the state machine lands on `.collapsed` via any OTHER path
+        // (not `dragExited()` itself) while a drag had auto-expanded the
+        // shelf, that must also clear the flag — otherwise it could survive
+        // to misfire against whatever the user does next.
+        dragVM.dragEntered()
+        check(dragVM.state == .expanded(.shelf), "Drag: setup — auto-expanded again")
+        dragVM.collapse() // an ordinary collapse, not dragExited()
+        check(dragVM.state == .collapsed, "Drag: setup — collapsed via collapse(), not dragExited()")
+        dragVM.expand(.shelf) // the user reopens it themselves
+        check(dragVM.state == .expanded(.shelf), "Drag: setup — user reopens the shelf themselves")
+        dragVM.dragExited()
+        check(dragVM.state == .expanded(.shelf),
+              "Drag: transition(to:) clearing dragAutoExpanded on the earlier collapse() means a stray dragExited() can't close a panel the user reopened themselves")
+
+        // --- Notch: NotchWindowController.shouldAcceptDrag — the pure
+        // predicate behind the window-level drag destination's accept/decline
+        // decision, testable without a real window, screen, or drag session ---
+        check(NotchWindowController.shouldAcceptDrag(state: .collapsed, pointInNotch: true, shelfEnabled: true),
+              "Drag accept: collapsed + inside the (slop-padded) notch + shelf enabled accepts")
+        check(!NotchWindowController.shouldAcceptDrag(state: .collapsed, pointInNotch: true, shelfEnabled: false),
+              "Drag accept: collapsed but the shelf widget is disabled declines")
+        check(!NotchWindowController.shouldAcceptDrag(state: .collapsed, pointInNotch: false, shelfEnabled: true),
+              "Drag accept: collapsed but the point is outside the notch declines")
+        check(NotchWindowController.shouldAcceptDrag(state: .expanded(.shelf), pointInNotch: true, shelfEnabled: true),
+              "Drag accept: already expanded to the shelf + inside its bounds accepts (keeps the window accepting after auto-expand)")
+        check(!NotchWindowController.shouldAcceptDrag(state: .expanded(.shelf), pointInNotch: false, shelfEnabled: true),
+              "Drag accept: expanded to the shelf but the point left its bounds declines")
+        check(!NotchWindowController.shouldAcceptDrag(state: .expanded(.nowPlaying), pointInNotch: true, shelfEnabled: true),
+              "Drag accept: expanded to a different widget (not the shelf) declines even if the point is inside")
+        check(!NotchWindowController.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true),
+              "Drag accept: a live activity showing declines")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

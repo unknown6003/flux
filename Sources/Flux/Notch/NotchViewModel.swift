@@ -272,6 +272,31 @@ final class NotchViewModel: ObservableObject {
     /// does `dragExited()` collapse back on its own — a drag that merely
     /// passes near a panel the user already had open deliberately must not
     /// close it.
+    ///
+    /// ## Lifecycle
+    /// - **Set** by `dragEntered()`, the moment it actually auto-expands.
+    /// - **Cleared** three ways, all of which must hold for `dragExited()`'s
+    ///   own collapse to fire correctly:
+    ///   1. `transition(to:)` clears it unconditionally whenever the state
+    ///      machine lands on `.collapsed` — via *any* path (an ordinary
+    ///      hover-out/click/swipe/hotkey collapse, `forceCollapse()`, a live
+    ///      activity being dismissed while `.collapsed` was already showing
+    ///      through it, ...), not just `dragExited()` itself. Without this,
+    ///      a flag left `true` by one drag session could survive an
+    ///      unrelated collapse-then-reopen and wrongly auto-close a panel
+    ///      the user opened themselves afterward.
+    ///   2. `dragCompleted()` clears it when a drop actually lands — the
+    ///      shelf stays open (state is still `.expanded(.shelf)`, so rule 1
+    ///      above doesn't apply here), but this *is* no longer "auto-expanded
+    ///      and unresolved"; a stray later `dragExited()` call must leave it
+    ///      alone.
+    ///   3. `dragExited()` clears it itself when it fires the collapse.
+    /// - **Read** by `dragExited()`, which additionally requires `state ==
+    ///   .expanded(.shelf)` — belt-and-suspenders with rule 1 above: even if
+    ///   this flag were somehow still `true` while the user had since
+    ///   navigated to a *different* expanded widget (a swipe mid-drag), that
+    ///   other widget must not be yanked shut by a drag session that has
+    ///   nothing to do with it.
     private var dragAutoExpanded = false
 
     /// A file-carrying drag session entered the notch's region while
@@ -289,19 +314,22 @@ final class NotchViewModel: ObservableObject {
 
     /// The drag session left the notch's region without a drop landing.
     /// Collapses back only if this exact drag is the one that opened the
-    /// panel; a drag that wandered near a panel the user opened themselves
-    /// leaves it alone.
+    /// panel (`dragAutoExpanded`) *and* the shelf is still what's showing —
+    /// a drag that wandered near a panel the user opened themselves, or that
+    /// the user has since swiped away from, leaves whatever's there alone.
+    /// See `dragAutoExpanded`'s doc comment for the full clearing lifecycle.
     func dragExited() {
-        guard dragAutoExpanded else { return }
+        guard dragAutoExpanded, state == .expanded(.shelf) else { return }
         dragAutoExpanded = false
         collapse()
     }
 
     /// The drag session ended with a drop `NotchWindowController` handled.
-    /// Clears the auto-expand flag without forcing a collapse — the shelf
-    /// stays open showing what was just added; ordinary hover-out (now live
-    /// again, since the state is `.expanded`) collapses it the moment the
-    /// cursor actually leaves.
+    /// Clears the auto-expand flag (clearing rule 2 on `dragAutoExpanded`'s
+    /// doc comment) without forcing a collapse — the shelf stays open
+    /// showing what was just added; ordinary hover-out (now live again,
+    /// since the state is `.expanded`) collapses it the moment the cursor
+    /// actually leaves.
     func dragCompleted() {
         dragAutoExpanded = false
     }
@@ -346,6 +374,13 @@ final class NotchViewModel: ObservableObject {
         }
 
         state = newState
+
+        if newState == .collapsed {
+            // See `dragAutoExpanded`'s doc comment (clearing rule 1): every
+            // path that lands the state machine on `.collapsed` must clear
+            // this, not just `dragExited()`.
+            dragAutoExpanded = false
+        }
 
         if case .expanded(let newID) = newState {
             lastUsedWidget = newID

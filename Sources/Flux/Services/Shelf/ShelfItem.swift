@@ -20,23 +20,12 @@ struct ShelfItem: Identifiable, Codable, Equatable {
     /// backups, support requests).
     var storedFileName: String
     var addedAt: Date
-    /// Size in bytes. `0` for directories — sizing one accurately means a
-    /// recursive enumeration, which is overkill for shelf display purposes.
-    var fileSize: Int64
-    /// Best-effort record of where this file came from (e.g. so a future
-    /// "reveal original" affordance has something to try). Not guaranteed to
-    /// still exist, still be reachable, or even to have been set — `nil` when
-    /// the origin wasn't known at add time.
-    var originURL: URL?
 
-    init(id: UUID = UUID(), fileName: String, storedFileName: String,
-         addedAt: Date, fileSize: Int64, originURL: URL?) {
+    init(id: UUID = UUID(), fileName: String, storedFileName: String, addedAt: Date) {
         self.id = id
         self.fileName = fileName
         self.storedFileName = storedFileName
         self.addedAt = addedAt
-        self.fileSize = fileSize
-        self.originURL = originURL
     }
 
     /// Where this item's copy actually lives, given the store's storage

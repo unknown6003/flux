@@ -158,6 +158,17 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchShelfExpiryDays, forKey: Keys.notchShelfExpiryDays) }
     }
 
+    /// `notchShelfExpiryDays` translated into the `TimeInterval?` that
+    /// `ShelfStore.expiryInterval` actually wants — `0` (the "Never"
+    /// setting) means keep forever, which `ShelfStore` spells as `nil`
+    /// rather than a magic `0` duration. Computed, not stored: it's a pure
+    /// function of `notchShelfExpiryDays`, which is the thing actually
+    /// persisted, so `AppDelegate` can read this straight into
+    /// `shelfStore.expiryInterval` instead of re-deriving the mapping itself.
+    var notchShelfExpiryInterval: TimeInterval? {
+        notchShelfExpiryDays > 0 ? notchShelfExpiryDays * 86400 : nil
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
