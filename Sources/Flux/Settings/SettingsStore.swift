@@ -46,6 +46,11 @@ final class SettingsStore: ObservableObject {
         self.notchActivityCalendarEventEnabled = defaults.bool(forKey: Keys.notchActivityCalendarEventEnabled)
         self.notchHudEnabled = defaults.bool(forKey: Keys.notchHudEnabled)
         self.notchHudInterceptEnabled = defaults.bool(forKey: Keys.notchHudInterceptEnabled)
+        self.notchMirrorEnabled = defaults.bool(forKey: Keys.notchMirrorEnabled)
+        self.notchClipboardEnabled = defaults.bool(forKey: Keys.notchClipboardEnabled)
+        self.notchTimersEnabled = defaults.bool(forKey: Keys.notchTimersEnabled)
+        self.notchActivityTimerEnabled = defaults.bool(forKey: Keys.notchActivityTimerEnabled)
+        self.notchLockScreenExperimentEnabled = defaults.bool(forKey: Keys.notchLockScreenExperimentEnabled)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
@@ -222,6 +227,50 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchHudInterceptEnabled, forKey: Keys.notchHudInterceptEnabled) }
     }
 
+    /// Whether the Mirror widget (a live camera preview) is enabled in the
+    /// notch's cycle. Defaults to `true` — like every other widget, showing
+    /// the widget itself needs no permission; it's `MirrorWidget`'s own
+    /// permission-gated view (and `CameraService`'s own authorization check)
+    /// that keeps the camera off until Camera access is actually granted.
+    @Published var notchMirrorEnabled: Bool {
+        didSet { defaults.set(notchMirrorEnabled, forKey: Keys.notchMirrorEnabled) }
+    }
+
+    /// Whether `ClipboardMonitor` collects clipboard history at all. Defaults
+    /// to `false`, unlike every other notch-suite toggle — clipboard content
+    /// routinely includes passwords and other sensitive text a user only
+    /// meant to paste once, so history collection is opt-in rather than
+    /// on-by-default the way a glanceable widget normally would be. Also
+    /// gates the Clipboard widget's own enabled state (see `AppDelegate`'s
+    /// wiring) — there's no reason to show an empty history widget when
+    /// collection itself is off.
+    @Published var notchClipboardEnabled: Bool {
+        didSet { defaults.set(notchClipboardEnabled, forKey: Keys.notchClipboardEnabled) }
+    }
+
+    /// Whether the Timers widget is enabled in the notch's cycle.
+    @Published var notchTimersEnabled: Bool {
+        didSet { defaults.set(notchTimersEnabled, forKey: Keys.notchTimersEnabled) }
+    }
+
+    /// Whether a finished timer posts a wing (plus plays a sound) and a
+    /// running timer shows an ambient countdown wing — read by
+    /// `NotchActivityRouter`, which also requires `notchEnabled` and
+    /// somewhere to actually present before showing either.
+    @Published var notchActivityTimerEnabled: Bool {
+        didSet { defaults.set(notchActivityTimerEnabled, forKey: Keys.notchActivityTimerEnabled) }
+    }
+
+    /// EXPERIMENTAL — master on/off for `LockScreenPresenter`'s notch
+    /// silhouette on the macOS lock screen. Defaults to `false`: this rides
+    /// on undocumented lock-screen notification names and drawing above the
+    /// lock screen's own shield window level (see that type's own doc
+    /// comment on why), so it's opt-in rather than on-by-default like the
+    /// rest of the notch suite.
+    @Published var notchLockScreenExperimentEnabled: Bool {
+        didSet { defaults.set(notchLockScreenExperimentEnabled, forKey: Keys.notchLockScreenExperimentEnabled) }
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
@@ -253,7 +302,8 @@ final class SettingsStore: ObservableObject {
         Keys.notchHoverOpenDelay: 0.15,
         Keys.notchHoverCloseDelay: 0.40,
         Keys.notchShowInFullscreen: true,
-        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue],
+        Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue,
+                                WidgetID.mirror.rawValue, WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
         Keys.notchNowPlayingEnabled: true,
         Keys.notchShelfEnabled: true,
         Keys.notchShelfExpiryDays: 0.0,
@@ -263,6 +313,11 @@ final class SettingsStore: ObservableObject {
         Keys.notchActivityCalendarEventEnabled: true,
         Keys.notchHudEnabled: true,
         Keys.notchHudInterceptEnabled: false,
+        Keys.notchMirrorEnabled: true,
+        Keys.notchClipboardEnabled: false,
+        Keys.notchTimersEnabled: true,
+        Keys.notchActivityTimerEnabled: true,
+        Keys.notchLockScreenExperimentEnabled: false,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
@@ -292,6 +347,11 @@ final class SettingsStore: ObservableObject {
         static let notchActivityCalendarEventEnabled = "flux.notch.activities.calendarEvent"
         static let notchHudEnabled = "flux.notch.hud.enabled"
         static let notchHudInterceptEnabled = "flux.notch.hud.intercept"
+        static let notchMirrorEnabled = "flux.notch.mirror.enabled"
+        static let notchClipboardEnabled = "flux.notch.clipboard.enabled"
+        static let notchTimersEnabled = "flux.notch.timers.enabled"
+        static let notchActivityTimerEnabled = "flux.notch.activities.timer"
+        static let notchLockScreenExperimentEnabled = "flux.notch.lockScreenExperiment"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }

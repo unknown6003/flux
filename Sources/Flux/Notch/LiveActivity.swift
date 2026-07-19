@@ -69,6 +69,28 @@ struct LiveActivity: Identifiable, Equatable {
         self.priority = priority
         self.tint = tint
     }
+
+    /// A plain-text caption derived from this activity's own content —
+    /// what `LockScreenPresenter` should caption its silhouette with when
+    /// wired to "whatever's currently showing" generically, rather than a
+    /// hardcoded dependency on any one producer (e.g. timers specifically).
+    /// Prefers `trailing` over `leading` since that's where every existing
+    /// producer's actual text lives (`.text`/`.iconText` on battery/timer/
+    /// calendar/menu-bar-overflow activities); falls back to `leading` in
+    /// case some future producer puts its text there instead. `nil` for an
+    /// icon-only/gauge/artwork/`.none` activity on both sides — nothing
+    /// there to caption with.
+    var captionText: String? {
+        Self.text(from: trailing) ?? Self.text(from: leading)
+    }
+
+    private static func text(from content: Content) -> String? {
+        switch content {
+        case .text(let value): return value
+        case .iconText(_, let value): return value
+        case .none, .icon, .gauge, .artwork: return nil
+        }
+    }
 }
 
 /// Priority queue for the notch's live-activity wings. Exactly one activity is
@@ -84,7 +106,10 @@ final class LiveActivityCenter: ObservableObject {
     @Published private(set) var current: LiveActivity?
 
     private var queue: [LiveActivity] = []
-    private var expiryTasks: [UUID: Task<Void, Never>] = [:]
+    /// One `DeadlineTask` per still-queued activity that has a `duration` —
+    /// see that type's own doc comment for the shared cancel/reschedule
+    /// shape this backs.
+    private var expiryTasks: [UUID: DeadlineTask] = [:]
 
     /// Post a new activity. An already-queued activity of the same `kind` is
     /// superseded — but exactly how depends on whether the new content is
@@ -168,17 +193,18 @@ final class LiveActivityCenter: ObservableObject {
 
     private func scheduleExpiry(for activity: LiveActivity) {
         let id = activity.id
-        // Cancel any previously scheduled deadline for this id unconditionally
-        // — including when the new `duration` is `nil` — so an activity that
-        // transitions from timed to sticky on a same-id repost/replace
-        // (`post`'s dedupe/update paths) doesn't leave a stale timer that
-        // dismisses it out from under the sticky state.
-        expiryTasks[id]?.cancel()
-        expiryTasks[id] = nil
-        guard let duration = activity.duration else { return } // nil = sticky, no deadline
-        expiryTasks[id] = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(duration))
-            guard !Task.isCancelled else { return }
+        guard let duration = activity.duration else {
+            // Cancel any previously scheduled deadline for this id — an
+            // activity that transitions from timed to sticky on a same-id
+            // repost/replace (`post`'s dedupe/update paths) must not leave a
+            // stale timer that dismisses it out from under the sticky state.
+            expiryTasks[id]?.cancel()
+            expiryTasks[id] = nil
+            return
+        }
+        let deadlineTask = expiryTasks[id] ?? DeadlineTask()
+        expiryTasks[id] = deadlineTask
+        deadlineTask.reschedule(to: Date().addingTimeInterval(duration)) { [weak self] in
             self?.dismiss(id: id)
         }
     }

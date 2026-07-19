@@ -106,6 +106,27 @@ arrangement across launches.
   Brightness is intercept-mode only: macOS has no change notification for
   display brightness to observe, so there's nothing to show without the
   keys themselves being captured.
+- **Mirror** — a live camera preview right in the notch, for a quick
+  "how do I look" check. The camera only ever runs while the widget is
+  actually open; needs Camera access, with the same live grant/denied status
+  and re-request button as every other permission-gated feature.
+- **Timers** — quick-start (1/5/10/25 min) or custom countdown timers in the
+  notch, with pause/resume/cancel. A wing (with a sound) announces a finished
+  timer; an ambient countdown wing shows the nearest remaining time while
+  one's running, or a paused indicator when every timer is paused. Both wings
+  share the single **Timer alerts** toggle in Settings → Notch.
+- **Clipboard** — an in-memory-only history of what you copy, with
+  click-to-copy-back, per-item removal, and Clear All. Off by default —
+  history collection is opt-in, since clipboard contents routinely include
+  passwords and other sensitive one-time text; nothing is ever written to
+  disk, and password-manager-marked copies (the `nspasteboard.org`
+  concealed/transient convention) are never captured at all.
+- **Lock screen (experimental)** — optionally keeps a minimal, non-interactive
+  notch silhouette visible on the macOS lock screen, captioned with the
+  nearest running timer if there is one. Off by default: it rides on
+  undocumented macOS lock-screen notifications and window-level behavior, so
+  it may stop working or misbehave after any macOS update — see Settings →
+  Notch → Experimental.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
@@ -120,11 +141,11 @@ drag **Flux** into **Applications**. On first launch, right-click the app → **
 
 **A note on permissions:** Flux is ad-hoc signed rather than notarized with a paid
 Developer ID, which means macOS can — and sometimes does — treat an update as a new,
-untrusted binary and quietly drop a previously granted TCC permission (Calendar and
-Accessibility today; Camera in a later version). If a permission-gated widget suddenly
-shows its "access needed" state after updating Flux, that's why — Settings → Notch
-shows the live grant/denied status for each permission and a button to re-request it
-or jump straight to the right System Settings pane.
+untrusted binary and quietly drop a previously granted TCC permission (Calendar,
+Accessibility, and Camera). If a permission-gated widget suddenly shows its
+"access needed" state after updating Flux, that's why — Settings → Notch shows the
+live grant/denied status for each permission and a button to re-request it or jump
+straight to the right System Settings pane.
 
 ## Build & run
 
@@ -184,11 +205,18 @@ Sources/Flux/
     Widgets/NowPlayingWidget.swift
     Widgets/ShelfWidget.swift  # tiles, drag in/out, AirDrop/Finder/Copy
     Widgets/CalendarWidget.swift # agenda, permission states
+    Widgets/MirrorWidget.swift # live camera preview; owns CameraService start/stop itself
+    Widgets/TimersWidget.swift # presets/custom countdowns, pause/resume/cancel
+    Widgets/ClipboardWidget.swift # history list, click-to-copy-back, Clear All
+    LockScreenPresenter.swift  # EXPERIMENTAL: notch silhouette on the lock screen
   Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
   Services/BluetoothMonitor.swift  # IOBluetooth connect/disconnect + IORegistry battery
+  Services/CameraService.swift    # AVCaptureSession behind Mirror, started/stopped by the widget itself
+  Services/ClipboardMonitor.swift # NSPasteboard.changeCount poll, settings-driven start/stop
+  Services/TimerService.swift     # countdown timers, single boundary Task, completions publisher
   Services/HUD/VolumeMonitor.swift        # CoreAudio volume/mute listener + setter (observe + intercept)
   Services/HUD/BrightnessMonitor.swift    # dlopen'd DisplayServices brightness get/set (intercept-only)
   Services/HUD/MediaKeyInterceptor.swift  # CGEventTap swallowing volume/brightness keys (Accessibility)
@@ -204,9 +232,9 @@ Sources/Flux/
 
 - **Per-app list control** and a searchable **drawer** popover (needs Accessibility +
   ScreenCaptureKit — deliberately deferred to keep the MVP resource-light).
-- More notch widgets (Mirror, Timers, Clipboard) beyond Now Playing, File
-  Shelf, and Calendar shipped so far.
 - Custom hotkey recording, profiles, triggers (show on update/active).
+- Graduating the lock-screen silhouette out of "experimental," if it proves
+  durable across macOS updates.
 
 ## License
 

@@ -177,8 +177,13 @@ private struct EventRow: View {
         return "\(Self.timeFormatter.string(from: event.start)) – \(Self.timeFormatter.string(from: event.end))"
     }
 
-    /// Shared rather than one-per-row — mirrors `ShelfTileView.ageFormatter`'s
+    /// Shared rather than one-per-row — mirrors `Formatters.relativeAge`'s
     /// reasoning for a formatter every row wants identically configured.
+    /// Not itself shared via `Formatters` (a `DateFormatter` configured for
+    /// time-of-day, not `ShelfTileView`/`ClipboardRow`'s relative-age
+    /// `RelativeDateTimeFormatter`) — nothing else in the notch suite wants
+    /// this exact style, unlike the byte-identical case `Formatters.
+    /// relativeAge` was pulled out of.
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
