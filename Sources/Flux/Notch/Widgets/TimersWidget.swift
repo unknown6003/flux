@@ -147,13 +147,23 @@ final class TimersWidget: NotchWidget {
 
 // MARK: - Expanded panel view
 
+/// Alcove refit (M7): this panel's total height budget is 185, minus fixed
+/// padding leaves a usable content height of roughly 100–150. The fixed
+/// chrome above the running list — header (~14, 12pt line), presetRow
+/// (~24: 12pt text + 6pt top/bottom padding), customRow (~24, same math),
+/// the 1pt divider, and 4 lots of 8pt inter-section spacing — adds up to
+/// 14 + 8 + 24 + 8 + 24 + 8 + 1 + 8 = 95, leaving ~5–55 for `content`
+/// depending on where in the usable range this panel actually lands; rows
+/// were tightened (8pt row spacing → 6, 4pt row vertical padding → 3, see
+/// `TimerRow`) precisely so at least one running-timer row plus its own
+/// scroll affordance still fits rather than being squeezed out entirely.
 private struct TimersExpandedView: View {
     @ObservedObject var service: TimerService
 
     @State private var customMinutes = 10
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             header
             presetRow
             customRow
@@ -180,6 +190,9 @@ private struct TimersExpandedView: View {
 
     // MARK: Start controls
 
+    /// Preset capsules: a quiet white wash, not the old amber-tinted one —
+    /// amber is gone from every widget surface except calendar dots/
+    /// warnings under Alcove's near-monochrome language.
     private var presetRow: some View {
         HStack(spacing: 8) {
             ForEach(TimersWidget.presetMinutes, id: \.self) { minutes in
@@ -188,16 +201,20 @@ private struct TimersExpandedView: View {
                 } label: {
                     Text("\(minutes)m")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.accentInkColor)
+                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(Capsule().fill(Theme.accentWashColor))
+                        .background(Capsule().fill(Color.white.opacity(0.14)))
                 }
                 .buttonStyle(.plain)
             }
         }
     }
 
+    /// `Start` is the one deliberately brighter control in this row — an
+    /// inverted anchor (near-white fill, black text) rather than another
+    /// white-wash capsule, so the single primary action still reads as
+    /// distinct from the preset row above it even with amber gone.
     private var customRow: some View {
         HStack(spacing: 10) {
             Stepper(value: $customMinutes, in: TimersWidget.customMinutesRange) {
@@ -214,7 +231,7 @@ private struct TimersExpandedView: View {
                 .foregroundStyle(Color.black.opacity(0.92))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Capsule().fill(Theme.accentColor))
+                .background(Capsule().fill(Color.white.opacity(0.9)))
         }
     }
 
@@ -236,11 +253,11 @@ private struct TimersExpandedView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: "timer")
-                .font(.system(size: 22))
-                .foregroundStyle(Theme.accentColor.opacity(0.5))
+                .font(.system(size: 20))
+                .foregroundStyle(Color.white.opacity(0.3))
             Text("No timers running")
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -276,7 +293,7 @@ private struct TimersExpandedView: View {
 
     private func rows(now: Date) -> some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 8) {
+            VStack(spacing: 6) {
                 ForEach(service.timers) { timer in
                     TimerRow(timer: timer, now: now, service: service)
                 }
@@ -302,7 +319,7 @@ private struct TimerRow: View {
                     .lineLimit(1)
                 Text(TimersWidget.formatCountdown(max(timer.remaining(at: now), 0)))
                     .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(timer.isPaused ? Color.white.opacity(0.4) : Theme.accentColor)
+                    .foregroundStyle(timer.isPaused ? Color.white.opacity(0.4) : Color.white)
             }
 
             Spacer(minLength: 0)
@@ -329,6 +346,6 @@ private struct TimerRow: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
     }
 }

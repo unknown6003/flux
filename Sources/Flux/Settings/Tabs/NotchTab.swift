@@ -102,6 +102,10 @@ struct NotchTab: View {
                 .padding(.vertical, 11)
                 .padding(.horizontal, 14)
             RowDivider()
+            ToggleRow(title: "Duo view",
+                      subtitle: "Show Now Playing and Calendar side by side when Now Playing is expanded (needs Calendar enabled too).",
+                      isOn: $settings.notchDuoEnabled)
+            RowDivider()
             ToggleRow(title: "File Shelf",
                       subtitle: "Drag files onto the notch to hold them; drag back out, AirDrop, or open anytime.",
                       isOn: $settings.notchShelfEnabled)
@@ -156,6 +160,16 @@ struct NotchTab: View {
             ToggleRow(title: "Timer alerts",
                       subtitle: "Show a wing (and play a sound) when a timer finishes, plus an ambient countdown while one's running.",
                       isOn: $settings.notchActivityTimerEnabled)
+            RowDivider()
+            ToggleRow(title: "Focus",
+                      subtitle: "Show a wing when your Focus changes. Best-effort — relies on undocumented macOS state and may not work on every setup.",
+                      isOn: $settings.notchActivityFocusEnabled)
+            if settings.notchActivityFocusEnabled {
+                RowDivider()
+                ToggleRow(title: "Keep a persistent indicator",
+                          subtitle: "Show a small icon-only wing for as long as a Focus stays active, not just when it changes.",
+                          isOn: $settings.notchActivityFocusStickyEnabled)
+            }
         }
     }
 

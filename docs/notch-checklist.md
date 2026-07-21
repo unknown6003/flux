@@ -131,3 +131,96 @@ drag-and-drop, hover, or click/mouse pass-through.
       password to unlock. Unlock and confirm the silhouette disappears.
       Turning the toggle off (or disabling the notch panel entirely) while
       locked should also make it disappear.
+
+## M7 — Shell redesign (Alcove scale/feel)
+
+The CI "Render notch snapshots" step gives the orchestrator/PR-bot a static
+look at collapsed/activity/expanded-nowPlaying, but a still PNG can't show
+motion, real-Mac shadow rendering, or per-widget height differences across
+every widget — the items below need a real notched Mac.
+
+- [ ] **Overshoot feel on open**: hover (or click, per your trigger setting)
+      to open the notch from collapsed and confirm the panel visibly bounces
+      slightly past its final size before settling — the Alcove-style
+      overshoot spring (`NotchRootView.expandSpring`), not a plain ease-in.
+      Repeat swiping between widgets (a `.expanded` → `.expanded` move) —
+      that should overshoot too, since it's a "growing" direction from the
+      spring's perspective.
+- [ ] **Snappy, no-overshoot close**: collapse the notch (hover-out, click,
+      swipe up) from every state (activity and each widget) and confirm it
+      settles quickly with no bounce — visibly a different, crisper feel than
+      the open animation, not just a faster version of the same curve.
+- [ ] **Seams invisible while idle/collapsed**: with the notch collapsed and
+      the cursor away from it, look closely at the edges against the physical
+      camera housing in both light and dark desktop wallpaper. Confirm there
+      is no visible shadow, halo, or seam — collapsed must look like the bare
+      hardware notch, not a panel sitting on top of it.
+- [ ] **Shadow only while open**: open the notch (activity or any widget) and
+      confirm a soft, dark drop shadow appears under the panel; collapse it
+      and confirm the shadow disappears immediately (not lingering, not
+      fading oddly) as the shape shrinks back to the collapsed hug.
+- [ ] **Per-widget expanded height**: open each widget in turn (Now Playing,
+      Shelf, Calendar, Mirror, Timers, Clipboard) and confirm the panel's
+      height visibly differs to match each widget's content — Shelf and Now
+      Playing noticeably shorter than Calendar/Clipboard — rather than every
+      widget reserving the same tall, mostly-empty box.
+- [ ] **Content blur-morph**: watch the widget content itself (not just the
+      black shape) as you open/close — confirm it fades and sharpens in
+      (blurred → crisp, transparent → opaque) rather than popping in/out
+      instantly, and that rapidly swiping through several widgets in a row
+      never leaves content stuck half-blurred.
+- [ ] **Monochrome wings**: trigger a non-warning live activity (e.g. a file
+      shelf drop or Now Playing) and confirm the wing icons/text/gauge render
+      in white/white-opacity tones with no amber anywhere; trigger a warning
+      activity (e.g. low battery, if wired up) and confirm only that one
+      still shows the warning color.
+- [ ] **Subtler hover breathing cue**: in click-trigger mode, hover the
+      collapsed notch without clicking and confirm the breathing scale cue is
+      present but subtle (a small pulse, not an obvious "wiggle").
+
+## M7 — Alcove parity: activity cycling, Duo view, Focus
+
+- [ ] **Cycle through queued activities**: get two or more sticky live
+      activities queued at once (e.g. a low-battery warning and an upcoming
+      calendar event) and, while a wing is showing, swipe left/right and
+      confirm it rotates to the other queued activity rather than only ever
+      showing the highest-priority one.
+- [ ] **Dismiss + restore**: with an activity wing showing, swipe up and
+      confirm it's dismissed (collapses, or shows the next-highest queued
+      one). Trigger the restore path (however it's wired up — hotkey/menu)
+      and confirm the just-dismissed activity comes back.
+- [ ] **Swipe down expands from an activity**: with a wing showing, swipe
+      down and confirm it expands to the widget panel (last-used/first
+      enabled widget), same as swiping down from fully collapsed.
+- [ ] **Expanded widget cycling unchanged**: confirm left/right while a
+      widget panel is open still cycles WIDGETS (not activities) exactly as
+      before M7, and up still collapses.
+- [ ] **Duo view renders side by side**: turn on "Duo view" in Settings →
+      Notch, with Calendar enabled and its permission granted, then expand
+      Now Playing. Confirm the panel widens and shows Now Playing on the
+      left and a Calendar agenda pane on the right, split by a thin divider.
+- [ ] **Duo view falls back gracefully**: with Duo view on but Calendar
+      disabled (or its permission not granted), expand Now Playing and
+      confirm it renders alone, at the normal (non-widened) size — no dead
+      blank space, no crash.
+- [ ] **Calendar solo is untouched**: with Duo view on, expand Calendar
+      directly (not via Now Playing) and confirm it still renders as its own
+      normal solo panel, not squeezed into the Duo layout.
+- [ ] **Focus peek**: turn on "Focus" in Settings → Notch → Live Activities,
+      change your Focus (or turn one on/off from Control Center) and confirm
+      a brief wing shows the Focus's name/icon (or "Focus off"). If nothing
+      appears at all, check Settings for whether Focus reads as available —
+      this is best-effort and may not work on every macOS version/security
+      posture (see `FocusMonitor`'s own doc comment).
+- [ ] **Focus sticky indicator**: with "Keep a persistent indicator" also
+      on, confirm a small icon-only wing stays up for as long as a Focus
+      stays active (after the initial peek fades), and disappears the moment
+      the Focus turns off.
+- [ ] **Option-click restores the last-dismissed activity**: swipe up on a
+      showing live-activity wing to dismiss it (or otherwise let one get
+      dismissed), then option-click the notch — in ANY state (collapsed,
+      another activity showing, or a widget panel expanded) — and confirm the
+      just-dismissed activity comes back as current (`LiveActivityCenter.
+      restoreLastDismissed()`, wired to `NotchViewModel.clicked(optionDown:)`).
+      Confirm a *plain* click (no option key) right after still does the
+      ordinary open/close toggle, unaffected.

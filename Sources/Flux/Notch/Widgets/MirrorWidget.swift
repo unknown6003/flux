@@ -126,7 +126,7 @@ private struct MirrorExpandedView: View {
         if service.isAvailable {
             ZStack(alignment: .bottom) {
                 CameraPreviewView(service: service)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 if !service.isRunning {
                     startingCaption
                 }
@@ -150,11 +150,11 @@ private struct MirrorExpandedView: View {
     private var unavailableState: some View {
         VStack(spacing: 6) {
             Image(systemName: "video.slash")
-                .font(.system(size: 22))
-                .foregroundStyle(Theme.accentColor.opacity(0.5))
+                .font(.system(size: 20))
+                .foregroundStyle(Color.white.opacity(0.3))
             Text("No camera found")
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

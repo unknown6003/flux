@@ -30,9 +30,30 @@ enum OffscreenRender {
     ///
     /// Always exits the process — success (`0`) once the PNG is written, or
     /// failure (`1`) if either AppKit capture step comes back empty — since
-    /// every current caller is itself a terminal CLI mode.
+    /// every current single-shot CLI mode wants exactly that. `NotchSnapshot.
+    /// captureAll` needs the same off-screen-window-and-bitmap recipe but
+    /// *without* the `exit()` (it renders three PNGs in one process and exits
+    /// itself, once, at the end) — see `render(rootView:size:dark:opaque:
+    /// settleDelay:label:to:)` below, which is the actual recipe this
+    /// function is now a thin, exiting wrapper around.
     static func capture(rootView: AnyView, size: CGSize, dark: Bool, opaque: Bool = true,
                         settleDelay: TimeInterval = 0.8, label: String, to path: String) {
+        let success = render(rootView: rootView, size: size, dark: dark, opaque: opaque,
+                             settleDelay: settleDelay, label: label, to: path)
+        exit(success ? 0 : 1)
+    }
+
+    /// The actual off-screen NSWindow/NSHostingView/`cacheDisplay(in:to:)`
+    /// recipe, factored out of `capture` (above) so a caller that needs to
+    /// render more than one PNG in a single process — `NotchSnapshot.
+    /// captureAll`, which renders collapsed/activity/expanded in one launch —
+    /// can drive it directly without `capture`'s own unconditional `exit()`
+    /// ending the process after the first one. Same parameters as `capture`,
+    /// minus the terminal exit code; returns whether the PNG was written
+    /// successfully instead.
+    @discardableResult
+    static func render(rootView: AnyView, size: CGSize, dark: Bool, opaque: Bool = true,
+                       settleDelay: TimeInterval = 0.8, label: String, to path: String) -> Bool {
         let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
 
         let hosting = NSHostingView(rootView: rootView)
@@ -59,17 +80,22 @@ enum OffscreenRender {
         let rect = hosting.bounds
         guard let rep = hosting.bitmapImageRepForCachingDisplay(in: rect) else {
             FileHandle.standardError.write(Data("\(label): no bitmap rep\n".utf8))
-            exit(1)
+            return false
         }
         rep.size = rect.size
         hosting.cacheDisplay(in: rect, to: rep)
 
         guard let png = rep.representation(using: .png, properties: [:]) else {
             FileHandle.standardError.write(Data("\(label): png encode failed\n".utf8))
-            exit(1)
+            return false
         }
-        try? png.write(to: URL(fileURLWithPath: path))
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+        } catch {
+            FileHandle.standardError.write(Data("\(label): write failed: \(error)\n".utf8))
+            return false
+        }
         FileHandle.standardError.write(Data("\(label) wrote \(path) (\(Int(size.width))x\(Int(size.height)))\n".utf8))
-        exit(0)
+        return true
     }
 }
