@@ -316,12 +316,18 @@ final class NotchWindowController {
             self?.handleMonitoredMove(at: NSEvent.mouseLocation)
             return event
         }
-        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            // Captured synchronously alongside the location, for the same
+            // reason (see the comment above) — reading `event.modifierFlags`
+            // is safe off the main actor since it's a plain stored property
+            // on the event, not live global state that could shift under the
+            // `Task` hop.
             let location = NSEvent.mouseLocation
-            Task { @MainActor in self?.handleMonitoredClick(at: location) }
+            let optionDown = event.modifierFlags.contains(.option)
+            Task { @MainActor in self?.handleMonitoredClick(at: location, optionDown: optionDown) }
         }
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.handleMonitoredClick(at: NSEvent.mouseLocation)
+            self?.handleMonitoredClick(at: NSEvent.mouseLocation, optionDown: event.modifierFlags.contains(.option))
             return event
         }
     }
@@ -354,9 +360,15 @@ final class NotchWindowController {
     /// `onTapGesture` never sees it. Global monitors can't consume/swallow
     /// the event they observe, which is fine here: the physical notch has no
     /// real pixels for another app to receive that same click instead.
-    private func handleMonitoredClick(at location: NSPoint) {
+    ///
+    /// `optionDown` is forwarded straight to `NotchViewModel.clicked(optionDown:)`
+    /// so an option-click restores the last-dismissed live activity even
+    /// while collapsed, matching `NotchRootView.handleTap`'s own option-click
+    /// handling for the activity/expanded states (where the panel itself
+    /// receives the click instead of these monitors).
+    private func handleMonitoredClick(at location: NSPoint, optionDown: Bool) {
         guard let rect = NSScreen.builtInNotchedScreen?.notchRect, rect.contains(location) else { return }
-        viewModel.clicked()
+        viewModel.clicked(optionDown: optionDown)
     }
 
     // MARK: - Drag-and-drop, collapsed and expanded (M2: file shelf)

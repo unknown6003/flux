@@ -231,6 +231,38 @@ struct FlippingArtwork: View {
     }
 }
 
+// MARK: - Shared bar-equalizer animation
+
+/// The "independent sine phase per bar" trick behind every animated
+/// equalizer-style bar strip in the notch UI — `WaveformVisualizer`'s 6 wide
+/// bars here and `AnimatedEqualizerBars`' 3 tiny compact-strip bars in
+/// `NowPlayingWidget.swift` were two near-identical copies of this same
+/// arithmetic, differing only in their tuning constants (bar count aside).
+/// Extracted once so both call sites share one implementation — and a future
+/// third animated-bars spot has an obvious function to call rather than a
+/// third copy to hand-tune independently.
+enum EqualizerAnimation {
+    /// - Parameters:
+    ///   - time: the animation clock, in seconds (typically a `TimelineView`
+    ///     timestamp's `timeIntervalSinceReferenceDate`).
+    ///   - index: this bar's position, `0`-based — each bar rides its own
+    ///     phase/frequency (via `freqStep`/`phaseStep`) so a row of bars
+    ///     never locks into visible unison.
+    ///   - base: the bar's minimum height (the sine wave's trough).
+    ///   - span: how much taller than `base` the bar gets at the sine wave's
+    ///     peak — i.e. `base + span` is the tallest a bar ever renders.
+    ///   - freqBase: bar 0's oscillation frequency.
+    ///   - freqStep: added per bar index to spread frequencies across the row.
+    ///   - phaseStep: added (times `index`) to offset each bar's phase.
+    static func barHeight(time: TimeInterval, index: Int, base: CGFloat, span: CGFloat,
+                           freqBase: Double, freqStep: Double, phaseStep: Double) -> CGFloat {
+        let frequency = freqBase + Double(index) * freqStep
+        let phase = Double(index) * phaseStep
+        let wave = (sin(time * frequency + phase) + 1) / 2
+        return base + CGFloat(wave) * span
+    }
+}
+
 // MARK: - Waveform visualizer
 
 /// A 6-bar capsule waveform, top-aligned in its row. Bars only animate while
@@ -279,10 +311,8 @@ struct WaveformVisualizer: View {
     }
 
     private func animatedHeight(t: TimeInterval, index: Int) -> CGFloat {
-        let frequency = 2.0 + Double(index) * 0.55
-        let phase = Double(index) * 1.3
-        let wave = (sin(t * frequency + phase) + 1) / 2
-        return 4 + CGFloat(wave) * (Self.maxHeight - 4)
+        EqualizerAnimation.barHeight(time: t, index: index, base: 4, span: Self.maxHeight - 4,
+                                      freqBase: 2.0, freqStep: 0.55, phaseStep: 1.3)
     }
 
     private func bars(heights: [CGFloat]) -> some View {
@@ -334,6 +364,12 @@ struct ScrubberTrack: View {
                     .fill(Color.white.opacity(0.18))
                     .frame(width: trackWidth, height: Self.trackHeight)
                     .offset(x: inset)
+                // The system accent-color fill here (and on the knob below) is
+                // INTENTIONAL, not a stray un-monochromed leftover — verified
+                // visually against the actual Alcove reference render
+                // (/tmp/alcove-refs/expanded-music.webp), which uses a
+                // colored scrubber fill against the otherwise-monochrome
+                // transport row. Do not "fix" this to plain white/monochrome.
                 Capsule()
                     .fill(Color(nsColor: .controlAccentColor))
                     .frame(width: x - inset, height: Self.trackHeight)
@@ -394,14 +430,21 @@ enum ArtworkPalette {
     /// no-artwork monochrome look.
     static let monochromeFallback = Color.white.opacity(0.85)
 
-    /// Small (≤6-entry) memo keyed by artwork identity, not content — the
-    /// artwork `NSImage` this app hands around is already a fresh, immutable
-    /// object per distinct image (see `NowPlayingService.updateArtwork`), so
-    /// identity is a cheap, correct-enough cache key. Reset wholesale rather
-    /// than LRU-evicted, since this is only ever a handful of recently-seen
-    /// tracks, not a real cache workload.
-    private static let cacheCapacity = 6
-    private static var cache: [ObjectIdentifier: (top: Color, bottom: Color)] = [:]
+    /// Single-entry memo of the most recently derived gradient, keyed AND
+    /// retained by the artwork image itself (not just an `ObjectIdentifier`).
+    ///
+    /// The previous version of this cache kept only `ObjectIdentifier(image):
+    /// colors` entries without retaining the `NSImage` each identifier came
+    /// from. `ObjectIdentifier` is just a bit pattern derived from an object's
+    /// address — once that `NSImage` was deallocated (nothing else here held
+    /// a reference to it), a *different*, later-allocated `NSImage` could land
+    /// at the exact same address and collide with the stale identifier still
+    /// sitting in the dictionary, silently handing back a wrong, unrelated
+    /// track's colors. Storing the actual `image` alongside its colors and
+    /// comparing with `===` (identity, not `Equatable`) fixes this at the
+    /// root: as long as `memo.image` is the same live object, the address
+    /// can't have been recycled out from under it.
+    private static var memo: (image: NSImage, colors: (top: Color, bottom: Color))?
 
     /// The waveform's two gradient stops for a given artwork image — the
     /// average color of its top half, and of its bottom half. `nil` artwork
@@ -410,8 +453,7 @@ enum ArtworkPalette {
     static func waveformGradientColors(for image: NSImage?) -> (top: Color, bottom: Color) {
         let fallback = (monochromeFallback, monochromeFallback)
         guard let image else { return fallback }
-        let key = ObjectIdentifier(image)
-        if let cached = cache[key] { return cached }
+        if let memo, memo.image === image { return memo.colors }
 
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
               cgImage.width > 0, cgImage.height > 0 else {
@@ -419,8 +461,7 @@ enum ArtworkPalette {
         }
 
         let result = topBottomColors(of: cgImage) ?? fallback
-        if cache.count >= cacheCapacity { cache.removeAll(keepingCapacity: true) }
-        cache[key] = result
+        memo = (image, result)
         return result
     }
 

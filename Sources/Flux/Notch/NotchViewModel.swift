@@ -214,7 +214,24 @@ final class NotchViewModel: ObservableObject {
     /// `expansionTrigger` — in hover mode a click is still the fast path to
     /// pin the panel open without waiting out the hover delay; in click mode
     /// it's the *only* way in, per `expansionTrigger`.
-    func clicked() {
+    ///
+    /// An option-click (`optionDown: true`), in ANY state, does something
+    /// completely different instead: it restores the most recently dismissed
+    /// live activity via `activities.restoreLastDismissed()`, rather than
+    /// toggling expansion at all. This is the one input path this app exposes
+    /// to `LiveActivityCenter.restoreLastDismissed()` — previously wired up
+    /// and tested at the `LiveActivityCenter`/state-machine level (see
+    /// `--selftest`'s swipe-up-dismiss coverage) but never actually reachable
+    /// from any real user input. Callers that don't care about modifiers
+    /// (the hotkey, swipe) keep calling the ordinary, unparameterized
+    /// `clicked()`/`toggleExpansion()` path — only an actual click can carry
+    /// an option-key chord, so this parameter only exists on this entry
+    /// point.
+    func clicked(optionDown: Bool = false) {
+        guard !optionDown else {
+            activities.restoreLastDismissed()
+            return
+        }
         toggleExpansion()
     }
 

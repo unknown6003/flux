@@ -110,10 +110,8 @@ private struct AnimatedEqualizerBars: View {
     }
 
     private func barHeight(_ t: TimeInterval, index: Int) -> CGFloat {
-        let frequency = 2.4 + Double(index) * 0.7
-        let phase = Double(index) * 1.9
-        let wave = (sin(t * frequency + phase) + 1) / 2
-        return 3 + CGFloat(wave) * 9
+        EqualizerAnimation.barHeight(time: t, index: index, base: 3, span: 9,
+                                      freqBase: 2.4, freqStep: 0.7, phaseStep: 1.9)
     }
 }
 

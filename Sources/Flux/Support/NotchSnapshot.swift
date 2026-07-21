@@ -43,9 +43,9 @@ enum NotchSnapshot {
     /// `exit()` once it's written its one PNG (every other snapshot flag is
     /// single-shot, so that's the right contract there) — calling it three
     /// times in a row would just exit the process after the first file.
-    /// `renderOffscreen` below is the same off-screen-window-and-bitmap
-    /// recipe with the `exit()` left out, so this can loop over all three
-    /// states and exit exactly once, itself, at the end.
+    /// `OffscreenRender.render` — the same recipe with the `exit()` left out —
+    /// is what this loops over instead, so all three states render and this
+    /// function exits exactly once, itself, at the end.
     ///
     /// A fourth `duo.png` (Now Playing + Calendar side by side, M7) was
     /// considered but deliberately left out: unlike `NowPlayingService`
@@ -76,10 +76,13 @@ enum NotchSnapshot {
         for (state, file) in states {
             let (root, panelSize) = buildRoot(for: state)
             let path = (dir as NSString).appendingPathComponent(file)
-            if renderOffscreen(rootView: root, size: panelSize, dark: dark, to: path) {
-                FileHandle.standardError.write(Data("snapshot-notch: wrote \(path)\n".utf8))
-            } else {
-                FileHandle.standardError.write(Data("snapshot-notch: failed to render '\(state)' to \(path)\n".utf8))
+            // Transparent (not opaque), matching `capture(to:dark:state:)`
+            // above — the notch panel draws its own shape over nothing.
+            // `OffscreenRender.render` already writes its own "wrote"/failure
+            // diagnostic to stderr (prefixed with `label`), so there's no
+            // need to duplicate that here.
+            if !OffscreenRender.render(rootView: root, size: panelSize, dark: dark, opaque: false,
+                                       label: "snapshot-notch", to: path) {
                 allSucceeded = false
             }
         }
@@ -126,44 +129,6 @@ enum NotchSnapshot {
         })
         let panelSize = NotchMetrics.panelBounds(for: notchSize.width)
         return (AnyView(root), panelSize)
-    }
-
-    /// The same off-screen NSWindow/NSHostingView/`cacheDisplay(in:to:)`
-    /// recipe `OffscreenRender.capture` uses, minus that function's own
-    /// `exit()` calls — see `captureAll`'s doc comment for why this couldn't
-    /// just reuse it directly. Returns whether the PNG was written
-    /// successfully instead of exiting the process itself.
-    private static func renderOffscreen(rootView: AnyView, size: CGSize, dark: Bool, to path: String) -> Bool {
-        let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
-
-        let hosting = NSHostingView(rootView: rootView)
-        hosting.appearance = appearance
-        hosting.frame = NSRect(origin: .zero, size: size)
-
-        let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless],
-                              backing: .buffered, defer: false)
-        window.contentView = hosting
-        window.appearance = appearance
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
-        window.makeKeyAndOrderFront(nil)
-
-        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
-        hosting.layoutSubtreeIfNeeded()
-
-        let rect = hosting.bounds
-        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: rect) else { return false }
-        rep.size = rect.size
-        hosting.cacheDisplay(in: rect, to: rep)
-
-        guard let png = rep.representation(using: .png, properties: [:]) else { return false }
-        do {
-            try png.write(to: URL(fileURLWithPath: path))
-            return true
-        } catch {
-            return false
-        }
     }
 
     /// Decodes the checked-in `streamFullSnapshotJSON` fixture (see

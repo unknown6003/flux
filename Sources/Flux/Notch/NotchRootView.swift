@@ -66,10 +66,23 @@ struct NotchRootView: View {
 
     /// How long the springs above take to settle — used to delay narrowing
     /// `interactiveRect` back down to the final rect (see
-    /// `updateInteractiveRect`). Kept close to, but a hair past, the slower
-    /// (`expandSpring`) response so the widened hit region outlives the
-    /// visible morph rather than snapping in early even on the overshoot path.
-    private static let interactiveRectSettleDelay: TimeInterval = 0.5
+    /// `updateInteractiveRect`). Chosen per *direction*, alongside
+    /// `springFor(_:)`, rather than one shared value for both: a single 0.5s
+    /// delay applied to a collapse — which `collapseSpring` (response 0.32,
+    /// so it visually settles around ~0.32-0.35s) actually finishes well
+    /// before — left the stale, still-widened hit-rect alive for an extra
+    /// ~0.15-0.18s after the shape had already visually shrunk. In that gap a
+    /// click landing in the now-invisible sliver was silently swallowed (it
+    /// hit-tested "inside the notch" against geometry nothing was drawn at),
+    /// and a lingering hover-in could even re-trigger a hover-open right after
+    /// the user had just closed it. `expandSettleDelay` stays a hair past
+    /// `expandSpring`'s slower response (kept for the overshoot path, which
+    /// settles later than a plain critically-damped curve would suggest);
+    /// `collapseSettleDelay` is trimmed down to match `collapseSpring`'s own,
+    /// snappier settle time instead of inheriting the growing direction's
+    /// number.
+    private static let expandSettleDelay: TimeInterval = 0.5
+    private static let collapseSettleDelay: TimeInterval = 0.35
 
     /// Cancelled/replaced on every state change so only the most recent
     /// transition's narrowing actually lands — see `updateInteractiveRect`.
@@ -151,7 +164,22 @@ struct NotchRootView: View {
     /// rather than expanding a notch widget for it) — `onActivityTap` is the
     /// hook that lets the wiring agent claim that tap; only when it declines
     /// (or isn't set) does this fall through to the ordinary toggle.
+    ///
+    /// An option-click, in ANY state, instead restores the most recently
+    /// dismissed live activity (`NotchViewModel.clicked(optionDown:)` →
+    /// `LiveActivityCenter.restoreLastDismissed()`) — checked, and handled,
+    /// before `onActivityTap` even gets a look, since it's an entirely
+    /// different action from whatever a plain tap on the current wing means.
+    /// `onTapGesture` hands back no event/modifier info of its own, so the
+    /// simplest correct read is `NSEvent.modifierFlags` at the moment the tap
+    /// actually lands — that's live global keyboard-modifier state, not
+    /// anything cached, so it reflects whatever's held down for exactly this
+    /// click.
     private func handleTap() {
+        guard !NSEvent.modifierFlags.contains(.option) else {
+            viewModel.clicked(optionDown: true)
+            return
+        }
         if case .activity = viewModel.state,
            let kind = viewModel.activities.current?.kind,
            onActivityTap?(kind) == true {
@@ -230,8 +258,10 @@ struct NotchRootView: View {
     /// first *widens* `interactiveRect` to the union of both rects — always
     /// a superset of whatever's actually on screen mid-morph — then narrows
     /// it back down to just the settled, final rect once the spring's had
-    /// time to finish (`interactiveRectSettleDelay`), cancelling any
-    /// still-pending narrowing from a previous, since-superseded transition.
+    /// time to finish (`expandSettleDelay`/`collapseSettleDelay`, picked by
+    /// the same incoming-state direction `springFor(_:)` uses), cancelling
+    /// any still-pending narrowing from a previous, since-superseded
+    /// transition.
     private func updateInteractiveRect(panelWidth: CGFloat, from oldState: NotchState? = nil, to newState: NotchState? = nil) {
         let state = newState ?? viewModel.state
         let finalRect = rect(for: state, panelWidth: panelWidth)
@@ -244,8 +274,9 @@ struct NotchRootView: View {
         }
 
         viewModel.interactiveRect = rect(for: oldState, panelWidth: panelWidth).union(finalRect)
+        let delay = state == .collapsed ? Self.collapseSettleDelay : Self.expandSettleDelay
         interactiveRectSettleTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(Self.interactiveRectSettleDelay))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             viewModel.interactiveRect = finalRect
         }
@@ -326,6 +357,38 @@ struct NotchRootView: View {
         }
     }
 
+    /// The chrome every expanded panel's content shares — regardless of
+    /// whether it's a single widget or Duo view: horizontal breathing room,
+    /// top clearance for the physical notch cutout, bottom clearance for the
+    /// shape's own bottom corner radius, and the blur/opacity content morph.
+    /// Extracted out of `expandedContent(for:)`/`duoContent` (which used to
+    /// each apply this exact same chain of modifiers independently) so
+    /// there's exactly one place this chrome is defined; both call sites just
+    /// apply it once via `.modifier(ExpandedChrome(...))`.
+    private struct ExpandedChrome: ViewModifier {
+        /// `notchSize.height + 6` at both call sites — clears the physical
+        /// notch cutout at the top of the expanded shape.
+        let topInset: CGFloat
+        let blur: CGFloat
+        let opacity: Double
+
+        func body(content: Content) -> some View {
+            content
+                .padding(.horizontal, 16)
+                .padding(.top, topInset)
+                // The M7 Alcove redesign grew the expanded shape's bottom
+                // corner radius from 24pt to 32pt (see `NotchShape.expanded`)
+                // without growing this padding to match — content (notably
+                // the transport row, the bottom-most thing any widget draws)
+                // kept clearing the *old*, tighter corner but now visually
+                // crowds/overhangs the more generous curve underneath it.
+                // 18pt restores that clearance.
+                .padding(.bottom, 18)
+                .blur(radius: blur)
+                .opacity(opacity)
+        }
+    }
+
     /// The two wings either side of the (blank, reserved) physical notch
     /// area, showing the current live activity's leading/trailing content.
     private var activityContent: some View {
@@ -355,6 +418,12 @@ struct NotchRootView: View {
     /// content "morph" — SwiftUI has no built-in blur transition primitive,
     /// so `updateContentMorph` drives these two plain `@State` values with an
     /// explicit `withAnimation` instead of a `.transition(...)` modifier.
+    ///
+    /// The single-widget and Duo branches used to each repeat the same
+    /// paddings + blur + opacity chain verbatim (see `ExpandedChrome` below)
+    /// — applying it once here, to the `Group` wrapping both branches,
+    /// removes that duplication and guarantees the two branches can never
+    /// drift out of sync on their chrome again.
     private func expandedContent(for widgetID: WidgetID) -> some View {
         let widget = viewModel.registry.enabledWidgets.first { $0.id == widgetID }
         return Group {
@@ -364,30 +433,19 @@ struct NotchRootView: View {
             } else if let widget {
                 widget.makeExpandedView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 16)
-                    .padding(.top, notchSize.height + 6)
-                    // The M7 Alcove redesign grew the expanded shape's
-                    // bottom corner radius from 24pt to 32pt (see
-                    // `NotchShape.expanded`) without growing this padding to
-                    // match — content (notably the transport row, the
-                    // bottom-most thing any widget draws) kept clearing the
-                    // *old*, tighter corner but now visually crowds/overhangs
-                    // the more generous curve underneath it. 18pt restores
-                    // that clearance.
-                    .padding(.bottom, 18)
-                    .blur(radius: contentBlur)
-                    .opacity(contentOpacity)
             }
         }
+        .modifier(ExpandedChrome(topInset: notchSize.height + 6, blur: contentBlur, opacity: contentOpacity))
         .frame(width: containerSize.width, height: containerSize.height, alignment: .top)
     }
 
     /// Alcove's Duo view (M7 v1.7 parity): Now Playing's expanded content at
     /// flexible width beside a fixed-width Calendar pane, split by a hairline
     /// divider. Both panes share this container's single blur/opacity content
-    /// morph (`contentBlur`/`contentOpacity`), so entering/leaving Duo fades
-    /// exactly like any other expanded-content change rather than needing a
-    /// second, separate morph.
+    /// morph (`contentBlur`/`contentOpacity`, applied via `ExpandedChrome` in
+    /// `expandedContent(for:)`, its only caller), so entering/leaving Duo
+    /// fades exactly like any other expanded-content change rather than
+    /// needing a second, separate morph.
     private static let duoCalendarPaneWidth: CGFloat = 200
 
     private func duoContent(nowPlaying: NotchWidget?, calendar: NotchWidget) -> some View {
@@ -406,14 +464,6 @@ struct NotchRootView: View {
                 .frame(width: Self.duoCalendarPaneWidth)
                 .frame(maxHeight: .infinity)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, notchSize.height + 6)
-        // Same bottom-corner clearance fix as the single-widget branch above
-        // — Duo's Now Playing pane draws the same transport row against the
-        // same `NotchShape.expanded` bottom radius.
-        .padding(.bottom, 18)
-        .blur(radius: contentBlur)
-        .opacity(contentOpacity)
     }
 
     /// Renders one `LiveActivity.Content` value with Theme tokens. The single

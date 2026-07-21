@@ -2572,6 +2572,99 @@ enum SelfTest {
             check(false, "ArtworkPalette: averageColor should decode a white+black RGBA pair")
         }
 
+        // --- M7 code-review fix: ArtworkPalette.waveformGradientColors'
+        // single-entry memo retains the image it's keyed on (`memo.image ===
+        // image`) rather than a bare `ObjectIdentifier`, so a fresh image
+        // handed back right after another never reads a stale, unrelated
+        // track's colors — the old cap-6 `[ObjectIdentifier: colors]` cache
+        // kept identifiers without retaining the images they came from, so a
+        // deallocated image's address could be recycled by a later,
+        // unrelated `NSImage` and collide with its still-cached entry. ---
+        do {
+            func solidImage(_ color: NSColor, side: Int = 8) -> NSImage {
+                let image = NSImage(size: NSSize(width: side, height: side))
+                image.lockFocus()
+                color.setFill()
+                NSRect(x: 0, y: 0, width: side, height: side).fill()
+                image.unlockFocus()
+                return image
+            }
+            let redImage = solidImage(.red)
+            let blueImage = solidImage(.blue)
+
+            let redColors = ArtworkPalette.waveformGradientColors(for: redImage)
+            let blueColors = ArtworkPalette.waveformGradientColors(for: blueImage)
+            check(redColors.top != blueColors.top || redColors.bottom != blueColors.bottom,
+                  "ArtworkPalette: waveformGradientColors for a distinct new image never reuses the immediately-previous image's colors")
+
+            let redAgain = ArtworkPalette.waveformGradientColors(for: redImage)
+            check(redAgain.top == redColors.top && redAgain.bottom == redColors.bottom,
+                  "ArtworkPalette: waveformGradientColors for the SAME still-alive image re-derives (memo now holds blueImage) to the SAME colors as before — correct regardless of what's currently memoized")
+
+            let blueAgain = ArtworkPalette.waveformGradientColors(for: blueImage)
+            check(blueAgain.top == blueColors.top && blueAgain.bottom == blueColors.bottom,
+                  "ArtworkPalette: switching back to blueImage after redAgain re-derives its own correct colors too — no track's colors ever leak into another's")
+        }
+
+        // --- M7 code-review fix: NotchMetrics.maxExpandedHeight is derived
+        // from expandedHeight(for:) across every WidgetID rather than a
+        // hand-maintained duplicate constant, so a future per-widget height
+        // bump can't silently drift past a stale hardcoded ceiling again. ---
+        do {
+            let expectedMax = WidgetID.allCases.map { NotchMetrics.expandedHeight(for: $0) }.max() ?? 0
+            check(NotchMetrics.maxExpandedHeight == expectedMax,
+                  "NotchMetrics: maxExpandedHeight equals the tallest expandedHeight(for:) across every WidgetID")
+            check(NotchMetrics.expandedHeight(for: .calendar) == NotchMetrics.maxExpandedHeight,
+                  "NotchMetrics: setup — Calendar (190) is currently the tallest widget, matching maxExpandedHeight")
+
+            // --- M7 code-review fix: panelBounds reserves a shadow-bleed
+            // margin beyond maxExpandedHeight/the widest visible footprint —
+            // it used to equal them exactly, leaving zero room for the
+            // expanded shape's own drop shadow (radius 16, y offset 4) and
+            // clipping it at the panel edge. ---
+            let notchWidth: CGFloat = 180
+            let bounds = NotchMetrics.panelBounds(for: notchWidth)
+            check(bounds.height == NotchMetrics.maxExpandedHeight + NotchMetrics.shadowMarginHeight,
+                  "NotchMetrics: panelBounds' height is maxExpandedHeight PLUS a shadow-bleed margin, not maxExpandedHeight exactly")
+            check(bounds.width == NotchMetrics.expandedWidth(for: notchWidth) + NotchMetrics.duoExtraWidth + NotchMetrics.shadowMarginWidth,
+                  "NotchMetrics: panelBounds' width is expandedWidth + duoExtraWidth PLUS the same shadow-bleed margin")
+        }
+
+        // --- M7 code-review fix: option-click wires the previously-dead
+        // LiveActivityCenter.restoreLastDismissed() to an actual input path —
+        // NotchViewModel.clicked(optionDown:) — instead of the ordinary
+        // open/close toggle. ---
+        do {
+            let optionClickRegistry = NotchWidgetRegistry()
+            let optionClickWidget = SelfTestWidget(id: .nowPlaying)
+            optionClickRegistry.register(optionClickWidget)
+            optionClickRegistry.order = [.nowPlaying]
+            let optionClickActivities = LiveActivityCenter()
+            let optionClickVM = NotchViewModel(registry: optionClickRegistry, activities: optionClickActivities)
+
+            let optionActivityA = LiveActivity(kind: .battery, leading: .none, trailing: .text("A"), duration: nil, priority: 200)
+            optionClickActivities.post(optionActivityA)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(optionClickVM.state == .activity(optionActivityA.id),
+                  "Notch: setup — posting a sticky activity preempts collapsed")
+
+            optionClickActivities.dismissCurrent(restorable: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(optionClickVM.state == .collapsed,
+                  "Notch: setup — dismissing the only queued activity collapses the notch")
+            check(optionClickActivities.current == nil,
+                  "Notch: setup — LiveActivityCenter has nothing current after the dismiss")
+
+            optionClickVM.clicked(optionDown: true)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(optionClickActivities.current?.id == optionActivityA.id,
+                  "Notch: clicked(optionDown: true) restores the last-dismissed activity via LiveActivityCenter.restoreLastDismissed(), reachable from an option-click in ANY state")
+
+            optionClickVM.clicked(optionDown: false)
+            check(optionClickVM.state == .expanded(.nowPlaying),
+                  "Notch: a plain click (optionDown: false) right after still does the ordinary open/close toggle, completely unaffected by the option-click path")
+        }
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }

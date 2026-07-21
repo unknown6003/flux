@@ -27,10 +27,22 @@ enum NotchMetrics {
     static let duoExtraWidth: CGFloat = 220
 
     /// The tallest any single widget's expanded height (`expandedHeight(for:)`
-    /// below) gets — i.e. the fixed panel bounds height. Individual widgets
-    /// render shorter than this; the panel itself is always exactly this
-    /// tall so it never resizes when the active widget changes.
-    static let maxExpandedHeight: CGFloat = 190
+    /// below) gets — the base the fixed panel bounds height derives from (see
+    /// `panelBounds(for:)`). Individual widgets render shorter than this; the
+    /// panel itself never resizes when the active widget changes.
+    ///
+    /// Derived from `expandedHeight(for:)` across every `WidgetID` rather than
+    /// hand-maintained as a separate constant — a previous version duplicated
+    /// this as `static let maxExpandedHeight: CGFloat = 190`, which happened
+    /// to still be correct after `.nowPlaying`'s height was bumped to 185 only
+    /// because 185 still came in under the hand-picked 190. That was luck, not
+    /// a guarantee: the next widget height bump past 190 would have silently
+    /// clipped against a stale constant nobody updated. Deriving it instead
+    /// makes that whole class of bug impossible — this can never again
+    /// disagree with the switch it's supposed to summarize.
+    static var maxExpandedHeight: CGFloat {
+        WidgetID.allCases.map { expandedHeight(for: $0) }.max() ?? 190
+    }
 
     /// Width of the *visible* expanded shape for a given physical notch
     /// width — compact, Alcove-scale (≈2.1× the notch itself) rather than
@@ -59,19 +71,53 @@ enum NotchMetrics {
         }
     }
 
+    /// Extra room reserved in the fixed panel/off-screen bounds — beyond the
+    /// widest/tallest *visible* shape ever gets — purely so the expanded
+    /// shape's drop shadow (`NotchRootView.shapeLayer`: radius 16, y offset 4)
+    /// has somewhere to bleed into. Before this existed, `panelBounds`' width
+    /// exactly equaled Duo's full-width footprint and its height exactly
+    /// equaled `maxExpandedHeight` — zero margin on either axis — so the
+    /// shadow was hard-clipped at the panel/window edge on the widest/tallest
+    /// widget states. `shadowMarginHeight` only needs to cover the bottom
+    /// (the shape is top-anchored — see `panelBounds(for:)`'s own doc comment
+    /// — so all the vertical margin naturally lands below it, where the
+    /// shadow's `y: 4` offset pushes most of its bleed anyway); the shadow's
+    /// upward bleed above the shape has nowhere real to render regardless,
+    /// since that's off the physical notch's own top edge. `shadowMarginWidth`
+    /// splits evenly left/right since the shape is horizontally centered.
+    static let shadowMarginHeight: CGFloat = 28
+    static let shadowMarginWidth: CGFloat = 48
+
     /// The fixed frame `NotchWindowController.position` sizes the real
     /// `NSPanel` to, and `NotchSnapshot` sizes its off-screen capture window
-    /// to — wide/tall enough to fit every widget's expanded footprint *and*
-    /// the Duo agent's future widened state, so that frame never has to
-    /// change size again once this milestone ships (only the SwiftUI
-    /// `NotchShape` drawn inside it grows/shrinks — see both callers' own
-    /// doc comments on why the panel itself never animates).
+    /// to — wide/tall enough to fit every widget's expanded footprint, the
+    /// Duo agent's future widened state, *and* the expanded shadow's own
+    /// bleed margin, so that frame never has to change size again once this
+    /// milestone ships (only the SwiftUI `NotchShape` drawn inside it
+    /// grows/shrinks — see both callers' own doc comments on why the panel
+    /// itself never animates).
     ///
     /// This is deliberately wider/taller than any single `expandedWidth(for:)`
     /// / `expandedHeight(for:)` pair: the *visible* shape is centered inside
     /// these bounds at its own, smaller, per-widget size (see
     /// `NotchRootView.size(for:)` / `.rect(for:panelWidth:)`).
+    ///
+    /// Growing these bounds doesn't require any compensating change to how
+    /// the shape is positioned: `NotchWindowController.position` derives the
+    /// panel's origin as `(notchRect.midX - bounds.width / 2, screen.maxY -
+    /// bounds.height)` — the first term keeps the panel horizontally centered
+    /// on the physical notch regardless of `bounds.width`, and the second
+    /// keeps the panel's *top* edge pinned to `screen.maxY` regardless of
+    /// `bounds.height` (since `origin.y + bounds.height` always simplifies
+    /// back to `screen.maxY`). Inside the panel, `NotchRootView`'s outer
+    /// `.frame(alignment: .top)` centers the shape horizontally and pins it
+    /// to the panel's top edge the same way, using plain SwiftUI alignment
+    /// rather than bounds-derived math — so it too is unaffected by these
+    /// margins growing. Net effect: the added margin surfaces entirely below
+    /// (and, symmetrically, to either side of) the visible shape, exactly
+    /// where the shadow needs it, with no change anywhere else required.
     static func panelBounds(for notchWidth: CGFloat) -> CGSize {
-        CGSize(width: expandedWidth(for: notchWidth) + duoExtraWidth, height: maxExpandedHeight)
+        CGSize(width: expandedWidth(for: notchWidth) + duoExtraWidth + shadowMarginWidth,
+               height: maxExpandedHeight + shadowMarginHeight)
     }
 }

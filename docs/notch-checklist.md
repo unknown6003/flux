@@ -216,3 +216,11 @@ every widget — the items below need a real notched Mac.
       on, confirm a small icon-only wing stays up for as long as a Focus
       stays active (after the initial peek fades), and disappears the moment
       the Focus turns off.
+- [ ] **Option-click restores the last-dismissed activity**: swipe up on a
+      showing live-activity wing to dismiss it (or otherwise let one get
+      dismissed), then option-click the notch — in ANY state (collapsed,
+      another activity showing, or a widget panel expanded) — and confirm the
+      just-dismissed activity comes back as current (`LiveActivityCenter.
+      restoreLastDismissed()`, wired to `NotchViewModel.clicked(optionDown:)`).
+      Confirm a *plain* click (no option key) right after still does the
+      ordinary open/close toggle, unaffected.
