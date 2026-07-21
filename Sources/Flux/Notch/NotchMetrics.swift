@@ -46,7 +46,11 @@ enum NotchMetrics {
     /// (Calendar/Clipboard) it actually needs to show.
     static func expandedHeight(for widget: WidgetID) -> CGFloat {
         switch widget {
-        case .nowPlaying: return 165
+        // 185, not the original 165: the content stack (56pt art row + times/
+        // track + transport + notch-clearing top padding) needs ~180pt — at
+        // 165 the transport row clipped into the bottom corner radius,
+        // verified via CI snapshot render.
+        case .nowPlaying: return 185
         case .shelf: return 150
         case .mirror: return 170
         case .timers: return 185
