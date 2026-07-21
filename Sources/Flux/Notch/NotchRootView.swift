@@ -395,7 +395,8 @@ struct NotchRootView: View {
                 .padding(.vertical, 12)
 
             calendar.makeExpandedView()
-                .frame(width: Self.duoCalendarPaneWidth, maxHeight: .infinity)
+                .frame(width: Self.duoCalendarPaneWidth)
+                .frame(maxHeight: .infinity)
         }
         .padding(.horizontal, 16)
         .padding(.top, notchSize.height + 6)
