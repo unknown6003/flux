@@ -102,7 +102,6 @@ enum NotchSnapshot {
 
         switch state {
         case "activity":
-            seedFixtureState(into: service)
             activities.post(LiveActivity(
                 kind: .nowPlaying,
                 leading: .artwork,
@@ -110,10 +109,14 @@ enum NotchSnapshot {
                 duration: nil,
                 priority: 200))
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        case "expanded":
+            // Seed AFTER the spin: posting/expanding can start real sources
+            // (adapter unavailable on CI publishes nil), which would overwrite
+            // an earlier injection during the run-loop turn.
             seedFixtureState(into: service)
+        case "expanded":
             viewModel.expand(.nowPlaying)
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            seedFixtureState(into: service)
         default:
             break // "collapsed" — leave the view model at its initial .collapsed state
         }
@@ -176,7 +179,23 @@ enum NotchSnapshot {
               let payload = try? JSONDecoder().decode(MediaRemoteAdapterPayload.self, from: payloadData),
               let state = NowPlayingState(payload: payload)
         else { return }
-        let artwork = state.artworkData.flatMap { NSImage(data: $0) }
+        let artwork = state.artworkData.flatMap { NSImage(data: $0) } ?? syntheticArtwork()
         service.injectPreviewState(state, artwork: artwork)
+    }
+
+    /// Deterministic stand-in cover art for renders when the fixture carries
+    /// no artwork bytes: a simple two-tone gradient square, so the artwork
+    /// wing, the 56pt expanded art, and the artwork-derived waveform gradient
+    /// all exercise their real code paths in snapshots.
+    private static func syntheticArtwork() -> NSImage {
+        let size = NSSize(width: 120, height: 120)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let gradient = NSGradient(
+            starting: NSColor(calibratedRed: 0.35, green: 0.45, blue: 0.85, alpha: 1),
+            ending: NSColor(calibratedRed: 0.75, green: 0.30, blue: 0.55, alpha: 1))
+        gradient?.draw(in: NSRect(origin: .zero, size: size), angle: 90)
+        image.unlockFocus()
+        return image
     }
 }
