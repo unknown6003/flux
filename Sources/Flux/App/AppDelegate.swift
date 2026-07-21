@@ -291,11 +291,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// below), plus once here at launch. Kept as this one small function
     /// (rather than inlined into each sink) so every trigger stays in sync
     /// with the same read of `notchWindow.registry`/`permissionCenter`.
-    private func recomputeDuoActive() {
+    ///
+    /// `duoSettingEnabled`/`calendarPermissionGranted` are optionals,
+    /// defaulting to `nil` (read live from `settings`/`permissionCenter`) —
+    /// callers reacting to a settings/permission change THAT ISN'T
+    /// `notchDuoEnabled`/`permissionCenter.statuses` itself (e.g.
+    /// `notchCalendarEnabled`'s own sink) pass nothing and get the live read.
+    /// But `settings.$notchDuoEnabled`'s own sink and
+    /// `permissionCenter.$statuses`'s own sink (below) MUST pass the value
+    /// they were just handed instead: `@Published` delivers to subscribers
+    /// from `willSet`, before its own backing storage is actually updated, so
+    /// a synchronous re-read of `settings.notchDuoEnabled`/
+    /// `permissionCenter.statuses` from inside one of those two sinks would
+    /// see the STALE pre-change value — the exact bug class M6's
+    /// `recomputeTimerActivity(timers:)` fix addressed for `timers.$timers`.
+    private func recomputeDuoActive(duoSettingEnabled: Bool? = nil, calendarPermissionGranted: Bool? = nil) {
         notchWindow.viewModel.duoActive = NotchViewModel.duoActive(
-            duoSettingEnabled: settings.notchDuoEnabled,
+            duoSettingEnabled: duoSettingEnabled ?? settings.notchDuoEnabled,
             calendarWidgetEnabled: notchWindow.registry.enabledWidgets.contains { $0.id == .calendar },
-            calendarPermissionGranted: permissionCenter.statuses[.calendar] == .granted)
+            calendarPermissionGranted: calendarPermissionGranted ?? (permissionCenter.statuses[.calendar] == .granted))
     }
 
     private func observeNotchSettings() {
@@ -351,7 +365,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchDuoEnabled
             .dropFirst()
-            .sink { [weak self] _ in self?.recomputeDuoActive() }
+            .sink { [weak self] value in self?.recomputeDuoActive(duoSettingEnabled: value) }
             .store(in: &cancellables)
 
         // Calendar permission can change independently of every settings
@@ -360,7 +374,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // other setting happens to change.
         permissionCenter.$statuses
             .dropFirst()
-            .sink { [weak self] _ in self?.recomputeDuoActive() }
+            .sink { [weak self] statuses in
+                self?.recomputeDuoActive(calendarPermissionGranted: statuses[.calendar] == .granted)
+            }
             .store(in: &cancellables)
 
         settings.$notchMirrorEnabled

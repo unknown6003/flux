@@ -243,11 +243,28 @@ final class LiveActivityCenter: ObservableObject {
     /// makes it `current` again unconditionally, regardless of priority — by
     /// pointing `cycleCursor` at it, the same "explicit user navigation wins"
     /// mechanism `cycle()` itself relies on. A no-op with nothing to restore.
+    ///
+    /// Bot-review fix: this used to re-queue the dismissed activity with a
+    /// bare `queue.append(activity)` — bypassing `post(_:)`'s own
+    /// one-entry-per-`kind` invariant entirely. If some OTHER activity of the
+    /// same `kind` had been posted in the meantime (entirely plausible: the
+    /// dismissed stack can hold an activity for a while, and its producer
+    /// keeps running), that append left TWO queued entries of the same kind
+    /// at once — an invariant every other mutating method on this type
+    /// (`post`, `dismiss(kind:)`) assumes never happens. Routing through
+    /// `post(_:)` instead reuses its exact same-kind supersession logic (see
+    /// its own doc comment): a genuine dup gets replaced in place, not
+    /// stacked. `post` may keep the ALREADY-queued same-kind entry's own `id`
+    /// on the replacement rather than `activity`'s (again, see `post`'s doc
+    /// comment on why) — so `cycleCursor` is pointed at whichever id actually
+    /// ended up queued for `activity.kind` after the call, not blindly at
+    /// `activity.id`, which could now be stale.
     func restoreLastDismissed() {
         guard let activity = dismissedStack.popLast() else { return }
-        queue.append(activity)
-        scheduleExpiry(for: activity)
-        cycleCursor = activity.id
+        post(activity)
+        if let queuedID = queue.first(where: { $0.kind == activity.kind })?.id {
+            cycleCursor = queuedID
+        }
         recomputeCurrent()
     }
 

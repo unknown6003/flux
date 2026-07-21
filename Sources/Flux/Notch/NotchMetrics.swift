@@ -18,12 +18,13 @@ enum NotchMetrics {
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// Extra width reserved in the *fixed panel bounds* (not the visible
-    /// shape) for the upcoming Duo agent widget, which will widen the
-    /// expanded shape beyond `expandedWidth(for:)` once it ships. Defined now
-    /// — rather than added later as a breaking change to `panelBounds(for:)`
-    /// — so the panel/off-screen window this milestone ships never has to be
-    /// resized again just to make room for it.
+    /// Extra width the *visible* expanded shape gains when Duo view (Now
+    /// Playing + Calendar side by side — see `NotchViewModel.duoActive`) is
+    /// showing: `NotchRootView.size(for:)` adds this on top of
+    /// `expandedWidth(for:)` whenever the active widget is laid out as Duo.
+    /// Also reserved in the *fixed panel bounds* below (`panelBounds(for:)`),
+    /// same as every other widget's own footprint, so the panel/off-screen
+    /// window never has to resize when Duo becomes active.
     static let duoExtraWidth: CGFloat = 220
 
     /// The tallest any single widget's expanded height (`expandedHeight(for:)`
@@ -46,8 +47,8 @@ enum NotchMetrics {
 
     /// Width of the *visible* expanded shape for a given physical notch
     /// width — compact, Alcove-scale (≈2.1× the notch itself) rather than
-    /// the old notch-width-plus-440-fixed-floor box. Widened further, per
-    /// widget, only once the Duo agent ships (see `duoExtraWidth`).
+    /// the old notch-width-plus-440-fixed-floor box. Widened further while
+    /// Duo view is showing (see `duoExtraWidth`).
     static func expandedWidth(for notchWidth: CGFloat) -> CGFloat {
         max(notchWidth * 2.1, 400)
     }
@@ -90,12 +91,12 @@ enum NotchMetrics {
 
     /// The fixed frame `NotchWindowController.position` sizes the real
     /// `NSPanel` to, and `NotchSnapshot` sizes its off-screen capture window
-    /// to — wide/tall enough to fit every widget's expanded footprint, the
-    /// Duo agent's future widened state, *and* the expanded shadow's own
-    /// bleed margin, so that frame never has to change size again once this
-    /// milestone ships (only the SwiftUI `NotchShape` drawn inside it
-    /// grows/shrinks — see both callers' own doc comments on why the panel
-    /// itself never animates).
+    /// to — wide/tall enough to fit every widget's expanded footprint, Duo's
+    /// widened state (Now Playing + Calendar side by side), *and* the
+    /// expanded shadow's own bleed margin, so that frame never has to change
+    /// size again once this milestone ships (only the SwiftUI `NotchShape`
+    /// drawn inside it grows/shrinks — see both callers' own doc comments on
+    /// why the panel itself never animates).
     ///
     /// This is deliberately wider/taller than any single `expandedWidth(for:)`
     /// / `expandedHeight(for:)` pair: the *visible* shape is centered inside

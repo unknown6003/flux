@@ -72,6 +72,22 @@ final class FocusMonitor {
     private var source: DispatchSourceFileSystemObject?
     private let directory: URL
     private var lastEvent: Event?
+    /// Bot-review fix: `false` until the very first read (`start()`'s own
+    /// initial `emitCurrent()` call) has established a baseline `lastEvent` —
+    /// that first read never publishes through `events`, only records what it
+    /// found, no matter what it found. Without this, a user who simply wasn't
+    /// in any Focus at launch had that baseline read publish a synthetic
+    /// `.focusChanged(name: nil, symbolName: nil)` — a real "no Focus" state,
+    /// but not a CHANGE from anything, and `NotchActivityRouter` can't tell
+    /// the difference between "genuinely just turned off" and "was already
+    /// off before this app even started watching" — so every launch spawned
+    /// a spurious "Focus off" peek. Every read AFTER this first one (a real
+    /// on-disk change the `DispatchSourceFileSystemObject` below actually
+    /// observed) still emits normally through `emit(_:)`. Never reset by
+    /// `stop()`/`start()` cycling within the same process — once a baseline
+    /// exists, a later restart seeing a different state than that baseline IS
+    /// a genuine change worth reporting, not a second "first read."
+    private var hasEmittedOnce = false
 
     /// `directory` is injectable purely for the (currently unused, but kept
     /// for parity with every other monitor's constructor-seam convention —
@@ -99,9 +115,12 @@ final class FocusMonitor {
     /// Starts watching the DB directory for changes via a
     /// `DispatchSourceFileSystemObject` — no polling, matching every other
     /// monitor in this app's zero-idle-cost perf contract. Also performs one
-    /// immediate read so a Focus already active before this starts (not just
-    /// a future change) is reported right away. Idempotent — a second call
-    /// while already watching is a no-op.
+    /// immediate read to establish the baseline Focus state — SILENTLY (see
+    /// `hasEmittedOnce`'s doc comment): whatever's already active (or not)
+    /// before this app started watching isn't a "change" worth a spurious
+    /// peek at every single launch. Only a genuine change AFTER that baseline
+    /// — the directory actually changing under the watch below — emits.
+    /// Idempotent — a second call while already watching is a no-op.
     func start() {
         guard source == nil else { return }
         emitCurrent()
@@ -156,10 +175,22 @@ final class FocusMonitor {
               let configData = try? Data(contentsOf: directory.appendingPathComponent("ModeConfigurations.json"))
         else {
             markUnavailable()
-            emit(.focusChanged(name: nil, symbolName: nil))
+            recordOrEmit(.focusChanged(name: nil, symbolName: nil))
             return
         }
-        emit(Self.parse(assertionsData: assertionsData, configData: configData))
+        recordOrEmit(Self.parse(assertionsData: assertionsData, configData: configData))
+    }
+
+    /// Routes every `emitCurrent()` read through the `hasEmittedOnce` baseline
+    /// check (see its own doc comment) before falling through to the normal
+    /// dedupe-and-publish `emit(_:)` path.
+    private func recordOrEmit(_ event: Event) {
+        guard hasEmittedOnce else {
+            hasEmittedOnce = true
+            lastEvent = event
+            return
+        }
+        emit(event)
     }
 
     private func emit(_ event: Event) {

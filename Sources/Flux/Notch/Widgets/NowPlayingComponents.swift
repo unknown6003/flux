@@ -177,6 +177,27 @@ struct FlippingArtwork: View {
                 guard Optional(newKey) != displayedKey else { return }
                 runFlip(to: image, key: newKey)
             }
+            // Bot-review fix: artwork can arrive asynchronously AFTER track
+            // metadata (title/artist/source — whatever `flipKey` is derived
+            // from) — e.g. `NowPlayingService` publishes the new track first
+            // and its artwork fetch resolves a moment later, under the SAME
+            // `flipKey`. Without this, `displayedImage` was only ever touched
+            // by `runFlip` (which only runs on a `flipKey` CHANGE), so that
+            // late-arriving artwork never displayed at all for the rest of
+            // that track's playback. Tracked by identity
+            // (`ObjectIdentifier`, not `Equatable`/`==`) — same reasoning as
+            // `ArtworkPalette.memo`'s own `===` comparison: `NSImage` isn't
+            // meaningfully value-comparable here, only "is this the same
+            // object" is.
+            .onChange(of: image.map(ObjectIdentifier.init)) { _, _ in
+                // Only fires when `flipKey` DIDN'T just change too — a
+                // genuine track change is `onChange(of: flipKey)`'s job,
+                // above, and runs its own flip; this path is purely "the
+                // already-displayed track's art just showed up," so it
+                // updates directly, with nothing to flip away from.
+                guard Optional(flipKey) == displayedKey else { return }
+                displayedImage = image
+            }
             .onDisappear { flipTask?.cancel() }
     }
 

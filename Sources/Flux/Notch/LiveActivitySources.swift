@@ -176,6 +176,7 @@ final class NotchActivityRouter {
         observeTimerGating()
         observeFocusGating()
         observeNotchState()
+        observeDuoActive()
         observePresentation(presentation)
         applyMonitorState()
         applyHUDState()
@@ -319,8 +320,13 @@ final class NotchActivityRouter {
     private let calendarThresholdTask = DeadlineTask()
 
     private func observeCalendar() {
+        // Takes the emitted array directly — not a re-read of `calendar.upcoming`
+        // from inside the sink — for the same `@Published`-delivers-from-`willSet`
+        // reason `observeTimers()`'s `timers.$timers` sink does (see its own doc
+        // comment): a synchronous `calendar.upcoming` read here would see the
+        // list from BEFORE this exact update.
         calendar.$upcoming
-            .sink { [weak self] _ in self?.recomputeCalendarActivity() }
+            .sink { [weak self] events in self?.recomputeCalendarActivity(events: events) }
             .store(in: &cancellables)
     }
 
@@ -330,23 +336,33 @@ final class NotchActivityRouter {
     /// whenever the gating settings change (`observeMonitorGating`, extended
     /// below to include the calendar toggle), and by the boundary task
     /// itself once its deadline arrives.
-    private func recomputeCalendarActivity() {
+    ///
+    /// `activityToggleOn`/`calendarPermissionGranted`/`events` default to
+    /// `nil` (read live) — `observeCalendar`'s `calendar.$upcoming` sink and
+    /// `observeMonitorGating`'s two sinks (the settings combineLatest and the
+    /// `permissions.$statuses` one) pass their own emitted values explicitly
+    /// instead, for the same stale-`willSet`-read reason documented on
+    /// `applyMonitorState`.
+    private func recomputeCalendarActivity(activityToggleOn: Bool? = nil,
+                                            calendarPermissionGranted: Bool? = nil,
+                                            events: [CalendarEvent]? = nil) {
         calendarThresholdTask.cancel()
 
-        guard settings.notchActivityCalendarEventEnabled,
-              permissions.statuses[.calendar] == .granted
+        guard (activityToggleOn ?? settings.notchActivityCalendarEventEnabled),
+              (calendarPermissionGranted ?? (permissions.statuses[.calendar] == .granted))
         else {
             activities.dismiss(kind: .calendarEvent)
             return
         }
 
         let now = Date()
-        if let activity = Self.calendarEventSoonActivity(events: calendar.upcoming, now: now) {
+        let upcoming = events ?? calendar.upcoming
+        if let activity = Self.calendarEventSoonActivity(events: upcoming, now: now) {
             activities.post(activity)
         } else {
             activities.dismiss(kind: .calendarEvent)
         }
-        scheduleNextCalendarBoundary(now: now)
+        scheduleNextCalendarBoundary(now: now, events: upcoming)
     }
 
     /// No repeating timer: computes the single next instant this decision
@@ -358,8 +374,8 @@ final class NotchActivityRouter {
     /// The actual "when" is `nextCalendarBoundary` — split out as a pure
     /// function below so `--selftest` can verify the countdown-tick math
     /// directly.
-    private func scheduleNextCalendarBoundary(now: Date) {
-        let next = Self.nextCalendarBoundary(events: calendar.upcoming, now: now)
+    private func scheduleNextCalendarBoundary(now: Date, events: [CalendarEvent]? = nil) {
+        let next = Self.nextCalendarBoundary(events: events ?? calendar.upcoming, now: now)
         calendarThresholdTask.reschedule(to: next) { [weak self] in self?.recomputeCalendarActivity() }
     }
 
@@ -526,8 +542,12 @@ final class NotchActivityRouter {
                 // too, not just the underlying service's start/stop, so
                 // switching the toggle off dismisses an already-showing wing
                 // immediately rather than waiting for `upcoming` to next
-                // change.
-                self?.recomputeCalendarActivity()
+                // change. Passes `calendarEnabled` straight through — not a
+                // no-arg call re-reading `settings.notchActivityCalendarEventEnabled`
+                // from inside this same combineLatest sink, which would see
+                // the stale pre-change value (see `applyMonitorState`'s doc
+                // comment).
+                self?.recomputeCalendarActivity(activityToggleOn: calendarEnabled)
             }
             .store(in: &cancellables)
 
@@ -543,15 +563,21 @@ final class NotchActivityRouter {
         // widget-side `willPresent` re-check needed.
         permissions.$statuses
             .dropFirst()
-            .sink { [weak self] _ in
-                self?.applyMonitorState()
-                self?.recomputeCalendarActivity()
+            .sink { [weak self] statuses in
+                // Uses the emitted `statuses` dict directly rather than
+                // re-reading `permissions.statuses` — the same `@Published`
+                // stale-`willSet`-read hazard as everywhere else in this
+                // file (see `applyMonitorState`'s doc comment): this sink IS
+                // subscribed to `permissions.$statuses` itself.
+                let calendarGranted = statuses[.calendar] == .granted
+                self?.applyMonitorState(calendarPermissionGranted: calendarGranted)
+                self?.recomputeCalendarActivity(calendarPermissionGranted: calendarGranted)
                 // Accessibility can be granted or revoked independently of
                 // every HUD settings toggle — re-evaluate whether intercept
                 // mode can actually run whenever permission itself changes,
                 // the same "grant-while-open" reasoning `recomputeCalendarActivity`
                 // above already applies to Calendar.
-                self?.applyHUDState()
+                self?.applyHUDState(accessibilityGranted: statuses[.accessibility] == .granted)
             }
             .store(in: &cancellables)
     }
@@ -559,25 +585,56 @@ final class NotchActivityRouter {
     /// Re-applies `recomputeTimerActivity` whenever the notch master switch or
     /// the timer-activity toggle changes — mirrors `observeHUDGating`'s exact
     /// shape. `dropFirst` skips the redundant initial delivery; `init` already
-    /// calls `recomputeTimerActivity()` once directly.
+    /// calls `recomputeTimerActivity()` once directly. Passes both emitted
+    /// values straight through rather than letting `recomputeTimerActivity`
+    /// re-read `settings.notchEnabled`/`settings.notchActivityTimerEnabled`
+    /// itself, which — subscribed to those exact two publishers — would see
+    /// the stale pre-change value (see `applyMonitorState`'s doc comment).
     private func observeTimerGating() {
         settings.$notchEnabled
             .combineLatest(settings.$notchActivityTimerEnabled)
             .dropFirst()
-            .sink { [weak self] _, _ in self?.recomputeTimerActivity() }
+            .sink { [weak self] notchEnabled, timerEnabled in
+                guard let self else { return }
+                self.recomputeTimerActivity(toggleOn: timerEnabled, notchPresenting: notchEnabled && self.isPresenting)
+            }
             .store(in: &cancellables)
     }
 
     /// Re-applies `applyMonitorState` whenever the notch's own state machine
     /// changes — specifically so the Calendar widget becoming (or stopping
-    /// being) the currently-`.expanded` widget is re-evaluated the same tick,
-    /// which `calendarServiceShouldRun` needs. The initial delivery every
-    /// `@Published` makes at subscription time is harmless here (unlike the
-    /// `dropFirst()` sinks above): `applyMonitorState` is idempotent, and this
-    /// runs before `init`'s own explicit final call anyway.
+    /// being) the currently-`.expanded` widget (and, M7, the Duo pane
+    /// becoming/stopping being `.expanded(.nowPlaying)`) is re-evaluated the
+    /// same tick, which `calendarServiceShouldRun` needs. The initial
+    /// delivery every `@Published` makes at subscription time is harmless
+    /// here (unlike the `dropFirst()` sinks above): `applyMonitorState` is
+    /// idempotent, and this runs before `init`'s own explicit final call
+    /// anyway. Passes the emitted `state` straight through — not a no-arg
+    /// call re-reading `viewModel.state` from inside this exact sink, which
+    /// would see the stale pre-transition value (see `applyMonitorState`'s
+    /// doc comment) — which matters now more than ever: a transition INTO
+    /// `.expanded(.nowPlaying)` while Duo is active must start
+    /// `CalendarService` the same tick, not one state change late.
     private func observeNotchState() {
         viewModel.$state
-            .sink { [weak self] _ in self?.applyMonitorState() }
+            .sink { [weak self] state in self?.applyMonitorState(state: state) }
+            .store(in: &cancellables)
+    }
+
+    /// M7: re-applies `applyMonitorState` whenever `duoActive` itself changes
+    /// (the Duo setting toggled, Calendar's own enabled state or permission
+    /// changing — see `AppDelegate.recomputeDuoActive`) — needed alongside
+    /// `observeNotchState` above so `calendarServiceShouldRun`'s new
+    /// `duoActive` input is re-evaluated the moment EITHER of its two
+    /// dependencies (state, duoActive) changes, not just state. `dropFirst`
+    /// skips the redundant initial delivery; `init`'s own final
+    /// `applyMonitorState()` call already covers the starting value. Passes
+    /// the emitted value through for the same stale-`willSet`-read reason as
+    /// every other sink here.
+    private func observeDuoActive() {
+        viewModel.$duoActive
+            .dropFirst()
+            .sink { [weak self] duoActive in self?.applyMonitorState(duoActive: duoActive) }
             .store(in: &cancellables)
     }
 
@@ -789,14 +846,15 @@ final class NotchActivityRouter {
     /// on its own: the permission sink below calls `applyHUDState()` again,
     /// `intendedHUDMode` now sees `accessibilityGranted: true`, and this
     /// re-arms the tap.
-    private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil, hudInterceptEnabled: Bool? = nil) {
+    private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil, hudInterceptEnabled: Bool? = nil,
+                                accessibilityGranted: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
         let mode = Self.intendedHUDMode(
             hudEnabled: hudEnabled ?? settings.notchHudEnabled,
             notchPresenting: notchOn,
             interceptRequested: hudInterceptEnabled ?? settings.notchHudInterceptEnabled,
-            accessibilityGranted: MediaKeyInterceptor.isAccessibilityGranted(permissions))
+            accessibilityGranted: accessibilityGranted ?? MediaKeyInterceptor.isAccessibilityGranted(permissions))
 
         switch mode {
         case .off:
@@ -892,9 +950,22 @@ final class NotchActivityRouter {
     /// see `calendarServiceShouldRun` and `CalendarService`'s own doc comment
     /// on the ownership fix this replaced (the old
     /// `isCalendarWidgetPresented()` closure this router used to defer to).
+    /// `calendarPermissionGranted`/`state`/`duoActive` are optionals, defaulting
+    /// to `nil` (read live) — the same "explicit value from a sink observing
+    /// THAT exact publisher, live read everywhere else" split every other
+    /// parameter here already follows. `observeNotchState`'s `viewModel.$state`
+    /// sink and the new `observeDuoActive`'s `viewModel.$duoActive` sink pass
+    /// their emitted values explicitly for the same reason
+    /// `observeMonitorGating`'s combineLatest sink already passes
+    /// `notchEnabled`/`batteryEnabled`/`bluetoothEnabled`/`calendarEnabled`:
+    /// `@Published` delivers from `willSet`, before backing storage updates,
+    /// so re-reading `viewModel.state`/`viewModel.duoActive`/
+    /// `permissions.statuses` from inside a sink subscribed to that exact
+    /// publisher would otherwise see the STALE pre-change value.
     private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil,
                                     bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil,
-                                    focusEnabled: Bool? = nil) {
+                                    focusEnabled: Bool? = nil, calendarPermissionGranted: Bool? = nil,
+                                    state: NotchState? = nil, duoActive: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
 
@@ -922,11 +993,12 @@ final class NotchActivityRouter {
         }
 
         let shouldRunCalendar = Self.calendarServiceShouldRun(
-            permissionGranted: permissions.statuses[.calendar] == .granted,
+            permissionGranted: calendarPermissionGranted ?? (permissions.statuses[.calendar] == .granted),
             notchPresenting: isPresenting,
             widgetEnabled: settings.notchCalendarEnabled,
-            state: viewModel.state,
-            activityToggleOn: calendarEnabled ?? settings.notchActivityCalendarEventEnabled)
+            state: state ?? viewModel.state,
+            activityToggleOn: calendarEnabled ?? settings.notchActivityCalendarEventEnabled,
+            duoActive: duoActive ?? viewModel.duoActive)
         if shouldRunCalendar {
             calendar.start()
         } else {
@@ -950,12 +1022,23 @@ final class NotchActivityRouter {
     /// actually present: a denied permission has nothing to show, and a
     /// service running with the notch's screen gone (or the panel disabled)
     /// has nowhere to render either the widget or the wing.
+    /// M7: extended with `duoActive` — Duo (Now Playing + Calendar side by
+    /// side, see `NotchViewModel.duoActive`) shows the Calendar pane's own
+    /// agenda even when the event-soon toggle is off and the Calendar widget
+    /// itself isn't the one `.expanded`, so `CalendarService` must be running
+    /// in that state too, or the Duo pane renders an empty agenda. `duoActive`
+    /// alone isn't sufficient on its own (it stays true even while some OTHER
+    /// widget, or nothing, is expanded) — it only matters here alongside the
+    /// Duo pane actually being the thing on screen, i.e. `state ==
+    /// .expanded(.nowPlaying)` (Duo always renders as the Now Playing widget
+    /// slot widened to include Calendar — see `NotchRootView.duoContent`).
     static func calendarServiceShouldRun(permissionGranted: Bool, notchPresenting: Bool,
                                           widgetEnabled: Bool, state: NotchState,
-                                          activityToggleOn: Bool) -> Bool {
+                                          activityToggleOn: Bool, duoActive: Bool) -> Bool {
         guard permissionGranted, notchPresenting else { return false }
         let widgetOpen = widgetEnabled && state == .expanded(.calendar)
-        return widgetOpen || activityToggleOn
+        let duoShowing = duoActive && state == .expanded(.nowPlaying)
+        return widgetOpen || activityToggleOn || duoShowing
     }
 
     // MARK: - Timers (M6)
@@ -1055,7 +1138,8 @@ final class NotchActivityRouter {
     /// own scheduled refresh task (these last few pass `nil`, since none of
     /// them run from inside a `$timers` willSet callback — reading
     /// `timers.timers` directly at those call sites is safe and current).
-    private func recomputeTimerActivity(timers liveTimers: [NotchTimer]? = nil) {
+    private func recomputeTimerActivity(timers liveTimers: [NotchTimer]? = nil,
+                                         toggleOn: Bool? = nil, notchPresenting: Bool? = nil) {
         let now = Date()
         // While a completion notice is still showing, this must not touch
         // the `.timer` activity at all — see `completionAlertUntil`'s doc
@@ -1069,8 +1153,8 @@ final class NotchActivityRouter {
         timerRefreshTask.cancel()
         let currentTimers = liveTimers ?? timers.timers
         switch Self.timerWingState(timers: currentTimers,
-                                    toggleOn: settings.notchActivityTimerEnabled,
-                                    notchPresenting: settings.notchEnabled && isPresenting,
+                                    toggleOn: toggleOn ?? settings.notchActivityTimerEnabled,
+                                    notchPresenting: notchPresenting ?? (settings.notchEnabled && isPresenting),
                                     at: now) {
         case .hidden:
             activities.dismiss(kind: .timer)
@@ -1261,7 +1345,14 @@ final class NotchActivityRouter {
     /// that could change the answer: the peek's own scheduled refresh
     /// (`armFocusRefresh`), the settings/presentation/notch-state gating
     /// sinks, and `init`'s final call.
-    private func recomputeFocusActivity() {
+    /// `notchEnabled`/`focusEnabled`/`stickyEnabled` default to `nil` (read
+    /// live) — `observeFocusGating`'s combineLatest sink (below) passes its
+    /// three emitted values explicitly instead, for the same stale-`willSet`-
+    /// read reason documented on `applyMonitorState`: that sink is subscribed
+    /// to exactly the three `@Published` properties this function would
+    /// otherwise re-read.
+    private func recomputeFocusActivity(notchEnabled: Bool? = nil, focusEnabled: Bool? = nil,
+                                         stickyEnabled: Bool? = nil) {
         let now = Date()
         // While the peek is still showing, this must not touch `.focus` at
         // all — see this section's own doc comment. Deliberately returns
@@ -1271,13 +1362,15 @@ final class NotchActivityRouter {
         if let focusPeekUntil, now < focusPeekUntil { return }
         self.focusPeekUntil = nil
 
-        guard settings.notchEnabled, isPresenting, settings.notchActivityFocusEnabled else {
+        guard (notchEnabled ?? settings.notchEnabled), isPresenting,
+              (focusEnabled ?? settings.notchActivityFocusEnabled) else {
             activities.dismiss(kind: .focus)
             return
         }
 
         let focusActive = currentFocusName != nil || currentFocusSymbolName != nil
-        guard Self.focusStickyShouldShow(stickyEnabled: settings.notchActivityFocusStickyEnabled, focusActive: focusActive) else {
+        guard Self.focusStickyShouldShow(stickyEnabled: stickyEnabled ?? settings.notchActivityFocusStickyEnabled,
+                                          focusActive: focusActive) else {
             activities.dismiss(kind: .focus)
             return
         }
@@ -1293,13 +1386,26 @@ final class NotchActivityRouter {
     /// notch master switch or either Focus toggle changes — mirrors
     /// `observeTimerGating`'s exact shape. `dropFirst` skips the redundant
     /// initial delivery; `init` already calls both once directly.
+    ///
+    /// Bot-review fix: this sink used to ignore its three emitted values
+    /// entirely (`_, _, _`) and call both functions with no arguments, which
+    /// made each of them turn around and re-read
+    /// `settings.notchEnabled`/`settings.notchActivityFocusEnabled`/
+    /// `settings.notchActivityFocusStickyEnabled` itself — exactly the three
+    /// `@Published` properties this combineLatest is subscribed to.
+    /// `@Published` delivers to subscribers from `willSet`, before its own
+    /// backing storage actually updates, so those re-reads saw the STALE
+    /// pre-change values (the same bug class M6's
+    /// `recomputeTimerActivity(timers:)` fix addressed for `timers.$timers`).
+    /// Now passes the emitted `notchEnabled`/`focusEnabled`/`stickyEnabled`
+    /// straight through to both calls instead.
     private func observeFocusGating() {
         settings.$notchEnabled
             .combineLatest(settings.$notchActivityFocusEnabled, settings.$notchActivityFocusStickyEnabled)
             .dropFirst()
-            .sink { [weak self] _, _, _ in
-                self?.applyMonitorState()
-                self?.recomputeFocusActivity()
+            .sink { [weak self] notchEnabled, focusEnabled, stickyEnabled in
+                self?.applyMonitorState(notchEnabled: notchEnabled, focusEnabled: focusEnabled)
+                self?.recomputeFocusActivity(notchEnabled: notchEnabled, focusEnabled: focusEnabled, stickyEnabled: stickyEnabled)
             }
             .store(in: &cancellables)
     }

@@ -1439,31 +1439,56 @@ enum SelfTest {
               "NotchActivityRouter: nextCalendarBoundary is nil with no events at all")
 
         // --- M4: NotchActivityRouter.calendarServiceShouldRun — pure
-        // lifecycle derivation (the grant-while-open / screen-disappear fix) ---
+        // lifecycle derivation (the grant-while-open / screen-disappear fix).
+        // `duoActive: false` on every case below that isn't specifically
+        // testing the M7 Duo addition, below. ---
         check(!NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: false, notchPresenting: true, widgetEnabled: true,
-                state: .expanded(.calendar), activityToggleOn: true),
+                state: .expanded(.calendar), activityToggleOn: true, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun is false without calendar permission, no matter what else is true")
         check(!NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: true, notchPresenting: false, widgetEnabled: true,
-                state: .expanded(.calendar), activityToggleOn: true),
+                state: .expanded(.calendar), activityToggleOn: true, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun is false with nowhere to present, even with the widget 'open' and the toggle on — the screen-disappear-stops-the-service fix")
         check(NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: true, notchPresenting: true, widgetEnabled: true,
-                state: .expanded(.calendar), activityToggleOn: false),
+                state: .expanded(.calendar), activityToggleOn: false, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun is true when the Calendar widget is the one currently expanded, even with the event-soon toggle off")
         check(NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: true, notchPresenting: true, widgetEnabled: false,
-                state: .collapsed, activityToggleOn: true),
+                state: .collapsed, activityToggleOn: true, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun is true when the event-soon toggle is on, even with the widget closed/disabled — the grant-while-open fix's other half")
         check(!NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: true, notchPresenting: true, widgetEnabled: true,
-                state: .collapsed, activityToggleOn: false),
+                state: .collapsed, activityToggleOn: false, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun is false when neither the widget is open nor the event-soon toggle is on")
         check(!NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: true, notchPresenting: true, widgetEnabled: false,
-                state: .expanded(.calendar), activityToggleOn: false),
+                state: .expanded(.calendar), activityToggleOn: false, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun requires widgetEnabled true for the widget-open condition to count, even if state somehow still reads .expanded(.calendar)")
+
+        // --- M7 bot-review fix: calendarServiceShouldRun also runs the
+        // service while the Duo pane (Now Playing + Calendar side by side)
+        // is showing, even with the Calendar widget's own event-soon toggle
+        // off and Calendar not itself the `.expanded` widget — otherwise the
+        // Duo pane's Calendar half renders with the service never started,
+        // an empty agenda. ---
+        check(NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: false,
+                state: .expanded(.nowPlaying), activityToggleOn: false, duoActive: true),
+              "NotchActivityRouter: calendarServiceShouldRun is true when Duo is active and its pane (.expanded(.nowPlaying)) is showing, even with the event-soon toggle off and the Calendar widget itself disabled")
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: false,
+                state: .expanded(.shelf), activityToggleOn: false, duoActive: true),
+              "NotchActivityRouter: calendarServiceShouldRun requires the Duo pane's OWN state (.expanded(.nowPlaying)) for duoActive to count — duoActive alone, with some other widget expanded, isn't the Duo pane actually being on screen")
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: false,
+                state: .expanded(.nowPlaying), activityToggleOn: false, duoActive: false),
+              "NotchActivityRouter: calendarServiceShouldRun stays false at .expanded(.nowPlaying) when Duo itself isn't active — this is just plain Now Playing, not Duo")
+        check(!NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: false, notchPresenting: true, widgetEnabled: false,
+                state: .expanded(.nowPlaying), activityToggleOn: false, duoActive: true),
+              "NotchActivityRouter: calendarServiceShouldRun is still false without calendar permission even with the Duo pane showing")
 
         // --- M5: MediaKeyInterceptor — NX_SYSDEFINED data1 parsing + decision
         // logic, all pure (no real CGEventTap is ever created here) ---
@@ -2329,6 +2354,40 @@ enum SelfTest {
                   "LiveActivityCenter: restoring past the cap's worth of dismissed activities is a no-op — cap0 was evicted, never restorable")
         }
 
+        // --- M7 bot-review fix: restoreLastDismissed() must route through
+        // post()'s own one-entry-per-kind invariant, not bypass it with a
+        // bare queue append — restoring a dismissed activity while a NEW
+        // activity of the SAME kind has since been posted must not leave two
+        // queued entries of that kind at once. ---
+        do {
+            let dupCenter = LiveActivityCenter()
+            let dupOld = LiveActivity(kind: .battery, leading: .none, trailing: .text("old"), duration: nil, priority: 200)
+            dupCenter.post(dupOld)
+            dupCenter.dismissCurrent(restorable: true)
+
+            let dupNew = LiveActivity(kind: .battery, leading: .none, trailing: .text("new"), duration: nil, priority: 200)
+            dupCenter.post(dupNew)
+            check(dupCenter.current?.id == dupNew.id,
+                  "LiveActivityCenter: setup — the freshly posted same-kind activity (new) is current before restoring")
+
+            dupCenter.restoreLastDismissed()
+            if case .text(let label)? = dupCenter.current?.trailing {
+                check(label == "old",
+                      "LiveActivityCenter: restoreLastDismissed() supersedes an already-queued same-kind activity through post()'s own dedup, surfacing the restored (old) content")
+            } else {
+                check(false, "LiveActivityCenter: restoreLastDismissed() should surface the restored activity's content")
+            }
+
+            // The real bug this guards against: bypassing post()'s
+            // one-entry-per-kind invariant would leave BOTH "old" and "new"
+            // queued under `.battery` at once — dismissing whichever is
+            // current would then just reveal the other leftover duplicate
+            // instead of leaving nothing queued.
+            dupCenter.dismissCurrent(restorable: false)
+            check(dupCenter.current == nil,
+                  "LiveActivityCenter: restoreLastDismissed() must not leave a duplicate same-kind entry behind — dismissing the restored activity leaves nothing queued, not a leftover duplicate")
+        }
+
         // --- M7: NotchViewModel's Alcove swipe map — while `.activity` is
         // showing, left/right cycle ACTIVITIES (not widgets), up dismisses
         // (restorably) the one showing, and down expands to the widget
@@ -2463,6 +2522,61 @@ enum SelfTest {
             focusProbe.stop()
             focusProbe.stop() // idempotent
             check(true, "FocusMonitor: start()/stop() cycle without crashing regardless of whether the DoNotDisturb DB is readable on this runner")
+        }
+
+        // --- M7 bot-review fix: FocusMonitor.start()'s own baseline read
+        // must never emit — a Focus state (on OR off) that was already true
+        // before this app started watching isn't a "change" worth a spurious
+        // peek at every single launch. Exercises the real start()/emitCurrent()
+        // path (not the pure parse(...) core above, which the bug doesn't
+        // live in) against a fixture directory this instance CAN actually
+        // read — `directory` is injectable for exactly this. Deliberately
+        // does NOT depend on the real DispatchSourceFileSystemObject firing
+        // (unreliable to time in CI — see the M6 clipboard CI fix's own
+        // lesson on this): both reads below happen synchronously inside
+        // `start()` itself, before `resume()` is ever called on that source. ---
+        do {
+            let focusFixtureDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("flux-selftest-focus-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: focusFixtureDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: focusFixtureDir) }
+
+            let assertionsURL = focusFixtureDir.appendingPathComponent("Assertions.json")
+            let configURL = focusFixtureDir.appendingPathComponent("ModeConfigurations.json")
+            func writeFocusFixture(active: Bool) {
+                if active {
+                    try? Data("""
+                    {"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":"com.apple.focus.work"}}]}]}
+                    """.utf8).write(to: assertionsURL)
+                    try? Data("""
+                    {"data":[{"modeConfigurations":{"com.apple.focus.work":{"modeDescriptor":{"userTitle":"Work","symbolImageName":"briefcase.fill"}}}}]}
+                    """.utf8).write(to: configURL)
+                } else {
+                    try? Data("{\"data\":[]}".utf8).write(to: assertionsURL)
+                    try? Data("{\"data\":[]}".utf8).write(to: configURL)
+                }
+            }
+            writeFocusFixture(active: false)
+
+            var suppressionEvents: [FocusMonitor.Event] = []
+            let suppressionFocus = FocusMonitor(directory: focusFixtureDir)
+            let suppressionCancellable = suppressionFocus.events.sink { suppressionEvents.append($0) }
+            suppressionFocus.start()
+            check(suppressionEvents.isEmpty,
+                  "FocusMonitor: start()'s own baseline read never emits, even though what it found (no Focus active) is a perfectly real, decodable state — it's establishing a baseline, not reporting a change")
+
+            // A genuine change AFTER that suppressed baseline — restart
+            // (`stop()` then `start()` again) against different fixture
+            // content — must still emit normally: this is a one-time baseline
+            // suppression, not a blanket "this instance never emits" bug.
+            suppressionFocus.stop()
+            writeFocusFixture(active: true)
+            suppressionFocus.start()
+            check(suppressionEvents == [.focusChanged(name: "Work", symbolName: "briefcase.fill")],
+                  "FocusMonitor: a genuine change after the suppressed baseline still emits normally, exactly once")
+
+            suppressionFocus.stop()
+            suppressionCancellable.cancel()
         }
 
         // --- M7: NotchActivityRouter — Focus peek/sticky translation, driven

@@ -255,7 +255,7 @@ final class NotchWindowController {
 
     /// Sizes the panel to the fixed panel bounds (`NotchMetrics.panelBounds`
     /// — wide/tall enough for the widest/tallest widget, plus room reserved
-    /// for the future Duo agent widget) and centers it, top-anchored, on the
+    /// for Duo view's own widened state) and centers it, top-anchored, on the
     /// physical notch. This frame never changes with `viewModel.state` — only
     /// the SwiftUI content inside grows/shrinks, to its own smaller per-widget
     /// size — so repositioning only has to happen when the screen itself
