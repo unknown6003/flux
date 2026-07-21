@@ -177,9 +177,42 @@ enum NotchSnapshot {
               JSONSerialization.isValidJSONObject(payloadDict),
               let payloadData = try? JSONSerialization.data(withJSONObject: payloadDict),
               let payload = try? JSONDecoder().decode(MediaRemoteAdapterPayload.self, from: payloadData),
-              let state = NowPlayingState(payload: payload)
+              var state = NowPlayingState(payload: payload)
         else { return }
-        let artwork = state.artworkData.flatMap { NSImage(data: $0) } ?? syntheticArtwork()
+
+        // The fixture's `artworkData` is intentionally a real, tiny 1x1 PNG
+        // (see `NowPlayingFixtures.tinyPNGBase64`'s doc comment) — that's
+        // exactly what the *decoder round-trip* tests want, but it decodes
+        // to a perfectly valid, non-nil, one-pixel (and transparent) NSImage,
+        // so the `?? syntheticArtwork()` fallback below never actually
+        // fires for it. Rendered at 56pt/22pt that pixel is indistinguishable
+        // from "no artwork at all" — both the expanded FlippingArtwork tile
+        // and the collapsed wing's `.artwork` content read this same
+        // `service.artwork`, so both silently went blank sharing this one
+        // cause. Only trust a decoded image as real cover art once it's
+        // bigger than that one-pixel placeholder.
+        let decodedArtwork = state.artworkData.flatMap { NSImage(data: $0) }
+        let artwork: NSImage
+        if let decodedArtwork, decodedArtwork.size.width > 1, decodedArtwork.size.height > 1 {
+            artwork = decodedArtwork
+        } else {
+            artwork = syntheticArtwork()
+        }
+
+        // The fixture's `timestamp`/`elapsed` are frozen at whatever moment
+        // it was authored — `NowPlayingService.currentElapsed(at:)`
+        // extrapolates a *playing* track forward from `timestamp`, so by the
+        // time CI actually renders this (days/months later), that
+        // extrapolation blows straight past `duration` and clamps to the
+        // end: a full blue bar and "-0:00" remaining instead of a mid-track
+        // scrubber. Rewriting both here to "now" / ~40% through the track
+        // keeps the fixture's own decode path untouched while giving the
+        // snapshot a believable, stable mid-playback position.
+        state.timestamp = Date()
+        if let duration = state.duration, duration > 0 {
+            state.elapsed = duration * 0.4
+        }
+
         service.injectPreviewState(state, artwork: artwork)
     }
 

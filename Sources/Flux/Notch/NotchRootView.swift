@@ -366,7 +366,15 @@ struct NotchRootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 16)
                     .padding(.top, notchSize.height + 6)
-                    .padding(.bottom, 14)
+                    // The M7 Alcove redesign grew the expanded shape's
+                    // bottom corner radius from 24pt to 32pt (see
+                    // `NotchShape.expanded`) without growing this padding to
+                    // match — content (notably the transport row, the
+                    // bottom-most thing any widget draws) kept clearing the
+                    // *old*, tighter corner but now visually crowds/overhangs
+                    // the more generous curve underneath it. 18pt restores
+                    // that clearance.
+                    .padding(.bottom, 18)
                     .blur(radius: contentBlur)
                     .opacity(contentOpacity)
             }
@@ -400,7 +408,10 @@ struct NotchRootView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, notchSize.height + 6)
-        .padding(.bottom, 14)
+        // Same bottom-corner clearance fix as the single-widget branch above
+        // — Duo's Now Playing pane draws the same transport row against the
+        // same `NotchShape.expanded` bottom radius.
+        .padding(.bottom, 18)
         .blur(radius: contentBlur)
         .opacity(contentOpacity)
     }

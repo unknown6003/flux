@@ -256,7 +256,18 @@ struct WaveformVisualizer: View {
     var body: some View {
         Group {
             if isPlaying {
-                TimelineView(.animation) { timeline in
+                // `.animation` is a display-link-driven schedule — it needs
+                // an actual on-screen, key window to ever tick. `NotchSnapshot`
+                // renders into an off-screen window positioned outside any
+                // real `NSScreen`, so that schedule can go dead silent
+                // (content closure never even runs once), leaving this whole
+                // branch blank instead of showing a first frame. `.periodic`
+                // is a plain timer-driven schedule, not tied to a display
+                // link — the scrubber's own `TimelineView(.periodic(...))`
+                // above already proves that kind of schedule does fire in
+                // this exact off-screen harness — so it's used here too, at
+                // a smooth-enough 30fps for the live app.
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
                     let t = timeline.date.timeIntervalSinceReferenceDate
                     bars(heights: (0..<Self.barCount).map { animatedHeight(t: t, index: $0) })
                 }
@@ -305,18 +316,28 @@ struct ScrubberTrack: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let width = max(proxy.size.width, 1)
+            // The knob is centered on the playhead (`x`), which itself used
+            // to range over the *full* `proxy.size.width` — so at progress
+            // 0 or 1 exactly half the knob (radius `knobSize / 2`) sat
+            // outside the track's own bounds, visually clipped/cut off
+            // against whatever's beside it. Insetting the playhead's travel
+            // range by the largest the knob ever gets (dragging size) keeps
+            // it fully on-screen at both extremes, dragging or not.
+            let inset = Self.knobDiameterDragging / 2
+            let trackWidth = max(proxy.size.width - inset * 2, 1)
             let clamped = min(max(progress, 0), 1)
             let knobSize = isDragging ? Self.knobDiameterDragging : Self.knobDiameter
-            let x = width * CGFloat(clamped)
+            let x = inset + trackWidth * CGFloat(clamped)
 
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.white.opacity(0.18))
-                    .frame(height: Self.trackHeight)
+                    .frame(width: trackWidth, height: Self.trackHeight)
+                    .offset(x: inset)
                 Capsule()
                     .fill(Color(nsColor: .controlAccentColor))
-                    .frame(width: x, height: Self.trackHeight)
+                    .frame(width: x - inset, height: Self.trackHeight)
+                    .offset(x: inset)
                 Circle()
                     .fill(Color(nsColor: .controlAccentColor))
                     .frame(width: knobSize, height: knobSize)
@@ -328,10 +349,10 @@ struct ScrubberTrack: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        onDragChanged(Double(min(max(value.location.x / width, 0), 1)))
+                        onDragChanged(Double(min(max((value.location.x - inset) / trackWidth, 0), 1)))
                     }
                     .onEnded { value in
-                        onDragEnded(Double(min(max(value.location.x / width, 0), 1)))
+                        onDragEnded(Double(min(max((value.location.x - inset) / trackWidth, 0), 1)))
                     }
             )
         }
