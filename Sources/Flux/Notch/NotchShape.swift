@@ -88,8 +88,10 @@ extension NotchShape {
     /// bottom rounding.
     static let collapsed = NotchShape(topFlareRadius: 6, bottomRadius: 10)
     /// Activity: notch + wings — same flare, slightly softer bottom corners.
-    static let activity = NotchShape(topFlareRadius: 6, bottomRadius: 14)
+    static let activity = NotchShape(topFlareRadius: 6, bottomRadius: 16)
     /// Expanded: the full panel — same flare (it's still fused to the
-    /// physical notch above it), generously rounded bottom.
-    static let expanded = NotchShape(topFlareRadius: 6, bottomRadius: 24)
+    /// physical notch above it), generously rounded, continuous-feeling
+    /// bottom corners — the M7 Alcove redesign's large, soft "island" bottom
+    /// rounding rather than the earlier, comparatively tight 24pt radius.
+    static let expanded = NotchShape(topFlareRadius: 6, bottomRadius: 32)
 }

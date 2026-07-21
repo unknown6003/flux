@@ -28,10 +28,15 @@ MainActor.assumeIsolated {
         exit(0)
     }
     // Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded]
+    // Flux --snapshot-notch <dir> all [dark]   (CI batch mode — see NotchSnapshot.captureAll)
     if let idx = args.firstIndex(of: "--snapshot-notch"), idx + 1 < args.count {
         let dark = args[(idx + 2)...].contains("dark")
-        let state = ["collapsed", "activity", "expanded"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
-        NotchSnapshot.capture(to: args[idx + 1], dark: dark, state: state)
+        if args[(idx + 2)...].contains("all") {
+            NotchSnapshot.captureAll(to: args[idx + 1], dark: dark)
+        } else {
+            let state = ["collapsed", "activity", "expanded"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
+            NotchSnapshot.capture(to: args[idx + 1], dark: dark, state: state)
+        }
         exit(0)
     }
     if args.contains("--selftest") {

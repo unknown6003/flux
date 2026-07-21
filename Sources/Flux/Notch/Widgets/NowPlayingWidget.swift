@@ -1,13 +1,20 @@
 import SwiftUI
+import AppKit
 import Combine
 import Foundation
 
 /// Wraps `NowPlayingService` as a `NotchWidget`: a mini artwork + animated
-/// equalizer bars for the notch's compact strip, and a full transport UI
-/// (artwork, title/artist, scrubber, previous/play-pause/next) for the
-/// expanded panel. Owns no now-playing state of its own — `NowPlayingService`
-/// is the single source of truth; this class only adapts it to the
-/// `NotchWidget` surface and starts/stops it on presentation.
+/// equalizer bars for the notch's compact strip/wings, and a full transport
+/// UI (artwork, title/artist, waveform, scrubber, previous/play-pause/next,
+/// source) for the expanded panel. Owns no now-playing state of its own —
+/// `NowPlayingService` is the single source of truth; this class only adapts
+/// it to the `NotchWidget` surface and starts/stops it on presentation.
+///
+/// `makeCompactView()` is still used for the collapsed notch's live-activity
+/// wings and for `NotchSnapshot`'s fixture rendering, but — per the M7 shell
+/// rework — it's no longer shown as a strip above `makeExpandedView()`'s
+/// content in the expanded panel; the expanded view now carries its own
+/// artwork/title header instead, so nothing above it would be redundant.
 @MainActor
 final class NowPlayingWidget: NotchWidget {
     let id: WidgetID = .nowPlaying
@@ -43,11 +50,13 @@ final class NowPlayingWidget: NotchWidget {
     }
 }
 
-// MARK: - Compact (notch strip) view
+// MARK: - Compact (notch strip / wings) view
 
-/// Mini artwork + a 3-bar equalizer. The bars only animate while something is
-/// actually playing — a paused/stopped track renders static bars instead, so
-/// no `TimelineView(.animation)` (and its per-frame redraw) exists at all in
+/// Mini artwork + a 3-bar equalizer, monochrome (white) throughout — no
+/// `Theme.accentColor` here, matching the expanded panel's monochrome design
+/// language. The bars only animate while something is actually playing — a
+/// paused/stopped track renders static bars instead, so no
+/// `TimelineView(.animation)` (and its per-frame redraw) exists at all in
 /// that case. The view itself only exists while this widget is presented
 /// (`willPresent`/`didDismiss` bracket that), so gating on `isPlaying` alone
 /// here is sufficient to satisfy "animate only while playing AND visible".
@@ -76,7 +85,7 @@ private struct NowPlayingCompactView: View {
         } else {
             Image(systemName: "music.note")
                 .font(.system(size: 11))
-                .foregroundStyle(Theme.accentColor)
+                .foregroundStyle(Color.white.opacity(0.6))
                 .frame(width: 16, height: 16)
         }
     }
@@ -92,7 +101,7 @@ private struct AnimatedEqualizerBars: View {
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(0..<3, id: \.self) { index in
                     Capsule()
-                        .fill(Theme.accentColor)
+                        .fill(Color.white.opacity(0.9))
                         .frame(width: 2, height: barHeight(t, index: index))
                 }
             }
@@ -115,7 +124,7 @@ private struct StaticEqualizerBars: View {
         HStack(alignment: .bottom, spacing: 2) {
             ForEach([5, 8, 5], id: \.self) { height in
                 Capsule()
-                    .fill(Theme.accentColor.opacity(0.5))
+                    .fill(Color.white.opacity(0.45))
                     .frame(width: 2, height: CGFloat(height))
             }
         }
@@ -125,6 +134,12 @@ private struct StaticEqualizerBars: View {
 
 // MARK: - Expanded panel view
 
+/// Three stacked rows, top to bottom: artwork + title/artist + waveform,
+/// then the scrubber, then transport. Nothing here hardcodes a panel width —
+/// every row is built from flexible frames/`Spacer`s around a small number
+/// of fixed-size assets (the 56pt artwork tile, the ~33pt-wide waveform, icon
+/// glyphs), so the whole thing lays out correctly whether the shell gives it
+/// the full expanded width or a narrower side-by-side slice.
 private struct NowPlayingExpandedView: View {
     @ObservedObject var service: NowPlayingService
 
@@ -146,7 +161,7 @@ private struct NowPlayingExpandedView: View {
         VStack(spacing: 8) {
             Image(systemName: "music.note")
                 .font(.system(size: 28))
-                .foregroundStyle(Theme.accentColor.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.3))
             Text("Nothing playing")
                 .font(.callout)
                 .foregroundStyle(Color.white.opacity(0.6))
@@ -155,57 +170,45 @@ private struct NowPlayingExpandedView: View {
     }
 
     private func content(for state: NowPlayingState) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            artworkView(state)
+        VStack(alignment: .leading, spacing: 14) {
+            headerRow(state)
+            scrubberSection(state)
+            transportRow(state)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                titleBlock(state)
-                Spacer(minLength: 0)
-                scrubber(state)
-                transportRow(state)
-                Text(service.activeSourceName)
-                    .font(.caption2)
-                    .foregroundStyle(Color.white.opacity(0.4))
+    // MARK: Row 1 — artwork, title/artist, waveform
+
+    private func headerRow(_ state: NowPlayingState) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            FlippingArtwork(image: service.artwork, flipKey: AnyHashable(flipKey(for: state)))
+
+            VStack(alignment: .leading, spacing: 2) {
+                MarqueeText(text: state.title, font: .system(size: 15, weight: .semibold),
+                            color: .white, height: 18)
+                if let artist = state.artist {
+                    MarqueeText(text: artist, font: .system(size: 13),
+                                color: Color.white.opacity(0.55), height: 16)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            WaveformVisualizer(isPlaying: state.isPlaying,
+                                gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
         }
     }
 
-    // MARK: Artwork
-
-    @ViewBuilder
-    private func artworkView(_ state: NowPlayingState) -> some View {
-        Group {
-            if let image = service.artwork {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Rectangle()
-                    .fill(Theme.surfaceRaisedColor)
-                    .overlay(Image(systemName: "music.note").foregroundStyle(Theme.accentColor))
-            }
-        }
-        .frame(width: 120, height: 120)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: .black.opacity(0.4), radius: 8, y: 3)
+    /// Identifies "the current track" for `FlippingArtwork`'s flip trigger.
+    /// Includes whether artwork is currently present so a track's artwork
+    /// arriving asynchronously (after its metadata) also triggers a flip
+    /// reveal, rather than silently popping in — folding that into the key
+    /// avoids needing a second, `NSImage`-comparing change handler entirely.
+    private func flipKey(for state: NowPlayingState) -> String {
+        "\(state.sourceBundleID ?? "")|\(state.title)|\(state.artist ?? "")|\(state.album ?? "")|\(service.artwork != nil)"
     }
 
-    private func titleBlock(_ state: NowPlayingState) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(state.title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            if let artist = state.artist {
-                Text(artist)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.white.opacity(0.6))
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    // MARK: Scrubber
+    // MARK: Row 2 — scrubber
 
     /// The 1s tick only runs while playback is actually advancing — a
     /// paused/stopped track has nothing to extrapolate (`currentElapsed`
@@ -214,7 +217,7 @@ private struct NowPlayingExpandedView: View {
     /// (see `willPresent`/`didDismiss`), so no extra visibility gate is
     /// needed beyond `state.isPlaying`.
     @ViewBuilder
-    private func scrubber(_ state: NowPlayingState) -> some View {
+    private func scrubberSection(_ state: NowPlayingState) -> some View {
         if state.isPlaying {
             TimelineView(.periodic(from: .now, by: 1)) { timeline in
                 scrubberBody(state, at: timeline.date)
@@ -224,64 +227,56 @@ private struct NowPlayingExpandedView: View {
         }
     }
 
-    /// A real, positive `duration` renders the interactive slider; anything
+    /// A real, positive `duration` renders the interactive scrubber; anything
     /// else (`nil`, or `0`/negative — a live radio stream, or a source that
     /// simply hasn't reported one yet) has no meaningful "total" to scrub
-    /// against, so it falls back to a non-interactive affordance instead of
-    /// fabricating one — the previous behavior clamped a missing duration to
-    /// a fake 1s, which both drew a nonsensical slider and could send a
-    /// bogus absolute `.seek(dragValue)` clamped into that fake 0...1s range.
+    /// against, so it falls back to a bare, non-interactive capsule instead
+    /// of fabricating one.
     @ViewBuilder
     private func scrubberBody(_ state: NowPlayingState, at date: Date) -> some View {
         if let duration = state.duration, duration > 0 {
             interactiveScrubber(state, duration: duration, at: date)
         } else {
-            indeterminateScrubber(at: date)
+            indeterminateScrubber
         }
     }
 
     private func interactiveScrubber(_ state: NowPlayingState, duration: TimeInterval, at date: Date) -> some View {
         let elapsed = min(max(isDragging ? dragValue : (service.currentElapsed(at: date) ?? 0), 0), duration)
-        let binding = Binding<TimeInterval>(
-            get: { elapsed },
-            set: { dragValue = $0 }
-        )
+        let remaining = max(duration - elapsed, 0)
         return VStack(spacing: 4) {
-            Slider(value: binding, in: 0...duration, onEditingChanged: { editing in
-                if editing { dragValue = elapsed }
-                isDragging = editing
-                if !editing { service.send(.seek(dragValue)) }
-            })
-            .tint(Theme.accentColor)
-
             HStack {
                 Text(Self.format(elapsed))
                 Spacer()
-                Text(Self.format(duration))
+                Text("-\(Self.format(remaining))")
             }
-            .font(.system(size: 10, design: .monospaced))
+            .font(.system(size: 11).monospacedDigit())
             .foregroundStyle(Color.white.opacity(0.5))
+
+            ScrubberTrack(
+                progress: elapsed / duration,
+                isDragging: isDragging,
+                onDragChanged: { progress in
+                    isDragging = true
+                    dragValue = progress * duration
+                },
+                onDragEnded: { progress in
+                    let value = progress * duration
+                    dragValue = value
+                    isDragging = false
+                    service.send(.seek(value))
+                }
+            )
         }
     }
 
-    /// No slider (nothing to drag against, and no `.seek` is ever sent from
-    /// here), and no total-time label (there is no total) — just the elapsed
-    /// time over a thin, static capsule that reads as "progress is happening,
-    /// scale unknown" rather than a real, draggable timeline.
-    private func indeterminateScrubber(at date: Date) -> some View {
-        let elapsed = max(service.currentElapsed(at: date) ?? 0, 0)
-        return VStack(spacing: 4) {
-            Capsule()
-                .fill(Color.white.opacity(0.15))
-                .frame(height: 4)
-
-            HStack {
-                Text(Self.format(elapsed))
-                Spacer()
-            }
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(0.5))
-        }
+    /// No knob, no time labels — there's no total to scrub against or
+    /// measure remaining time from, so this is just a static, dim capsule
+    /// that reads as "progress is happening, scale unknown."
+    private var indeterminateScrubber: some View {
+        Capsule()
+            .fill(Color.white.opacity(0.15))
+            .frame(height: 4)
     }
 
     private static func format(_ seconds: TimeInterval) -> String {
@@ -290,23 +285,53 @@ private struct NowPlayingExpandedView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    // MARK: Transport
+    // MARK: Row 3 — transport
 
+    /// Four elements, evenly spaced across the full width via `Spacer`s —
+    /// no favorite/star button (there's no favorite API in any of our
+    /// `NowPlayingSource`s, and a non-functional star would be a dead,
+    /// dishonest control) — and monochrome white throughout, including
+    /// play/pause: unlike the old amber "prominent" treatment, size alone
+    /// (22pt vs 17pt) is what marks it as the visual anchor now.
     private func transportRow(_ state: NowPlayingState) -> some View {
-        HStack(spacing: 20) {
-            transportButton("backward.fill") { service.send(.previous) }
-            transportButton(state.isPlaying ? "pause.fill" : "play.fill", prominent: true) {
+        HStack {
+            Spacer()
+            transportButton("backward.fill", size: 17) { service.send(.previous) }
+            Spacer()
+            transportButton(state.isPlaying ? "pause.fill" : "play.fill", size: 22, prominent: true) {
                 service.send(.togglePlayPause)
             }
-            transportButton("forward.fill") { service.send(.next) }
+            Spacer()
+            transportButton("forward.fill", size: 17) { service.send(.next) }
+            Spacer()
+            sourceButton(state)
+            Spacer()
         }
     }
 
-    private func transportButton(_ systemName: String, prominent: Bool = false, action: @escaping () -> Void) -> some View {
+    private func transportButton(_ systemName: String, size: CGFloat, prominent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: prominent ? 18 : 14, weight: .semibold))
-                .foregroundStyle(prominent ? Theme.accentColor : Color.white.opacity(0.8))
+                .font(.system(size: size, weight: prominent ? .semibold : .medium))
+                .foregroundStyle(Color.white)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// A generic "output" glyph rather than a per-app icon — mapping bundle
+    /// IDs to specific glyphs (Apple Music note, Spotify logo, ...) isn't
+    /// worth the maintenance surface for a single small affordance; tapping
+    /// it opens the source app (via `NSWorkspace`) when its bundle ID is
+    /// known, and is otherwise inert rather than guessing.
+    private func sourceButton(_ state: NowPlayingState) -> some View {
+        Button {
+            guard let bundleID = state.sourceBundleID,
+                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+            NSWorkspace.shared.open(url)
+        } label: {
+            Image(systemName: "laptopcomputer")
+                .font(.system(size: 15))
+                .foregroundStyle(Color.white.opacity(0.45))
         }
         .buttonStyle(.plain)
     }

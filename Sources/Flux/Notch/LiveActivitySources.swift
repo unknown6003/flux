@@ -80,6 +80,11 @@ final class NotchActivityRouter {
     /// `MediaKeyInterceptor.isTapActive`'s own doc comment) rather than
     /// cached here.
     private let interceptor: MediaKeyInterceptor
+    /// M7: best-effort Focus status — see its own doc comment on why this is
+    /// inherently fragile (undocumented on-disk state, no public API). Owned
+    /// outright, like `power`/`bluetooth`/`volume` — this router is its only
+    /// consumer.
+    private let focus: FocusMonitor
     /// Last time `applyVolumeKey` applied a volume/mute change through the
     /// interceptor pipeline — the memory behind
     /// `isVolumeMonitorEventSuppressed`'s dedupe window (see that function's
@@ -132,6 +137,7 @@ final class NotchActivityRouter {
          volume: VolumeMonitor? = nil,
          brightness: BrightnessMonitor? = nil,
          interceptor: MediaKeyInterceptor? = nil,
+         focus: FocusMonitor? = nil,
          startsMonitors: Bool = true,
          presentation: AnyPublisher<Bool, Never> = Just(true).eraseToAnyPublisher()) {
         self.activities = activities
@@ -146,6 +152,7 @@ final class NotchActivityRouter {
         self.volume = volume ?? VolumeMonitor()
         self.brightness = brightness ?? BrightnessMonitor()
         self.interceptor = interceptor ?? MediaKeyInterceptor()
+        self.focus = focus ?? FocusMonitor()
         self.startsMonitors = startsMonitors
 
         // Wired once, here — not re-wired per `applyHUDState` call — because
@@ -163,21 +170,24 @@ final class NotchActivityRouter {
         observeOverflowGating()
         observeCalendar()
         observeTimers()
+        observeFocus()
         observeMonitorGating()
         observeHUDGating()
         observeTimerGating()
+        observeFocusGating()
         observeNotchState()
         observePresentation(presentation)
         applyMonitorState()
         applyHUDState()
         recomputeTimerActivity()
+        recomputeFocusActivity()
     }
 
     deinit {
-        // `calendarThresholdTask`/`timerRefreshTask` are each a `DeadlineTask`
-        // now (see their own doc comments) — its own `deinit` cancels
-        // whatever's pending when this router does, so there's nothing left
-        // to do here explicitly.
+        // `calendarThresholdTask`/`timerRefreshTask`/`focusRefreshTask` are
+        // each a `DeadlineTask` now (see their own doc comments) — its own
+        // `deinit` cancels whatever's pending when this router does, so
+        // there's nothing left to do here explicitly.
     }
 
     // MARK: - Battery
@@ -850,6 +860,7 @@ final class NotchActivityRouter {
                 self.recomputeCalendarActivity()
                 self.applyHUDState()
                 self.recomputeTimerActivity()
+                self.recomputeFocusActivity()
             }
             .store(in: &cancellables)
     }
@@ -882,7 +893,8 @@ final class NotchActivityRouter {
     /// on the ownership fix this replaced (the old
     /// `isCalendarWidgetPresented()` closure this router used to defer to).
     private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil,
-                                    bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil) {
+                                    bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil,
+                                    focusEnabled: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
 
@@ -898,6 +910,15 @@ final class NotchActivityRouter {
         } else {
             bluetooth.stop()
             activities.dismiss(kind: .bluetoothDevice)
+        }
+
+        if notchOn && (focusEnabled ?? settings.notchActivityFocusEnabled) {
+            focus.start()
+        } else {
+            focus.stop()
+            focusRefreshTask.cancel()
+            focusPeekUntil = nil
+            activities.dismiss(kind: .focus)
         }
 
         let shouldRunCalendar = Self.calendarServiceShouldRun(
@@ -1150,5 +1171,136 @@ final class NotchActivityRouter {
         let epoch = now.timeIntervalSinceReferenceDate
         let nextEpoch = (epoch / interval).rounded(.down) * interval + interval
         return Date(timeIntervalSinceReferenceDate: nextEpoch)
+    }
+
+    // MARK: - Focus (M7)
+    //
+    // Mirrors the timer-completion/ambient-wing shape above exactly:
+    //   - `handleFocusEvent`: a transient (5s), higher-priority (130) "peek"
+    //     — the Focus's own icon + name (or "Focus off" turning one off) —
+    //     posted on every CHANGE, the moment `FocusMonitor` reports one.
+    //   - `recomputeFocusActivity`: an optional sticky (lower-priority, 105),
+    //     icon-only ambient indicator shown for as long as a Focus stays
+    //     active AND the opt-in sticky setting is on — gated behind
+    //     `focusPeekUntil` the same way `completionAlertUntil` protects the
+    //     timer completion notice: the peek is always left to run its full
+    //     5s before the ambient recompute is allowed to touch `.focus` at
+    //     all, so a rapid string of Focus changes never stomps its own
+    //     still-showing peek.
+    //
+    // Both share the single `.focus` `LiveActivity.Kind` — `post`'s own
+    // same-kind supersession means posting the sticky right after an
+    // in-progress peek would just replace it early, which is exactly what
+    // `focusPeekUntil`'s guard (mirroring `completionAlertUntil`) prevents.
+
+    private func observeFocus() {
+        focus.events
+            .sink { [weak self] event in self?.handleFocusEvent(event) }
+            .store(in: &cancellables)
+    }
+
+    private func handleFocusEvent(_ event: FocusMonitor.Event) {
+        guard settings.notchActivityFocusEnabled else { return }
+        let name: String?
+        let symbolName: String?
+        switch event {
+        case .focusChanged(let eventName, let eventSymbolName):
+            name = eventName
+            symbolName = eventSymbolName
+        }
+        currentFocusName = name
+        currentFocusSymbolName = symbolName
+
+        let expiresAt = Date().addingTimeInterval(Self.focusPeekDuration)
+        // Recorded BEFORE posting — see `completionAlertUntil`'s identical
+        // ordering note on the timer side: `recomputeFocusActivity` checks
+        // this on every call, so it must already be set before anything
+        // downstream of `post` could possibly race a recompute.
+        focusPeekUntil = expiresAt
+        activities.post(Self.focusPeekActivity(name: name, symbolName: symbolName))
+        armFocusRefresh(at: expiresAt.addingTimeInterval(0.1))
+    }
+
+    static let focusPeekDuration: TimeInterval = 5
+    static let focusPeekPriority = 130
+    static let focusStickyPriority = 105
+
+    /// The transient "peek" activity a Focus change posts immediately —
+    /// `name`/`symbolName` both `nil` reads as "Focus off."
+    static func focusPeekActivity(name: String?, symbolName: String?) -> LiveActivity {
+        LiveActivity(kind: .focus,
+                     leading: .icon(systemName: symbolName ?? "moon.fill"),
+                     trailing: .text(name ?? "Focus off"),
+                     duration: focusPeekDuration,
+                     priority: focusPeekPriority)
+    }
+
+    /// Pure core of "should the ambient sticky indicator show right now" —
+    /// matching `intendedHUDMode`/`timerWingState`/`calendarServiceShouldRun`'s
+    /// shape so `--selftest` can drive every combination directly.
+    static func focusStickyShouldShow(stickyEnabled: Bool, focusActive: Bool) -> Bool {
+        stickyEnabled && focusActive
+    }
+
+    /// Non-`nil` for exactly `focusPeekDuration` seconds after
+    /// `handleFocusEvent` posts a peek — see this section's own doc comment;
+    /// mirrors `completionAlertUntil` exactly.
+    private var focusPeekUntil: Date?
+    private var currentFocusName: String?
+    private var currentFocusSymbolName: String?
+    /// Backed by the shared `DeadlineTask` helper, matching
+    /// `calendarThresholdTask`/`timerRefreshTask`'s "exactly one deadline in
+    /// flight" shape.
+    private let focusRefreshTask = DeadlineTask()
+
+    private func armFocusRefresh(at date: Date) {
+        focusRefreshTask.reschedule(to: date) { [weak self] in self?.recomputeFocusActivity() }
+    }
+
+    /// Re-evaluates the ambient sticky indicator — called from every trigger
+    /// that could change the answer: the peek's own scheduled refresh
+    /// (`armFocusRefresh`), the settings/presentation/notch-state gating
+    /// sinks, and `init`'s final call.
+    private func recomputeFocusActivity() {
+        let now = Date()
+        // While the peek is still showing, this must not touch `.focus` at
+        // all — see this section's own doc comment. Deliberately returns
+        // before cancelling `focusRefreshTask`: the refresh already armed by
+        // `handleFocusEvent` (for just past this exact expiry) is exactly
+        // what should run next.
+        if let focusPeekUntil, now < focusPeekUntil { return }
+        self.focusPeekUntil = nil
+
+        guard settings.notchEnabled, isPresenting, settings.notchActivityFocusEnabled else {
+            activities.dismiss(kind: .focus)
+            return
+        }
+
+        let focusActive = currentFocusName != nil || currentFocusSymbolName != nil
+        guard Self.focusStickyShouldShow(stickyEnabled: settings.notchActivityFocusStickyEnabled, focusActive: focusActive) else {
+            activities.dismiss(kind: .focus)
+            return
+        }
+
+        activities.post(LiveActivity(kind: .focus,
+                                      leading: .icon(systemName: currentFocusSymbolName ?? "moon.fill"),
+                                      trailing: .none,
+                                      duration: nil,
+                                      priority: Self.focusStickyPriority))
+    }
+
+    /// Re-applies `applyMonitorState`/`recomputeFocusActivity` whenever the
+    /// notch master switch or either Focus toggle changes — mirrors
+    /// `observeTimerGating`'s exact shape. `dropFirst` skips the redundant
+    /// initial delivery; `init` already calls both once directly.
+    private func observeFocusGating() {
+        settings.$notchEnabled
+            .combineLatest(settings.$notchActivityFocusEnabled, settings.$notchActivityFocusStickyEnabled)
+            .dropFirst()
+            .sink { [weak self] _, _, _ in
+                self?.applyMonitorState()
+                self?.recomputeFocusActivity()
+            }
+            .store(in: &cancellables)
     }
 }

@@ -52,6 +52,16 @@ final class NotchViewModel: ObservableObject {
     /// a cheap boolean), but only click-mode UI needs to look at it.
     @Published var hoverHint = false
 
+    /// M7 (Alcove parity): whether the expanded Now Playing panel should
+    /// render side-by-side with Calendar (Duo view) instead of alone. Plain
+    /// data, not derived here — `NotchViewModel` stays view-free and has no
+    /// way to see Calendar's own permission status, so `AppDelegate` computes
+    /// this (via the pure `duoActive(duoSettingEnabled:calendarWidgetEnabled:
+    /// calendarPermissionGranted:)` below) and writes it here on every input
+    /// that could change the answer. `NotchRootView` reads this directly,
+    /// keeping it a purely declarative consumer.
+    @Published var duoActive = false
+
     /// Which gesture opens the notch. Switching to `.click` cancels any
     /// in-flight hover-intent delay so a stale timer can't fire an open/close
     /// after the mode that scheduled it no longer applies.
@@ -144,6 +154,19 @@ final class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
+    // MARK: - Duo view (M7)
+
+    /// Whether Duo view should currently render — a pure function of exactly
+    /// the three independent facts that decide it, so `--selftest` can drive
+    /// every combination directly without constructing the whole settings/
+    /// registry/permission graph. `AppDelegate` recomputes this (see its own
+    /// `recomputeDuoActive()`) whenever any of the three could have changed —
+    /// the setting itself, the Calendar widget's own enabled state, or
+    /// Calendar permission — and writes the result into `duoActive` above.
+    static func duoActive(duoSettingEnabled: Bool, calendarWidgetEnabled: Bool, calendarPermissionGranted: Bool) -> Bool {
+        duoSettingEnabled && calendarWidgetEnabled && calendarPermissionGranted
+    }
+
     // MARK: - Inputs
 
     /// Debounced hover containment. `inside` is `interactiveRect.contains(point)`,
@@ -195,19 +218,51 @@ final class NotchViewModel: ObservableObject {
         toggleExpansion()
     }
 
-    /// Cycles widgets left/right while expanded; `down` opens from collapsed;
-    /// `up` collapses from anywhere. Left/right are no-ops outside `.expanded`
-    /// — there's nothing to cycle through in the collapsed or activity wings.
+    /// The swipe map — Alcove semantics (M7), which differ depending on
+    /// what's currently showing:
+    /// - **`.collapsed`**: `down` opens (to the last-used/first-enabled
+    ///   widget, via `expand(nil)`); left/right/up are no-ops — there's
+    ///   nothing to cycle or dismiss yet.
+    /// - **`.activity`** (a live-activity wing showing): `left`/`right` both
+    ///   cycle through queued STICKY activities (`activities.cycle()` — see
+    ///   its own doc comment for why this is a single-direction ring rather
+    ///   than two); `up` dismisses the one currently showing, restorably
+    ///   (`activities.dismissCurrent(restorable: true)`); `down` expands to
+    ///   the widget panel, same as from collapsed. Every one of these only
+    ///   *asks* `activities`/`registry` for a new state — `observeActivities()`
+    ///   is what actually drives `state` in response, so there's no duplicate
+    ///   transition logic here.
+    /// - **`.expanded`**: unchanged from pre-M7 — `left`/`right` cycle
+    ///   WIDGETS (`cycle(forward:)`), `up` collapses. `down` is deliberately
+    ///   left a no-op here, matching the pre-M7 behavior — Alcove's own
+    ///   "swipe down" gesture on an open panel is closer to what this app's
+    ///   widget-cycling already covers via left/right than to a new gesture
+    ///   worth inventing a meaning for.
     func swiped(_ direction: SwipeDirection) {
         switch direction {
         case .down:
-            if state == .collapsed { expand(nil) }
+            switch state {
+            case .collapsed, .activity: expand(nil)
+            case .expanded: break
+            }
         case .up:
-            collapse()
+            if case .activity = state {
+                activities.dismissCurrent(restorable: true)
+            } else {
+                collapse()
+            }
         case .left:
-            cycle(forward: true)
+            switch state {
+            case .expanded: cycle(forward: true)
+            case .activity: activities.cycle()
+            case .collapsed: break
+            }
         case .right:
-            cycle(forward: false)
+            switch state {
+            case .expanded: cycle(forward: false)
+            case .activity: activities.cycle()
+            case .collapsed: break
+            }
         }
     }
 

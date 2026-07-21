@@ -2237,6 +2237,341 @@ enum SelfTest {
         check(sixRegistry.enabledWidgets.map(\.id) == WidgetID.allCases,
               "NotchWidgetRegistry: all 6 widgets appear, in order, when every one is enabled")
 
+        // --- M7: SettingsStore — fresh-install defaults for the Duo view
+        // and Focus toggles, mirroring the M6 defaults block's own pattern. ---
+        do {
+            let m7SettingsSuiteName = "flux.selftest.m7settings"
+            UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
+            let m7Settings = SettingsStore(defaults: UserDefaults(suiteName: m7SettingsSuiteName)!)
+            check(!m7Settings.notchDuoEnabled, "SettingsStore: notchDuoEnabled defaults to false")
+            check(m7Settings.notchActivityFocusEnabled, "SettingsStore: notchActivityFocusEnabled defaults to true")
+            check(!m7Settings.notchActivityFocusStickyEnabled,
+                  "SettingsStore: notchActivityFocusStickyEnabled defaults to false — the persistent indicator is opt-in")
+            UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
+        }
+
+        // --- M7: LiveActivityCenter.cycle() — the Alcove-style ring over
+        // queued STICKY activities, starting from whatever's current. ---
+        do {
+            let cycleCenter = LiveActivityCenter()
+            let cycleA = LiveActivity(kind: .battery, leading: .none, trailing: .text("A"), duration: nil, priority: 200)
+            let cycleB = LiveActivity(kind: .bluetoothDevice, leading: .none, trailing: .text("B"), duration: nil, priority: 100)
+            let cycleC = LiveActivity(kind: .calendarEvent, leading: .none, trailing: .text("C"), duration: nil, priority: 120)
+            cycleCenter.post(cycleA)
+            cycleCenter.post(cycleB)
+            cycleCenter.post(cycleC)
+            check(cycleCenter.current?.id == cycleA.id,
+                  "LiveActivityCenter: setup — the highest-priority sticky activity (A, 200) is current before any cycling")
+
+            cycleCenter.cycle()
+            check(cycleCenter.current?.id == cycleB.id,
+                  "LiveActivityCenter: cycle() advances the ring in post order starting from whatever's current (A -> B), regardless of B's lower priority")
+            cycleCenter.cycle()
+            check(cycleCenter.current?.id == cycleC.id,
+                  "LiveActivityCenter: cycle() continues to the next queued sticky activity (B -> C)")
+            cycleCenter.cycle()
+            check(cycleCenter.current?.id == cycleA.id,
+                  "LiveActivityCenter: cycle() wraps back around to the first (C -> A)")
+
+            cycleCenter.cycle() // A -> B
+            check(cycleCenter.current?.id == cycleB.id, "LiveActivityCenter: setup — cursor parked on B")
+            let transientHUD = LiveActivity(kind: .hudVolume, leading: .none, trailing: .none, duration: 5, priority: 300)
+            cycleCenter.post(transientHUD)
+            check(cycleCenter.current?.id == cycleB.id,
+                  "LiveActivityCenter: a transient activity posted while an explicit cycle cursor is active does not preempt it, even at a higher priority — the documented cycleCursor tradeoff")
+            cycleCenter.dismiss(id: transientHUD.id)
+
+            // dismissCurrent(restorable: true) removes whatever's current and
+            // stashes it; the cursor's own target is now gone, so
+            // recomputeCurrent falls back to plain priority resolution.
+            cycleCenter.dismissCurrent(restorable: true)
+            check(cycleCenter.current?.id == cycleA.id,
+                  "LiveActivityCenter: dismissCurrent(restorable:) removes the shown activity (B) and falls back to plain priority resolution (A) once the cursor's target is gone")
+
+            cycleCenter.restoreLastDismissed()
+            check(cycleCenter.current?.id == cycleB.id,
+                  "LiveActivityCenter: restoreLastDismissed() re-queues the most recently dismissed activity (B) and makes it current again, regardless of priority")
+
+            cycleCenter.restoreLastDismissed()
+            check(cycleCenter.current?.id == cycleB.id,
+                  "LiveActivityCenter: restoreLastDismissed() is a no-op with nothing left on the dismissed stack")
+
+            let noopCenter = LiveActivityCenter()
+            noopCenter.cycle()
+            check(noopCenter.current == nil, "LiveActivityCenter: cycle() is a safe no-op with nothing queued at all")
+        }
+
+        // --- M7: LiveActivityCenter's dismissed-stack caps at 5, evicting
+        // the OLDEST dismissal first — a long dismiss/restore session must
+        // never grow it unbounded. ---
+        do {
+            let capCenter = LiveActivityCenter()
+            for i in 0..<6 {
+                let activity = LiveActivity(kind: .battery, leading: .none, trailing: .text("cap\(i)"), duration: nil, priority: 100 + i)
+                capCenter.post(activity)
+                capCenter.dismissCurrent(restorable: true)
+            }
+            var restoredOrder: [String] = []
+            for _ in 0..<5 {
+                capCenter.restoreLastDismissed()
+                if case .text(let label)? = capCenter.current?.trailing {
+                    restoredOrder.append(label)
+                }
+                // Dismiss NON-restorably so the next restore reaches the next
+                // one down the stack, rather than this same one cycling
+                // straight back onto it.
+                capCenter.dismissCurrent(restorable: false)
+            }
+            check(restoredOrder == ["cap5", "cap4", "cap3", "cap2", "cap1"],
+                  "LiveActivityCenter: the dismissed stack caps at 5 (oldest, cap0, evicted) and restores most-recently-dismissed first")
+            capCenter.restoreLastDismissed()
+            check(capCenter.current == nil,
+                  "LiveActivityCenter: restoring past the cap's worth of dismissed activities is a no-op — cap0 was evicted, never restorable")
+        }
+
+        // --- M7: NotchViewModel's Alcove swipe map — while `.activity` is
+        // showing, left/right cycle ACTIVITIES (not widgets), up dismisses
+        // (restorably) the one showing, and down expands to the widget
+        // panel. Drives real LiveActivityCenter posts so the observeActivities()
+        // sink's own state-machine reaction is exercised end to end, not
+        // mocked. ---
+        do {
+            let swipeActivityRegistry = NotchWidgetRegistry()
+            let swipeActivityWidget = SelfTestWidget(id: .nowPlaying)
+            swipeActivityRegistry.register(swipeActivityWidget)
+            swipeActivityRegistry.order = [.nowPlaying]
+            let swipeActivities = LiveActivityCenter()
+            let swipeVM = NotchViewModel(registry: swipeActivityRegistry, activities: swipeActivities)
+
+            let swipeActivityA = LiveActivity(kind: .battery, leading: .none, trailing: .text("A"), duration: nil, priority: 200)
+            let swipeActivityB = LiveActivity(kind: .bluetoothDevice, leading: .none, trailing: .text("B"), duration: nil, priority: 100)
+            swipeActivities.post(swipeActivityA)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(swipeVM.state == .activity(swipeActivityA.id), "Notch: setup — posting a sticky activity preempts collapsed")
+
+            swipeActivities.post(swipeActivityB)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(swipeVM.state == .activity(swipeActivityA.id), "Notch: setup — A (200) still outranks B (100) before any cycling")
+
+            swipeVM.swiped(.left)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(swipeVM.state == .activity(swipeActivityB.id),
+                  "Notch: swipe left while an activity is showing cycles to the next queued activity (Alcove semantics), not widgets")
+
+            swipeVM.swiped(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(swipeVM.state == .activity(swipeActivityA.id),
+                  "Notch: swipe right while an activity is showing also cycles activities (cycle() is a single-direction ring either way)")
+
+            swipeVM.swiped(.up)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(swipeVM.state == .activity(swipeActivityB.id),
+                  "Notch: swipe up while an activity is showing dismisses it (restorably), surfacing the next queued one")
+
+            swipeVM.swiped(.down)
+            check(swipeVM.state == .expanded(.nowPlaying),
+                  "Notch: swipe down while an activity is showing expands to the widget panel")
+
+            swipeActivities.restoreLastDismissed()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            check(swipeVM.state == .expanded(.nowPlaying),
+                  "Notch: restoring a dismissed activity doesn't preempt an already-expanded widget panel (unchanged pre-M7 rule)")
+            check(swipeActivities.current?.id == swipeActivityA.id,
+                  "Notch: restoreLastDismissed() does bring A back as LiveActivityCenter's own current, even though the notch itself stays on the expanded widget")
+        }
+
+        // --- M7: swipe(.down) is a no-op while already `.expanded` — Alcove
+        // semantics deliberately leave this case untouched. ---
+        do {
+            let downNoopRegistry = NotchWidgetRegistry()
+            let downNoopWidget = SelfTestWidget(id: .nowPlaying)
+            downNoopRegistry.register(downNoopWidget)
+            downNoopRegistry.order = [.nowPlaying]
+            let downNoopVM = NotchViewModel(registry: downNoopRegistry, activities: LiveActivityCenter())
+            downNoopVM.expand(.nowPlaying)
+            downNoopVM.swiped(.down)
+            check(downNoopVM.state == .expanded(.nowPlaying),
+                  "Notch: swipe down while a widget panel is already expanded is a no-op")
+        }
+
+        // --- M7: NotchViewModel.duoActive(...) — the pure Duo-view
+        // derivation, testable without settings/registry/permission. ---
+        check(NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: true),
+              "NotchViewModel: duoActive is true when the setting is on, Calendar is enabled, AND permission is granted")
+        check(!NotchViewModel.duoActive(duoSettingEnabled: false, calendarWidgetEnabled: true, calendarPermissionGranted: true),
+              "NotchViewModel: duoActive is false when the Duo setting itself is off")
+        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: false, calendarPermissionGranted: true),
+              "NotchViewModel: duoActive is false when the Calendar widget itself isn't enabled")
+        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: false),
+              "NotchViewModel: duoActive is false without Calendar permission granted, even with everything else on")
+
+        // --- M7: FocusMonitor — JSON parsing over checked-in-style fixture
+        // strings, no real ~/Library/DoNotDisturb involved. ---
+        do {
+            let focusActiveAssertionsJSON = """
+            {"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":"com.apple.focus.work"}}]}]}
+            """
+            let focusActiveConfigJSON = """
+            {"data":[{"modeConfigurations":{"com.apple.focus.work":{"modeDescriptor":{"userTitle":"Work","symbolImageName":"briefcase.fill"}}}}]}
+            """
+            let focusEmptyAssertionsJSON = """
+            {"data":[]}
+            """
+            let focusEmptyConfigJSON = """
+            {"data":[]}
+            """
+            let focusActiveAssertionsData = Data(focusActiveAssertionsJSON.utf8)
+            let focusActiveConfigData = Data(focusActiveConfigJSON.utf8)
+            let focusEmptyAssertionsData = Data(focusEmptyAssertionsJSON.utf8)
+            let focusEmptyConfigData = Data(focusEmptyConfigJSON.utf8)
+
+            check(FocusMonitor.activeModeIdentifier(fromAssertionsData: focusActiveAssertionsData) == "com.apple.focus.work",
+                  "FocusMonitor: activeModeIdentifier reads the asserted mode's identifier out of the Assertions fixture")
+            check(FocusMonitor.activeModeIdentifier(fromAssertionsData: focusEmptyAssertionsData) == nil,
+                  "FocusMonitor: activeModeIdentifier is nil for an empty Assertions fixture (no Focus active)")
+
+            if case .focusChanged(let name, let symbolName) = FocusMonitor.parse(assertionsData: focusActiveAssertionsData, configData: focusActiveConfigData) {
+                check(name == "Work" && symbolName == "briefcase.fill",
+                      "FocusMonitor: parse cross-references Assertions + ModeConfigurations into the active mode's name/symbol")
+            } else {
+                check(false, "FocusMonitor: parse should decode a .focusChanged event with the active fixture pair")
+            }
+
+            check(FocusMonitor.parse(assertionsData: focusEmptyAssertionsData, configData: focusEmptyConfigData) == .focusChanged(name: nil, symbolName: nil),
+                  "FocusMonitor: parse reads as 'no Focus active' (nil/nil) for the empty fixture pair")
+
+            check(FocusMonitor.modeInfo(forIdentifier: "com.apple.focus.unknown", configData: focusActiveConfigData) == nil,
+                  "FocusMonitor: modeInfo is nil for an identifier the ModeConfigurations fixture doesn't contain")
+
+            // Defensive parsing: malformed/non-JSON input degrades to nil —
+            // never a crash — matching the type's own doc comment.
+            let malformedData = Data("not json at all".utf8)
+            check(FocusMonitor.activeModeIdentifier(fromAssertionsData: malformedData) == nil,
+                  "FocusMonitor: activeModeIdentifier degrades to nil for malformed JSON rather than crashing")
+            check(FocusMonitor.parse(assertionsData: malformedData, configData: malformedData) == .focusChanged(name: nil, symbolName: nil),
+                  "FocusMonitor: parse degrades to 'no Focus active' for malformed JSON on either side")
+        }
+
+        // --- M7 smoke test: FocusMonitor construct/start/stop safely on a
+        // headless CI runner with no guaranteed-readable DoNotDisturb DB —
+        // mirrors M5/M6's BrightnessMonitor/CameraService smoke tests. ---
+        do {
+            let focusProbe = FocusMonitor()
+            check(focusProbe.isAvailable, "FocusMonitor: isAvailable starts true before any read has been attempted")
+            focusProbe.start()
+            focusProbe.start() // idempotent
+            focusProbe.stop()
+            focusProbe.stop() // idempotent
+            check(true, "FocusMonitor: start()/stop() cycle without crashing regardless of whether the DoNotDisturb DB is readable on this runner")
+        }
+
+        // --- M7: NotchActivityRouter — Focus peek/sticky translation, driven
+        // purely through a real (but never-`start()`ed) FocusMonitor's own
+        // `.events` — mirrors the M3/M5/M6 router blocks' shape exactly. ---
+        check(NotchActivityRouter.focusStickyShouldShow(stickyEnabled: true, focusActive: true),
+              "NotchActivityRouter: focusStickyShouldShow is true only when the sticky setting is on AND a Focus is active")
+        check(!NotchActivityRouter.focusStickyShouldShow(stickyEnabled: false, focusActive: true),
+              "NotchActivityRouter: focusStickyShouldShow is false with the sticky setting off, even with a Focus active")
+        check(!NotchActivityRouter.focusStickyShouldShow(stickyEnabled: true, focusActive: false),
+              "NotchActivityRouter: focusStickyShouldShow is false with no Focus active, even with the sticky setting on")
+
+        let focusPeek = NotchActivityRouter.focusPeekActivity(name: "Work", symbolName: "briefcase.fill")
+        check(focusPeek.kind == .focus && focusPeek.priority == 130 && focusPeek.duration == 5,
+              "NotchActivityRouter: focusPeekActivity posts at kind .focus, priority 130, duration 5s")
+        check(focusPeek.leading == .icon(systemName: "briefcase.fill") && focusPeek.trailing == .text("Work"),
+              "NotchActivityRouter: focusPeekActivity's content is the Focus's own icon + name")
+        let focusOffPeek = NotchActivityRouter.focusPeekActivity(name: nil, symbolName: nil)
+        check(focusOffPeek.leading == .icon(systemName: "moon.fill") && focusOffPeek.trailing == .text("Focus off"),
+              "NotchActivityRouter: focusPeekActivity falls back to a moon icon and 'Focus off' text when both name and symbolName are nil")
+
+        do {
+            let focusRouterSuiteName = "flux.selftest.focusrouter"
+            let focusRouterSuite = UserDefaults(suiteName: focusRouterSuiteName)!
+            focusRouterSuite.removePersistentDomain(forName: focusRouterSuiteName)
+            let focusRouterSettings = SettingsStore(defaults: focusRouterSuite)
+            let focusRouterActivities = LiveActivityCenter()
+            let focusRouterArranger = MenuBarArranger()
+            let focusRouterCalendar = CalendarService()
+            let focusRouterPermissions = PermissionCenter()
+            let focusRouterTimers = TimerService()
+            let focusRouterViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
+            let testFocus = FocusMonitor()
+            // `startsMonitors: false` — as with every other router block in
+            // this file, this must never let the router's real
+            // settings-driven lifecycle call `focus.start()` for real and
+            // arm a live DispatchSource watch on the CI runner; only
+            // synthetic events fed straight through `testFocus.events` drive
+            // this block.
+            let focusRouter = NotchActivityRouter(activities: focusRouterActivities, settings: focusRouterSettings,
+                                                   arranger: focusRouterArranger, calendar: focusRouterCalendar,
+                                                   permissions: focusRouterPermissions, viewModel: focusRouterViewModel,
+                                                   timers: focusRouterTimers, focus: testFocus, startsMonitors: false)
+
+            withExtendedLifetime(focusRouter) {
+                testFocus.events.send(.focusChanged(name: "Work", symbolName: "briefcase.fill"))
+                check(focusRouterActivities.current?.kind == .focus,
+                      "NotchActivityRouter: a Focus change posts a .focus live activity")
+                check(focusRouterActivities.current?.priority == 130,
+                      "NotchActivityRouter: the Focus peek posts at priority 130")
+                check(focusRouterActivities.current?.duration == 5,
+                      "NotchActivityRouter: the Focus peek is transient (5s)")
+                check(focusRouterActivities.current?.trailing == .text("Work"),
+                      "NotchActivityRouter: the Focus peek's trailing text is the Focus's own name")
+                check(focusRouterActivities.current?.leading == .icon(systemName: "briefcase.fill"),
+                      "NotchActivityRouter: the Focus peek's leading icon is the Focus's own symbol")
+
+                // Turning the sticky setting on WHILE the peek is still
+                // showing must not replace it early — mirrors the M6 timer
+                // completion-alert guard (`completionAlertUntil`).
+                focusRouterSettings.notchActivityFocusStickyEnabled = true
+                check(focusRouterActivities.current?.trailing == .text("Work"),
+                      "NotchActivityRouter: enabling the sticky setting mid-peek doesn't stomp the still-showing peek")
+
+                // A Focus turning off posts its own peek.
+                testFocus.events.send(.focusChanged(name: nil, symbolName: nil))
+                check(focusRouterActivities.current?.trailing == .text("Focus off"),
+                      "NotchActivityRouter: a Focus turning off posts its own peek reading 'Focus off'")
+
+                // Settings gating: the toggle off suppresses further posts.
+                focusRouterActivities.dismiss(kind: .focus)
+                focusRouterSettings.notchActivityFocusEnabled = false
+                testFocus.events.send(.focusChanged(name: "Personal", symbolName: "person.fill"))
+                check(focusRouterActivities.current?.kind != .focus,
+                      "NotchActivityRouter: the Focus toggle off suppresses further posts")
+            }
+            focusRouterSuite.removePersistentDomain(forName: focusRouterSuiteName)
+        }
+
+        // --- M7: MarqueeText.overflowWidth — the scroll-distance threshold
+        // decision behind the Now Playing header's scrolling title/artist,
+        // extracted as a pure function so it's testable without a live view. ---
+        check(MarqueeText.overflowWidth(textWidth: 50, containerWidth: 100) == 0,
+              "MarqueeText: overflowWidth is 0 when text comfortably fits its container")
+        check(MarqueeText.overflowWidth(textWidth: 100, containerWidth: 100) == 0,
+              "MarqueeText: overflowWidth is 0 when text exactly fits (no overflow right at the boundary)")
+        check(MarqueeText.overflowWidth(textWidth: 150, containerWidth: 100) == 50,
+              "MarqueeText: overflowWidth is the excess distance text needs to scroll once it overflows")
+
+        // --- M7: ArtworkPalette.averageColor(ofRGBA:) — the pure arithmetic
+        // core behind the Now Playing waveform's artwork-derived gradient,
+        // over synthetic RGBA buffers (no real image decoding involved). ---
+        check(ArtworkPalette.averageColor(ofRGBA: []) == nil,
+              "ArtworkPalette: averageColor is nil for an empty buffer")
+        check(ArtworkPalette.averageColor(ofRGBA: [255, 0, 0]) == nil,
+              "ArtworkPalette: averageColor is nil when the buffer length isn't a multiple of 4 (malformed RGBA)")
+        if let solidRed = ArtworkPalette.averageColor(ofRGBA: [255, 0, 0, 255, 255, 0, 0, 255]) {
+            check(abs(solidRed.red - 1.0) < 0.001 && solidRed.green == 0 && solidRed.blue == 0,
+                  "ArtworkPalette: averageColor of two solid-red RGBA pixels reads pure red")
+        } else {
+            check(false, "ArtworkPalette: averageColor should decode two well-formed RGBA pixels")
+        }
+        if let midGray = ArtworkPalette.averageColor(ofRGBA: [255, 255, 255, 255, 0, 0, 0, 255]) {
+            check(abs(midGray.red - 0.5) < 0.001 && abs(midGray.green - 0.5) < 0.001 && abs(midGray.blue - 0.5) < 0.001,
+                  "ArtworkPalette: averageColor of one white + one black pixel averages to mid-gray on every channel")
+        } else {
+            check(false, "ArtworkPalette: averageColor should decode a white+black RGBA pair")
+        }
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }

@@ -34,6 +34,16 @@ jobs:
       - name: Self-test
         run: ./build/Flux.app/Contents/MacOS/Flux --selftest
 
+      - name: Render notch snapshots
+        run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots all
+
+      - name: Upload notch snapshots artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: notch-snapshots
+          path: snapshots/
+          if-no-files-found: error
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:

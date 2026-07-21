@@ -44,6 +44,9 @@ final class SettingsStore: ObservableObject {
         self.notchActivityBatteryEnabled = defaults.bool(forKey: Keys.notchActivityBatteryEnabled)
         self.notchActivityBluetoothEnabled = defaults.bool(forKey: Keys.notchActivityBluetoothEnabled)
         self.notchActivityCalendarEventEnabled = defaults.bool(forKey: Keys.notchActivityCalendarEventEnabled)
+        self.notchActivityFocusEnabled = defaults.bool(forKey: Keys.notchActivityFocusEnabled)
+        self.notchActivityFocusStickyEnabled = defaults.bool(forKey: Keys.notchActivityFocusStickyEnabled)
+        self.notchDuoEnabled = defaults.bool(forKey: Keys.notchDuoEnabled)
         self.notchHudEnabled = defaults.bool(forKey: Keys.notchHudEnabled)
         self.notchHudInterceptEnabled = defaults.bool(forKey: Keys.notchHudInterceptEnabled)
         self.notchMirrorEnabled = defaults.bool(forKey: Keys.notchMirrorEnabled)
@@ -207,6 +210,29 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityCalendarEventEnabled, forKey: Keys.notchActivityCalendarEventEnabled) }
     }
 
+    /// M7: whether a best-effort Focus-change "peek" wing (and, optionally,
+    /// a persistent sticky indicator — see `notchActivityFocusStickyEnabled`)
+    /// shows in the notch — read by `NotchActivityRouter`, which also
+    /// requires `notchEnabled` before actually starting `FocusMonitor`. Genuinely
+    /// best-effort (see `FocusMonitor`'s own doc comment on the undocumented
+    /// on-disk state this reads) — defaults to `true` like every other Live
+    /// Activities toggle since it needs no permission and silently no-ops if
+    /// it can't read anything.
+    @Published var notchActivityFocusEnabled: Bool {
+        didSet { defaults.set(notchActivityFocusEnabled, forKey: Keys.notchActivityFocusEnabled) }
+    }
+
+    /// Opt-in escalation from `notchActivityFocusEnabled`'s transient peek to
+    /// a persistent, icon-only sticky wing shown for as long as a Focus stays
+    /// active. Defaults to `false` — unlike the brief peek, a wing that's
+    /// permanently up whenever ANY Focus is on (including ones a user might
+    /// leave on for hours, like Sleep or a custom all-day mode) is a bigger
+    /// ongoing claim on the notch's limited wing space than this app should
+    /// make without the user opting in.
+    @Published var notchActivityFocusStickyEnabled: Bool {
+        didSet { defaults.set(notchActivityFocusStickyEnabled, forKey: Keys.notchActivityFocusStickyEnabled) }
+    }
+
     /// Master on/off for the M5 volume/brightness HUD — governs both modes.
     /// Defaults to `true`: observe mode (`VolumeMonitor`'s CoreAudio
     /// listeners posting alongside the system bezel) needs no permission and
@@ -251,6 +277,17 @@ final class SettingsStore: ObservableObject {
     /// Whether the Timers widget is enabled in the notch's cycle.
     @Published var notchTimersEnabled: Bool {
         didSet { defaults.set(notchTimersEnabled, forKey: Keys.notchTimersEnabled) }
+    }
+
+    /// M7 (Alcove v1.7 parity): show Now Playing and Calendar side by side
+    /// (Duo view) when Now Playing is the expanded widget, instead of Now
+    /// Playing alone — only actually renders when Calendar is ALSO enabled
+    /// and its permission is granted (see `NotchViewModel.duoActive(...)`);
+    /// this toggle alone just expresses the user's preference. Defaults to
+    /// `false`: a wider panel is a bigger visual claim than this app should
+    /// make without an explicit opt-in.
+    @Published var notchDuoEnabled: Bool {
+        didSet { defaults.set(notchDuoEnabled, forKey: Keys.notchDuoEnabled) }
     }
 
     /// Whether a finished timer posts a wing (plus plays a sound) and a
@@ -311,6 +348,9 @@ final class SettingsStore: ObservableObject {
         Keys.notchActivityBatteryEnabled: true,
         Keys.notchActivityBluetoothEnabled: true,
         Keys.notchActivityCalendarEventEnabled: true,
+        Keys.notchActivityFocusEnabled: true,
+        Keys.notchActivityFocusStickyEnabled: false,
+        Keys.notchDuoEnabled: false,
         Keys.notchHudEnabled: true,
         Keys.notchHudInterceptEnabled: false,
         Keys.notchMirrorEnabled: true,
@@ -345,6 +385,9 @@ final class SettingsStore: ObservableObject {
         static let notchActivityBatteryEnabled = "flux.notch.activities.battery"
         static let notchActivityBluetoothEnabled = "flux.notch.activities.bluetooth"
         static let notchActivityCalendarEventEnabled = "flux.notch.activities.calendarEvent"
+        static let notchActivityFocusEnabled = "flux.notch.activities.focus"
+        static let notchActivityFocusStickyEnabled = "flux.notch.activities.focusSticky"
+        static let notchDuoEnabled = "flux.notch.duo"
         static let notchHudEnabled = "flux.notch.hud.enabled"
         static let notchHudInterceptEnabled = "flux.notch.hud.intercept"
         static let notchMirrorEnabled = "flux.notch.mirror.enabled"

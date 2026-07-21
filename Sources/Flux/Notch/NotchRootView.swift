@@ -8,10 +8,12 @@ import AppKit
 /// own frame (that tears and isn't interruptible at high refresh rates).
 /// Instead this view draws a single `NotchShape` whose size and corner radii
 /// change with `NotchViewModel.state`, wrapped in one `.animation(_:value:)`
-/// spring, so macOS 14's Core Animation-backed SwiftUI renderer morphs it
-/// smoothly the way the OS's own Dynamic Island does. Widget/activity content
-/// is a separate overlay layered on top, so it can cross-fade independently
-/// of the shape morph.
+/// that picks a *different* spring depending on the transition's direction
+/// (see `springFor(_:)`) — growing overshoots, Alcove-style; collapsing
+/// settles snappily — so macOS 14's Core Animation-backed SwiftUI renderer
+/// morphs it the way the OS's own Dynamic Island does. Widget/activity
+/// content is a separate overlay layered on top, so it can cross-fade
+/// independently of the shape morph.
 struct NotchRootView: View {
     @ObservedObject var viewModel: NotchViewModel
 
@@ -35,18 +37,51 @@ struct NotchRootView: View {
     /// app-specific meaning.
     var onActivityTap: ((LiveActivity.Kind) -> Bool)?
 
-    private static let springAnimation = Animation.spring(response: 0.35, dampingFraction: 0.8)
+    /// Growing (collapsed → activity/expanded, or activity → expanded)
+    /// springs with visible overshoot — the shape bounces slightly past its
+    /// final size before settling, the same "alive" feel Alcove-style Dynamic
+    /// Island panels use for their open gesture. A higher `response` (slower)
+    /// paired with a lower `dampingFraction` (less damping) than the collapse
+    /// spring below is what produces that overshoot.
+    private static let expandSpring = Animation.spring(response: 0.42, dampingFraction: 0.68)
 
-    /// How long the spring in `springAnimation` takes to settle — used to
-    /// delay narrowing `interactiveRect` back down to the final rect (see
-    /// `updateInteractiveRect`). Kept close to, but a hair past, the spring's
-    /// own `response` so the widened hit region outlives the visible morph
-    /// rather than snapping in early.
-    private static let interactiveRectSettleDelay: TimeInterval = 0.4
+    /// Shrinking (anything → collapsed) springs snappier and without
+    /// overshoot — closing should read as a crisp, immediate dismissal, not
+    /// another bounce. A lower `response` (faster) and higher
+    /// `dampingFraction` (more damping) than `expandSpring` is what keeps
+    /// this one critically-damped-ish rather than bouncy.
+    private static let collapseSpring = Animation.spring(response: 0.32, dampingFraction: 0.78)
+
+    /// Picks the spring by transition *direction*, not a single fixed curve
+    /// for every state change: `.animation(_:value:)` re-evaluates its
+    /// animation argument using the view's freshly re-rendered body (i.e.
+    /// the *new* value of `state`), so returning a different `Animation`
+    /// depending on the incoming state is enough to make the collapse
+    /// direction settle snappily while every growing direction overshoots —
+    /// without needing two separate `.animation` modifiers or manual
+    /// transaction plumbing.
+    private func springFor(_ state: NotchState) -> Animation {
+        state == .collapsed ? Self.collapseSpring : Self.expandSpring
+    }
+
+    /// How long the springs above take to settle — used to delay narrowing
+    /// `interactiveRect` back down to the final rect (see
+    /// `updateInteractiveRect`). Kept close to, but a hair past, the slower
+    /// (`expandSpring`) response so the widened hit region outlives the
+    /// visible morph rather than snapping in early even on the overshoot path.
+    private static let interactiveRectSettleDelay: TimeInterval = 0.5
 
     /// Cancelled/replaced on every state change so only the most recent
     /// transition's narrowing actually lands — see `updateInteractiveRect`.
     @State private var interactiveRectSettleTask: Task<Void, Never>?
+
+    /// Drives the expanded body's blur-morph-in/out (see `expandedContent`
+    /// and `updateContentMorph`). Start hidden (heavily blurred, transparent)
+    /// so a fresh `.expanded` case — which SwiftUI only actually constructs
+    /// the moment `contentLayer`'s switch first lands on it — always animates
+    /// *in* from this state rather than popping in already-sharp.
+    @State private var contentBlur: CGFloat = 8
+    @State private var contentOpacity: Double = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -60,9 +95,25 @@ struct NotchRootView: View {
                 // buttons) before an ancestor's `onTapGesture`, so this never
                 // steals taps meant for the widget's own UI.
                 .onTapGesture { handleTap() }
-                .onAppear { updateInteractiveRect(panelWidth: proxy.size.width) }
+                .onAppear {
+                    updateInteractiveRect(panelWidth: proxy.size.width)
+                    updateContentMorph(for: viewModel.state)
+                }
                 .onChange(of: viewModel.state) { oldState, newState in
                     updateInteractiveRect(panelWidth: proxy.size.width, from: oldState, to: newState)
+                    updateContentMorph(for: newState)
+                }
+                // M7: toggling Duo view while Now Playing is ALREADY the
+                // expanded widget changes this view's size without `state`
+                // itself changing — the widen/narrow/spring dance above only
+                // reacts to `state`, so this just re-snaps `interactiveRect`
+                // to the new footprint immediately (correct hit-testing) and
+                // otherwise lets the size pop rather than spring; toggling
+                // the Duo setting mid-session is rare enough that this small
+                // scope cut is worth not doubling `updateInteractiveRect`'s
+                // already-subtle transition bookkeeping for it.
+                .onChange(of: viewModel.duoActive) { _, _ in
+                    updateInteractiveRect(panelWidth: proxy.size.width)
                 }
         }
         // Kept at this stable, always-present position (rather than nested
@@ -72,8 +123,24 @@ struct NotchRootView: View {
         // would otherwise have been attached to, which could otherwise leave
         // the `repeatForever` animation started below running indefinitely.
         .onChange(of: shouldBreathe) { _, breathe in updateBreathing(breathe) }
-        .animation(Self.springAnimation, value: viewModel.state)
+        .animation(springFor(viewModel.state), value: viewModel.state)
         .ignoresSafeArea()
+    }
+
+    /// Animates the expanded body's blur/opacity morph: sharp and opaque
+    /// (`0`/`1`) the instant `state` becomes `.expanded`, blurred and
+    /// invisible (`8`/`0`) for every other state. `withAnimation` here is
+    /// what makes this cancellation-safe "for free" — SwiftUI interrupts an
+    /// in-flight implicit animation cleanly when a new one is issued for the
+    /// same properties, so rapid re-toggling (e.g. a fast swipe through
+    /// several widgets) never leaves stale, half-finished blur state behind
+    /// the way a hand-rolled `Task`-based sequence could.
+    private func updateContentMorph(for state: NotchState) {
+        let expanding = { if case .expanded = state { return true }; return false }()
+        withAnimation(.easeOut(duration: 0.25)) {
+            contentBlur = expanding ? 0 : 8
+            contentOpacity = expanding ? 1 : 0
+        }
     }
 
     // MARK: - Tap routing
@@ -107,10 +174,29 @@ struct NotchRootView: View {
         case .activity:
             return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2,
                           height: max(notchSize.height, 32))
-        case .expanded:
-            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
-                          height: NotchMetrics.expandedHeight)
+        case .expanded(let widgetID):
+            guard isDuoLayout(for: widgetID) else {
+                return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
+                              height: NotchMetrics.expandedHeight(for: widgetID))
+            }
+            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width) + NotchMetrics.duoExtraWidth,
+                          height: max(NotchMetrics.expandedHeight(for: .nowPlaying), NotchMetrics.expandedHeight(for: .calendar)))
         }
+    }
+
+    /// Whether `widgetID`'s expanded panel should render as Duo view (Now
+    /// Playing + Calendar side by side) rather than alone. `viewModel.
+    /// duoActive` alone isn't quite enough to trust here — it can be one
+    /// Combine tick stale relative to the registry (e.g. the instant Calendar
+    /// is disabled) — so this re-checks that Calendar is actually a currently
+    /// enabled widget too, which both `size(for:)` and `expandedContent(for:)`
+    /// call THIS shared function for, so the visible shape's size and its
+    /// content can never disagree about whether Duo is active this frame.
+    /// Expanding Calendar directly is untouched: Duo only ever applies to
+    /// `.nowPlaying`.
+    private func isDuoLayout(for widgetID: WidgetID) -> Bool {
+        guard widgetID == .nowPlaying, viewModel.duoActive else { return false }
+        return viewModel.registry.enabledWidgets.contains { $0.id == .calendar }
     }
 
     /// The shape's current footprint — `viewModel.state`'s size, centered in
@@ -134,8 +220,8 @@ struct NotchRootView: View {
     /// swallowed by it.
     ///
     /// A state *change* is where this gets subtle: `shapeLayer`'s footprint
-    /// spends `springAnimation`'s ~0.35s morphing between the outgoing and
-    /// incoming sizes, but `viewModel.state` itself (and hence this rect,
+    /// spends `expandSpring`/`collapseSpring`'s ~0.3-0.4s morphing between the
+    /// outgoing and incoming sizes, but `viewModel.state` itself (and hence this rect,
     /// if it jumped straight to the final size) changes instantly. Setting
     /// `interactiveRect` to only the final rect for that whole window would
     /// make part of the still-visible outgoing shape (while it's shrinking)
@@ -175,25 +261,27 @@ struct NotchRootView: View {
         }
     }
 
-    /// Solid black while collapsed/activity so it reads as one surface with
-    /// the physical notch; a hair short of opaque plus a faint accent glow
-    /// once expanded, so the panel still looks native next to the hardware
-    /// notch but visibly "lifts" as its own surface.
-    private var isExpanded: Bool {
-        if case .expanded = viewModel.state { return true }
-        return false
-    }
+    /// Pure black in *every* state (collapsed, activity, expanded alike) —
+    /// the M7 Alcove redesign drops the old expanded-only opacity dip and
+    /// amber glow stroke entirely, so the panel always reads as one seamless
+    /// surface fused to the physical notch, never a visibly "lifted" or
+    /// tinted card.
+    private var isCollapsed: Bool { viewModel.state == .collapsed }
 
+    /// A soft drop shadow is what actually sells the "lifted" panel now that
+    /// there's no fill/stroke change to do it — but only while there's
+    /// something to lift off of: while collapsed the shape must stay
+    /// perfectly seamless/invisible against the physical notch, so the
+    /// shadow is skipped entirely (not just faded to zero opacity) rather
+    /// than risk a hairline halo around the idle notch.
     private var shapeLayer: some View {
         shape
-            .fill(isExpanded ? Color.black.opacity(0.98) : Color.black)
-            .overlay {
-                if isExpanded {
-                    shape.stroke(Theme.accentColor.opacity(0.18), lineWidth: 1).blur(radius: 6)
-                }
-            }
+            .fill(Color.black)
             .frame(width: containerSize.width, height: containerSize.height)
             .scaleEffect(breathingScale)
+            .shadow(color: isCollapsed ? .clear : .black.opacity(0.55),
+                    radius: isCollapsed ? 0 : 16,
+                    y: isCollapsed ? 0 : 4)
     }
 
     // MARK: - Breathing hover cue (click mode only)
@@ -211,7 +299,7 @@ struct NotchRootView: View {
     }
 
     private var breathingScale: CGFloat {
-        shouldBreathe && breathePhase ? 1.05 : 1.0
+        shouldBreathe && breathePhase ? 1.02 : 1.0
     }
 
     // MARK: - Content layer
@@ -252,33 +340,68 @@ struct NotchRootView: View {
         .frame(width: containerSize.width, height: containerSize.height)
     }
 
-    /// The expanded panel: a compact strip exactly the notch's own height at
-    /// the top (so nothing is drawn under the physical camera), showing the
-    /// active widget's `makeCompactView()` if it has one, then the widget's
-    /// full `makeExpandedView()` filling the rest of the panel below it.
-    /// Resolved through `enabledWidgets` (not the plain, unfiltered
-    /// `registry.widget(for:)`) so a widget that was disabled out from under
-    /// an in-flight state transition can never render here even for a single
-    /// frame — belt-and-suspenders alongside `NotchViewModel` re-routing
-    /// `state` away from it (see `observeRegistry()`).
+    /// The expanded panel: pure widget content, no chrome. Alcove's panel
+    /// doesn't reserve a separate compact strip at the top the way the old
+    /// design did — the physical notch cutout itself is the "top area", so
+    /// content only needs to clear it via top padding (`notchSize.height +
+    /// 6`), not a whole extra row. Resolved through `enabledWidgets` (not the
+    /// plain, unfiltered `registry.widget(for:)`) so a widget that was
+    /// disabled out from under an in-flight state transition can never
+    /// render here even for a single frame — belt-and-suspenders alongside
+    /// `NotchViewModel` re-routing `state` away from it (see
+    /// `observeRegistry()`).
+    ///
+    /// `.blur(radius: contentBlur)` + `.opacity(contentOpacity)` is the
+    /// content "morph" — SwiftUI has no built-in blur transition primitive,
+    /// so `updateContentMorph` drives these two plain `@State` values with an
+    /// explicit `withAnimation` instead of a `.transition(...)` modifier.
     private func expandedContent(for widgetID: WidgetID) -> some View {
         let widget = viewModel.registry.enabledWidgets.first { $0.id == widgetID }
-        return VStack(spacing: 0) {
-            HStack {
-                if let compact = widget?.makeCompactView() {
-                    compact
-                }
-            }
-            .frame(width: containerSize.width, height: notchSize.height)
-
-            if let widget {
+        return Group {
+            if isDuoLayout(for: widgetID),
+               let calendarWidget = viewModel.registry.enabledWidgets.first(where: { $0.id == .calendar }) {
+                duoContent(nowPlaying: widget, calendar: calendarWidget)
+            } else if let widget {
                 widget.makeExpandedView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
+                    .padding(.horizontal, 16)
+                    .padding(.top, notchSize.height + 6)
+                    .padding(.bottom, 14)
+                    .blur(radius: contentBlur)
+                    .opacity(contentOpacity)
             }
         }
         .frame(width: containerSize.width, height: containerSize.height, alignment: .top)
+    }
+
+    /// Alcove's Duo view (M7 v1.7 parity): Now Playing's expanded content at
+    /// flexible width beside a fixed-width Calendar pane, split by a hairline
+    /// divider. Both panes share this container's single blur/opacity content
+    /// morph (`contentBlur`/`contentOpacity`), so entering/leaving Duo fades
+    /// exactly like any other expanded-content change rather than needing a
+    /// second, separate morph.
+    private static let duoCalendarPaneWidth: CGFloat = 200
+
+    private func duoContent(nowPlaying: NotchWidget?, calendar: NotchWidget) -> some View {
+        HStack(spacing: 0) {
+            Group {
+                if let nowPlaying { nowPlaying.makeExpandedView() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 1)
+                .padding(.vertical, 12)
+
+            calendar.makeExpandedView()
+                .frame(width: Self.duoCalendarPaneWidth, maxHeight: .infinity)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, notchSize.height + 6)
+        .padding(.bottom, 14)
+        .blur(radius: contentBlur)
+        .opacity(contentOpacity)
     }
 
     /// Renders one `LiveActivity.Content` value with Theme tokens. The single
@@ -287,10 +410,15 @@ struct NotchRootView: View {
     /// affects the cases actually shown in the collapsed wings (`icon` /
     /// `iconText`/ `text`) — `gauge` and `artwork` are HUD/Now-Playing-only
     /// content that never carries a warning tint in practice, so they keep
-    /// their fixed Theme colors unconditionally.
+    /// their fixed monochrome color unconditionally.
+    ///
+    /// M7: wing content is monochrome — `Theme.accentColor` no longer
+    /// appears here at all. `tint == .warning` is the one exception that
+    /// still gets a color (`Theme.warningColor`, for genuinely urgent wings
+    /// like low battery); everything else renders plain white.
     @ViewBuilder
     private func content(for value: LiveActivity.Content, tint: LiveActivity.ActivityTint = .normal) -> some View {
-        let tintColor = tint == .warning ? Theme.warningColor : Theme.accentColor
+        let tintColor = tint == .warning ? Theme.warningColor : Color.white
         switch value {
         case .none:
             EmptyView()
@@ -300,14 +428,14 @@ struct NotchRootView: View {
         case .text(let text):
             Text(text)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(tint == .warning ? tintColor : .white)
+                .foregroundStyle(tintColor)
                 .lineLimit(1)
         case .iconText(let systemName, let text):
             HStack(spacing: 4) {
                 Image(systemName: systemName)
                 Text(text).font(.system(size: 11, weight: .semibold)).lineLimit(1)
             }
-            .foregroundStyle(tint == .warning ? tintColor : .white)
+            .foregroundStyle(tintColor)
         case .gauge(let value, let systemName):
             let clamped = min(max(value, 0), 1)
             HStack(spacing: 4) {
@@ -322,10 +450,10 @@ struct NotchRootView: View {
                 // value changes — no continuous/repeating animation, matching
                 // this app's 0%-idle-CPU contract.
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.25))
+                    Capsule().fill(Color.white.opacity(0.22))
                     GeometryReader { geometry in
                         Capsule()
-                            .fill(Theme.accentColor)
+                            .fill(Color.white.opacity(0.9))
                             .frame(width: geometry.size.width * clamped)
                     }
                 }
@@ -342,7 +470,7 @@ struct NotchRootView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
                 Image(systemName: "music.note")
-                    .foregroundStyle(Theme.accentColor)
+                    .foregroundStyle(Color.white.opacity(0.9))
             }
         }
     }

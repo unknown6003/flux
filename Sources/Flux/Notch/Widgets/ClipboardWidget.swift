@@ -76,14 +76,14 @@ private struct ClipboardExpandedView: View {
     private var header: some View {
         HStack {
             Text("Clipboard")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.7))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.55))
             Spacer()
             if !monitor.entries.isEmpty {
                 Button("Clear All") { monitor.clear() }
                     .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(Theme.accentColor)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.45))
             }
         }
     }
@@ -91,15 +91,23 @@ private struct ClipboardExpandedView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: "doc.on.clipboard")
-                .font(.system(size: 22))
-                .foregroundStyle(Theme.accentColor.opacity(0.5))
+                .font(.system(size: 20))
+                .foregroundStyle(Color.white.opacity(0.3))
             Text("Nothing copied yet")
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Alcove refit (M7): this panel's total height budget is 190, leaving
+    /// ~100–150 of usable content height after fixed padding. Each row is
+    /// ~34pt (6pt vertical padding × 2 + a 12pt preview line + 2pt inner
+    /// spacing + a 9pt age line, i.e. 12 + 6 + 12 + 2 + 9 ≈ 41 at the high
+    /// end, ~34 typical) plus 6pt list spacing — so 3 rows already
+    /// approach the top of the usable range, which is why this list leans
+    /// on `ScrollView` rather than trying to guarantee every entry is
+    /// visible without scrolling.
     private var list: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 6) {
@@ -125,7 +133,7 @@ private struct ClipboardRow: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 13))
-                .foregroundStyle(Theme.accentColor.opacity(0.85))
+                .foregroundStyle(Color.white.opacity(0.6))
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -147,7 +155,7 @@ private struct ClipboardRow: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Theme.surfaceRaisedColor.opacity(isHovering ? 1 : 0.55))
+                .fill(Color.white.opacity(isHovering ? 0.12 : 0.06))
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: handleTap)
@@ -161,7 +169,7 @@ private struct ClipboardRow: View {
     private var trailingControl: some View {
         if didConfirmCopy {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(Theme.accentColor)
+                .foregroundStyle(.white)
         } else if isHovering {
             Button {
                 monitor.remove(entry.id)

@@ -95,6 +95,17 @@ private struct CalendarExpandedView: View {
 
     // MARK: Agenda
 
+    /// Alcove refit (M7): this panel's total height budget is 190, minus
+    /// fixed padding (top `notchHeight + 6`, bottom 14) leaves a usable
+    /// content height of roughly 100–150. A section header (9pt, ~11pt line
+    /// height) + 6pt spacing to its first row, then N rows of ~28pt
+    /// (12pt title line + 2pt inner spacing + 10pt time line, ~14+2+12) each
+    /// separated by 6pt: header(11) + 6 + 4×28 + 3×6 = 11+6+112+18 = 147 —
+    /// right at the top of the usable range for a *single* section at 4
+    /// visible rows, which is why only ~4 rows are expected to show before
+    /// the `ScrollView` below takes over (a second section, e.g. Tomorrow,
+    /// scrolls into view rather than both being guaranteed on-screen at
+    /// once).
     @ViewBuilder
     private var agenda: some View {
         let groups = CalendarService.groupByDay(events: service.upcoming, now: Date())
@@ -102,7 +113,7 @@ private struct CalendarExpandedView: View {
             emptyState
         } else {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
                     if !groups.today.isEmpty {
                         section(title: "Today", events: groups.today)
                     }
@@ -118,11 +129,11 @@ private struct CalendarExpandedView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: "calendar")
-                .font(.system(size: 22))
-                .foregroundStyle(Theme.accentColor.opacity(0.5))
+                .font(.system(size: 20))
+                .foregroundStyle(Color.white.opacity(0.3))
             Text("No upcoming events")
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -130,9 +141,9 @@ private struct CalendarExpandedView: View {
     private func section(title: String, events: [CalendarEvent]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.4))
-                .tracking(0.8)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.45))
+                .tracking(0.7)
             ForEach(events) { event in
                 EventRow(event: event)
             }
@@ -147,8 +158,15 @@ private struct EventRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
+            // The one deliberately colorful element in this near-monochrome
+            // panel (Alcove's own agenda dot) — an event's real calendar
+            // color when it has one. An event with no calendar color at all
+            // falls back to a neutral white dot rather than the old amber,
+            // since a colorless fallback isn't actually "the event's
+            // calendar color" and shouldn't borrow the accent just to have
+            // *a* color.
             Circle()
-                .fill(Color(nsColor: event.calendarColor ?? Theme.accent))
+                .fill(event.calendarColor.map { Color(nsColor: $0) } ?? Color.white.opacity(0.45))
                 .frame(width: 7, height: 7)
                 .padding(.top, 4)
 
@@ -160,11 +178,11 @@ private struct EventRow: View {
                 HStack(spacing: 4) {
                     Text(timeRange)
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.5))
+                        .foregroundStyle(Color.white.opacity(0.58))
                     if let location = event.location {
                         Text("· \(location)")
                             .font(.caption2)
-                            .foregroundStyle(Color.white.opacity(0.4))
+                            .foregroundStyle(Color.white.opacity(0.42))
                             .lineLimit(1)
                     }
                 }

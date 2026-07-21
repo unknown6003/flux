@@ -255,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureNotchHotkey()
         configureClipboardMonitor()
         configureLockScreenPresenter()
+        recomputeDuoActive()
         // Force the lazy router into existence — see its property doc
         // comment for why nothing else naturally touches it. Its own `init`
         // reads the live activity toggles directly, so no further settings
@@ -280,6 +281,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// reason: a disabled notch feature means off everywhere.
     private func configureLockScreenPresenter() {
         lockScreenPresenter.setEnabled(settings.notchEnabled && settings.notchLockScreenExperimentEnabled)
+    }
+
+    /// M7 (Alcove parity): pushes the pure `NotchViewModel.duoActive(...)`
+    /// derivation into the live view model — called from every input that
+    /// could change its answer: the Duo setting itself, the Calendar
+    /// widget's own enabled state (`settings.$notchCalendarEnabled`'s sink,
+    /// below), and Calendar permission (`permissionCenter.$statuses`'s sink,
+    /// below), plus once here at launch. Kept as this one small function
+    /// (rather than inlined into each sink) so every trigger stays in sync
+    /// with the same read of `notchWindow.registry`/`permissionCenter`.
+    private func recomputeDuoActive() {
+        notchWindow.viewModel.duoActive = NotchViewModel.duoActive(
+            duoSettingEnabled: settings.notchDuoEnabled,
+            calendarWidgetEnabled: notchWindow.registry.enabledWidgets.contains { $0.id == .calendar },
+            calendarPermissionGranted: permissionCenter.statuses[.calendar] == .granted)
     }
 
     private func observeNotchSettings() {
@@ -327,7 +343,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchCalendarEnabled
             .dropFirst()
-            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.calendar, value) }
+            .sink { [weak self] value in
+                self?.notchWindow.registry.setEnabled(.calendar, value)
+                self?.recomputeDuoActive()
+            }
+            .store(in: &cancellables)
+
+        settings.$notchDuoEnabled
+            .dropFirst()
+            .sink { [weak self] _ in self?.recomputeDuoActive() }
+            .store(in: &cancellables)
+
+        // Calendar permission can change independently of every settings
+        // toggle above (granted/revoked in System Settings) — Duo view must
+        // drop out the moment access is revoked, not just the next time some
+        // other setting happens to change.
+        permissionCenter.$statuses
+            .dropFirst()
+            .sink { [weak self] _ in self?.recomputeDuoActive() }
             .store(in: &cancellables)
 
         settings.$notchMirrorEnabled

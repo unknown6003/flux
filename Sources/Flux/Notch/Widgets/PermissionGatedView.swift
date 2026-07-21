@@ -54,17 +54,46 @@ struct PermissionGatedView<Content: View>: View {
         VStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 26))
-                .foregroundStyle(Theme.accentColor.opacity(0.6))
+                .foregroundStyle(Color.white.opacity(0.35))
             Text(message)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.7))
+                .foregroundStyle(Color.white.opacity(0.65))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button(actionTitle, action: action)
-                .buttonStyle(.fluxProminent)
+                .buttonStyle(.notchCapsule)
                 .frame(width: 170)
         }
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+// MARK: - Alcove capsule button style
+
+/// This panel's local replacement for `.fluxProminent` (`Theme.swift`) —
+/// Alcove's near-monochrome notch surface has no amber left to fill a
+/// prominent button with, so this is a white-on-dark capsule instead: a
+/// quiet `white.opacity(0.14)` fill with white text, matching the same
+/// interactive-fill language `TimersWidget`'s preset capsules use. Deliberately
+/// defined here rather than in `Theme.swift` — the notch's Alcove restyle is
+/// scoped to `Sources/Flux/Notch/Widgets`, and `Theme.fluxProminent` is still
+/// the correct amber-filled style for the (unrestyled) Settings surface, so
+/// the two must not be merged.
+private struct NotchCapsuleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 9)
+            .background(
+                Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.20 : 0.14))
+            )
+            .contentShape(Capsule())
+    }
+}
+
+private extension ButtonStyle where Self == NotchCapsuleButtonStyle {
+    static var notchCapsule: NotchCapsuleButtonStyle { .init() }
 }

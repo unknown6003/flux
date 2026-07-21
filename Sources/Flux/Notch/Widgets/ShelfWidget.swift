@@ -90,14 +90,14 @@ private struct ShelfExpandedView: View {
     private var header: some View {
         HStack {
             Text("File Shelf")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.7))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.55))
             Spacer()
             if !store.items.isEmpty {
                 Button("Clear All") { store.removeAll() }
                     .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(Theme.accentColor)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.45))
             }
         }
     }
@@ -105,11 +105,11 @@ private struct ShelfExpandedView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: "tray.and.arrow.down")
-                .font(.system(size: 22))
-                .foregroundStyle(Theme.accentColor.opacity(0.5))
+                .font(.system(size: 20))
+                .foregroundStyle(Color.white.opacity(0.3))
             Text("Drop files here")
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.55))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -128,6 +128,12 @@ private struct ShelfExpandedView: View {
 
 // MARK: - One tile
 
+/// Alcove refit (M7): 64pt-wide tiles (was 72) with a 44×44 thumbnail (was
+/// 56×56) — sized to fit this panel's 150 total height budget as a single
+/// horizontal row: 44 (thumb) + 4 + ~12 (10pt filename line) + 4 + ~11 (9pt
+/// age line) ≈ 75, comfortably inside the ~100–150 usable content height
+/// left after the panel's fixed padding, with headroom for the header row
+/// above it.
 private struct ShelfTileView: View {
     let item: ShelfItem
     @ObservedObject var store: ShelfStore
@@ -147,7 +153,7 @@ private struct ShelfTileView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(Color.white.opacity(0.4))
         }
-        .frame(width: 72)
+        .frame(width: 64)
         .contentShape(Rectangle())
         .onTapGesture { store.open(item.id) }
         .onHover { isHovering = $0 }
@@ -176,10 +182,10 @@ private struct ShelfTileView: View {
                 } else {
                     Rectangle()
                         .fill(Theme.surfaceRaisedColor)
-                        .overlay(Image(systemName: "doc.fill").foregroundStyle(Theme.accentColor.opacity(0.7)))
+                        .overlay(Image(systemName: "doc.fill").foregroundStyle(Color.white.opacity(0.35)))
                 }
             }
-            .frame(width: 56, height: 56)
+            .frame(width: 44, height: 44)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             if isHovering {

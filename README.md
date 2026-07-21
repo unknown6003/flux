@@ -69,13 +69,29 @@ arrangement across launches.
 - **Arrange Mode** — a guided editor that reveals labeled zone markers in the live
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
-- **Notch panel** — on notched Macs, hover (or click) the camera housing to expand
-  a **Now Playing** widget: artwork, title/artist, a scrubber, and transport
-  controls for whatever's playing (any app, via a vendored MediaRemote adapter;
-  falls back to AppleScript for Music/Spotify — macOS may show an Automation
-  permission prompt the first time that fallback controls either app). Open
-  gesture, hover delays, and which widgets are enabled are all configurable in
-  Settings → Notch.
+- **Notch panel — Alcove-inspired compact redesign (M7)** — a pure-black,
+  seamless panel sized to each widget's own content (no more one-size-fits-all
+  box), with overshoot springs on open and a snappy, no-bounce close, plus a
+  blur/opacity content morph as it expands. Hover (or click) the camera
+  housing to expand a **Now Playing** widget: artwork, title/artist, a
+  scrubber, and transport controls for whatever's playing (any app, via a
+  vendored MediaRemote adapter; falls back to AppleScript for Music/Spotify —
+  macOS may show an Automation permission prompt the first time that fallback
+  controls either app). Open gesture, hover delays, and which widgets are
+  enabled are all configurable in Settings → Notch.
+- **Duo view (M7)** — an opt-in toggle in Settings → Notch shows Now Playing
+  and Calendar side by side when Now Playing is expanded (needs Calendar
+  enabled and its permission granted too); expanding Calendar on its own still
+  shows it alone.
+- **Activity cycling & restore (M7)** — while a live-activity wing is
+  showing, swipe left/right to cycle through every other queued activity,
+  swipe up to dismiss the one showing (restorable — the last 5 dismissed
+  activities can be brought back), and swipe down to open the widget panel.
+- **Focus activity (M7, best-effort)** — a brief wing peeks the active Focus's
+  name/icon whenever it changes, with an optional persistent icon-only
+  indicator while one stays on. This rides on undocumented on-disk state (no
+  public Focus API exists) and silently does nothing if it can't read it —
+  see Settings → Notch → Live Activities.
 - **File Shelf** — drag files straight onto the notch to hold them: hovering a
   drag over the (collapsed) camera housing expands the shelf automatically,
   and dropping copies the files in (they survive the source being moved,
@@ -214,6 +230,7 @@ Sources/Flux/
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
   Services/BluetoothMonitor.swift  # IOBluetooth connect/disconnect + IORegistry battery
+  Services/FocusMonitor.swift      # M7: best-effort Focus status from undocumented on-disk state, no polling
   Services/CameraService.swift    # AVCaptureSession behind Mirror, started/stopped by the widget itself
   Services/ClipboardMonitor.swift # NSPasteboard.changeCount poll, settings-driven start/stop
   Services/TimerService.swift     # countdown timers, single boundary Task, completions publisher
