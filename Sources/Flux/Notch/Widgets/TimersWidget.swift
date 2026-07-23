@@ -251,15 +251,7 @@ private struct TimersExpandedView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "timer")
-                .font(.system(size: 20))
-                .foregroundStyle(Color.white.opacity(0.3))
-            Text("No timers running")
-                .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.55))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        WidgetEmptyStateView(icon: "timer", message: "No timers running")
     }
 
     /// One shared 1s tick drives every row's countdown text — but ONLY while

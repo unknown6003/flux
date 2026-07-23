@@ -103,15 +103,7 @@ private struct ShelfExpandedView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "tray.and.arrow.down")
-                .font(.system(size: 20))
-                .foregroundStyle(Color.white.opacity(0.3))
-            Text("Drop files here")
-                .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.55))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        WidgetEmptyStateView(icon: "tray.and.arrow.down", message: "Drop files here")
     }
 
     private var tileScroll: some View {

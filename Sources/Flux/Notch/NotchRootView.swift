@@ -61,7 +61,11 @@ struct NotchRootView: View {
     /// without needing two separate `.animation` modifiers or manual
     /// transaction plumbing.
     private func springFor(_ state: NotchState) -> Animation {
-        state == .collapsed ? Self.collapseSpring : Self.expandSpring
+        // Keyed on the transition DIRECTION (recorded by the view model just
+        // before publishing the new state), not on the target state alone:
+        // `.expanded → .activity` targets a non-collapsed state but is still
+        // a shrink, and should settle snappily rather than overshoot.
+        viewModel.lastTransitionWasShrink ? Self.collapseSpring : Self.expandSpring
     }
 
     /// How long the springs above take to settle — used to delay narrowing
@@ -274,7 +278,10 @@ struct NotchRootView: View {
         }
 
         viewModel.interactiveRect = rect(for: oldState, panelWidth: panelWidth).union(finalRect)
-        let delay = state == .collapsed ? Self.collapseSettleDelay : Self.expandSettleDelay
+        // Same direction rule as `springFor(_:)`: any shrink (not just
+        // landing on .collapsed) settles on the collapse spring's timetable.
+        let isShrink = NotchViewModel.footprintRank(state) < NotchViewModel.footprintRank(oldState)
+        let delay = isShrink ? Self.collapseSettleDelay : Self.expandSettleDelay
         interactiveRectSettleTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }

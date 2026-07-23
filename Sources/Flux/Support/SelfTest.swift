@@ -526,6 +526,17 @@ enum SelfTest {
         // collapsed resolves back to shelf, not nowPlaying.
         check(notchVM.state == .expanded(.shelf), "Notch: swipe down from collapsed opens the last-used widget")
 
+        // Transition-direction classification (drives the view's spring
+        // choice: shrinks settle on the collapse spring, growths overshoot).
+        check(NotchViewModel.footprintRank(.collapsed) < NotchViewModel.footprintRank(.activity(UUID()))
+                && NotchViewModel.footprintRank(.activity(UUID())) < NotchViewModel.footprintRank(.expanded(.nowPlaying)),
+              "Notch: footprint ranks order collapsed < activity < expanded")
+        check(notchVM.lastTransitionWasShrink == false,
+              "Notch: opening from collapsed records a growth, not a shrink")
+        notchVM.collapse()
+        check(notchVM.lastTransitionWasShrink == true,
+              "Notch: collapsing records a shrink so the collapse spring is used")
+
         // Live-activity preemption + return-to-collapsed.
         notchVM.collapse()
         check(notchVM.state == .collapsed, "Notch: collapse() returns to collapsed with no activity queued")
