@@ -4,7 +4,7 @@ import CoreAudio
 import OSLog
 
 /// Shared logging point for the HUD subsystem (M5: volume/brightness) —
-/// mirrors `powerLog`'s/`bluetoothLog`'s file-scope-constant pattern rather
+/// mirrors `powerLog`'s/`deviceLog`'s file-scope-constant pattern rather
 /// than adding a new case to `Log.swift`, since this is a self-contained M5
 /// subsystem the notch suite owns.
 let hudLog = Logger(subsystem: "com.flux.menubar", category: "hud")
@@ -87,7 +87,7 @@ final class VolumeMonitor {
 
     deinit {
         // Plain CoreAudio teardown calls, not `self.stop()` — mirrors
-        // `PowerMonitor.deinit`/`BluetoothMonitor.deinit` calling their raw
+        // `PowerMonitor.deinit`/`DeviceMonitor.deinit` calling their raw
         // C/Objective-C teardown directly rather than routing through an
         // instance method from a nonisolated `deinit`.
         if let volumeListener {

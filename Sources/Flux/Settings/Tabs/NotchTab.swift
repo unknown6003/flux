@@ -154,7 +154,7 @@ struct NotchTab: View {
                       isOn: $settings.notchActivityBatteryEnabled)
             RowDivider()
             ToggleRow(title: "Bluetooth devices",
-                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect. Off by default — turning this on lets macOS ask for Bluetooth access the first time.",
+                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect, with a battery reading when one's reported. No permission needed.",
                       isOn: $settings.notchActivityBluetoothEnabled)
             RowDivider()
             ToggleRow(title: "Upcoming event alerts",

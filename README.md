@@ -164,10 +164,12 @@ nothing runs that could prompt later without you turning it on first:
   behind their own explicit **Grant Access** button in Settings → Notch —
   the permission-gated widget/feature shows its own "access needed" state
   until you ask for it.
-- **Bluetooth device wings are OFF by default.** Registering for Bluetooth
-  connect notifications is what triggers macOS's Bluetooth access prompt on
-  macOS 12+, so this stays opt-in — turning it on in Settings → Notch → Live
-  Activities is what asks macOS for access, not launching the app.
+- **Bluetooth device wings need no permission at all.** Flux detects
+  accessory connect/disconnect through the system's own device registry (the
+  IOKit `AppleDeviceManagementHIDEventService` that already reports accessory
+  battery, permission-free) plus CoreAudio's device list — it never requests
+  Bluetooth access, so nothing prompts, and the wings are on by default like
+  the rest of the notch suite.
 - **Focus wings are OFF by default.** This reads a system Focus-status file
   that macOS may protect depending on your setup; it's opt-in, and silently
   shows nothing if macOS won't let it read the file at all.
@@ -264,7 +266,7 @@ Sources/Flux/
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
-  Services/BluetoothMonitor.swift  # IOBluetooth connect/disconnect + IORegistry battery
+  Services/DeviceMonitor.swift     # permission-free BT connect/disconnect: IOKit matching notifications + CoreAudio device list + IORegistry battery
   Services/FocusMonitor.swift      # M7: best-effort Focus status from undocumented on-disk state, no polling
   Services/CameraService.swift    # AVCaptureSession behind Mirror, started/stopped by the widget itself
   Services/ClipboardMonitor.swift # NSPasteboard.changeCount poll, settings-driven start/stop

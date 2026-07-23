@@ -20,20 +20,20 @@ import Combine
 /// stays in `AppDelegate` because it's UI-input routing, not activity
 /// production.
 ///
-/// Also owns the `PowerMonitor`/`BluetoothMonitor` service instances
+/// Also owns the `PowerMonitor`/`DeviceMonitor` service instances
 /// outright (rather than `AppDelegate` holding them and merely handing this
 /// their `events` publishers) — this router is the only consumer either
 /// monitor has, so there is no reason for `AppDelegate` to reference them at
 /// all. Both are injectable (default-constructed) purely so `--selftest` can
 /// substitute instances and feed synthetic events through `.events` without
-/// touching real IOKit/IOBluetooth state.
+/// touching real IOKit/CoreAudio state.
 @MainActor
 final class NotchActivityRouter {
     private let activities: LiveActivityCenter
     private let settings: SettingsStore
     private let arranger: MenuBarArranger
     private let power: PowerMonitor
-    private let bluetooth: BluetoothMonitor
+    private let bluetooth: DeviceMonitor
     /// Shared with `CalendarWidget` — unlike `power`/`bluetooth` (whose only
     /// consumer is this router), this instance is also the Calendar widget's
     /// own data source, so it's injected rather than default-constructed
@@ -98,7 +98,7 @@ final class NotchActivityRouter {
     /// `interceptor.events` (wired unconditionally by `observePower`/
     /// `observeBluetooth`/`observeVolume`/`observeInterceptor` above) and must
     /// never let this router's normal settings-driven lifecycle touch real
-    /// IOKit/IOBluetooth/CoreAudio/a real event tap on a headless CI runner.
+    /// IOKit/CoreAudio/a real event tap on a headless CI runner.
     private let startsMonitors: Bool
     /// The latest value delivered by the injected `presentation` publisher —
     /// whether there's currently anywhere to actually show a wing. Cached
@@ -111,7 +111,7 @@ final class NotchActivityRouter {
 
     // `power`/`bluetooth`/`volume`/`brightness`/`interceptor` take optionals
     // defaulting to `nil` — rather than defaulting directly to
-    // `PowerMonitor()`/`BluetoothMonitor()`/etc. — because default-argument
+    // `PowerMonitor()`/`DeviceMonitor()`/etc. — because default-argument
     // expressions are evaluated in a nonisolated context, and every one of
     // these types' initializers is `@MainActor`-isolated. Constructing them
     // here in the init body (which *is* MainActor-isolated, since this whole
@@ -133,7 +133,7 @@ final class NotchActivityRouter {
          viewModel: NotchViewModel,
          timers: TimerService,
          power: PowerMonitor? = nil,
-         bluetooth: BluetoothMonitor? = nil,
+         bluetooth: DeviceMonitor? = nil,
          volume: VolumeMonitor? = nil,
          brightness: BrightnessMonitor? = nil,
          interceptor: MediaKeyInterceptor? = nil,
@@ -148,7 +148,7 @@ final class NotchActivityRouter {
         self.viewModel = viewModel
         self.timers = timers
         self.power = power ?? PowerMonitor()
-        self.bluetooth = bluetooth ?? BluetoothMonitor()
+        self.bluetooth = bluetooth ?? DeviceMonitor()
         self.volume = volume ?? VolumeMonitor()
         self.brightness = brightness ?? BrightnessMonitor()
         self.interceptor = interceptor ?? MediaKeyInterceptor()
@@ -287,9 +287,9 @@ final class NotchActivityRouter {
         }
     }
 
-    /// Which SF Symbol reads as "this device." `category` (the device's
-    /// IOKit class major, threaded through by `BluetoothMonitor`) does the
-    /// coarse audio-vs-HID split; IOBluetooth exposes no further product-line
+    /// Which SF Symbol reads as "this device." `category` (threaded through by
+    /// `DeviceMonitor`, derived from the device's HID usage pairs + name) does
+    /// the coarse audio-vs-HID split; there's no further product-line
     /// identifier beyond that and the device's own advertised name, so
     /// picking the specific HID glyph (keyboard / mouse / game controller)
     /// within `.peripheral` is still a name-based best-effort guess. Every
@@ -297,7 +297,7 @@ final class NotchActivityRouter {
     /// ...) contains "airpods"; every other audio accessory (or anything
     /// IOKit didn't class as HID either) falls back to a generic headphones
     /// glyph, which still reads correctly for the audio devices
-    /// `BluetoothMonitor` actually filters to.
+    /// `DeviceMonitor` actually filters to.
     static func deviceSymbol(name: String, category: BluetoothDeviceCategory) -> String {
         guard category == .peripheral else {
             return name.lowercased().contains("airpods") ? "airpodspro" : "headphones"
@@ -933,7 +933,7 @@ final class NotchActivityRouter {
     /// somewhere to actually show a wing (`isPresenting`) — an external-only
     /// clamshell setup, or a moment where the notch's screen has been lost,
     /// leaves nowhere for either activity to render, so idling the monitors
-    /// there saves the IOKit run-loop source / IOBluetooth notifications for
+    /// there saves the IOKit run-loop source / CoreAudio listener for
     /// nothing. `start()`/`stop()` on both monitors are no-ops when already
     /// in the requested state, so this can be called freely on every
     /// settings tick (or presentation/state change) without worrying about
@@ -948,7 +948,7 @@ final class NotchActivityRouter {
     ///
     /// Also gated on `startsMonitors` — `false` only for `--selftest` (see
     /// its doc comment) — so a headless test run never touches real
-    /// IOKit/IOBluetooth/EventKit state no matter how many settings toggles
+    /// IOKit/CoreAudio/EventKit state no matter how many settings toggles
     /// it flips.
     ///
     /// Calendar's `start()`/`stop()` here is now this router's ONLY vote —

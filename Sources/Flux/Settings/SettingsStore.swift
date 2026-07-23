@@ -216,17 +216,17 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityBatteryEnabled, forKey: Keys.notchActivityBatteryEnabled) }
     }
 
-    /// Whether `BluetoothMonitor` runs and posts `.bluetoothDevice` live
+    /// Whether `DeviceMonitor` runs and posts `.bluetoothDevice` live
     /// activities — same gating as `notchActivityBatteryEnabled`. Defaults to
-    /// `false` (M9 privacy audit): unlike every other Live Activity toggle,
-    /// turning this on has a real permission cost — `BluetoothMonitor.start()`
-    /// calls `IOBluetoothDevice.register(forConnectNotifications:)`, which
-    /// triggers macOS's Bluetooth TCC prompt on macOS 12+ the moment it's
-    /// first registered. A fresh install must show zero TCC prompts before
-    /// the user has touched anything, so this can't be on-by-default like
-    /// battery/calendar-event/timer are; the user opts in from Settings →
-    /// Notch → Live Activities, at which point seeing the system prompt is
-    /// expected rather than a surprise.
+    /// `true` again as of M10: the M9 audit had flipped this to opt-in only
+    /// because the *old* `BluetoothMonitor` called
+    /// `IOBluetoothDevice.register(forConnectNotifications:)`, which triggered
+    /// macOS's Bluetooth TCC prompt on macOS 12+. `DeviceMonitor` replaced that
+    /// with a fully permission-free implementation (IOKit matching
+    /// notifications on `AppleDeviceManagementHIDEventService` + CoreAudio
+    /// device-list diffing — neither prompts), so there's no TCC cost left to
+    /// gate behind opt-in, and the wing is restored for everyone like the rest
+    /// of the on-by-default Live Activities.
     @Published var notchActivityBluetoothEnabled: Bool {
         didSet { defaults.set(notchActivityBluetoothEnabled, forKey: Keys.notchActivityBluetoothEnabled) }
     }
@@ -423,9 +423,10 @@ final class SettingsStore: ObservableObject {
         Keys.notchShelfExpiryDays: 0.0,
         Keys.notchCalendarEnabled: true,
         Keys.notchActivityBatteryEnabled: true,
-        // M9 privacy audit: was `true` — see `notchActivityBluetoothEnabled`'s
-        // own doc comment for why this flipped to opt-in.
-        Keys.notchActivityBluetoothEnabled: false,
+        // M9 flipped this to `false` (opt-in) because the old IOBluetooth
+        // monitor triggered a TCC prompt; M10 restored it to `true` — the new
+        // `DeviceMonitor` is permission-free. See its doc comment.
+        Keys.notchActivityBluetoothEnabled: true,
         Keys.notchActivityCalendarEventEnabled: true,
         // M9 privacy audit: was `true` — see `notchActivityFocusEnabled`'s
         // own doc comment for why this flipped to opt-in.

@@ -311,3 +311,47 @@ CI environment.
       prompt exactly where they always have — the first time you click each
       feature's own "Grant Access" button in Settings → Notch, not at
       launch and not from any other action.
+
+## M10 — Permission-free Bluetooth monitor (DeviceMonitor)
+
+`--selftest` covers the pure cores headlessly (transport filter, category
+heuristic, baseline-vs-event decision, name-keyed dedupe) plus a start/stop
+smoke test, but the actual connect/disconnect wings and — crucially — the
+*absence* of any TCC prompt need a real Mac with Bluetooth hardware, since
+notifications and prompts don't happen at all in a headless CI environment.
+
+- [ ] **AirPods connect/disconnect with NO Bluetooth prompt**: on a machine
+      that has never granted Flux Bluetooth access (reset with
+      `tccutil reset Bluetooth com.flux.menubar` if unsure), with "Bluetooth
+      devices" ON, connect AirPods and confirm a connect wing appears (device
+      glyph + battery %) and **no** Bluetooth permission dialog ever shows.
+      Disconnect them and confirm a "Disconnected" wing. Repeat for a
+      non-Apple BT headphone/headset.
+- [ ] **No startup wing spam for already-connected devices**: with AirPods (or
+      any BT accessory) already connected, quit and relaunch Flux (or toggle
+      the notch off and back on) and confirm NO connect wing fires for the
+      already-present device — it's absorbed as baseline, only a genuinely new
+      connect after start should post a wing.
+- [ ] **USB / built-in input devices do NOT trigger wings**: with a USB (wired)
+      keyboard or mouse plugged in, and using the built-in laptop keyboard/
+      trackpad, confirm none of them ever post a Bluetooth wing — the transport
+      filter surfaces only Bluetooth / Bluetooth LE accessories.
+- [ ] **Battery reading + category glyph**: confirm a connected AirPods shows
+      the AirPods glyph with a battery %; a BT keyboard/mouse shows the
+      keyboard/mouse glyph (HID category), not a headphones glyph; a generic BT
+      speaker/headset shows the headphones glyph.
+- [ ] **No double wing from the two sources**: connect AirPods (which surface
+      via BOTH the IOKit HID service and CoreAudio) and confirm exactly ONE
+      connect wing appears, not two — the name-keyed 5s dedupe window collapses
+      them.
+- [ ] **Toggle still gates cleanly**: turn "Bluetooth devices" OFF and confirm
+      connecting/disconnecting an accessory posts no wing at all; turn it back
+      ON (no prompt) and confirm wings resume on the next connect.
+- [ ] **Third-party (non-Apple) Bluetooth HID accessory** (M10 review fix):
+      connect a non-Apple Bluetooth keyboard, mouse, or game controller — one
+      that does NOT publish `AppleDeviceManagementHIDEventService` (check with
+      `ioreg -c AppleDeviceManagementHIDEventService` before/after pairing;
+      many third-party accessories only ever register a plain `IOHIDDevice`)
+      — and confirm a connect/disconnect wing appears with no Bluetooth
+      prompt, same as an Apple accessory. This is the second, generic
+      `IOHIDDevice` matching source added for exactly this case.
