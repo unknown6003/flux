@@ -63,6 +63,18 @@ private struct MarqueeContent: View {
     @State private var textWidth: CGFloat = 0
     @State private var offset: CGFloat = 0
     @State private var loopTask: Task<Void, Never>?
+    /// The `containerWidth` a loop was last actually (re)started for — guards
+    /// `onChange(of: containerWidth)` below against restarting the marquee
+    /// for sub-pixel measurement jitter rather than a real resize. M8 audit:
+    /// `NotchRootView.expandedContent(for:)` now gives this view's ancestor a
+    /// frame FIXED at the state's settled final size specifically so
+    /// `containerWidth` stays constant across the whole expand/collapse
+    /// spring instead of tracking every interpolated frame — this debounce is
+    /// extra insurance on top of that (a `GeometryReader`-driven width can
+    /// still wobble by a fraction of a point between layout passes with
+    /// nothing actually changing), not the primary fix for the per-frame
+    /// relayout hitch.
+    @State private var lastRestartWidth: CGFloat?
 
     private var overflow: CGFloat { MarqueeText.overflowWidth(textWidth: textWidth, containerWidth: containerWidth) }
 
@@ -79,7 +91,13 @@ private struct MarqueeContent: View {
             .mask(fadeMask)
             .onAppear { restartLoop() }
             .onChange(of: text) { _, _ in restartLoop() }
-            .onChange(of: containerWidth) { _, _ in restartLoop() }
+            .onChange(of: containerWidth) { _, newWidth in
+                // Sub-0.5pt jitter (or a redelivery of the same, already-
+                // committed target width) is measurement noise, not a real
+                // resize — ignore it rather than restarting the loop.
+                if let lastRestartWidth, abs(newWidth - lastRestartWidth) < 0.5 { return }
+                restartLoop()
+            }
             .onChange(of: textWidth) { _, _ in restartLoop() }
             .onDisappear { loopTask?.cancel() }
     }
@@ -115,6 +133,7 @@ private struct MarqueeContent: View {
     /// `onChange` above, and always tears down the previous task first, so a
     /// rapid string of track changes never leaves more than one loop alive.
     private func restartLoop() {
+        lastRestartWidth = containerWidth
         loopTask?.cancel()
         offset = 0
         let distance = overflow
@@ -144,12 +163,31 @@ private struct MarqueeContent: View {
 /// present) so a genuinely new track always flips, while unrelated
 /// re-renders (a playback-clock tick, a play/pause toggle) never do.
 ///
-/// The flip is two chained 0.175s `easeInOut` halves (0.35s total): rotate
-/// 0°→90° (content still showing, edge-on and invisible), swap to the new
-/// image at -90° with no animation, then rotate -90°→0°. Driven by a single
-/// cancellable `Task` rather than a canned SwiftUI transition so a second
-/// track change arriving mid-flip cleanly cancels and restarts rather than
-/// fighting the first animation.
+/// The flip is 0°→90° over 0.175s (content still showing, rotating away),
+/// an instant jump to -90° (still edge-on/invisible, just the mirror-image
+/// angle), then -90°→0° over another 0.175s (0.35s total) — driven by
+/// `keyframeAnimator(initialValue:trigger:)` (M8 audit fix) rather than the
+/// two-`Task`-sleep chain this used to be. `keyframeAnimator` owns the
+/// rotation's timeline itself and, per its documented contract, blends
+/// smoothly from whatever the CURRENT interpolated angle is when `trigger`
+/// (== `flipKey`) changes again mid-flight — unlike a hand-rolled sleep
+/// chain, there's no window where a second track change arriving mid-flip
+/// could race the first `Task`'s cancellation and leave `rotation` snapped to
+/// a stale value; the animator itself guarantees continuity.
+///
+/// The image swap at the crossing is driven by the interpolated angle
+/// itself, not a side effect scheduled to fire "at the same time": the
+/// `content` closure picks `settledImage` (whatever was showing before this
+/// flip) while `angle > 0` (still rotating away, front-half) and `image`
+/// (this flip's target) once `angle <= 0` (rotating back into place,
+/// back-half) — a pure function of the animated value, so it can never drift
+/// out of sync with the rotation the way a separately-timed callback could.
+/// `settledImage`/`committedKey` still exist as plain `@State`, but only for
+/// bookkeeping: a short cancellable `Task` commits them to this flip's target
+/// once the full 0.35s has elapsed, purely so the *next* flip's front-half
+/// has the right "old" image to show — that `Task` never touches `rotation`,
+/// so cancelling/replacing it on a rapid re-trigger carries none of the
+/// visual risk the old sleep-driven rotation chain did.
 struct FlippingArtwork: View {
     let image: NSImage?
     let flipKey: AnyHashable
@@ -158,54 +196,145 @@ struct FlippingArtwork: View {
     private static let cornerRadius: CGFloat = 13
     private static let halfDuration: Double = 0.175
 
-    @State private var displayedImage: NSImage?
-    @State private var displayedKey: AnyHashable?
-    @State private var rotation: Double = 0
-    @State private var flipTask: Task<Void, Never>?
+    /// The keyframe-animated value: just the Y-axis rotation angle, in
+    /// degrees. A plain `Double` conforms to `Animatable` already (SwiftUI
+    /// extends the standard floating-point types for exactly this), so this
+    /// wrapper exists purely to give `KeyframeTrack` a named key path.
+    private struct FlipAngle: Equatable {
+        var angle: Double = 0
+    }
+
+    /// The most recently SETTLED (fully flipped-to, at rest) image/key —
+    /// i.e. what a flip's front-half should show as the "old" side. Renamed
+    /// from the pre-M8 `displayedImage`/`displayedKey`: those used to be the
+    /// single source of truth for what's on screen every frame; now the
+    /// `content` closure below picks between this and the live `image`
+    /// property directly based on the animated angle, so these two only ever
+    /// need to be correct at REST (between flips), not mid-flight.
+    @State private var settledImage: NSImage?
+    @State private var committedKey: AnyHashable?
+    /// Bookkeeping-only — see the type's doc comment above.
+    @State private var commitTask: Task<Void, Never>?
+    /// M8 fix (Codex): the freshest `image` value seen so far, kept current
+    /// on EVERY change (unlike `settledImage`, which only updates at rest or
+    /// on commit) — see the doc comment on the `commitTask` assignment in
+    /// `onChange(of: flipKey)` above for why a commit in flight needs this
+    /// rather than a value captured back when it was scheduled.
+    @State private var latestImage: NSImage?
 
     init(image: NSImage?, flipKey: AnyHashable) {
         self.image = image
         self.flipKey = flipKey
-        _displayedImage = State(initialValue: image)
-        _displayedKey = State(initialValue: flipKey)
+        _settledImage = State(initialValue: image)
+        _committedKey = State(initialValue: flipKey)
+        _latestImage = State(initialValue: image)
     }
 
     var body: some View {
-        artworkTile
-            .rotation3DEffect(.degrees(rotation), axis: (x: 0, y: 1, z: 0))
+        Color.clear
+            .frame(width: Self.side, height: Self.side)
+            .keyframeAnimator(initialValue: FlipAngle(), trigger: flipKey) { _, value in
+                // Ignoring the placeholder `view` argument is deliberate:
+                // this flip needs to swap actual CONTENT (which image is
+                // shown), not just layer a modifier over fixed content, so
+                // the tile is rebuilt fresh from the animated `value` every
+                // frame instead.
+                artworkTile(showing: value.angle > 0 ? settledImage : image)
+                    .rotation3DEffect(.degrees(value.angle), axis: (x: 0, y: 1, z: 0))
+            } keyframes: { _ in
+                KeyframeTrack(\.angle) {
+                    // M8 fix: an instantaneous, positive-EPSILON first
+                    // keyframe (0.0001°, not a real angle — just enough to be
+                    // `> 0`) rather than starting the track at a bare `90`.
+                    // `content` above picks `settledImage` (the OLD image)
+                    // exactly while `angle > 0`; without this keyframe, the
+                    // very first rendered frame of a flip is whatever `angle`
+                    // was left at (`0`, at rest) BEFORE animating toward `90`
+                    // even begins, which reads as `angle > 0 == false` and
+                    // picks the NEW `image` for that one frame — a one-frame
+                    // flash of the new artwork through the front-facing tile,
+                    // before it's rotated away enough to plausibly be showing
+                    // something new. Landing on `0.0001` instantly (zero
+                    // duration) flips the branch to "old image" from the very
+                    // first frame, so the front-half consistently shows the
+                    // OLD image for its entire rotation, exactly as intended.
+                    LinearKeyframe(0.0001, duration: 0)
+                    CubicKeyframe(90, duration: Self.halfDuration)
+                    LinearKeyframe(-90, duration: 0)
+                    CubicKeyframe(0, duration: Self.halfDuration)
+                }
+            }
             .onChange(of: flipKey) { _, newKey in
-                guard Optional(newKey) != displayedKey else { return }
-                runFlip(to: image, key: newKey)
+                // M8 fix: cancel any in-flight commit FIRST, before the
+                // dedup guard below — a rapid A→B→A track change used to
+                // return out of this handler (guard failing because
+                // `committedKey` is still `A`, unchanged since the B commit
+                // hasn't landed yet) WITHOUT cancelling B's still-pending
+                // commit `Task`. That task would then fire ~0.35s later and
+                // stomp `settledImage`/`committedKey` to B's target — wrong
+                // "old" image baked in for the next flip, and the late-
+                // artwork handler below permanently unable to match `A`
+                // again (`committedKey` stuck at `B`) until another real
+                // flip happened to land on `B`. Cancelling unconditionally,
+                // before the guard, means a stale commit from a superseded
+                // flip can never land no matter how the guard resolves.
+                commitTask?.cancel()
+                guard Optional(newKey) != committedKey else { return }
+                commitTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(Self.halfDuration * 2))
+                    guard !Task.isCancelled else { return }
+                    // M8 fix (Codex): read `latestImage` HERE, at commit
+                    // time, rather than capturing `image`'s value back when
+                    // this Task was scheduled. Artwork can arrive
+                    // asynchronously for this same `newKey` track WHILE this
+                    // flip is still in flight — the `onChange(of: image...)`
+                    // handler below can't fold that straight into
+                    // `settledImage` yet (this flip hasn't committed, so
+                    // `committedKey` doesn't match `newKey` yet), but it does
+                    // keep `latestImage` current. Capturing `image` up front
+                    // instead would silently commit whatever (possibly nil/
+                    // placeholder) artwork was live at schedule time, even
+                    // after fresher artwork had since arrived for the exact
+                    // track this commit is for.
+                    settledImage = latestImage
+                    committedKey = newKey
+                }
             }
-            // Bot-review fix: artwork can arrive asynchronously AFTER track
-            // metadata (title/artist/source — whatever `flipKey` is derived
-            // from) — e.g. `NowPlayingService` publishes the new track first
-            // and its artwork fetch resolves a moment later, under the SAME
-            // `flipKey`. Without this, `displayedImage` was only ever touched
-            // by `runFlip` (which only runs on a `flipKey` CHANGE), so that
-            // late-arriving artwork never displayed at all for the rest of
-            // that track's playback. Tracked by identity
-            // (`ObjectIdentifier`, not `Equatable`/`==`) — same reasoning as
-            // `ArtworkPalette.memo`'s own `===` comparison: `NSImage` isn't
-            // meaningfully value-comparable here, only "is this the same
-            // object" is.
+            // Bot-review fix (M7, preserved): artwork can arrive
+            // asynchronously AFTER track metadata (title/artist/source —
+            // whatever `flipKey` is derived from) — e.g. `NowPlayingService`
+            // publishes the new track first and its artwork fetch resolves a
+            // moment later, under the SAME `flipKey`. `content` above already
+            // reads the live `image` property directly once `angle <= 0`
+            // (i.e. at rest, no flip in flight), so a late-arriving image for
+            // an unchanged `flipKey` shows up immediately with no extra work
+            // — this handler's only remaining job is keeping `settledImage`
+            // (the "old" side for the NEXT flip) in sync for that same case,
+            // which `content` doesn't cover since it isn't mid-flip. Tracked
+            // by identity (`ObjectIdentifier`, not `Equatable`/`==`) — same
+            // reasoning as `ArtworkPalette.memo`'s own `===` comparison:
+            // `NSImage` isn't meaningfully value-comparable here, only "is
+            // this the same object" is.
             .onChange(of: image.map(ObjectIdentifier.init)) { _, _ in
-                // Only fires when `flipKey` DIDN'T just change too — a
-                // genuine track change is `onChange(of: flipKey)`'s job,
-                // above, and runs its own flip; this path is purely "the
-                // already-displayed track's art just showed up," so it
-                // updates directly, with nothing to flip away from.
-                guard Optional(flipKey) == displayedKey else { return }
-                displayedImage = image
+                // M8 fix (Codex): always buffer into `latestImage`, even mid-
+                // flip when the guard below can't touch `settledImage` yet —
+                // see that property's own doc comment. The guarded update
+                // underneath is unchanged: it's still the at-rest case
+                // (unrelated to any flip in flight) where `content` needs
+                // `settledImage` itself kept in sync for the front-half of
+                // the NEXT flip.
+                latestImage = image
+                guard Optional(flipKey) == committedKey else { return }
+                settledImage = image
             }
-            .onDisappear { flipTask?.cancel() }
+            .onDisappear { commitTask?.cancel() }
     }
 
     @ViewBuilder
-    private var artworkTile: some View {
+    private func artworkTile(showing shownImage: NSImage?) -> some View {
         Group {
-            if let displayedImage {
-                Image(nsImage: displayedImage)
+            if let shownImage {
+                Image(nsImage: shownImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
@@ -227,28 +356,6 @@ struct FlippingArtwork: View {
                 .fill(Color.black.opacity(0.06))
         )
         .shadow(color: .black.opacity(0.35), radius: 6, y: 3)
-    }
-
-    private func runFlip(to newImage: NSImage?, key: AnyHashable) {
-        flipTask?.cancel()
-        flipTask = Task { @MainActor in
-            withAnimation(.easeInOut(duration: Self.halfDuration)) {
-                rotation = 90
-            }
-            try? await Task.sleep(for: .seconds(Self.halfDuration))
-            guard !Task.isCancelled else { return }
-            // Swap content at the edge-on 90° point, then jump to -90° with
-            // no ambient animation (no `.animation(_:value:)` is attached to
-            // this view, so a bare assignment outside `withAnimation` never
-            // animates) before rotating back up to 0 — this is what makes
-            // the swap itself invisible instead of a visible content pop.
-            displayedImage = newImage
-            displayedKey = key
-            rotation = -90
-            withAnimation(.easeInOut(duration: Self.halfDuration)) {
-                rotation = 0
-            }
-        }
     }
 }
 
@@ -295,6 +402,23 @@ struct WaveformVisualizer: View {
     let isPlaying: Bool
     let gradientColors: (top: Color, bottom: Color)
 
+    /// M8 audit fix: production wants `TimelineView(.animation)` — a
+    /// display-link-driven schedule that tracks the real screen refresh rate
+    /// (up to 120Hz on ProMotion) rather than a fixed tick, so the bars read
+    /// as genuinely smooth motion instead of a visibly steppy 30fps flicker.
+    /// That schedule needs a real, on-screen, key window to ever fire, though
+    /// — `NotchSnapshot`'s off-screen render harness (see
+    /// `SnapshotEnvironment.swift`) parks its window outside any real
+    /// `NSScreen`, where a display-link schedule can go dead silent (its
+    /// content closure never runs even once), leaving this whole branch blank
+    /// in a snapshot rather than showing a representative first frame. The
+    /// 30Hz `.periodic` schedule below is kept ONLY for that harness — a
+    /// plain timer-driven schedule, not tied to a display link, which the
+    /// scrubber's own `TimelineView(.periodic(...))` elsewhere already proves
+    /// does fire there — gated on `isSnapshotRender` so the live app never
+    /// takes the lower-frame-rate path.
+    @Environment(\.isSnapshotRender) private var isSnapshotRender
+
     static let barCount = 6
     static let barWidth: CGFloat = 2.5
     static let barSpacing: CGFloat = 2.5
@@ -309,20 +433,16 @@ struct WaveformVisualizer: View {
     var body: some View {
         Group {
             if isPlaying {
-                // `.animation` is a display-link-driven schedule — it needs
-                // an actual on-screen, key window to ever tick. `NotchSnapshot`
-                // renders into an off-screen window positioned outside any
-                // real `NSScreen`, so that schedule can go dead silent
-                // (content closure never even runs once), leaving this whole
-                // branch blank instead of showing a first frame. `.periodic`
-                // is a plain timer-driven schedule, not tied to a display
-                // link — the scrubber's own `TimelineView(.periodic(...))`
-                // above already proves that kind of schedule does fire in
-                // this exact off-screen harness — so it's used here too, at
-                // a smooth-enough 30fps for the live app.
-                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
-                    let t = timeline.date.timeIntervalSinceReferenceDate
-                    bars(heights: (0..<Self.barCount).map { animatedHeight(t: t, index: $0) })
+                if isSnapshotRender {
+                    TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
+                        let t = timeline.date.timeIntervalSinceReferenceDate
+                        bars(heights: (0..<Self.barCount).map { animatedHeight(t: t, index: $0) })
+                    }
+                } else {
+                    TimelineView(.animation) { timeline in
+                        let t = timeline.date.timeIntervalSinceReferenceDate
+                        bars(heights: (0..<Self.barCount).map { animatedHeight(t: t, index: $0) })
+                    }
                 }
             } else {
                 bars(heights: Self.staticHeights).opacity(0.5)

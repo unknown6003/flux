@@ -66,7 +66,10 @@ enum NotchMetrics {
         case .nowPlaying: return 185
         case .shelf: return 150
         case .mirror: return 170
-        case .timers: return 185
+        // 190 (the max tier): even with the decorative header removed, the
+        // start chrome + one running row + the scroll-fade inset want every
+        // point available so the first countdown renders un-faded.
+        case .timers: return 190
         case .calendar: return 190
         case .clipboard: return 190
         }

@@ -85,7 +85,7 @@ private struct NowPlayingCompactView: View {
         } else {
             Image(systemName: "music.note")
                 .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
                 .frame(width: 16, height: 16)
         }
     }
@@ -122,7 +122,7 @@ private struct StaticEqualizerBars: View {
         HStack(alignment: .bottom, spacing: 2) {
             ForEach([5, 8, 5], id: \.self) { height in
                 Capsule()
-                    .fill(Color.white.opacity(0.45))
+                    .fill(Color.white.opacity(NotchDesign.tertiaryOpacity))
                     .frame(width: 2, height: CGFloat(height))
             }
         }
@@ -153,16 +153,22 @@ private struct NowPlayingExpandedView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Bug fix (M8): `NotchRootView`'s Duo layout gives this pane
+        // chrome's 16pt horizontal inset only on the panel's own outer edge
+        // (the artwork was nearly touching it), nothing on the inner edge
+        // against the divider — see `NotchDesign.paneInsets`'s own doc
+        // comment for why this is applied symmetrically.
+        .padding(.horizontal, NotchDesign.paneInsets)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: NotchDesign.space2) {
             Image(systemName: "music.note")
                 .font(.system(size: 28))
-                .foregroundStyle(Color.white.opacity(0.3))
+                .foregroundStyle(Color.white.opacity(NotchDesign.quaternaryOpacity))
             Text("Nothing playing")
                 .font(.callout)
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -179,15 +185,15 @@ private struct NowPlayingExpandedView: View {
     // MARK: Row 1 — artwork, title/artist, waveform
 
     private func headerRow(_ state: NowPlayingState) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: NotchDesign.space3) {
             FlippingArtwork(image: service.artwork, flipKey: AnyHashable(flipKey(for: state)))
 
             VStack(alignment: .leading, spacing: 2) {
-                MarqueeText(text: state.title, font: .system(size: 15, weight: .semibold),
+                MarqueeText(text: state.title, font: NotchDesign.titleFont,
                             color: .white, height: 18)
                 if let artist = state.artist {
                     MarqueeText(text: artist, font: .system(size: 13),
-                                color: Color.white.opacity(0.55), height: 16)
+                                color: Color.white.opacity(NotchDesign.secondaryOpacity), height: 16)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -248,8 +254,8 @@ private struct NowPlayingExpandedView: View {
                 Spacer()
                 Text("-\(Self.format(remaining))")
             }
-            .font(.system(size: 11).monospacedDigit())
-            .foregroundStyle(Color.white.opacity(0.5))
+            .font(NotchDesign.monoDigitsSmall)
+            .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
 
             ScrubberTrack(
                 progress: elapsed / duration,
@@ -329,7 +335,7 @@ private struct NowPlayingExpandedView: View {
         } label: {
             Image(systemName: "laptopcomputer")
                 .font(.system(size: 15))
-                .foregroundStyle(Color.white.opacity(0.45))
+                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
         }
         .buttonStyle(.plain)
     }

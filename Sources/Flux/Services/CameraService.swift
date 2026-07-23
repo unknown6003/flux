@@ -94,6 +94,33 @@ final class CameraService: ObservableObject {
         observeSessionNotifications()
     }
 
+    /// Preview/testing seam (M8 fix): constructs a service that reports
+    /// `isAvailable == false` unconditionally, regardless of what real camera
+    /// hardware the host machine actually has. `NotchSnapshot`'s
+    /// `expanded-mirror` render needs its "No camera found" branch to be what
+    /// actually renders deterministically — not a coincidence of whichever
+    /// machine happens to run `--snapshot-notch` next, which could have a
+    /// real built-in camera. `discoverDefaultDevice()` is skipped entirely
+    /// when `forcingUnavailable` is `true` (not merely discarding its
+    /// result) — the smallest, most honest seam: this never touches
+    /// `AVCaptureDevice.DiscoverySession` at all, so a snapshot render can
+    /// never accidentally probe/claim real capture hardware.
+    init(forcingUnavailable: Bool) {
+        if forcingUnavailable {
+            self.device = nil
+            self.isAvailable = false
+            cameraLog.notice("CameraService: constructed with forcingUnavailable — isAvailable is false regardless of real hardware (preview/snapshot use only)")
+        } else {
+            let device = Self.discoverDefaultDevice()
+            self.device = device
+            self.isAvailable = device != nil
+            if !isAvailable {
+                cameraLog.notice("CameraService: no built-in camera device found — Mirror widget will show its unavailable state")
+            }
+        }
+        observeSessionNotifications()
+    }
+
     deinit {
         // Plain teardown of what this instance itself registered, called
         // directly from a nonisolated `deinit` — mirrors
@@ -137,6 +164,33 @@ final class CameraService: ObservableObject {
             }
         }
         return nil
+    }
+
+    // MARK: - Preview mirroring
+
+    /// Whether `MirrorWidget`'s preview-layer connection may have its mirror
+    /// configured *right now*. Pure so `--selftest` can cover it without a
+    /// camera — the actual `AVCaptureConnection` mutation lives in
+    /// `MirrorWidget.CameraPreviewView`, but the *decision* is centralized and
+    /// tested here.
+    ///
+    /// Both conditions are load-bearing against an uncatchable
+    /// `NSInvalidArgumentException` (an Obj-C exception Swift can't catch =
+    /// instant crash):
+    /// - `sessionRunning`: the connection's mirror MUST only be touched once
+    ///   `startRunning()` has actually returned. Configuring it while
+    ///   `startRunning()` is still executing on `sessionQueue` races that call
+    ///   — which re-initializes the connection's own
+    ///   `automaticallyAdjustsVideoMirroring` back to `true` as it activates
+    ///   connections — so a `isVideoMirrored = true` on the main thread can
+    ///   land in the window where auto-adjust flipped back to `true`, and
+    ///   setting `isVideoMirrored` while `automaticallyAdjustsVideoMirroring`
+    ///   is `true` throws. Gating on the session actually running is what keeps
+    ///   the configuration off that race entirely.
+    /// - `mirroringSupported`: setting `isVideoMirrored` on a connection whose
+    ///   `isVideoMirroringSupported` is `false` throws outright.
+    static func shouldConfigureMirroring(sessionRunning: Bool, mirroringSupported: Bool) -> Bool {
+        sessionRunning && mirroringSupported
     }
 
     // MARK: - Lifecycle

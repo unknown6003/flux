@@ -178,6 +178,19 @@ final class ClipboardMonitor: ObservableObject {
         suppressedChangeCount = nil
     }
 
+    // MARK: - Fixture injection (dev/testing only)
+
+    /// Directly sets `entries`, bypassing the pasteboard-polling pipeline
+    /// entirely. Used by `NotchSnapshot` (`--snapshot-notch`) to render
+    /// deterministic fixture history offscreen, without a real `NSPasteboard`
+    /// poll. Mirrors `NowPlayingService.injectPreviewState` — never called
+    /// from a live poll path; `poll()` would simply overwrite it on the next
+    /// tick, but a snapshot render never calls `start()`, so that never
+    /// actually happens here.
+    func injectPreviewEntries(_ entries: [ClipboardEntry]) {
+        self.entries = entries
+    }
+
     // MARK: - Polling
 
     private func poll() {

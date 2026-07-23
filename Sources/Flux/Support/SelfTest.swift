@@ -2017,6 +2017,33 @@ enum SelfTest {
             check(!cameraProbe.isRunning, "CameraService: start() without authorization never optimistically flips isRunning")
             cameraProbe.stop()
             check(!cameraProbe.isRunning, "CameraService: stop() after an unauthorized start() is still a safe no-op")
+
+            // --- M8 crash fix: the Mirror preview may only configure its
+            // capture connection's mirror once the session is actually running
+            // (never while startRunning() is still racing on the session
+            // queue) AND only when mirroring is supported — either violation
+            // throws an uncatchable NSInvalidArgumentException. The gate is a
+            // pure function so it's covered here without a camera. ---
+            check(CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: true),
+                  "CameraService.shouldConfigureMirroring: configures only when running AND supported")
+            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: true),
+                  "CameraService.shouldConfigureMirroring: never configures before the session is running (would race startRunning())")
+            check(!CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: false),
+                  "CameraService.shouldConfigureMirroring: never sets isVideoMirrored when mirroring is unsupported")
+            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: false),
+                  "CameraService.shouldConfigureMirroring: no-op when neither running nor supported")
+
+            // --- M8 fix: CameraService(forcingUnavailable:) — the seam
+            // `NotchSnapshot`'s expanded-mirror render uses so its "No camera
+            // found" state renders deterministically, even on a machine that
+            // actually has a built-in camera (unlike the plain init() probe
+            // above, which reports whatever the real host hardware has). ---
+            let forcedUnavailableProbe = CameraService(forcingUnavailable: true)
+            check(!forcedUnavailableProbe.isAvailable,
+                  "CameraService(forcingUnavailable: true): isAvailable is false unconditionally, regardless of real host hardware")
+            forcedUnavailableProbe.start() // must still be a safe no-op — isAvailable gates start() same as a real absent camera
+            check(!forcedUnavailableProbe.isRunning,
+                  "CameraService(forcingUnavailable: true): start() is a safe no-op since isAvailable is forced false")
         }
         do {
             let clipboardProbe = ClipboardMonitor(pasteboard: .general)
@@ -2036,6 +2063,43 @@ enum SelfTest {
             clipboardProbe.stop()
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: start()/stop() cycles alone never capture anything")
         }
+
+        // --- M8: fixture-injection seams behind NotchSnapshot's
+        // all-widgets snapshot coverage (`CalendarService.injectPreviewEvents`,
+        // `ClipboardMonitor.injectPreviewEntries`, `PermissionCenter.
+        // injectPreviewStatus`). Each is a direct passthrough into a
+        // service's own `@Published` state — mirroring `NowPlayingService.
+        // injectPreviewState`'s existing seam — so asserting the published
+        // value right after injecting is enough to prove each seam actually
+        // reaches what its widget reads. `NotchSnapshot` itself renders
+        // real SwiftUI offscreen and isn't exercised by `--selftest`; this is
+        // the seams' own regression net. ---
+        do {
+            let previewCalendar = CalendarService()
+            check(previewCalendar.upcoming.isEmpty, "CalendarService: upcoming starts empty")
+            let fixtureEvent = CalendarEvent(id: "preview-fixture", title: "Fixture Event",
+                                              start: Date(), end: Date().addingTimeInterval(3_600),
+                                              isAllDay: false, calendarColor: nil, location: nil)
+            previewCalendar.injectPreviewEvents([fixtureEvent])
+            check(previewCalendar.upcoming == [fixtureEvent],
+                  "CalendarService.injectPreviewEvents: published upcoming reflects exactly the injected fixture, bypassing EventKit entirely")
+
+            let previewClipboard = ClipboardMonitor(pasteboard: .general)
+            let fixtureEntry = ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .text,
+                                               preview: "preview", fullString: "preview", filePaths: nil)
+            previewClipboard.injectPreviewEntries([fixtureEntry])
+            check(previewClipboard.entries == [fixtureEntry],
+                  "ClipboardMonitor.injectPreviewEntries: published entries reflects exactly the injected fixture, bypassing the pasteboard poll entirely")
+
+            let previewPermissions = PermissionCenter()
+            previewPermissions.injectPreviewStatus(.calendar, .granted)
+            check(previewPermissions.statuses[.calendar] == .granted,
+                  "PermissionCenter.injectPreviewStatus: overwrites the published status for the given kind")
+            previewPermissions.injectPreviewStatus(.camera, .denied)
+            check(previewPermissions.statuses[.camera] == .denied && previewPermissions.statuses[.calendar] == .granted,
+                  "PermissionCenter.injectPreviewStatus: each PermissionKind's injected status is independent of the others")
+        }
+
         // --- M6 fix: ClipboardMonitor.shouldSuppressCapture — the pure
         // decision core behind suppressedChangeCount, split out of poll()
         // (mirroring classify(string:)'s own split, for the identical
@@ -2794,6 +2858,64 @@ enum SelfTest {
             optionClickVM.clicked(optionDown: false)
             check(optionClickVM.state == .expanded(.nowPlaying),
                   "Notch: a plain click (optionDown: false) right after still does the ordinary open/close toggle, completely unaffected by the option-click path")
+        }
+
+        // --- M8: NotchDesign token sanity — the opacity ramp is strictly
+        // ordered (each step dimmer than the last) and every spacing token
+        // is positive/increasing, so a future edit can't quietly invert the
+        // visual hierarchy or zero out a token every widget lays out
+        // against. ---
+        do {
+            check(NotchDesign.primaryOpacity > NotchDesign.secondaryOpacity
+                    && NotchDesign.secondaryOpacity > NotchDesign.tertiaryOpacity
+                    && NotchDesign.tertiaryOpacity > NotchDesign.quaternaryOpacity
+                    && NotchDesign.quaternaryOpacity > NotchDesign.hairlineOpacity,
+                  "NotchDesign: the opacity ramp is strictly ordered primary > secondary > tertiary > quaternary > hairline")
+            check(NotchDesign.primaryOpacity == 1.0, "NotchDesign: primaryOpacity is full strength")
+            check(NotchDesign.hairlineOpacity > 0, "NotchDesign: hairlineOpacity is still visible, not fully transparent")
+
+            check(NotchDesign.space1 > 0 && NotchDesign.space2 > 0 && NotchDesign.space3 > 0 && NotchDesign.space4 > 0,
+                  "NotchDesign: every base spacing token is positive")
+            check(NotchDesign.space1 < NotchDesign.space2
+                    && NotchDesign.space2 < NotchDesign.space3
+                    && NotchDesign.space3 < NotchDesign.space4,
+                  "NotchDesign: the spacing scale is strictly increasing (space1 < space2 < space3 < space4)")
+            check(NotchDesign.rowSpacing == NotchDesign.space2, "NotchDesign: rowSpacing aliases space2")
+            check(NotchDesign.sectionSpacing == NotchDesign.space3, "NotchDesign: sectionSpacing aliases space3")
+            check(NotchDesign.contentPadding == NotchDesign.space4, "NotchDesign: contentPadding aliases space4")
+
+            check(NotchDesign.scrollFadeLength > 0 && NotchDesign.scrollFadeContentInset > 0,
+                  "NotchDesign: the scroll-fade length and its matching content inset are both positive")
+            check(NotchDesign.paneInsets > 0, "NotchDesign: paneInsets is a real, positive inset")
+        }
+
+        // --- M8: Formatters.age(from:to:) — the fix for Shelf/Clipboard row
+        // captions reading a future-tense "in 0s" for an item added moments
+        // ago. Anything under 60s reads as a flat "now"; anything older
+        // reads unambiguously past tense, even right across the boundary
+        // that used to flip sign under ordinary clock skew. ---
+        do {
+            let now = Date()
+            check(Formatters.age(from: now, to: now) == "now",
+                  "Formatters.age: a zero-second-old item reads 'now', not a future-tense 'in 0s'")
+            check(Formatters.age(from: now.addingTimeInterval(-30), to: now) == "now",
+                  "Formatters.age: a 30s-old item still reads 'now' (under the 60s threshold)")
+            check(Formatters.age(from: now.addingTimeInterval(-59), to: now) == "now",
+                  "Formatters.age: a 59s-old item is still 'now' (just under the boundary)")
+            // The actual bug repro: `from` lands microseconds AFTER `to`
+            // (clock skew/rounding between two separate `Date()` reads,
+            // never a real future timestamp) — this must still read 'now',
+            // never a future-tense phrase.
+            check(Formatters.age(from: now.addingTimeInterval(2), to: now) == "now",
+                  "Formatters.age: a `from` timestamp marginally AFTER `to` (clock skew) still reads 'now', never future tense")
+
+            let age90 = Formatters.age(from: now.addingTimeInterval(-90), to: now)
+            check(!age90.hasPrefix("in "), "Formatters.age: a 90s-old item is never phrased in future tense (got \(age90))")
+            check(age90.contains("ago"), "Formatters.age: a 90s-old item reads past tense (\"...ago\"), got \(age90)")
+
+            let age60 = Formatters.age(from: now.addingTimeInterval(-60), to: now)
+            check(!age60.hasPrefix("in ") && age60 != "now",
+                  "Formatters.age: exactly at the 60s boundary the item is old enough for real relative text (got \(age60)), not 'now' or future tense")
         }
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")

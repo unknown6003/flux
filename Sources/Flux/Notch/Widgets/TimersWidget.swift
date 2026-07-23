@@ -163,8 +163,13 @@ private struct TimersExpandedView: View {
     @State private var customMinutes = 10
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header
+        // No "Timers" title row: unlike Shelf/Clipboard headers (which carry
+        // the Clear All action), it was purely decorative — and its ~19pt
+        // (text + row spacing) is exactly what the running list needs so the
+        // first timer's countdown renders clear of the bottom scroll fade
+        // (snapshot-verified: with the header, the countdown sat entirely
+        // inside the fade zone and was invisible without scrolling).
+        VStack(alignment: .leading, spacing: NotchDesign.rowSpacing) {
             presetRow
             customRow
             // A plain `Divider()` leans on the system separator color, which
@@ -175,17 +180,11 @@ private struct TimersExpandedView: View {
             // the notch UI (`NotchRootView`'s gauge track, `EventRow`'s
             // dividing dot) instead.
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
                 .frame(height: 1)
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private var header: some View {
-        Text("Timers")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.7))
     }
 
     // MARK: Start controls
@@ -194,7 +193,7 @@ private struct TimersExpandedView: View {
     /// amber is gone from every widget surface except calendar dots/
     /// warnings under Alcove's near-monochrome language.
     private var presetRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: NotchDesign.rowSpacing) {
             ForEach(TimersWidget.presetMinutes, id: \.self) { minutes in
                 Button {
                     start(minutes: minutes)
@@ -204,7 +203,7 @@ private struct TimersExpandedView: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(Capsule().fill(Color.white.opacity(0.14)))
+                        .background(Capsule().fill(NotchDesign.capsuleFill))
                 }
                 .buttonStyle(.plain)
             }
@@ -217,11 +216,7 @@ private struct TimersExpandedView: View {
     /// distinct from the preset row above it even with amber gone.
     private var customRow: some View {
         HStack(spacing: 10) {
-            Stepper(value: $customMinutes, in: TimersWidget.customMinutesRange) {
-                Text("\(customMinutes) min")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white)
-            }
+            customStepper
 
             Spacer(minLength: 0)
 
@@ -233,6 +228,34 @@ private struct TimersExpandedView: View {
                 .padding(.vertical, 6)
                 .background(Capsule().fill(Color.white.opacity(0.9)))
         }
+    }
+
+    /// Bug fix (M8): the stock macOS `Stepper` this row used to wrap drew
+    /// its own system-styled +/- control — the one stock AppKit/SwiftUI
+    /// chrome left anywhere in this near-monochrome, otherwise fully custom
+    /// panel, and it clashed visibly against the dark surface. Replaced
+    /// with two circular, monochrome buttons (`NotchDesign.capsuleFill`,
+    /// matching every other interactive fill in this panel) flanking the
+    /// same minutes label the `Stepper`'s label closure used to supply.
+    /// Same `TimersWidget.customMinutesRange` (1...120) clamping as before,
+    /// just applied by hand in `adjust(by:)` instead of relying on the
+    /// `Stepper`'s own built-in bounds. `StepperRepeatButton` (below) is the
+    /// M8 follow-up fix restoring the stock `Stepper`'s press-and-hold
+    /// repeat, which this replacement dropped.
+    private var customStepper: some View {
+        HStack(spacing: NotchDesign.space2) {
+            StepperRepeatButton(systemName: "minus") { adjust(by: -1) }
+            Text("\(customMinutes) min")
+                .font(NotchDesign.monoDigitsBody)
+                .foregroundStyle(.white)
+                .frame(minWidth: 44)
+            StepperRepeatButton(systemName: "plus") { adjust(by: 1) }
+        }
+    }
+
+    private func adjust(by delta: Int) {
+        let range = TimersWidget.customMinutesRange
+        customMinutes = min(max(customMinutes + delta, range.lowerBound), range.upperBound)
     }
 
     private func start(minutes: Int) {
@@ -285,12 +308,96 @@ private struct TimersExpandedView: View {
 
     private func rows(now: Date) -> some View {
         ScrollView(showsIndicators: false) {
+            // 6, not `NotchDesign.rowSpacing` (8) — deliberately tightened
+            // from 8 for this exact height-budget reason; see this type's
+            // own doc comment above `TimersExpandedView`.
             VStack(spacing: 6) {
                 ForEach(service.timers) { timer in
                     TimerRow(timer: timer, now: now, service: service)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.top, 2)
+            // Bug fix (M8): matches `notchScrollFade()` below.
+            .padding(.bottom, 2 + NotchDesign.scrollFadeContentInset)
+        }
+        // Bug fix (M8): the running timer's countdown row was clipping hard
+        // into the panel's 32pt bottom corner radius; this fades it out.
+        .notchScrollFade()
+    }
+}
+
+// MARK: - Hold-to-repeat stepper button (Codex M8 finding)
+
+/// The custom minutes stepper's +/- control: a single tap adjusts by one
+/// minute (matching the stock `Stepper` this replaced), and pressing and
+/// holding repeats the adjustment — the one piece of the stock `Stepper`'s
+/// behavior the plain-`Button` replacement above dropped.
+///
+/// Deliberately NOT a `Button` plus a separate gesture: `.onLongPressGesture(
+/// onPressingChanged:)`'s callback alone already reports press-down/release
+/// as a simple `Bool`, immediately and regardless of `minimumDuration` — a
+/// huge `minimumDuration` here only suppresses `perform` (which nothing here
+/// reads) from ever firing; `onPressingChanged` is what drives everything.
+/// That one signal is enough to implement tap-vs-hold by hand:
+/// `hasFiredDuringHold` tracks whether the repeat loop already got a chance
+/// to fire at least once before release, so a quick tap (released before the
+/// initial delay elapses) still adjusts exactly once, and a long hold's
+/// release never double-fires on top of the repeat loop's own last tick.
+private struct StepperRepeatButton: View {
+    let systemName: String
+    let action: () -> Void
+
+    /// Matches the stock `Stepper`'s own feel: a brief pause before the
+    /// repeat kicks in (so a normal tap never accidentally free-repeats),
+    /// then a quick, steady repeat cadence.
+    private static let initialDelay: Duration = .milliseconds(400)
+    private static let repeatInterval: Duration = .milliseconds(100)
+
+    @State private var repeatTask: Task<Void, Never>?
+    @State private var hasFiredDuringHold = false
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(Circle().fill(NotchDesign.capsuleFill))
+            .contentShape(Circle())
+            .onLongPressGesture(minimumDuration: 100_000, maximumDistance: .infinity) {
+                // `perform`: fires only after `minimumDuration` elapses with
+                // no movement/release — effectively never at this duration.
+                // `onPressingChanged` below drives all real behavior.
+            } onPressingChanged: { pressing in
+                if pressing {
+                    beginPress()
+                } else {
+                    endPress()
+                }
+            }
+    }
+
+    private func beginPress() {
+        hasFiredDuringHold = false
+        repeatTask?.cancel()
+        repeatTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.initialDelay)
+            guard !Task.isCancelled else { return }
+            while !Task.isCancelled {
+                hasFiredDuringHold = true
+                action()
+                try? await Task.sleep(for: Self.repeatInterval)
+            }
+        }
+    }
+
+    private func endPress() {
+        repeatTask?.cancel()
+        repeatTask = nil
+        // The repeat loop never got past its initial delay before release —
+        // this was a plain tap, so fire the single adjustment it would
+        // otherwise never get.
+        if !hasFiredDuringHold {
+            action()
         }
     }
 }
@@ -306,12 +413,12 @@ private struct TimerRow: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(timer.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(NotchDesign.bodyFont)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(TimersWidget.formatCountdown(max(timer.remaining(at: now), 0)))
-                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(timer.isPaused ? Color.white.opacity(0.4) : Color.white)
+                    .font(NotchDesign.monoDigitsLarge)
+                    .foregroundStyle(timer.isPaused ? Color.white.opacity(NotchDesign.tertiaryOpacity) : Color.white)
             }
 
             Spacer(minLength: 0)
@@ -334,7 +441,7 @@ private struct TimerRow: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundStyle(Color.white.opacity(0.4))
+                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
             }
             .buttonStyle(.plain)
         }

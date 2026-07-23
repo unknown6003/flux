@@ -150,6 +150,20 @@ final class CalendarService: ObservableObject {
         midnightRolloverTask = nil
     }
 
+    // MARK: - Fixture injection (dev/testing only)
+
+    /// Directly sets `upcoming`, bypassing the `EKEventStore` fetch pipeline
+    /// entirely. Used by `NotchSnapshot` (`--snapshot-notch`) to render
+    /// deterministic fixture agendas offscreen, without a real calendar
+    /// permission grant or event-store fetch. Mirrors `NowPlayingService.
+    /// injectPreviewState` — never called from a live fetch path; `refresh()`
+    /// would simply overwrite it on the next `.EKEventStoreChanged`/midnight-
+    /// rollover tick, but a snapshot render never calls `start()`, so that
+    /// never actually happens here.
+    func injectPreviewEvents(_ events: [CalendarEvent]) {
+        upcoming = events
+    }
+
     /// No repeating timer: the rolling "now → end of tomorrow" fetch window
     /// (see `fetchUpcoming`) is only ever recomputed when something calls
     /// `refresh()` — an `.EKEventStoreChanged` notification, or this task.
