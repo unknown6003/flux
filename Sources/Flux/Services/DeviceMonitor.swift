@@ -45,7 +45,7 @@ enum BluetoothEvent: Equatable {
 /// touching `IOBluetooth`** — so it never triggers macOS 12+'s Bluetooth TCC
 /// prompt the way `IOBluetoothDevice.register(forConnectNotifications:)` did.
 ///
-/// Two independent, both permission-free, sources feed the same events:
+/// Three independent, all permission-free, sources feed the same events:
 ///
 /// 1. **IOKit matching notifications** on `AppleDeviceManagementHIDEventService`
 ///    — the synthetic IOService AirPods and other BT accessories register, and
@@ -55,20 +55,28 @@ enum BluetoothEvent: Equatable {
 ///    when one vanishes (disconnect). This is the primary source and the only
 ///    one that can report battery + HID category.
 ///
-/// 2. **CoreAudio** device-list diffing (`kAudioHardwarePropertyDevices`) —
+/// 2. **IOKit matching notifications** on the generic `IOHIDDevice` class
+///    (M10 review) — catches third-party Bluetooth keyboards/mice/
+///    controllers that never register the Apple-accessory-oriented class
+///    above. Same matching machinery, same transport/built-in filter, same
+///    dedupe — see `genericHIDServiceClass`'s doc comment.
+///
+/// 3. **CoreAudio** device-list diffing (`kAudioHardwarePropertyDevices`) —
 ///    catches Bluetooth *audio* devices that may register as a CoreAudio
-///    output without exposing the HID service above. Only devices whose
+///    output without exposing either HID service above. Only devices whose
 ///    `kAudioDevicePropertyTransportType` is Bluetooth/BluetoothLE count.
 ///
-/// Both sources dedupe through the same name-keyed, session-scoped connected
-/// set (`shouldEmitConnect`/`shouldEmitDisconnect`), so the common case — an
-/// AirPods connect that shows up via *both* IOKit and CoreAudio at once —
-/// emits a single wing, not two: once a name is "connected" any further
-/// connect report for it is absorbed regardless of how much time has passed
-/// (a pure 5s time-window can't catch a slow-to-register audio device that
-/// shows up more than 5s after IOKit already reported it). The 5s window
-/// still exists, but scoped to only its original purpose — a disconnect→
-/// reconnect flap. See `shouldEmitConnect` for the name-keying tradeoff.
+/// All three sources dedupe through the same normalized-name-keyed,
+/// session-scoped connected set (`shouldEmitConnect`/`shouldEmitDisconnect`),
+/// so the common case — an AirPods connect that shows up via *multiple*
+/// sources at once — emits a single wing, not several: once a name is
+/// "connected" any further connect report for it is absorbed regardless of
+/// how much time has passed (a pure 5s time-window can't catch a slow-to-
+/// register audio device that shows up more than 5s after IOKit already
+/// reported it). The 5s window still exists, but scoped to only its original
+/// purpose — a disconnect→reconnect flap. See `shouldEmitConnect` for the
+/// name-keying tradeoff and `dedupeKey(forName:)` for the cross-source name
+/// normalization (M10 review) and its residual risk.
 ///
 /// ## The C-callback interop (IOKit)
 /// `IOServiceAddMatchingNotification` takes a plain `@convention(c)`
@@ -103,6 +111,19 @@ final class DeviceMonitor {
     /// from, now also its connect/disconnect signal.
     private static let serviceClass = "AppleDeviceManagementHIDEventService"
 
+    /// M10 review: `AppleDeviceManagementHIDEventService` is Apple-accessory-
+    /// oriented (AirPods and similar battery-reporting accessories) — a
+    /// third-party Bluetooth keyboard, mouse, or game controller typically
+    /// never publishes it, so it would otherwise be invisible to this
+    /// monitor. `IOHIDDevice` is the class such accessories register under
+    /// instead; matched through the exact same `Transport`/`Built-In`/
+    /// `Product`/`DeviceUsagePairs` property reads (`IOHIDDevice` nubs expose
+    /// the same standard IOHID keys `AppleDeviceManagementHIDEventService`
+    /// does) and the same name-keyed dedupe, so a device that happens to
+    /// register under both classes at once (absorbed the same way an
+    /// IOKit+CoreAudio double-report for AirPods already is) doesn't double-post.
+    private static let genericHIDServiceClass = "IOHIDDevice"
+
     /// Reconnect-storm dedupe window — see `shouldEmitConnect`.
     private static let dedupeWindow: TimeInterval = 5
 
@@ -113,6 +134,10 @@ final class DeviceMonitor {
     /// the callback, which is the same handle.
     private var firstMatchIterator: io_iterator_t = 0
     private var terminatedIterator: io_iterator_t = 0
+    /// The `genericHIDServiceClass` counterparts of the two iterators above —
+    /// see that constant's doc comment for why a second matching source exists.
+    private var genericFirstMatchIterator: io_iterator_t = 0
+    private var genericTerminatedIterator: io_iterator_t = 0
 
     // MARK: CoreAudio state
     /// Held once and reused for removal — CoreAudio compares block *identity*,
@@ -215,6 +240,43 @@ final class DeviceMonitor {
             }
         }
 
+        // M10 review: second matching source for generic (non-Apple-
+        // accessory) Bluetooth HID devices — see `genericHIDServiceClass`'s
+        // doc comment. Same callback bodies as above (they only dispatch on
+        // the iterator IOKit hands them, never reference a specific class),
+        // just registered against a different service class and iterator.
+        if let genericFirstMatch = IOServiceMatching(Self.genericHIDServiceClass) {
+            let status = IOServiceAddMatchingNotification(
+                port, kIOFirstMatchNotification, genericFirstMatch,
+                { refCon, iterator in
+                    guard let refCon else { return }
+                    let monitor = Unmanaged<DeviceMonitor>.fromOpaque(refCon).takeUnretainedValue()
+                    MainActor.assumeIsolated { monitor.drain(iterator, isInitialDrain: false, event: .connect) }
+                },
+                context, &genericFirstMatchIterator)
+            if status == KERN_SUCCESS {
+                drain(genericFirstMatchIterator, isInitialDrain: true, event: .connect)
+            } else {
+                deviceLog.error("DeviceMonitor: failed to register generic-HID first-match notification (kern_return_t \(status))")
+            }
+        }
+
+        if let genericTermMatch = IOServiceMatching(Self.genericHIDServiceClass) {
+            let status = IOServiceAddMatchingNotification(
+                port, kIOTerminatedNotification, genericTermMatch,
+                { refCon, iterator in
+                    guard let refCon else { return }
+                    let monitor = Unmanaged<DeviceMonitor>.fromOpaque(refCon).takeUnretainedValue()
+                    MainActor.assumeIsolated { monitor.drain(iterator, isInitialDrain: false, event: .disconnect) }
+                },
+                context, &genericTerminatedIterator)
+            if status == KERN_SUCCESS {
+                drain(genericTerminatedIterator, isInitialDrain: true, event: .disconnect)
+            } else {
+                deviceLog.error("DeviceMonitor: failed to register generic-HID terminated notification (kern_return_t \(status))")
+            }
+        }
+
         startAudioListener()
     }
 
@@ -227,6 +289,8 @@ final class DeviceMonitor {
 
         if firstMatchIterator != 0 { IOObjectRelease(firstMatchIterator); firstMatchIterator = 0 }
         if terminatedIterator != 0 { IOObjectRelease(terminatedIterator); terminatedIterator = 0 }
+        if genericFirstMatchIterator != 0 { IOObjectRelease(genericFirstMatchIterator); genericFirstMatchIterator = 0 }
+        if genericTerminatedIterator != 0 { IOObjectRelease(genericTerminatedIterator); genericTerminatedIterator = 0 }
         if let port = notificationPort {
             if let source = IONotificationPortGetRunLoopSource(port)?.takeUnretainedValue() {
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -247,6 +311,8 @@ final class DeviceMonitor {
         // raw teardown directly rather than routing through an instance method.
         if firstMatchIterator != 0 { IOObjectRelease(firstMatchIterator) }
         if terminatedIterator != 0 { IOObjectRelease(terminatedIterator) }
+        if genericFirstMatchIterator != 0 { IOObjectRelease(genericFirstMatchIterator) }
+        if genericTerminatedIterator != 0 { IOObjectRelease(genericTerminatedIterator) }
         if let port = notificationPort {
             if let source = IONotificationPortGetRunLoopSource(port)?.takeUnretainedValue() {
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -423,8 +489,14 @@ final class DeviceMonitor {
     private func shouldEmitConnect(name: String, now: Date = Date()) -> Bool {
         lastDisconnectAt = lastDisconnectAt.filter { now.timeIntervalSince($0.value) < Self.dedupeWindow }
 
-        guard Self.shouldEmitConnect(name: name, now: now, connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt) else { return false }
-        connectedNames.insert(name)
+        // M10 review: dedupe on the NORMALIZED key, not the raw display name
+        // — see `dedupeKey(forName:)`. `connectedNames`/`lastDisconnectAt`
+        // therefore always hold keys, never display names, but that's purely
+        // internal bookkeeping: the emitted `BluetoothEvent` always carries
+        // the original `name` this function was called with, untouched.
+        let key = Self.dedupeKey(forName: name)
+        guard Self.shouldEmitConnect(name: key, now: now, connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt) else { return false }
+        connectedNames.insert(key)
         return true
     }
 
@@ -432,10 +504,43 @@ final class DeviceMonitor {
     /// clears `name` from the connected set and records the disconnect time
     /// (the reconnect-storm grace window `shouldEmitConnect` consults).
     private func shouldEmitDisconnect(name: String, now: Date = Date()) -> Bool {
-        guard Self.shouldEmitDisconnect(name: name, connectedNames: connectedNames) else { return false }
-        connectedNames.remove(name)
-        lastDisconnectAt[name] = now
+        let key = Self.dedupeKey(forName: name)
+        guard Self.shouldEmitDisconnect(name: key, connectedNames: connectedNames) else { return false }
+        connectedNames.remove(key)
+        lastDisconnectAt[key] = now
         return true
+    }
+
+    /// Normalizes a device display name into a stable dedupe key so
+    /// cosmetically different strings for the SAME physical accessory across
+    /// the two sources — IOKit's `Product` vs CoreAudio's device name, or
+    /// either source's `"Bluetooth Device"`/`"Unknown device"` fallback vs the
+    /// other's real name — still collapse onto one connect/disconnect
+    /// session instead of posting two wings (M10 review finding).
+    ///
+    /// Deliberately conservative: only case-folding and whitespace
+    /// normalization (lowercased, leading/trailing trimmed, internal
+    /// whitespace runs collapsed to a single space). No suffix/prefix
+    /// stripping — a rule like "strip a trailing possessive" is itself a
+    /// footgun (it would merge "Ammar's AirPods" and "Sam's AirPods" into the
+    /// same key, turning two distinct devices into one session), so this
+    /// intentionally does NOT attempt it.
+    ///
+    /// Residual risk: this still does not catch every real-world mismatch —
+    /// a genuinely different string per source (e.g. a user-renamed CoreAudio
+    /// device name vs IOKit's raw `Product`, like "Ammar's AirPods" vs
+    /// "AirPods Pro") is not the same key after this normalization and can
+    /// still double-post. A stable per-device identifier (a CoreAudio UID or
+    /// IORegistry entry id shared across both sources) would close that gap,
+    /// but CoreAudio's Bluetooth path here never exposes one — see
+    /// `currentBluetoothAudioDevices()`. Name is still the only identifier
+    /// both sources share.
+    static func dedupeKey(forName name: String) -> String {
+        name
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     /// Pure predicate behind the CONNECT half of the dedupe. Keyed by
@@ -477,6 +582,18 @@ final class DeviceMonitor {
 
     private func startAudioListener() {
         guard deviceListListenerBlock == nil else { return }
+
+        // M10 review: seed the on-launch baseline BEFORE the listener is
+        // installed, not after. A device that connects in the gap between
+        // "listener installed" and "baseline queried" would otherwise be
+        // silently absorbed into the baseline itself (the old ordering) —
+        // its queued callback later diffs against a snapshot that already
+        // contains it, sees no delta, and emits nothing, with no IOKit event
+        // to recover the missed connect. Taken WITHOUT emitting: devices
+        // already connected before Flux even starts watching are baseline,
+        // not fresh connects.
+        knownBluetoothAudioDevices = Self.currentBluetoothAudioDevices() ?? [:]
+
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self else { return }
             // Runs on `DispatchQueue.main` (passed at registration below) — a
@@ -488,9 +605,16 @@ final class DeviceMonitor {
         var address = Self.deviceListAddress
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main, block)
 
-        // Seed the baseline WITHOUT emitting — already-connected BT audio
-        // devices at start are not fresh connects.
-        knownBluetoothAudioDevices = Self.currentBluetoothAudioDevices()
+        // M10 review (continued): re-query and reconcile ONCE, immediately
+        // after the listener is armed, against the pre-listener baseline
+        // above. This is a real diff — using `handleAudioDevicesChanged`'s
+        // own emit path — so a device that connected in that narrow gap gets
+        // a genuine connect wing instead of being lost. `nil` here (a HAL
+        // read failure right at startup) just leaves the pre-listener
+        // baseline as-is; there is nothing yet to reconcile against.
+        if let reconciled = Self.currentBluetoothAudioDevices() {
+            reconcileAudioDevices(current: reconciled)
+        }
     }
 
     private func stopAudioListener() {
@@ -504,8 +628,32 @@ final class DeviceMonitor {
     /// Diffs the current Bluetooth-audio device set against the last-seen one
     /// and emits connect/disconnect for the delta. Removed devices use their
     /// cached name (they're already gone and can't be re-queried).
+    ///
+    /// M10 review: a CoreAudio device-list read can fail transiently (the
+    /// size query and the data query race a concurrent reconfiguration, or
+    /// either HAL call just fails) — `currentBluetoothAudioDevices()` returns
+    /// `nil` for that, never an empty dictionary, specifically so this can
+    /// tell "nothing is connected" apart from "the read didn't work." A
+    /// failed read must never be treated as an authoritative empty list: that
+    /// would emit a disconnect for every cached device now, and matching
+    /// false connects on the next successful read. `reconciledSnapshot`
+    /// (below) is the pure form of that decision — a `nil` read passes
+    /// `knownBluetoothAudioDevices` through untouched; only a real (possibly
+    /// empty) read ever replaces it.
     private func handleAudioDevicesChanged() {
-        let current = Self.currentBluetoothAudioDevices()
+        let read = Self.currentBluetoothAudioDevices()
+        if read == nil {
+            deviceLog.error("DeviceMonitor: CoreAudio device-list read failed — preserving the previous snapshot rather than treating it as authoritative (would emit spurious disconnects)")
+        }
+        reconcileAudioDevices(current: Self.reconciledSnapshot(previous: knownBluetoothAudioDevices, read: read))
+    }
+
+    /// The shared diff-and-emit step behind both a listener-driven device-
+    /// list change (`handleAudioDevicesChanged`) and the one-time post-seed
+    /// reconciliation in `startAudioListener()` — same delta logic, same
+    /// dedupe, same snapshot update, just fed a `current` snapshot from a
+    /// different call site.
+    private func reconcileAudioDevices(current: [AudioObjectID: String]) {
         let previous = knownBluetoothAudioDevices
 
         for (id, name) in current where previous[id] == nil {
@@ -524,14 +672,30 @@ final class DeviceMonitor {
     }
 
     /// The current default+all audio devices whose transport is Bluetooth /
-    /// Bluetooth LE, `AudioObjectID` → name.
-    private static func currentBluetoothAudioDevices() -> [AudioObjectID: String] {
+    /// Bluetooth LE, `AudioObjectID` → name. `nil` — not an empty dictionary —
+    /// when the underlying `allAudioDevices()` HAL read itself failed, so
+    /// callers can tell "nothing connected" apart from "couldn't read" (M10
+    /// review; see `handleAudioDevicesChanged`).
+    private static func currentBluetoothAudioDevices() -> [AudioObjectID: String]? {
+        guard let ids = allAudioDevices() else { return nil }
         var result: [AudioObjectID: String] = [:]
-        for id in allAudioDevices() {
+        for id in ids {
             guard let transport = transportType(id), isBluetoothTransport(transport) else { continue }
             result[id] = deviceName(id) ?? "Bluetooth Device"
         }
         return result
+    }
+
+    /// Pure decision behind "should a failed CoreAudio device-list read wipe
+    /// the known snapshot" (M10 review) — extracted so `--selftest` can
+    /// verify it without a real CoreAudio call. `read` is what
+    /// `currentBluetoothAudioDevices()` returned: `nil` means the HAL read
+    /// failed and `previous` must pass through unchanged (never overwritten
+    /// with an empty/partial result); any non-nil value — including a
+    /// genuinely empty dictionary, meaning every BT audio device really is
+    /// gone — replaces it.
+    static func reconciledSnapshot(previous: [AudioObjectID: String], read: [AudioObjectID: String]?) -> [AudioObjectID: String] {
+        read ?? previous
     }
 
     /// CoreAudio transport-type overload — the four-char-code form of the same
@@ -619,15 +783,20 @@ final class DeviceMonitor {
                                     mElement: kAudioObjectPropertyElementMain)
     }
 
-    private static func allAudioDevices() -> [AudioObjectID] {
+    /// `nil` — not an empty array — specifically when either HAL call
+    /// itself fails, so `currentBluetoothAudioDevices()` can distinguish a
+    /// real "zero devices" read from "the read didn't work" (M10 review).
+    /// `count == 0` (the property genuinely reports no devices) is a
+    /// successful read and returns `[]`, not `nil`.
+    private static func allAudioDevices() -> [AudioObjectID]? {
         var address = deviceListAddress
         let system = AudioObjectID(kAudioObjectSystemObject)
         var dataSize: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &dataSize) == noErr else { return [] }
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &dataSize) == noErr else { return nil }
         let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
         guard count > 0 else { return [] }
         var ids = [AudioObjectID](repeating: kAudioObjectUnknown, count: count)
-        guard AudioObjectGetPropertyData(system, &address, 0, nil, &dataSize, &ids) == noErr else { return [] }
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &dataSize, &ids) == noErr else { return nil }
         return ids
     }
 

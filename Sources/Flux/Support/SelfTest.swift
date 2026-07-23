@@ -1188,6 +1188,46 @@ enum SelfTest {
         check(DeviceMonitor.category(name: "Unknown Thing", usagePairs: []) == .other,
               "DeviceMonitor: an unclassifiable device falls back to .other")
 
+        // --- M10 review: DeviceMonitor.dedupeKey — the conservative cross-
+        // source name normalization (lowercase + trim + collapse whitespace)
+        // that lets the IOKit `Product` name and the CoreAudio device name
+        // for the SAME accessory collapse onto one dedupe key even when they
+        // differ cosmetically. Deliberately does NOT strip suffixes/
+        // possessives — the residual-risk cases at the end confirm that. ---
+        check(DeviceMonitor.dedupeKey(forName: "AirPods") == "airpods",
+              "DeviceMonitor.dedupeKey: lowercases the name")
+        check(DeviceMonitor.dedupeKey(forName: "AIRPODS") == DeviceMonitor.dedupeKey(forName: "airpods"),
+              "DeviceMonitor.dedupeKey: case differences collapse to the same key")
+        check(DeviceMonitor.dedupeKey(forName: "  Magic Mouse  ") == "magic mouse",
+              "DeviceMonitor.dedupeKey: leading/trailing whitespace is trimmed")
+        check(DeviceMonitor.dedupeKey(forName: "Magic    Mouse") == "magic mouse",
+              "DeviceMonitor.dedupeKey: internal whitespace runs collapse to a single space")
+        check(DeviceMonitor.dedupeKey(forName: "Magic\tMouse\n") == "magic mouse",
+              "DeviceMonitor.dedupeKey: tabs/newlines count as whitespace too")
+        check(DeviceMonitor.dedupeKey(forName: "AirPods Pro") == "airpods pro",
+              "DeviceMonitor.dedupeKey: a genuinely multi-word name is preserved, just normalized")
+        check(DeviceMonitor.dedupeKey(forName: "Ammar's AirPods") != DeviceMonitor.dedupeKey(forName: "Sam's AirPods"),
+              "DeviceMonitor.dedupeKey: residual risk — two distinct devices with different possessive prefixes are NOT merged (deliberately conservative, no suffix stripping)")
+        check(DeviceMonitor.dedupeKey(forName: "Bluetooth Device") != DeviceMonitor.dedupeKey(forName: "Magic Mouse"),
+              "DeviceMonitor.dedupeKey: residual risk — one source's generic fallback name still won't match the other source's real name")
+
+        // --- M10 review: DeviceMonitor.reconciledSnapshot — the pure decision
+        // behind "a failed CoreAudio device-list read must never wipe the
+        // known snapshot" (a `nil` read must never be treated as an
+        // authoritative empty list, which would fire spurious disconnects for
+        // every cached device and matching false connects on the next
+        // successful read) ---
+        do {
+            let previous: [AudioObjectID: String] = [1: "AirPods", 2: "Magic Mouse"]
+            check(DeviceMonitor.reconciledSnapshot(previous: previous, read: nil) == previous,
+                  "DeviceMonitor.reconciledSnapshot: a nil read (HAL failure) leaves the previous snapshot completely unchanged")
+            let updated: [AudioObjectID: String] = [3: "Beats Solo"]
+            check(DeviceMonitor.reconciledSnapshot(previous: previous, read: updated) == updated,
+                  "DeviceMonitor.reconciledSnapshot: a successful (non-nil) read always replaces the previous snapshot, even when it differs completely")
+            check(DeviceMonitor.reconciledSnapshot(previous: previous, read: [:]) == [:],
+                  "DeviceMonitor.reconciledSnapshot: a successful read of a genuinely empty device list IS trusted — nil (failure) and [:] (confirmed-empty) are different signals")
+        }
+
         // --- M10: DeviceMonitor construction + start/stop is safe headless.
         // CI has no BT hardware; IOKit notification-port registration and the
         // CoreAudio listener must arm and tear down without crashing on a

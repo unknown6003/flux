@@ -347,3 +347,11 @@ notifications and prompts don't happen at all in a headless CI environment.
 - [ ] **Toggle still gates cleanly**: turn "Bluetooth devices" OFF and confirm
       connecting/disconnecting an accessory posts no wing at all; turn it back
       ON (no prompt) and confirm wings resume on the next connect.
+- [ ] **Third-party (non-Apple) Bluetooth HID accessory** (M10 review fix):
+      connect a non-Apple Bluetooth keyboard, mouse, or game controller — one
+      that does NOT publish `AppleDeviceManagementHIDEventService` (check with
+      `ioreg -c AppleDeviceManagementHIDEventService` before/after pairing;
+      many third-party accessories only ever register a plain `IOHIDDevice`)
+      — and confirm a connect/disconnect wing appears with no Bluetooth
+      prompt, same as an Apple accessory. This is the second, generic
+      `IOHIDDevice` matching source added for exactly this case.
