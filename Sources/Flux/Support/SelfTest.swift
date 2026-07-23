@@ -1142,7 +1142,7 @@ enum SelfTest {
         // --- M10: DeviceMonitor.category — the name + HID-usage-pairs heuristic ---
         check(DeviceMonitor.category(name: "Ammar's AirPods Pro", usagePairs: [(page: 0x0C, usage: 0x01)]) == .audio,
               "DeviceMonitor: an AirPods name (with only consumer usages) maps to .audio")
-        check(DeviceMonitor.category(name: "Sony WH-1000XM4", usagePairs: []) == .audio,
+        check(DeviceMonitor.category(name: "Sony WH-1000XM4 Headphones", usagePairs: []) == .audio,
               "DeviceMonitor: an audio-hinted name with no usage pairs maps to .audio")
         check(DeviceMonitor.category(name: "Magic Keyboard", usagePairs: [(page: 0x01, usage: 0x06)]) == .peripheral,
               "DeviceMonitor: a Generic-Desktop Keyboard usage maps to .peripheral")
