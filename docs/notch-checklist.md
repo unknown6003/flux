@@ -224,3 +224,90 @@ every widget — the items below need a real notched Mac.
       restoreLastDismissed()`, wired to `NotchViewModel.clicked(optionDown:)`).
       Confirm a *plain* click (no option key) right after still does the
       ordinary open/close toggle, unaffected.
+
+## M9 — Alcove lock-screen parity: live media, notifications, unlock pill
+
+Turn on "Show on the lock screen" in Settings → Notch → Experimental before
+any of these — every item below assumes the master toggle is already on, and
+the four sub-toggles beneath it are all on unless a specific item says
+otherwise.
+
+- [ ] **Lock with music playing**: start something playing, lock the screen,
+      and confirm the media pill appears below the notch silhouette with the
+      right artwork/title/artist, fading in over the notch silhouette rather
+      than snapping into place. Skip/pause from another device (or just let
+      the track change) and confirm the pill updates live, still locked, with
+      no need to unlock and re-lock for it to catch up.
+- [ ] **Notification pill**: with something posting a live activity (plug in
+      the charger for the battery wing, or start a timer), lock the screen
+      and confirm its caption shows as a second pill beneath the media pill
+      (or alone, if nothing's playing).
+- [ ] **Fade in/out**: watch the lock (content fades in, ~0.4s) and unlock
+      (content fades out, ~0.25s, BEFORE the panel actually disappears — it
+      shouldn't just vanish instantly) transitions directly; both should read
+      as a soft fade, not a hard cut.
+- [ ] **Unlock sound**: turn on "Play a sound on unlock," lock, then unlock,
+      and confirm a short sound plays right at the moment of unlocking (not
+      before, not noticeably after).
+- [ ] **Unlock pill**: turn on "Unlock pill," lock the screen, and confirm a
+      black pill reading "Press any key to unlock" with a padlock glyph shows
+      below whatever other pills are present.
+- [ ] **Activity allow-list respected**: turn off "Now Playing" (leaving
+      "Notifications" on) with music playing and a live activity both
+      available, lock the screen, and confirm only the notification pill
+      shows — no media pill. Then flip it the other way (Now Playing on,
+      Notifications off) and confirm only the media pill shows. Turning both
+      off (with the master toggle still on) should show just the silhouette
+      (plus the unlock pill, if that's on).
+- [ ] **Rapid lock/unlock cycling**: lock and unlock the screen several times
+      in quick succession (faster than the fade durations) — including
+      re-locking WHILE a fade-out from the previous unlock is still visibly in
+      progress. Confirm this never leaves a stuck, orphaned, or doubled panel
+      behind, and never crashes; the content should always end up in the
+      state matching whatever the CURRENT lock state actually is.
+- [ ] **No interaction possible**: with the lock-screen content showing
+      (any/all pills), try clicking directly on top of it and confirm nothing
+      happens — no highlight, no button press feedback, and typing your
+      password to unlock still works exactly as if none of this were showing.
+- [ ] **Master toggle off mid-lock**: while locked with content showing, have
+      another device/session turn the master "Show on the lock screen" toggle
+      off (or disable the notch panel entirely) — or simulate by unlocking,
+      turning it off, and re-locking — and confirm nothing shows at all on the
+      next lock.
+
+## M9 — Privacy audit: zero permissions by default
+
+`--selftest` covers the factory-default values and the pure consent-gating
+decisions headlessly; the items below need a real fresh macOS user account
+(or at least a fresh TCC state for Flux — `tccutil reset All com.flux.menubar`
+on a throwaway build) since TCC prompts don't happen at all in a headless
+CI environment.
+
+- [ ] **Fresh install, zero TCC prompts at launch**: reset Flux's TCC state
+      (or use a clean account), launch Flux, and confirm **no** permission
+      prompt of any kind appears — no Calendar, Camera, Accessibility,
+      Bluetooth, or Automation dialog — just the chevron appearing near the
+      clock. Open Settings → Notch and confirm Bluetooth, Focus, and the
+      Now Playing AppleScript fallback all show as OFF.
+- [ ] **Bluetooth prompts only on enable**: with Bluetooth still off, connect
+      a Bluetooth accessory and confirm nothing prompts and no wing appears.
+      Turn "Bluetooth devices" on in Settings → Notch → Live Activities and
+      confirm macOS's Bluetooth access prompt appears at that moment (not
+      before) — grant it, then reconnect the accessory and confirm the wing
+      now shows.
+- [ ] **Focus stays silent until enabled**: with Focus still off, change your
+      Focus and confirm no wing appears (and nothing prompts — this feature
+      needs no TCC permission at all). Turn "Focus" on and confirm the peek
+      wing now shows on the next Focus change.
+- [ ] **AppleScript fallback prompts only on first use**: with the fallback
+      still off, temporarily rename/remove whatever makes the MediaRemote
+      adapter available (or otherwise force it unavailable) and confirm Now
+      Playing just shows its empty state — no Automation prompt, no attempt
+      to control Music/Spotify. Turn "AppleScript fallback" on in Settings →
+      Notch and, with Music or Spotify playing, confirm macOS's Automation
+      permission prompt appears the first time Flux actually scripts that
+      app, and Now Playing then reflects it.
+- [ ] **Calendar/Camera/Accessibility unaffected**: confirm these three still
+      prompt exactly where they always have — the first time you click each
+      feature's own "Grant Access" button in Settings → Notch, not at
+      launch and not from any other action.

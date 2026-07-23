@@ -52,11 +52,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let timerService = TimerService()
     private lazy var timersWidget = TimersWidget(
         service: timerService, isEnabled: settings.notchTimersEnabled)
-    // M6: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment. Gated
-    // from `configureLockScreenPresenter()` below; `currentActivityLine` is
-    // wired to `timersWidget`'s own nearest-remaining-timer line in
-    // `configureNotch()`.
-    private let lockScreenPresenter = LockScreenPresenter()
+    // M6/M9: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment.
+    // Gated from `configureLockScreenPresenter()` below. `lazy` (like the
+    // widgets above) because its initializer reads sibling instance
+    // properties (`nowPlayingService`, `notchWindow.activities`, `settings`),
+    // which isn't possible from a plain stored property's default-value
+    // expression; forced into existence by `configureLockScreenPresenter()`'s
+    // own `lockScreenPresenter.setEnabled(...)` call, so nothing extra is
+    // needed to touch it the way `notchActivityRouter` needs its explicit
+    // `_ = notchActivityRouter` line.
+    private lazy var lockScreenPresenter = LockScreenPresenter(
+        nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
     // Single home for every live-activity *producer* (menu-bar overflow,
     // battery, Bluetooth, calendar, volume/brightness HUD) — see
     // `NotchActivityRouter`'s own doc comment for why this replaced the ad
@@ -233,24 +239,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
+        // M9: consent gate for the AppleScript scripting-source failover —
+        // see `NowPlayingService.allowScriptingFallback`'s own doc comment.
+        nowPlayingService.allowScriptingFallback = settings.notchNowPlayingAppleScriptFallbackEnabled
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
         notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
         notchWindow.registry.setEnabled(.mirror, settings.notchMirrorEnabled)
         notchWindow.registry.setEnabled(.timers, settings.notchTimersEnabled)
         notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
-        // Read fresh every time the lock screen actually locks, not cached —
-        // see `LockScreenPresenter.currentActivityLine`'s own doc comment.
-        // Wired generically to whatever the notch's CURRENT live activity is
-        // (`LiveActivity.captionText`) rather than hardcoded to timers
-        // specifically, falling back to the timers widget's own countdown
-        // line only when nothing else is currently showing (e.g. no active
-        // wing at all, or the current one is icon/gauge/artwork-only with no
-        // text of its own to caption with).
-        lockScreenPresenter.currentActivityLine = { [weak self] in
-            guard let self else { return nil }
-            return self.notchWindow.activities.current?.captionText ?? self.timersWidget.nearestRemainingLine(at: Date())
-        }
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
         configureClipboardMonitor()
@@ -279,8 +276,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// EXPERIMENTAL — same "both this feature's own toggle AND the master
     /// notch switch" gating as `configureClipboardMonitor`, for the same
     /// reason: a disabled notch feature means off everywhere.
-    private func configureLockScreenPresenter() {
-        lockScreenPresenter.setEnabled(settings.notchEnabled && settings.notchLockScreenExperimentEnabled)
+    ///
+    /// `lockScreenExperimentEnabled` — like `recomputeDuoActive`'s own
+    /// optional params (see that function's doc comment) — takes the value a
+    /// `settings.$notchLockScreenExperimentEnabled` sink was just handed
+    /// rather than defaulting to a re-read of `settings.
+    /// notchLockScreenExperimentEnabled`: `@Published` delivers via `willSet`,
+    /// so a sink that re-reads the stored property instead of using its own
+    /// emitted value would see the OLD one, one toggle behind. Falls back to
+    /// a live read when called with no argument (every other call site here —
+    /// startup, and any other setting's sink recomputing this incidentally —
+    /// has no fresher value to hand it).
+    private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil) {
+        let experimentEnabled = lockScreenExperimentEnabled ?? settings.notchLockScreenExperimentEnabled
+        lockScreenPresenter.setEnabled(settings.notchEnabled && experimentEnabled)
     }
 
     /// M7 (Alcove parity): pushes the pure `NotchViewModel.duoActive(...)`
@@ -355,6 +364,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.shelf, value) }
             .store(in: &cancellables)
 
+        // M9: push the AppleScript-fallback consent toggle straight into the
+        // service the moment it changes, not just at launch — see
+        // `NowPlayingService.allowScriptingFallback`'s own doc comment.
+        settings.$notchNowPlayingAppleScriptFallbackEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.nowPlayingService.allowScriptingFallback = value }
+            .store(in: &cancellables)
+
         settings.$notchCalendarEnabled
             .dropFirst()
             .sink { [weak self] value in
@@ -399,7 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchLockScreenExperimentEnabled
             .dropFirst()
-            .sink { [weak self] _ in self?.configureLockScreenPresenter() }
+            .sink { [weak self] value in self?.configureLockScreenPresenter(lockScreenExperimentEnabled: value) }
             .store(in: &cancellables)
 
         settings.$notchShelfExpiryDays

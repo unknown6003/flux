@@ -390,10 +390,13 @@ enum SelfTest {
               "LiveActivity: the in-place update reflects the newly posted content")
         center.dismiss(id: batteryA.id)
 
-        // --- M6 fix: LiveActivity.captionText — the generic seam
-        // `LockScreenPresenter.currentActivityLine` wires to instead of a
-        // timers-only dependency. Prefers `trailing` over `leading`, and is
-        // `nil` for icon/gauge/artwork/`.none` content on both sides. ---
+        // --- M6 fix (M9: now read directly by `LockScreenContentView`'s
+        // activity pill via `LiveActivityCenter.current?.captionText`,
+        // rather than through the M6 `currentActivityLine` closure this
+        // replaced) — LiveActivity.captionText: the generic seam that keeps
+        // the lock-screen activity pill from depending on any one producer
+        // (e.g. timers) specifically. Prefers `trailing` over `leading`, and
+        // is `nil` for icon/gauge/artwork/`.none` content on both sides. ---
         check(LiveActivity(kind: .timer, leading: .icon(systemName: "timer"), trailing: .text("2 min"),
                             duration: nil, priority: 110).captionText == "2 min",
               "LiveActivity: captionText reads a .text trailing side")
@@ -759,6 +762,34 @@ enum SelfTest {
         check(missingRateElapsed.map { abs($0 - 13) < 0.01 } ?? false,
               "NowPlaying: currentElapsed treats a missing playbackRate as normal 1x speed (got \(String(describing: missingRateElapsed)))")
 
+        // --- M9: NowPlayingService.shouldEngageScriptingFallback — the pure
+        // consent-gating decision behind the AppleScript failover, extracted
+        // so it's testable without a live Music/Spotify process (this
+        // environment can't run either). Both `setActive` and
+        // `observeSources`'s adapter-availability sink route through this
+        // one rule; the fallback must never engage while the consent toggle
+        // is off, even if the adapter is unavailable. ---
+        check(!NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: false, adapterAvailable: false),
+              "NowPlayingService: the scripting fallback never engages while the consent toggle is off, even with the adapter unavailable")
+        check(!NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: false, adapterAvailable: true),
+              "NowPlayingService: the scripting fallback stays off with the toggle off and the adapter alive too")
+        check(NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: true, adapterAvailable: false),
+              "NowPlayingService: opting in engages the fallback once the adapter is unavailable")
+        check(!NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: true, adapterAvailable: true),
+              "NowPlayingService: even opted in, the fallback doesn't engage while the preferred adapter is alive")
+
+        // Behavioral check on a real instance: setting `allowScriptingFallback`
+        // is itself gated the same way — flipping it on while the widget
+        // isn't presented (`isActive == false`) must not start the scripting
+        // poller, honoring the same "widget hidden -> scripting poll MUST
+        // stop" contract `setActive` documents.
+        let consentService = NowPlayingService()
+        check(!consentService.allowScriptingFallback,
+              "NowPlayingService: allowScriptingFallback defaults to false on a fresh instance")
+        consentService.allowScriptingFallback = true
+        check(consentService.allowScriptingFallback,
+              "NowPlayingService: allowScriptingFallback is settable (wired from SettingsStore by AppDelegate)")
+
         // --- ScriptingNowPlayingSource: per-poll player selection ---
         // Pure functions (no AppleScript execution) so they're testable on a
         // machine that can't run Music or Spotify at all.
@@ -1081,8 +1112,8 @@ enum SelfTest {
               "NotchActivityRouter: a full battery maps to battery.100")
         check(NotchActivityRouter.batterySymbol(percent: 74, charging: false) == "battery.50",
               "NotchActivityRouter: percent rounds DOWN to the nearest SF Symbol step (74% -> 50, never up to 75)")
-        check(NotchActivityRouter.batterySymbol(percent: 50, charging: true) == "battery.50.bolt",
-              "NotchActivityRouter: charging adds the .bolt variant")
+        check(NotchActivityRouter.batterySymbol(percent: 50, charging: true) == "battery.100.bolt",
+              "NotchActivityRouter: charging always uses battery.100.bolt (the only .bolt step SF Symbols ships)")
         check(NotchActivityRouter.deviceSymbol(name: "Ammar's AirPods Pro", category: .audio) == "airpodspro",
               "NotchActivityRouter: AirPods-named devices map to the airpodspro glyph")
         check(NotchActivityRouter.deviceSymbol(name: "Sony WH-1000XM4", category: .audio) == "headphones",
@@ -1105,6 +1136,10 @@ enum SelfTest {
             let routerSuite = UserDefaults(suiteName: routerSuiteName)!
             routerSuite.removePersistentDomain(forName: routerSuiteName)
             let routerSettings = SettingsStore(defaults: routerSuite)
+            // M9 privacy audit: Bluetooth now defaults to OFF — opt in
+            // explicitly so this block can keep exercising the
+            // BluetoothEvent -> LiveActivity translation logic below.
+            routerSettings.notchActivityBluetoothEnabled = true
             let routerActivities = LiveActivityCenter()
             let routerArranger = MenuBarArranger()
             let testPower = PowerMonitor()
@@ -2154,14 +2189,84 @@ enum SelfTest {
                   "ClipboardEntry: fullString is nil for a .file entry — file paths round-trip through filePaths only")
         }
         do {
-            let lockScreenProbe = LockScreenPresenter()
+            // M9: `LockScreenPresenter` now takes its Now Playing/activity/
+            // settings dependencies directly (replacing the old
+            // `currentActivityLine` closure seam) — fresh, disposable
+            // instances of each, isolated to their own `UserDefaults` suite,
+            // are all this smoke test needs; no real lock session, MediaRemote
+            // source, or persisted user preference is ever touched.
+            let lockScreenSuiteName = "flux.selftest.lockscreenpresenter"
+            UserDefaults.standard.removePersistentDomain(forName: lockScreenSuiteName)
+            let lockScreenSettings = SettingsStore(defaults: UserDefaults(suiteName: lockScreenSuiteName)!)
+            let lockScreenProbe = LockScreenPresenter(nowPlaying: NowPlayingService(),
+                                                       activities: LiveActivityCenter(),
+                                                       settings: lockScreenSettings)
             check(!lockScreenProbe.isPresentingOnLockScreen, "LockScreenPresenter: starts not presenting")
             lockScreenProbe.setEnabled(true)
             lockScreenProbe.setEnabled(true) // idempotent — a repeated identical call is a no-op
             lockScreenProbe.setEnabled(false)
             check(!lockScreenProbe.isPresentingOnLockScreen,
                   "LockScreenPresenter: disabling tears everything down — nothing left presenting")
+            UserDefaults.standard.removePersistentDomain(forName: lockScreenSuiteName)
         }
+
+        // --- M9 (lock-screen Now Playing freshness): LockScreenPresenter.
+        // shouldActivateForLock — the pure decision behind whether the
+        // presenter itself needs to call `nowPlaying.setActive(true)` while
+        // locked, extracted the same way `NowPlayingService.
+        // shouldEngageScriptingFallback` is, so the on/off matrix is
+        // assertable without a real lock session or notched screen (this
+        // environment has neither). The core property under test: the
+        // presenter only ever activates the service on its own behalf when
+        // BOTH the master experiment flag and the Now Playing sub-toggle are
+        // on AND nothing else has already made the service active — that
+        // last clause is what keeps this presenter from stepping on the Now
+        // Playing widget's own ownership when it was already presented at
+        // lock time. ---
+        check(!LockScreenPresenter.shouldActivateForLock(serviceActive: false, masterEnabled: false, nowPlayingAllowed: true),
+              "LockScreenPresenter.shouldActivateForLock: never activates while the master experiment flag is off")
+        check(!LockScreenPresenter.shouldActivateForLock(serviceActive: false, masterEnabled: true, nowPlayingAllowed: false),
+              "LockScreenPresenter.shouldActivateForLock: never activates while the Now Playing sub-toggle is off")
+        check(!LockScreenPresenter.shouldActivateForLock(serviceActive: true, masterEnabled: true, nowPlayingAllowed: true),
+              "LockScreenPresenter.shouldActivateForLock: never activates when the service is already active — the widget (or a prior lock) already owns it")
+        check(LockScreenPresenter.shouldActivateForLock(serviceActive: false, masterEnabled: true, nowPlayingAllowed: true),
+              "LockScreenPresenter.shouldActivateForLock: activates when both flags are on and the service is currently inactive")
+
+        // --- M9 (Alcove lock-screen parity): LockScreenPillLogic.visiblePills
+        // — the pure derivation behind which of the (up to) three lock-screen
+        // pills actually render, covering the on/off matrix headlessly. ---
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
+                                                hasActivityCaption: false, allowActivities: true,
+                                                showUnlockPill: false) == [],
+              "LockScreenPillLogic: nothing to show, nothing enabled → no pills")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: true,
+                                                hasActivityCaption: false, allowActivities: true,
+                                                showUnlockPill: false) == [.nowPlaying],
+              "LockScreenPillLogic: Now Playing has state and is allowed → just the media pill")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: false,
+                                                hasActivityCaption: false, allowActivities: true,
+                                                showUnlockPill: false) == [],
+              "LockScreenPillLogic: Now Playing has state but the sub-toggle is off → no media pill")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
+                                                hasActivityCaption: true, allowActivities: true,
+                                                showUnlockPill: false) == [.activity],
+              "LockScreenPillLogic: a captioned activity, allowed → just the activity pill")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
+                                                hasActivityCaption: true, allowActivities: false,
+                                                showUnlockPill: false) == [],
+              "LockScreenPillLogic: a captioned activity but the sub-toggle is off → no activity pill")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
+                                                hasActivityCaption: false, allowActivities: true,
+                                                showUnlockPill: true) == [.unlock],
+              "LockScreenPillLogic: nothing else showing, unlock pill on → just the unlock pill")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: true,
+                                                hasActivityCaption: true, allowActivities: true,
+                                                showUnlockPill: true) == [.nowPlaying, .activity, .unlock],
+              "LockScreenPillLogic: everything showing and allowed → all three, in fixed media/activity/unlock order")
+        check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: false,
+                                                hasActivityCaption: true, allowActivities: false,
+                                                showUnlockPill: true) == [.unlock],
+              "LockScreenPillLogic: Now Playing and the activity both disallowed → only the unlock pill survives")
 
         // --- M6: NotchActivityRouter — timer completion/ambient translation,
         // driven purely through a real (but headless) TimerService's own
@@ -2327,6 +2432,23 @@ enum SelfTest {
                                                    WidgetID.calendar.rawValue, WidgetID.mirror.rawValue,
                                                    WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
                   "SettingsStore: the default notchWidgetOrder appends mirror/timers/clipboard after calendar")
+
+            // M9 (Alcove lock-screen parity): the three sub-toggles that
+            // only matter once the master experimental flag above is on
+            // default to Now Playing/Notifications ON (they surface
+            // information a passerby could otherwise miss, the same bar
+            // every other on-by-default notch feature clears) but the
+            // Unlock pill and unlock sound stay OFF (purely decorative/
+            // audible additions, not information — see each property's own
+            // doc comment on `SettingsStore`).
+            check(m6Settings.notchLockScreenNowPlayingEnabled,
+                  "SettingsStore: notchLockScreenNowPlayingEnabled defaults to true")
+            check(m6Settings.notchLockScreenActivitiesEnabled,
+                  "SettingsStore: notchLockScreenActivitiesEnabled defaults to true")
+            check(!m6Settings.notchLockScreenUnlockPillEnabled,
+                  "SettingsStore: notchLockScreenUnlockPillEnabled defaults to false")
+            check(!m6Settings.notchLockScreenUnlockSoundEnabled,
+                  "SettingsStore: notchLockScreenUnlockSoundEnabled defaults to false")
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
         }
 
@@ -2350,10 +2472,29 @@ enum SelfTest {
             UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
             let m7Settings = SettingsStore(defaults: UserDefaults(suiteName: m7SettingsSuiteName)!)
             check(!m7Settings.notchDuoEnabled, "SettingsStore: notchDuoEnabled defaults to false")
-            check(m7Settings.notchActivityFocusEnabled, "SettingsStore: notchActivityFocusEnabled defaults to true")
+            check(!m7Settings.notchActivityFocusEnabled,
+                  "SettingsStore: notchActivityFocusEnabled defaults to false (M9) — no protected-path read without opt-in")
             check(!m7Settings.notchActivityFocusStickyEnabled,
                   "SettingsStore: notchActivityFocusStickyEnabled defaults to false — the persistent indicator is opt-in")
             UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
+        }
+
+        // --- M9: SettingsStore — the privacy-audit defaults: Bluetooth and
+        // Focus flipped from on-by-default to opt-in, and the new AppleScript
+        // fallback consent toggle defaults off too. Fresh-install launch
+        // must produce zero TCC prompts, so every one of these three has to
+        // read `false` on a brand-new suite before anything else runs. ---
+        do {
+            let m9SettingsSuiteName = "flux.selftest.m9settings"
+            UserDefaults.standard.removePersistentDomain(forName: m9SettingsSuiteName)
+            let m9Settings = SettingsStore(defaults: UserDefaults(suiteName: m9SettingsSuiteName)!)
+            check(!m9Settings.notchActivityBluetoothEnabled,
+                  "SettingsStore: notchActivityBluetoothEnabled defaults to false (M9) — registering for Bluetooth notifications triggers the TCC prompt, so this is opt-in")
+            check(!m9Settings.notchActivityFocusEnabled,
+                  "SettingsStore: notchActivityFocusEnabled defaults to false (M9)")
+            check(!m9Settings.notchNowPlayingAppleScriptFallbackEnabled,
+                  "SettingsStore: notchNowPlayingAppleScriptFallbackEnabled defaults to false (M9) — scripting Music/Spotify triggers an Automation prompt, so this is opt-in")
+            UserDefaults.standard.removePersistentDomain(forName: m9SettingsSuiteName)
         }
 
         // --- M7: LiveActivityCenter.cycle() — the Alcove-style ring over
@@ -2684,6 +2825,10 @@ enum SelfTest {
             let focusRouterSuite = UserDefaults(suiteName: focusRouterSuiteName)!
             focusRouterSuite.removePersistentDomain(forName: focusRouterSuiteName)
             let focusRouterSettings = SettingsStore(defaults: focusRouterSuite)
+            // M9 privacy audit: Focus now defaults to OFF — opt in
+            // explicitly so this block can keep exercising the
+            // FocusEvent -> LiveActivity translation logic below.
+            focusRouterSettings.notchActivityFocusEnabled = true
             let focusRouterActivities = LiveActivityCenter()
             let focusRouterArranger = MenuBarArranger()
             let focusRouterCalendar = CalendarService()

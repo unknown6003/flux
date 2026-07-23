@@ -27,14 +27,20 @@ MainActor.assumeIsolated {
         SettingsSnapshot.capture(to: args[idx + 1], dark: dark, arranging: arranging, overflow: overflow, tab: tab)
         exit(0)
     }
-    // Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded]
+    // Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded|lockscreen]
     // Flux --snapshot-notch <dir> all [dark]   (CI batch mode — see NotchSnapshot.captureAll)
     if let idx = args.firstIndex(of: "--snapshot-notch"), idx + 1 < args.count {
         let dark = args[(idx + 2)...].contains("dark")
         if args[(idx + 2)...].contains("all") {
             NotchSnapshot.captureAll(to: args[idx + 1], dark: dark)
         } else {
-            let state = ["collapsed", "activity", "expanded"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
+            // M9: "lockscreen" added alongside the pre-existing three —
+            // `NotchSnapshot.capture(to:dark:state:)` already special-cases it
+            // (see that function's own doc comment), but this allowed-state
+            // list gates whether the flag ever reaches that dispatch at all;
+            // without it here, `--snapshot-notch out.png lockscreen` silently
+            // fell back to "collapsed" instead.
+            let state = ["collapsed", "activity", "expanded", "lockscreen"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
             NotchSnapshot.capture(to: args[idx + 1], dark: dark, state: state)
         }
         exit(0)

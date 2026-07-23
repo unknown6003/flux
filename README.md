@@ -138,8 +138,13 @@ arrangement across launches.
   disk, and password-manager-marked copies (the `nspasteboard.org`
   concealed/transient convention) are never captured at all.
 - **Lock screen (experimental)** — optionally keeps a minimal, non-interactive
-  notch silhouette visible on the macOS lock screen, captioned with the
-  nearest running timer if there is one. Off by default: it rides on
+  notch silhouette visible on the macOS lock screen, with up to three
+  stacked, fading pills beneath it: a live Now Playing media pill (artwork +
+  title/artist), the notch's current live activity as a caption pill
+  (battery, Bluetooth, calendar, timer, ...), and an optional black
+  "Press any key to unlock" pill with a padlock glyph — plus an optional
+  sound the moment you unlock. Each of the three sub-features has its own
+  toggle, all nested under the master switch. Off by default: it rides on
   undocumented macOS lock-screen notifications and window-level behavior, so
   it may stop working or misbehave after any macOS update — see Settings →
   Notch → Experimental.
@@ -148,6 +153,35 @@ arrangement across launches.
 - Three menu-bar icon styles: Chevron / Dot / Line.
 - Light & dark, adapts to your system accent color.
 - Runs as a true agent: no Dock icon, no app switcher entry.
+
+## Privacy — zero permissions by default
+
+Flux's core (menu-bar hiding, the notch panel, widget cycling) runs with
+**no TCC access of any kind** — nothing prompts on a fresh install, and
+nothing runs that could prompt later without you turning it on first:
+
+- **Calendar, Camera, and the HUD's Accessibility intercept** are each
+  behind their own explicit **Grant Access** button in Settings → Notch —
+  the permission-gated widget/feature shows its own "access needed" state
+  until you ask for it.
+- **Bluetooth device wings are OFF by default.** Registering for Bluetooth
+  connect notifications is what triggers macOS's Bluetooth access prompt on
+  macOS 12+, so this stays opt-in — turning it on in Settings → Notch → Live
+  Activities is what asks macOS for access, not launching the app.
+- **Focus wings are OFF by default.** This reads a system Focus-status file
+  that macOS may protect depending on your setup; it's opt-in, and silently
+  shows nothing if macOS won't let it read the file at all.
+- **The AppleScript Now Playing fallback is OFF by default.** The
+  MediaRemote adapter is the only thing driving Now Playing until you
+  explicitly enable the fallback in Settings → Notch — only then does Flux
+  ever script Music or Spotify, which is what prompts macOS's Automation
+  permission the first time each app is scripted.
+- **Clipboard history is opt-in and in-memory only** — nothing is captured
+  until you turn it on, and nothing it captures is ever written to disk.
+
+Every grant above is revocable at any time in System Settings, and every
+gated feature degrades gracefully (its own empty/permission state) rather
+than breaking the rest of the app when access isn't there.
 
 ## Install
 
@@ -191,7 +225,7 @@ The executable understands a few headless flags used for testing:
 ```bash
 Flux --selftest                     # functional test of the collapse engine
 Flux --snapshot out.png [light|dark] # render the real settings UI to a PNG
-Flux --snapshot-notch out.png [dark] [collapsed|activity|expanded] # render the notch panel to a PNG
+Flux --snapshot-notch out.png [dark] [collapsed|activity|expanded|lockscreen] # render the notch panel to a PNG
 ```
 
 ## Architecture
@@ -224,7 +258,8 @@ Sources/Flux/
     Widgets/MirrorWidget.swift # live camera preview; owns CameraService start/stop itself
     Widgets/TimersWidget.swift # presets/custom countdowns, pause/resume/cancel
     Widgets/ClipboardWidget.swift # history list, click-to-copy-back, Clear All
-    LockScreenPresenter.swift  # EXPERIMENTAL: notch silhouette on the lock screen
+    LockScreenPresenter.swift  # EXPERIMENTAL: fade in/out, lock/unlock, unlock sound
+    LockScreenContentView.swift # EXPERIMENTAL: live media/activity/unlock pills on the lock screen
   Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
