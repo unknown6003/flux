@@ -195,6 +195,15 @@ private struct CameraPreviewView: NSViewRepresentable {
         /// `bind(to:)` — held only so `deinit` can remove it.
         private var didStartRunningObserver: NSObjectProtocol?
 
+        /// M8 fix: holds the retry loop started by `handleSessionDidStartRunning()`
+        /// for the case where the notification fires before `previewLayer.
+        /// connection` has actually materialized — see that method's doc
+        /// comment. At most one retry loop is ever in flight; cancelled here
+        /// in `deinit`, inside the loop itself once it succeeds or a new one
+        /// replaces it, and whenever a fresh `.AVCaptureSessionDidStartRunning`
+        /// arrives.
+        private var mirrorRetryTask: Task<Void, Never>?
+
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             wantsLayer = true
@@ -210,6 +219,7 @@ private struct CameraPreviewView: NSViewRepresentable {
             if let didStartRunningObserver {
                 NotificationCenter.default.removeObserver(didStartRunningObserver)
             }
+            mirrorRetryTask?.cancel()
         }
 
         /// Binds the preview layer to `session` and arranges for mirroring to
@@ -224,22 +234,69 @@ private struct CameraPreviewView: NSViewRepresentable {
         /// So rather than reconfigure on every SwiftUI update (the old,
         /// racy `updateNSView` path), this observes
         /// `.AVCaptureSessionDidStartRunning` — posted only once
-        /// `startRunning()` has returned and the session is genuinely up — and
-        /// configures the mirror from there. `configureMirroringIfNeeded()` is
-        /// also called once here for the case where the session is *already*
-        /// running by the time this view mounts (a preview re-created during a
-        /// panel morph while the camera's still on), which the notification
-        /// alone would miss.
+        /// `startRunning()` has returned and the session is genuinely up —
+        /// via `handleSessionDidStartRunning()`. `configureMirroringIfNeeded()`
+        /// is also called once here directly for the case where the session
+        /// is *already* running by the time this view mounts (a preview
+        /// re-created during a panel morph while the camera's still on),
+        /// which the notification alone would miss — that direct call
+        /// deliberately does NOT also fall through to the retry loop below:
+        /// if the session is already running and the connection still isn't
+        /// there yet, `.AVCaptureSessionDidStartRunning` won't fire again to
+        /// explain why, so there'd be nothing to retry against; the retry
+        /// loop only ever makes sense anchored to the notification actually
+        /// firing.
+        ///
+        /// `queue: .main` below is what makes it safe for the observer
+        /// closure (and everything it calls) to touch `previewLayer`/
+        /// `mirrorRetryTask` directly with no further hop — AVFoundation
+        /// posts this notification on an arbitrary background thread
+        /// otherwise, per Apple's own documentation, so this is deliberate,
+        /// not an oversight.
         func bind(to session: AVCaptureSession) {
             previewLayer.session = session
             if didStartRunningObserver == nil {
                 didStartRunningObserver = NotificationCenter.default.addObserver(
                     forName: .AVCaptureSessionDidStartRunning, object: session, queue: .main
                 ) { [weak self] _ in
-                    self?.configureMirroringIfNeeded()
+                    self?.handleSessionDidStartRunning()
                 }
             }
             configureMirroringIfNeeded()
+        }
+
+        /// M8 fix: `.AVCaptureSessionDidStartRunning` firing doesn't
+        /// guarantee `previewLayer.connection` has actually materialized at
+        /// that exact instant — when it lands a beat later, the old
+        /// single-shot `configureMirroringIfNeeded()` call here would leave
+        /// this session's preview permanently unmirrored, since nothing else
+        /// ever re-tries. If the connection still isn't there right after
+        /// this fires, `scheduleMirrorConfigurationRetry()` polls for it a
+        /// few more times before giving up.
+        private func handleSessionDidStartRunning() {
+            configureMirroringIfNeeded()
+            guard previewLayer.connection == nil else { return }
+            scheduleMirrorConfigurationRetry()
+        }
+
+        /// Polls `configureMirroringIfNeeded()` up to 5 times, 100ms apart,
+        /// for the late-materializing-connection case described above. A
+        /// single Task at a time — a fresh call cancels whatever retry loop
+        /// was already running — and the loop bails out the moment a
+        /// connection actually shows up (whether or not mirroring itself
+        /// ends up configured for it, e.g. an unsupported device: at that
+        /// point there's a real connection to reason about, so further
+        /// blind polling wouldn't help).
+        private func scheduleMirrorConfigurationRetry() {
+            mirrorRetryTask?.cancel()
+            mirrorRetryTask = Task { @MainActor [weak self] in
+                for _ in 0..<5 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    guard !Task.isCancelled, let self else { return }
+                    self.configureMirroringIfNeeded()
+                    if self.previewLayer.connection != nil { return }
+                }
+            }
         }
 
         /// Flips the preview horizontally so it reads as an actual mirror —

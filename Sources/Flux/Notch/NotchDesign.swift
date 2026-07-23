@@ -27,7 +27,26 @@ import SwiftUI
 /// Every token here is a plain, documented constant (or `Font`/`Color`
 /// value) rather than a wrapper type — widgets apply them with the exact
 /// same modifiers (`.padding`, `.font`, `.foregroundStyle`, ...) they'd use
-/// for a literal, so adopting a token is always a same-shape substitution.
+/// for a literal, so adopting a token is always a same-SHAPE substitution.
+///
+/// It is NOT, however, always a same-VALUE one — say so plainly, since a
+/// reviewer diffing widget code against this file could otherwise mistake
+/// the opacity ramp below for a pure refactor. Converging every widget's
+/// hand-picked opacity onto the four-step `secondaryOpacity`/
+/// `tertiaryOpacity`/`quaternaryOpacity`/`hairlineOpacity` ramp deliberately
+/// NORMALIZED several near-miss literals that were close but not identical
+/// to the value their role converged on:
+/// - `0.58` → `0.55` (secondary)
+/// - `0.42` → `0.45` (tertiary)
+/// - `0.5`  → `0.55` (secondary)
+/// - `0.6`  → `0.55` (secondary)
+/// - `0.65` → `0.55` (secondary)
+///
+/// Each of those was a small, deliberate visual delta, not a bug — the whole
+/// point of the ramp is one consistent value per semantic role instead of
+/// every widget's own independently-tuned number. Recorded here so a future
+/// reviewer comparing before/after screenshots knows the (tiny) difference
+/// was intended.
 enum NotchDesign {
 
     // MARK: - Spacing

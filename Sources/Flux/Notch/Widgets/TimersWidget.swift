@@ -239,27 +239,18 @@ private struct TimersExpandedView: View {
     /// same minutes label the `Stepper`'s label closure used to supply.
     /// Same `TimersWidget.customMinutesRange` (1...120) clamping as before,
     /// just applied by hand in `adjust(by:)` instead of relying on the
-    /// `Stepper`'s own built-in bounds.
+    /// `Stepper`'s own built-in bounds. `StepperRepeatButton` (below) is the
+    /// M8 follow-up fix restoring the stock `Stepper`'s press-and-hold
+    /// repeat, which this replacement dropped.
     private var customStepper: some View {
         HStack(spacing: NotchDesign.space2) {
-            stepperButton("minus") { adjust(by: -1) }
+            StepperRepeatButton(systemName: "minus") { adjust(by: -1) }
             Text("\(customMinutes) min")
                 .font(NotchDesign.monoDigitsBody)
                 .foregroundStyle(.white)
                 .frame(minWidth: 44)
-            stepperButton("plus") { adjust(by: 1) }
+            StepperRepeatButton(systemName: "plus") { adjust(by: 1) }
         }
-    }
-
-    private func stepperButton(_ systemName: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(NotchDesign.capsuleFill))
-        }
-        .buttonStyle(.plain)
     }
 
     private func adjust(by delta: Int) {
@@ -332,6 +323,82 @@ private struct TimersExpandedView: View {
         // Bug fix (M8): the running timer's countdown row was clipping hard
         // into the panel's 32pt bottom corner radius; this fades it out.
         .notchScrollFade()
+    }
+}
+
+// MARK: - Hold-to-repeat stepper button (Codex M8 finding)
+
+/// The custom minutes stepper's +/- control: a single tap adjusts by one
+/// minute (matching the stock `Stepper` this replaced), and pressing and
+/// holding repeats the adjustment — the one piece of the stock `Stepper`'s
+/// behavior the plain-`Button` replacement above dropped.
+///
+/// Deliberately NOT a `Button` plus a separate gesture: `.onLongPressGesture(
+/// onPressingChanged:)`'s callback alone already reports press-down/release
+/// as a simple `Bool`, immediately and regardless of `minimumDuration` — a
+/// huge `minimumDuration` here only suppresses `perform` (which nothing here
+/// reads) from ever firing; `onPressingChanged` is what drives everything.
+/// That one signal is enough to implement tap-vs-hold by hand:
+/// `hasFiredDuringHold` tracks whether the repeat loop already got a chance
+/// to fire at least once before release, so a quick tap (released before the
+/// initial delay elapses) still adjusts exactly once, and a long hold's
+/// release never double-fires on top of the repeat loop's own last tick.
+private struct StepperRepeatButton: View {
+    let systemName: String
+    let action: () -> Void
+
+    /// Matches the stock `Stepper`'s own feel: a brief pause before the
+    /// repeat kicks in (so a normal tap never accidentally free-repeats),
+    /// then a quick, steady repeat cadence.
+    private static let initialDelay: Duration = .milliseconds(400)
+    private static let repeatInterval: Duration = .milliseconds(100)
+
+    @State private var repeatTask: Task<Void, Never>?
+    @State private var hasFiredDuringHold = false
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(Circle().fill(NotchDesign.capsuleFill))
+            .contentShape(Circle())
+            .onLongPressGesture(minimumDuration: 100_000, maximumDistance: .infinity) {
+                // `perform`: fires only after `minimumDuration` elapses with
+                // no movement/release — effectively never at this duration.
+                // `onPressingChanged` below drives all real behavior.
+            } onPressingChanged: { pressing in
+                if pressing {
+                    beginPress()
+                } else {
+                    endPress()
+                }
+            }
+    }
+
+    private func beginPress() {
+        hasFiredDuringHold = false
+        repeatTask?.cancel()
+        repeatTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.initialDelay)
+            guard !Task.isCancelled else { return }
+            while !Task.isCancelled {
+                hasFiredDuringHold = true
+                action()
+                try? await Task.sleep(for: Self.repeatInterval)
+            }
+        }
+    }
+
+    private func endPress() {
+        repeatTask?.cancel()
+        repeatTask = nil
+        // The repeat loop never got past its initial delay before release —
+        // this was a plain tap, so fire the single adjustment it would
+        // otherwise never get.
+        if !hasFiredDuringHold {
+            action()
+        }
     }
 }
 

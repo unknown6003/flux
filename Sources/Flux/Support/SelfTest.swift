@@ -2032,6 +2032,18 @@ enum SelfTest {
                   "CameraService.shouldConfigureMirroring: never sets isVideoMirrored when mirroring is unsupported")
             check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: false),
                   "CameraService.shouldConfigureMirroring: no-op when neither running nor supported")
+
+            // --- M8 fix: CameraService(forcingUnavailable:) — the seam
+            // `NotchSnapshot`'s expanded-mirror render uses so its "No camera
+            // found" state renders deterministically, even on a machine that
+            // actually has a built-in camera (unlike the plain init() probe
+            // above, which reports whatever the real host hardware has). ---
+            let forcedUnavailableProbe = CameraService(forcingUnavailable: true)
+            check(!forcedUnavailableProbe.isAvailable,
+                  "CameraService(forcingUnavailable: true): isAvailable is false unconditionally, regardless of real host hardware")
+            forcedUnavailableProbe.start() // must still be a safe no-op — isAvailable gates start() same as a real absent camera
+            check(!forcedUnavailableProbe.isRunning,
+                  "CameraService(forcingUnavailable: true): start() is a safe no-op since isAvailable is forced false")
         }
         do {
             let clipboardProbe = ClipboardMonitor(pasteboard: .general)

@@ -22,12 +22,22 @@ enum NotchSnapshot {
         app.setActivationPolicy(.accessory)
         app.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
 
-        let (root, panelSize) = buildRoot(for: state)
+        let (root, panelSize, tempShelfDirectory) = buildRoot(for: state)
 
-        // Transparent (not opaque) window: the notch panel draws its own
-        // shape over nothing, unlike Settings' real window chrome.
-        OffscreenRender.capture(rootView: root, size: panelSize, dark: dark,
-                                opaque: false, label: "snapshot-notch", to: path)
+        // M8 fix: `buildRoot` always creates a fresh temp `ShelfStore`
+        // directory (whether or not `state` actually populates it) — calling
+        // `OffscreenRender.capture` directly would `exit()` before any
+        // cleanup here ever ran, leaking that directory on every single-shot
+        // `--snapshot-notch` invocation (and every CI run of it). Using
+        // `render` (which returns instead of exiting) and calling `exit()`
+        // ourselves, after removing the directory, mirrors what `captureAll`
+        // below already has to do for the exact same reason. Transparent
+        // (not opaque): the notch panel draws its own shape over nothing,
+        // unlike Settings' real window chrome.
+        let success = OffscreenRender.render(rootView: root, size: panelSize, dark: dark,
+                                             opaque: false, label: "snapshot-notch", to: path)
+        try? FileManager.default.removeItem(at: tempShelfDirectory)
+        exit(success ? 0 : 1)
     }
 
     /// Batch mode behind CI's "Render notch snapshots" step: renders every
@@ -66,8 +76,17 @@ enum NotchSnapshot {
         ]
 
         var allSucceeded = true
+        // M8 fix: every `buildRoot(for:)` call below creates its own fresh
+        // temp `ShelfStore` directory (used or not, depending on `state`) —
+        // with 11 states rendered per run, that used to leak 11 directories
+        // under the system temp dir on every CI run of this step (and every
+        // local one). Collected here and removed in one pass right before
+        // this function's own single `exit()` call, since nothing after
+        // `exit()` would ever run.
+        var tempShelfDirectories: [URL] = []
         for (state, file) in states {
-            let (root, panelSize) = buildRoot(for: state)
+            let (root, panelSize, tempShelfDirectory) = buildRoot(for: state)
+            tempShelfDirectories.append(tempShelfDirectory)
             let path = (dir as NSString).appendingPathComponent(file)
             // Transparent (not opaque), matching `capture(to:dark:state:)`
             // above — the notch panel draws its own shape over nothing.
@@ -78,6 +97,9 @@ enum NotchSnapshot {
                                        label: "snapshot-notch", to: path) {
                 allSucceeded = false
             }
+        }
+        for directory in tempShelfDirectories {
+            try? FileManager.default.removeItem(at: directory)
         }
         exit(allSucceeded ? 0 : 1)
     }
@@ -91,15 +113,30 @@ enum NotchSnapshot {
     /// one `state` is about to expand) — matching how `AppDelegate` wires the
     /// real app, and required for `expanded-duo` (which needs both Now
     /// Playing and Calendar registered at once).
-    private static func buildRoot(for state: String) -> (AnyView, CGSize) {
+    ///
+    /// Also returns the fresh temp directory backing this call's `ShelfStore`
+    /// — M8 fix: every call creates one of these (used or not, depending on
+    /// `state`), and neither caller had ever been removing it, leaking one
+    /// directory under the system temp dir per render. Handing it back is
+    /// what lets both callers actually clean up after themselves.
+    private static func buildRoot(for state: String) -> (AnyView, CGSize, URL) {
         let registry = NotchWidgetRegistry()
         let activities = LiveActivityCenter()
 
         let nowPlayingService = NowPlayingService()
-        let shelfStore = ShelfStore(directory: makeTempShelfDirectory())
+        let tempShelfDirectory = makeTempShelfDirectory()
+        let shelfStore = ShelfStore(directory: tempShelfDirectory)
         let calendarService = CalendarService()
         let permissions = PermissionCenter()
-        let cameraService = CameraService()
+        // M8 fix: forced unavailable, not just "no camera on this machine" —
+        // `expanded-mirror` needs its "No camera found" state to render
+        // deterministically on ANY machine this ever runs on, including one
+        // WITH a real built-in camera (a contributor's dev Mac, some future
+        // CI runner image, ...). Without this, that render's correctness
+        // depended on accidental hardware absence rather than an explicit,
+        // reviewable seam — and on a machine that does have one, this snapshot
+        // harness must still never touch real capture hardware at all.
+        let cameraService = CameraService(forcingUnavailable: true)
         let timerService = TimerService()
         let clipboardMonitor = ClipboardMonitor()
 
@@ -181,11 +218,13 @@ enum NotchSnapshot {
             // `MirrorWidget.willPresent()` both refreshes the permission
             // status AND opens a live `permissions.$statuses` subscription
             // that reacts to this injection the instant it publishes,
-            // attempting `cameraService.start()`. There's no camera on CI
-            // (`isAvailable == false`), so that attempt no-ops and the panel
-            // renders its "No camera found" empty state — still exactly what
-            // this snapshot is for: reviewing the GRANTED-but-no-hardware
-            // layout, not a live feed.
+            // attempting `cameraService.start()`. `cameraService` above is
+            // constructed with `forcingUnavailable: true` (M8 fix), so
+            // `isAvailable == false` deterministically regardless of the
+            // host machine's real hardware — that attempt no-ops and the
+            // panel renders its "No camera found" empty state, still exactly
+            // what this snapshot is for: reviewing the GRANTED-but-no-
+            // hardware layout, not a live feed, on any machine this runs on.
             viewModel.expand(.mirror)
             permissions.injectPreviewStatus(.camera, .granted)
 
@@ -217,7 +256,7 @@ enum NotchSnapshot {
         // distinction matters for a display-link-driven `TimelineView`.
         let snapshotRoot = root.environment(\.isSnapshotRender, true)
         let panelSize = NotchMetrics.panelBounds(for: notchSize.width)
-        return (AnyView(snapshotRoot), panelSize)
+        return (AnyView(snapshotRoot), panelSize, tempShelfDirectory)
     }
 
     /// Decodes the checked-in `streamFullSnapshotJSON` fixture (see

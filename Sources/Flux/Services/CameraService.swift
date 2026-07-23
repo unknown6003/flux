@@ -94,6 +94,33 @@ final class CameraService: ObservableObject {
         observeSessionNotifications()
     }
 
+    /// Preview/testing seam (M8 fix): constructs a service that reports
+    /// `isAvailable == false` unconditionally, regardless of what real camera
+    /// hardware the host machine actually has. `NotchSnapshot`'s
+    /// `expanded-mirror` render needs its "No camera found" branch to be what
+    /// actually renders deterministically — not a coincidence of whichever
+    /// machine happens to run `--snapshot-notch` next, which could have a
+    /// real built-in camera. `discoverDefaultDevice()` is skipped entirely
+    /// when `forcingUnavailable` is `true` (not merely discarding its
+    /// result) — the smallest, most honest seam: this never touches
+    /// `AVCaptureDevice.DiscoverySession` at all, so a snapshot render can
+    /// never accidentally probe/claim real capture hardware.
+    init(forcingUnavailable: Bool) {
+        if forcingUnavailable {
+            self.device = nil
+            self.isAvailable = false
+            cameraLog.notice("CameraService: constructed with forcingUnavailable — isAvailable is false regardless of real hardware (preview/snapshot use only)")
+        } else {
+            let device = Self.discoverDefaultDevice()
+            self.device = device
+            self.isAvailable = device != nil
+            if !isAvailable {
+                cameraLog.notice("CameraService: no built-in camera device found — Mirror widget will show its unavailable state")
+            }
+        }
+        observeSessionNotifications()
+    }
+
     deinit {
         // Plain teardown of what this instance itself registered, called
         // directly from a nonisolated `deinit` — mirrors
