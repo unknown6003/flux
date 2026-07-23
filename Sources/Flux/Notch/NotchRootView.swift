@@ -280,7 +280,7 @@ struct NotchRootView: View {
         viewModel.interactiveRect = rect(for: oldState, panelWidth: panelWidth).union(finalRect)
         // Same direction rule as `springFor(_:)`: any shrink (not just
         // landing on .collapsed) settles on the collapse spring's timetable.
-        let isShrink = NotchViewModel.footprintRank(state) < NotchViewModel.footprintRank(oldState)
+        let isShrink = NotchViewModel.isShrink(from: oldState, to: state)
         let delay = isShrink ? Self.collapseSettleDelay : Self.expandSettleDelay
         interactiveRectSettleTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))

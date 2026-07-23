@@ -82,6 +82,21 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// Whether `old → new` shrinks the visible shape. Rank covers the
+    /// cross-tier cases; the expanded→expanded tie (widget→widget swipes)
+    /// compares the two widgets' actual panel heights, so cycling from a
+    /// taller widget (Calendar, 190) to a shorter one (Shelf, 150) settles
+    /// on the collapse spring instead of overshooting. Pure and
+    /// selftest-covered.
+    static func isShrink(from old: NotchState, to new: NotchState) -> Bool {
+        let oldRank = footprintRank(old), newRank = footprintRank(new)
+        if newRank != oldRank { return newRank < oldRank }
+        if case .expanded(let oldID) = old, case .expanded(let newID) = new {
+            return NotchMetrics.expandedHeight(for: newID) < NotchMetrics.expandedHeight(for: oldID)
+        }
+        return false
+    }
+
     /// Which gesture opens the notch. Switching to `.click` cancels any
     /// in-flight hover-intent delay so a stale timer can't fire an open/close
     /// after the mode that scheduled it no longer applies.
@@ -465,7 +480,7 @@ final class NotchViewModel: ObservableObject {
             registry.widget(for: oldID)?.didDismiss()
         }
 
-        lastTransitionWasShrink = Self.footprintRank(newState) < Self.footprintRank(state)
+        lastTransitionWasShrink = Self.isShrink(from: state, to: newState)
         state = newState
 
         if newState == .collapsed {
