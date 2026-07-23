@@ -181,7 +181,12 @@ private struct LockScreenMediaPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .padding(.vertical, LockScreenPillMetrics.verticalPadding)
-        .frame(maxWidth: LockScreenPillMetrics.maxWidth, alignment: .leading)
+        // No `.frame(maxWidth:)` here: a maxWidth frame EXPANDS to
+        // min(proposal, max) regardless of content size, which stretched
+        // every pill to a near-panel-width black bar (snapshot-verified).
+        // Intrinsic sizing + the panel's own width proposal caps long titles
+        // (Text truncates); `maxWidth` in the metrics is now only the text
+        // column's cap below.
         .background(lockScreenCapsule())
     }
 
@@ -229,7 +234,7 @@ private struct LockScreenActivityPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .padding(.vertical, NotchDesign.space1)
-        .frame(maxWidth: LockScreenPillMetrics.maxWidth, alignment: .leading)
+        // Intrinsic width, same reasoning as the media pill above.
         .background(lockScreenCapsule())
     }
 }
