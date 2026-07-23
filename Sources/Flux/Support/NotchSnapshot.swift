@@ -210,8 +210,14 @@ enum NotchSnapshot {
         let root = NotchRootView(viewModel: viewModel, notchSize: notchSize, artworkProvider: { [weak nowPlayingService] in
             nowPlayingService?.artwork
         })
+        // M8 audit fix: tells `WaveformVisualizer` (and anything else that
+        // ever needs to distinguish the two) that this render is happening
+        // inside the off-screen snapshot harness, not the live app — see
+        // `SnapshotEnvironment.swift`'s own doc comment for why that
+        // distinction matters for a display-link-driven `TimelineView`.
+        let snapshotRoot = root.environment(\.isSnapshotRender, true)
         let panelSize = NotchMetrics.panelBounds(for: notchSize.width)
-        return (AnyView(root), panelSize)
+        return (AnyView(snapshotRoot), panelSize)
     }
 
     /// Decodes the checked-in `streamFullSnapshotJSON` fixture (see

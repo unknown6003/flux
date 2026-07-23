@@ -92,14 +92,6 @@ struct NotchRootView: View {
     /// transition's narrowing actually lands — see `updateInteractiveRect`.
     @State private var interactiveRectSettleTask: Task<Void, Never>?
 
-    /// Drives the expanded body's blur-morph-in/out (see `expandedContent`
-    /// and `updateContentMorph`). Start hidden (heavily blurred, transparent)
-    /// so a fresh `.expanded` case — which SwiftUI only actually constructs
-    /// the moment `contentLayer`'s switch first lands on it — always animates
-    /// *in* from this state rather than popping in already-sharp.
-    @State private var contentBlur: CGFloat = 8
-    @State private var contentOpacity: Double = 0
-
     var body: some View {
         GeometryReader { proxy in
             shapeLayer
@@ -114,11 +106,9 @@ struct NotchRootView: View {
                 .onTapGesture { handleTap() }
                 .onAppear {
                     updateInteractiveRect(panelWidth: proxy.size.width)
-                    updateContentMorph(for: viewModel.state)
                 }
                 .onChange(of: viewModel.state) { oldState, newState in
                     updateInteractiveRect(panelWidth: proxy.size.width, from: oldState, to: newState)
-                    updateContentMorph(for: newState)
                 }
                 // M7: toggling Duo view while Now Playing is ALREADY the
                 // expanded widget changes this view's size without `state`
@@ -142,22 +132,6 @@ struct NotchRootView: View {
         .onChange(of: shouldBreathe) { _, breathe in updateBreathing(breathe) }
         .animation(springFor(viewModel.state), value: viewModel.state)
         .ignoresSafeArea()
-    }
-
-    /// Animates the expanded body's blur/opacity morph: sharp and opaque
-    /// (`0`/`1`) the instant `state` becomes `.expanded`, blurred and
-    /// invisible (`8`/`0`) for every other state. `withAnimation` here is
-    /// what makes this cancellation-safe "for free" — SwiftUI interrupts an
-    /// in-flight implicit animation cleanly when a new one is issued for the
-    /// same properties, so rapid re-toggling (e.g. a fast swipe through
-    /// several widgets) never leaves stale, half-finished blur state behind
-    /// the way a hand-rolled `Task`-based sequence could.
-    private func updateContentMorph(for state: NotchState) {
-        let expanding = { if case .expanded = state { return true }; return false }()
-        withAnimation(.easeOut(duration: 0.25)) {
-            contentBlur = expanding ? 0 : 8
-            contentOpacity = expanding ? 1 : 0
-        }
     }
 
     // MARK: - Tap routing
@@ -312,13 +286,33 @@ struct NotchRootView: View {
     /// perfectly seamless/invisible against the physical notch, so the
     /// shadow is skipped entirely (not just faded to zero opacity) rather
     /// than risk a hairline halo around the idle notch.
+    ///
+    /// M8 audit fix: `.compositingGroup()` sits between the filled shape and
+    /// `.shadow(...)` so the shadow is computed off the shape's flattened
+    /// alpha (a single rasterized layer), not re-derived from the shape's
+    /// live vector geometry on every one of the ~60-120 frames `NotchShape`'s
+    /// `animatableData` ticks through during a spring — that per-frame
+    /// re-rasterization of the whole shadow (rather than an offset+blur of an
+    /// already-flattened layer) was a measurable chunk of the expand/collapse
+    /// morph's frame cost. Deliberately `.compositingGroup()`, NOT
+    /// `.drawingGroup()`: the latter forces a Metal-backed off-screen render,
+    /// which the `cacheDisplay(in:to:)`-based snapshot path in
+    /// `OffscreenRender` (used by both `--snapshot`/`--snapshot-notch`) can't
+    /// reliably capture from its own off-screen, never-on-a-real-display
+    /// window — `.compositingGroup()` only flattens compositing (opacity/
+    /// blend mode/shadow), which `cacheDisplay` handles the same as any other
+    /// layered SwiftUI content. Shadow radius trimmed 16 → 12 alongside this
+    /// — softer/tighter blur is both cheaper to composite and reads closer to
+    /// the Alcove reference now that it's rendered off one flattened layer
+    /// instead of the shape's raw silhouette.
     private var shapeLayer: some View {
         shape
             .fill(Color.black)
             .frame(width: containerSize.width, height: containerSize.height)
             .scaleEffect(breathingScale)
+            .compositingGroup()
             .shadow(color: isCollapsed ? .clear : .black.opacity(0.55),
-                    radius: isCollapsed ? 0 : 16,
+                    radius: isCollapsed ? 0 : 12,
                     y: isCollapsed ? 0 : 4)
     }
 
@@ -366,18 +360,34 @@ struct NotchRootView: View {
 
     /// The chrome every expanded panel's content shares — regardless of
     /// whether it's a single widget or Duo view: horizontal breathing room,
-    /// top clearance for the physical notch cutout, bottom clearance for the
-    /// shape's own bottom corner radius, and the blur/opacity content morph.
-    /// Extracted out of `expandedContent(for:)`/`duoContent` (which used to
-    /// each apply this exact same chain of modifiers independently) so
-    /// there's exactly one place this chrome is defined; both call sites just
-    /// apply it once via `.modifier(ExpandedChrome(...))`.
+    /// top clearance for the physical notch cutout, and bottom clearance for
+    /// the shape's own bottom corner radius. Extracted out of
+    /// `expandedContent(for:)`/`duoContent` (which used to each apply this
+    /// exact same chain of modifiers independently) so there's exactly one
+    /// place this chrome is defined; both call sites just apply it once via
+    /// `.modifier(ExpandedChrome(...))`.
+    ///
+    /// M8 audit fix: this used to also own the expanded body's fade-in/out
+    /// morph via two `@State` values (`contentBlur`/`contentOpacity`) an
+    /// explicit `updateContentMorph(for:)` drove with its own
+    /// `withAnimation(.easeOut(duration: 0.25))` — entirely separate from,
+    /// and un-synced with, the spring `.animation(springFor(state), value:
+    /// state)` (see `body`) actually driving the shape morph and this
+    /// content's own frame size. That mismatch was the primary hitch: a
+    /// full-content Gaussian `.blur(radius:)`, RE-RASTERIZED on every one of
+    /// the ~60-120 animated frames a spring ticks through, is expensive
+    /// enough on its own to visibly stutter the whole expand/collapse morph
+    /// — and it bought nothing a plain cross-fade doesn't already sell just
+    /// as well here. The morph now lives entirely in `ExpandedContentTransition`
+    /// below, applied via a plain `.transition(...)` on the content-layer
+    /// branches (`activityContent`/`expandedContent(for:)` — see
+    /// `contentLayer`), which rides that SAME `.animation(springFor(state),
+    /// value: state)` transaction instead of a second, independent curve —
+    /// one mechanism, one timeline, no blur.
     private struct ExpandedChrome: ViewModifier {
         /// `notchSize.height + 6` at both call sites — clears the physical
         /// notch cutout at the top of the expanded shape.
         let topInset: CGFloat
-        let blur: CGFloat
-        let opacity: Double
 
         func body(content: Content) -> some View {
             content
@@ -391,13 +401,62 @@ struct NotchRootView: View {
                 // crowds/overhangs the more generous curve underneath it.
                 // 18pt restores that clearance.
                 .padding(.bottom, 18)
-                .blur(radius: blur)
-                .opacity(opacity)
         }
     }
 
+    /// The expanded body's fade+scale morph (M8 audit FIX 1 + FIX 3):
+    /// opacity `0 → 1` paired with a slight scale-up `0.96 → 1.0` (anchored
+    /// at `.top`, matching how the content itself is top-aligned), applied
+    /// as a `ViewModifier`-backed `AnyTransition` rather than a `@State`-
+    /// driven blur. Conforming to `Animatable` (via `progress`) is what makes
+    /// this continuously interpolated across the whole transition — SwiftUI
+    /// drives `progress` from `0` (this modifier's "active"/removed end) to
+    /// `1` ("identity"/fully shown) using whatever animation is in the
+    /// current transaction, exactly like `NotchShape.animatableData` drives
+    /// the shape morph — rather than a two-keyframe snap.
+    ///
+    /// Attaching this via `.transition(...)` (see `activityContent`/
+    /// `expandedContent(for:)`) rather than a plain modifier is what fixes
+    /// the collapse-side "content pop": `contentLayer`'s switch tears the
+    /// `.expanded`/`.activity` branch's view out of the tree the same frame
+    /// `state` leaves it, so a hand-rolled `@State` fade (which needs a
+    /// *living* view to keep re-rendering while it animates) had nothing left
+    /// to animate — the fade-out simply never rendered, popping the content
+    /// away instantly even while the shape itself kept shrinking. A
+    /// `.transition` is exactly the primitive SwiftUI has for animating a
+    /// view's removal (not just its insertion): it keeps that subtree alive,
+    /// interpolating this modifier, for the whole animation before actually
+    /// discarding it.
+    private struct ExpandedContentTransition: ViewModifier, Animatable {
+        var progress: Double
+
+        var animatableData: Double {
+            get { progress }
+            set { progress = newValue }
+        }
+
+        func body(content: Content) -> some View {
+            content
+                .opacity(progress)
+                .scaleEffect(0.96 + 0.04 * progress, anchor: .top)
+        }
+    }
+
+    private static let expandedContentMorph = AnyTransition.modifier(
+        active: ExpandedContentTransition(progress: 0),
+        identity: ExpandedContentTransition(progress: 1))
+
     /// The two wings either side of the (blank, reserved) physical notch
     /// area, showing the current live activity's leading/trailing content.
+    ///
+    /// `.transition(.opacity)` (M8 audit FIX 6) is the same "content pop"
+    /// fix as `expandedContentMorph` above, applied here too: without it, the
+    /// wings would pop in/out instantly on the collapsed↔activity boundary
+    /// the same way the expanded panel used to, since this branch is torn
+    /// down/built by the exact same `contentLayer` switch. A plain opacity
+    /// fade (rather than the fuller fade+scale morph) is enough here — the
+    /// wings are thin strips flanking the physical notch, not a whole panel
+    /// growing out of it, so a scale cue reads as unnecessary motion.
     private var activityContent: some View {
         let tint = viewModel.activities.current?.tint ?? .normal
         return HStack(spacing: 0) {
@@ -408,6 +467,7 @@ struct NotchRootView: View {
                 .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
         }
         .frame(width: containerSize.width, height: containerSize.height)
+        .transition(.opacity)
     }
 
     /// The expanded panel: pure widget content, no chrome. Alcove's panel
@@ -421,18 +481,36 @@ struct NotchRootView: View {
     /// `NotchViewModel` re-routing `state` away from it (see
     /// `observeRegistry()`).
     ///
-    /// `.blur(radius: contentBlur)` + `.opacity(contentOpacity)` is the
-    /// content "morph" — SwiftUI has no built-in blur transition primitive,
-    /// so `updateContentMorph` drives these two plain `@State` values with an
-    /// explicit `withAnimation` instead of a `.transition(...)` modifier.
-    ///
     /// The single-widget and Duo branches used to each repeat the same
-    /// paddings + blur + opacity chain verbatim (see `ExpandedChrome` below)
+    /// paddings + blur + opacity chain verbatim (see `ExpandedChrome` above)
     /// — applying it once here, to the `Group` wrapping both branches,
     /// removes that duplication and guarantees the two branches can never
     /// drift out of sync on their chrome again.
+    ///
+    /// M8 audit FIX 5: the widget content used to sit directly inside the
+    /// single frame this function's whole result gets sized to
+    /// (`containerSize`, whose width/height are themselves an interpolated
+    /// spring value while `state` is mid-transition — see `body`'s
+    /// `.animation(springFor(state), value: state)`). A widget's own
+    /// `MarqueeText`/`ScrubberTrack`/layout `HStack`s measure their available
+    /// width via `GeometryReader` and react to every change (e.g.
+    /// `MarqueeText`'s `onChange(of: containerWidth)` restarting its scroll
+    /// loop) — so with the frame *itself* animating, that content was
+    /// re-measuring and re-laying-out on every single one of the spring's
+    /// ~60-120 interpolated frames, restarting marquee loops mid-scroll and
+    /// generally doing real layout work far more often than the eye can even
+    /// register, which is real, measurable frame cost stacked on top of the
+    /// shape morph. The fix: give the widget content a frame FIXED at this
+    /// state's own settled, final size (`finalSize` below — never animated,
+    /// since it depends only on discrete `state`, not a continuously
+    /// interpolated value) so it lays out exactly once per widget/Duo target;
+    /// the *animated* `containerSize`-sized frame wraps that fixed content
+    /// from the outside instead, with `.clipped()` turning it into a growing/
+    /// shrinking viewport over already-laid-out content rather than a
+    /// resize that content has to keep reacting to.
     private func expandedContent(for widgetID: WidgetID) -> some View {
         let widget = viewModel.registry.enabledWidgets.first { $0.id == widgetID }
+        let finalSize = size(for: .expanded(widgetID))
         return Group {
             if isDuoLayout(for: widgetID),
                let calendarWidget = viewModel.registry.enabledWidgets.first(where: { $0.id == .calendar }) {
@@ -442,14 +520,29 @@ struct NotchRootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .modifier(ExpandedChrome(topInset: notchSize.height + 6, blur: contentBlur, opacity: contentOpacity))
+        .modifier(ExpandedChrome(topInset: notchSize.height + 6))
+        // Fixed, settled-size inner frame — laid out once per widget/Duo
+        // target, never interpolated (see doc comment above). `.animation
+        // (nil, value:)` is a belt-and-suspenders guard: `finalSize` only
+        // ever changes in lockstep with discrete `state`/`duoActive` changes
+        // anyway, but this makes the "this frame never springs" invariant
+        // explicit and immune to some ancestor's `.animation(_:value:)`
+        // reaching in and animating it regardless.
+        .frame(width: finalSize.width, height: finalSize.height, alignment: .top)
+        .animation(nil, value: finalSize)
+        // The animated viewport: `containerSize` is the same interpolated-
+        // during-spring value `shapeLayer` sizes the visible shell to, so
+        // this clips the fixed-size content above to exactly what the
+        // morphing shape is showing at each instant.
         .frame(width: containerSize.width, height: containerSize.height, alignment: .top)
+        .clipped()
+        .transition(Self.expandedContentMorph)
     }
 
     /// Alcove's Duo view (M7 v1.7 parity): Now Playing's expanded content at
     /// flexible width beside a fixed-width Calendar pane, split by a hairline
-    /// divider. Both panes share this container's single blur/opacity content
-    /// morph (`contentBlur`/`contentOpacity`, applied via `ExpandedChrome` in
+    /// divider. Both panes share this container's single fade+scale content
+    /// morph (`expandedContentMorph`, applied via `.transition(...)` in
     /// `expandedContent(for:)`, its only caller), so entering/leaving Duo
     /// fades exactly like any other expanded-content change rather than
     /// needing a second, separate morph.

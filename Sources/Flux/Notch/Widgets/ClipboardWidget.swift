@@ -76,14 +76,14 @@ private struct ClipboardExpandedView: View {
     private var header: some View {
         HStack {
             Text("Clipboard")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.55))
+                .font(NotchDesign.captionFont.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
             Spacer()
             if !monitor.entries.isEmpty {
                 Button("Clear All") { monitor.clear() }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.45))
+                    .font(NotchDesign.captionFont)
+                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
             }
         }
     }
@@ -102,13 +102,25 @@ private struct ClipboardExpandedView: View {
     /// visible without scrolling.
     private var list: some View {
         ScrollView(showsIndicators: false) {
+            // Row spacing stays a literal 6, not `NotchDesign.rowSpacing`
+            // (8) — this panel's height budget is documented above
+            // (`list`'s own doc comment) as already approaching its usable
+            // ceiling at 3 rows; the extra points `rowSpacing` would add per
+            // gap risks reintroducing the very clipping this pass fixes.
             VStack(spacing: 6) {
                 ForEach(monitor.entries) { entry in
                     ClipboardRow(entry: entry, monitor: monitor)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.top, 2)
+            // Bug fix (M8): matches `notchScrollFade()` below — the last
+            // row's real content clears the fade zone instead of fading out
+            // from underneath it.
+            .padding(.bottom, 2 + NotchDesign.scrollFadeContentInset)
         }
+        // Bug fix (M8): the clipboard's third row was clipping hard into
+        // the panel's 32pt bottom corner radius; this fades it out instead.
+        .notchScrollFade()
     }
 }
 
@@ -122,31 +134,31 @@ private struct ClipboardRow: View {
     @State private var didConfirmCopy = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: NotchDesign.rowSpacing) {
             Image(systemName: icon)
                 .font(.system(size: 13))
-                .foregroundStyle(Color.white.opacity(0.6))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.preview)
-                    .font(.system(size: 12))
+                    .font(NotchDesign.bodyFont)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(Formatters.relativeAge.localizedString(for: entry.capturedAt, relativeTo: Date()))
+                Text(Formatters.age(from: entry.capturedAt))
                     .font(.system(size: 9))
-                    .foregroundStyle(Color.white.opacity(0.4))
+                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
             }
 
             Spacer(minLength: 4)
 
             trailingControl
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, NotchDesign.space2)
         .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: NotchDesign.rowRadius, style: .continuous)
                 .fill(Color.white.opacity(isHovering ? 0.12 : 0.06))
         )
         .contentShape(Rectangle())
@@ -167,7 +179,7 @@ private struct ClipboardRow: View {
                 monitor.remove(entry.id)
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
             }
             .buttonStyle(.plain)
         }

@@ -163,7 +163,7 @@ private struct TimersExpandedView: View {
     @State private var customMinutes = 10
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: NotchDesign.rowSpacing) {
             header
             presetRow
             customRow
@@ -175,7 +175,7 @@ private struct TimersExpandedView: View {
             // the notch UI (`NotchRootView`'s gauge track, `EventRow`'s
             // dividing dot) instead.
             Rectangle()
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
                 .frame(height: 1)
             content
         }
@@ -194,7 +194,7 @@ private struct TimersExpandedView: View {
     /// amber is gone from every widget surface except calendar dots/
     /// warnings under Alcove's near-monochrome language.
     private var presetRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: NotchDesign.rowSpacing) {
             ForEach(TimersWidget.presetMinutes, id: \.self) { minutes in
                 Button {
                     start(minutes: minutes)
@@ -204,7 +204,7 @@ private struct TimersExpandedView: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(Capsule().fill(Color.white.opacity(0.14)))
+                        .background(Capsule().fill(NotchDesign.capsuleFill))
                 }
                 .buttonStyle(.plain)
             }
@@ -217,11 +217,7 @@ private struct TimersExpandedView: View {
     /// distinct from the preset row above it even with amber gone.
     private var customRow: some View {
         HStack(spacing: 10) {
-            Stepper(value: $customMinutes, in: TimersWidget.customMinutesRange) {
-                Text("\(customMinutes) min")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white)
-            }
+            customStepper
 
             Spacer(minLength: 0)
 
@@ -233,6 +229,43 @@ private struct TimersExpandedView: View {
                 .padding(.vertical, 6)
                 .background(Capsule().fill(Color.white.opacity(0.9)))
         }
+    }
+
+    /// Bug fix (M8): the stock macOS `Stepper` this row used to wrap drew
+    /// its own system-styled +/- control — the one stock AppKit/SwiftUI
+    /// chrome left anywhere in this near-monochrome, otherwise fully custom
+    /// panel, and it clashed visibly against the dark surface. Replaced
+    /// with two circular, monochrome buttons (`NotchDesign.capsuleFill`,
+    /// matching every other interactive fill in this panel) flanking the
+    /// same minutes label the `Stepper`'s label closure used to supply.
+    /// Same `TimersWidget.customMinutesRange` (1...120) clamping as before,
+    /// just applied by hand in `adjust(by:)` instead of relying on the
+    /// `Stepper`'s own built-in bounds.
+    private var customStepper: some View {
+        HStack(spacing: NotchDesign.space2) {
+            stepperButton("minus") { adjust(by: -1) }
+            Text("\(customMinutes) min")
+                .font(NotchDesign.monoDigitsBody)
+                .foregroundStyle(.white)
+                .frame(minWidth: 44)
+            stepperButton("plus") { adjust(by: 1) }
+        }
+    }
+
+    private func stepperButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(NotchDesign.capsuleFill))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func adjust(by delta: Int) {
+        let range = TimersWidget.customMinutesRange
+        customMinutes = min(max(customMinutes + delta, range.lowerBound), range.upperBound)
     }
 
     private func start(minutes: Int) {
@@ -285,13 +318,21 @@ private struct TimersExpandedView: View {
 
     private func rows(now: Date) -> some View {
         ScrollView(showsIndicators: false) {
+            // 6, not `NotchDesign.rowSpacing` (8) — deliberately tightened
+            // from 8 for this exact height-budget reason; see this type's
+            // own doc comment above `TimersExpandedView`.
             VStack(spacing: 6) {
                 ForEach(service.timers) { timer in
                     TimerRow(timer: timer, now: now, service: service)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.top, 2)
+            // Bug fix (M8): matches `notchScrollFade()` below.
+            .padding(.bottom, 2 + NotchDesign.scrollFadeContentInset)
         }
+        // Bug fix (M8): the running timer's countdown row was clipping hard
+        // into the panel's 32pt bottom corner radius; this fades it out.
+        .notchScrollFade()
     }
 }
 
@@ -306,12 +347,12 @@ private struct TimerRow: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(timer.label)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(NotchDesign.bodyFont)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(TimersWidget.formatCountdown(max(timer.remaining(at: now), 0)))
-                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(timer.isPaused ? Color.white.opacity(0.4) : Color.white)
+                    .font(NotchDesign.monoDigitsLarge)
+                    .foregroundStyle(timer.isPaused ? Color.white.opacity(NotchDesign.tertiaryOpacity) : Color.white)
             }
 
             Spacer(minLength: 0)
@@ -334,7 +375,7 @@ private struct TimerRow: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundStyle(Color.white.opacity(0.4))
+                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
             }
             .buttonStyle(.plain)
         }

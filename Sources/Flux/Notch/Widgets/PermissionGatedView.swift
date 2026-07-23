@@ -54,17 +54,17 @@ struct PermissionGatedView<Content: View>: View {
         VStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 26))
-                .foregroundStyle(Color.white.opacity(0.35))
+                .foregroundStyle(Color.white.opacity(NotchDesign.quaternaryOpacity))
             Text(message)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.65))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button(actionTitle, action: action)
                 .buttonStyle(.notchCapsule)
                 .frame(width: 170)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, NotchDesign.space3)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -88,7 +88,7 @@ private struct NotchCapsuleButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 9)
             .background(
-                Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.20 : 0.14))
+                Capsule().fill(configuration.isPressed ? Color.white.opacity(0.20) : NotchDesign.capsuleFill)
             )
             .contentShape(Capsule())
     }

@@ -90,14 +90,14 @@ private struct ShelfExpandedView: View {
     private var header: some View {
         HStack {
             Text("File Shelf")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.55))
+                .font(NotchDesign.captionFont.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
             Spacer()
             if !store.items.isEmpty {
                 Button("Clear All") { store.removeAll() }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.45))
+                    .font(NotchDesign.captionFont)
+                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
             }
         }
     }
@@ -108,13 +108,18 @@ private struct ShelfExpandedView: View {
 
     private var tileScroll: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
+            HStack(spacing: NotchDesign.space3) {
                 ForEach(store.items) { item in
                     ShelfTileView(item: item, store: store)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.leading, 2)
+            // Bug fix (M8): Shelf's horizontal strip needs a TRAILING fade
+            // (its corner curve reads left→right), matched by a trailing
+            // content inset here — see `notchScrollFade(edge:)` below.
+            .padding(.trailing, 2 + NotchDesign.scrollFadeContentInset)
         }
+        .notchScrollFade(edge: .trailing)
     }
 }
 
@@ -141,9 +146,9 @@ private struct ShelfTileView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 64)
-            Text(Formatters.relativeAge.localizedString(for: item.addedAt, relativeTo: Date()))
+            Text(Formatters.age(from: item.addedAt))
                 .font(.system(size: 9))
-                .foregroundStyle(Color.white.opacity(0.4))
+                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
         }
         .frame(width: 64)
         .contentShape(Rectangle())
@@ -178,7 +183,7 @@ private struct ShelfTileView: View {
                 }
             }
             .frame(width: 44, height: 44)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: NotchDesign.tileRadius, style: .continuous))
 
             if isHovering {
                 Button {

@@ -91,6 +91,12 @@ private struct CalendarExpandedView: View {
         ) {
             agenda
         }
+        // Bug fix (M8): `NotchRootView`'s Duo layout gives this pane chrome's
+        // 16pt horizontal inset only on the panel's own outer edge, nothing
+        // on the inner edge against the divider — see `NotchDesign.
+        // paneInsets`'s own doc comment for why this is applied
+        // symmetrically rather than only on the divider-facing side.
+        .padding(.horizontal, NotchDesign.paneInsets)
     }
 
     // MARK: Agenda
@@ -114,7 +120,7 @@ private struct CalendarExpandedView: View {
             emptyState
         } else {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: NotchDesign.sectionSpacing) {
                     if !groups.today.isEmpty {
                         section(title: "Today", events: groups.today)
                     }
@@ -122,8 +128,22 @@ private struct CalendarExpandedView: View {
                         section(title: "Tomorrow", events: groups.tomorrow)
                     }
                 }
-                .padding(.vertical, 2)
+                // Bug fix (M8): without this, an unconstrained-width VStack
+                // inside a ScrollView takes its own intrinsic (widest-row)
+                // width and centers within the ScrollView's full width by
+                // default — the "floats with huge dead margins left AND
+                // right" bug. Leading-aligning it across the full available
+                // width is the actual fix; `NotchDesign.paneInsets` above
+                // (on `CalendarExpandedView.body`) only handles the
+                // Duo-pane divider gap, a separate concern.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+                // Bug fix (M8): the extra bottom inset `notchScrollFade`
+                // expects, so the last row's real content clears the fade
+                // zone instead of fading out from underneath it.
+                .padding(.bottom, 2 + NotchDesign.scrollFadeContentInset)
             }
+            .notchScrollFade()
         }
     }
 
@@ -132,10 +152,16 @@ private struct CalendarExpandedView: View {
     }
 
     private func section(title: String, events: [CalendarEvent]) -> some View {
+        // Row spacing here stays a literal 6, not `NotchDesign.rowSpacing`
+        // (8) — this panel's height budget is already documented above
+        // (`agenda`'s own doc comment) as landing right at the top of its
+        // usable range at 4 visible rows; the extra 2pt × 3 gaps `rowSpacing`
+        // would add is enough to reintroduce the very clipping this pass
+        // fixed elsewhere.
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.45))
+                .font(NotchDesign.microFont)
+                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
                 .tracking(0.7)
             ForEach(events) { event in
                 EventRow(event: event)
@@ -150,7 +176,7 @@ private struct EventRow: View {
     let event: CalendarEvent
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: NotchDesign.rowSpacing) {
             // The one deliberately colorful element in this near-monochrome
             // panel (Alcove's own agenda dot) — an event's real calendar
             // color when it has one. An event with no calendar color at all
@@ -159,23 +185,23 @@ private struct EventRow: View {
             // calendar color" and shouldn't borrow the accent just to have
             // *a* color.
             Circle()
-                .fill(event.calendarColor.map { Color(nsColor: $0) } ?? Color.white.opacity(0.45))
+                .fill(event.calendarColor.map { Color(nsColor: $0) } ?? Color.white.opacity(NotchDesign.tertiaryOpacity))
                 .frame(width: 7, height: 7)
                 .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.title)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(NotchDesign.bodyFont)
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                HStack(spacing: 4) {
+                HStack(spacing: NotchDesign.space1) {
                     Text(timeRange)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.58))
+                        .font(NotchDesign.monoDigitsCaption)
+                        .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
                     if let location = event.location {
                         Text("· \(location)")
                             .font(.caption2)
-                            .foregroundStyle(Color.white.opacity(0.42))
+                            .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
                             .lineLimit(1)
                     }
                 }

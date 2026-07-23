@@ -2848,6 +2848,64 @@ enum SelfTest {
                   "Notch: a plain click (optionDown: false) right after still does the ordinary open/close toggle, completely unaffected by the option-click path")
         }
 
+        // --- M8: NotchDesign token sanity — the opacity ramp is strictly
+        // ordered (each step dimmer than the last) and every spacing token
+        // is positive/increasing, so a future edit can't quietly invert the
+        // visual hierarchy or zero out a token every widget lays out
+        // against. ---
+        do {
+            check(NotchDesign.primaryOpacity > NotchDesign.secondaryOpacity
+                    && NotchDesign.secondaryOpacity > NotchDesign.tertiaryOpacity
+                    && NotchDesign.tertiaryOpacity > NotchDesign.quaternaryOpacity
+                    && NotchDesign.quaternaryOpacity > NotchDesign.hairlineOpacity,
+                  "NotchDesign: the opacity ramp is strictly ordered primary > secondary > tertiary > quaternary > hairline")
+            check(NotchDesign.primaryOpacity == 1.0, "NotchDesign: primaryOpacity is full strength")
+            check(NotchDesign.hairlineOpacity > 0, "NotchDesign: hairlineOpacity is still visible, not fully transparent")
+
+            check(NotchDesign.space1 > 0 && NotchDesign.space2 > 0 && NotchDesign.space3 > 0 && NotchDesign.space4 > 0,
+                  "NotchDesign: every base spacing token is positive")
+            check(NotchDesign.space1 < NotchDesign.space2
+                    && NotchDesign.space2 < NotchDesign.space3
+                    && NotchDesign.space3 < NotchDesign.space4,
+                  "NotchDesign: the spacing scale is strictly increasing (space1 < space2 < space3 < space4)")
+            check(NotchDesign.rowSpacing == NotchDesign.space2, "NotchDesign: rowSpacing aliases space2")
+            check(NotchDesign.sectionSpacing == NotchDesign.space3, "NotchDesign: sectionSpacing aliases space3")
+            check(NotchDesign.contentPadding == NotchDesign.space4, "NotchDesign: contentPadding aliases space4")
+
+            check(NotchDesign.scrollFadeLength > 0 && NotchDesign.scrollFadeContentInset > 0,
+                  "NotchDesign: the scroll-fade length and its matching content inset are both positive")
+            check(NotchDesign.paneInsets > 0, "NotchDesign: paneInsets is a real, positive inset")
+        }
+
+        // --- M8: Formatters.age(from:to:) — the fix for Shelf/Clipboard row
+        // captions reading a future-tense "in 0s" for an item added moments
+        // ago. Anything under 60s reads as a flat "now"; anything older
+        // reads unambiguously past tense, even right across the boundary
+        // that used to flip sign under ordinary clock skew. ---
+        do {
+            let now = Date()
+            check(Formatters.age(from: now, to: now) == "now",
+                  "Formatters.age: a zero-second-old item reads 'now', not a future-tense 'in 0s'")
+            check(Formatters.age(from: now.addingTimeInterval(-30), to: now) == "now",
+                  "Formatters.age: a 30s-old item still reads 'now' (under the 60s threshold)")
+            check(Formatters.age(from: now.addingTimeInterval(-59), to: now) == "now",
+                  "Formatters.age: a 59s-old item is still 'now' (just under the boundary)")
+            // The actual bug repro: `from` lands microseconds AFTER `to`
+            // (clock skew/rounding between two separate `Date()` reads,
+            // never a real future timestamp) — this must still read 'now',
+            // never a future-tense phrase.
+            check(Formatters.age(from: now.addingTimeInterval(2), to: now) == "now",
+                  "Formatters.age: a `from` timestamp marginally AFTER `to` (clock skew) still reads 'now', never future tense")
+
+            let age90 = Formatters.age(from: now.addingTimeInterval(-90), to: now)
+            check(!age90.hasPrefix("in "), "Formatters.age: a 90s-old item is never phrased in future tense (got \(age90))")
+            check(age90.contains("ago"), "Formatters.age: a 90s-old item reads past tense (\"...ago\"), got \(age90)")
+
+            let age60 = Formatters.age(from: now.addingTimeInterval(-60), to: now)
+            check(!age60.hasPrefix("in ") && age60 != "now",
+                  "Formatters.age: exactly at the 60s boundary the item is old enough for real relative text (got \(age60)), not 'now' or future tense")
+        }
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }
