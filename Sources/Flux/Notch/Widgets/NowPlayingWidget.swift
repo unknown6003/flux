@@ -292,9 +292,9 @@ private struct NowPlayingExpandedView: View {
     // MARK: Row 3 — transport
 
     /// Four elements, evenly spaced across the full width via `Spacer`s —
-    /// no favorite/star button (there's no favorite API in any of our
-    /// `NowPlayingSource`s, and a non-functional star would be a dead,
-    /// dishonest control) — and monochrome white throughout, including
+    /// no favorite/star button (there's no favorite API in the MediaRemote
+    /// adapter, and a non-functional star would be a dead, dishonest
+    /// control) — and monochrome white throughout, including
     /// play/pause: unlike the old amber "prominent" treatment, size alone
     /// (22pt vs 17pt) is what marks it as the visual anchor now.
     private func transportRow(_ state: NowPlayingState) -> some View {

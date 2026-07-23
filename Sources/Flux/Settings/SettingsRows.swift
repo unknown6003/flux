@@ -44,9 +44,9 @@ struct ToggleRow: View {
 /// "Grant Access" while undetermined, "Open System Settings" once denied/
 /// restricted, nothing once granted (or on a status this app can't act on).
 /// Introduced in M4 for Calendar; written generically over `PermissionKind`
-/// so M5 (Accessibility) and M6 (Camera) reuse this exact row rather than
-/// each hand-rolling their own — see `PermissionCenter`'s doc comment for why
-/// a grant here can't be assumed permanent (ad-hoc signing).
+/// so M6 (Camera) reuses this exact row rather than hand-rolling its own —
+/// see `PermissionCenter`'s doc comment for why a grant here can't be assumed
+/// permanent (ad-hoc signing).
 struct PermissionRow: View {
     let kind: PermissionKind
     let title: String
@@ -110,25 +110,9 @@ struct PermissionRow: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentColor)
         case .denied, .restricted:
-            HStack(spacing: 12) {
-                // Accessibility never reports `.notDetermined` — `AXIsProcessTrusted()`
-                // only ever answers granted-or-not, so the `.notDetermined`
-                // branch above is unreachable for this one kind, and
-                // `request(.accessibility)`'s `AXIsProcessTrustedWithOptions`
-                // prompt (which is what actually registers this app in the
-                // TCC list at all) would otherwise never be reachable from
-                // this row once denied. Restricted is left alone — a device
-                // policy blocking the permission outright isn't something a
-                // re-prompt can fix.
-                if kind == .accessibility, status == .denied {
-                    Button("Grant Access") { permissions.request(kind) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Theme.accentColor)
-                }
-                Button("Open System Settings") { permissions.openSystemSettings(kind) }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Theme.accentColor)
-            }
+            Button("Open System Settings") { permissions.openSystemSettings(kind) }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accentColor)
         case .granted, .unavailable:
             EmptyView()
         }

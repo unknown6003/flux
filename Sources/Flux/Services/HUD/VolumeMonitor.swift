@@ -3,29 +3,30 @@ import Combine
 import CoreAudio
 import OSLog
 
-/// Shared logging point for the HUD subsystem (M5: volume/brightness) —
-/// mirrors `powerLog`'s/`deviceLog`'s file-scope-constant pattern rather
-/// than adding a new case to `Log.swift`, since this is a self-contained M5
-/// subsystem the notch suite owns.
+/// Shared logging point for the HUD subsystem (M5: volume) — mirrors
+/// `powerLog`'s/`deviceLog`'s file-scope-constant pattern rather than adding
+/// a new case to `Log.swift`, since this is a self-contained M5 subsystem
+/// the notch suite owns.
 let hudLog = Logger(subsystem: "com.flux.menubar", category: "hud")
 
 /// A discrete volume/mute change worth surfacing as a live activity.
 /// `VolumeMonitor` posts one every time CoreAudio reports either changing —
-/// whether the user turned a physical key (observe mode), dragged Control
-/// Center's slider, or `MediaKeyInterceptor`'s intercept-mode path just
-/// applied one via `setVolume`/`adjustVolume`/`toggleMute` (CoreAudio fires
-/// the same listener for a programmatic write as for a hardware one — see
-/// `NotchActivityRouter`'s dedupe logic for how the double-post this would
-/// otherwise cause in intercept mode is suppressed).
+/// whether the user turned a physical key, dragged Control Center's slider,
+/// or another app changed it directly (CoreAudio fires the same listener
+/// regardless of who caused the change).
 enum VolumeEvent: Equatable {
     case volumeChanged(level: Float, muted: Bool)
 }
 
 /// Watches the default output device's volume/mute via CoreAudio's
 /// block-based property-listener API and turns changes into `VolumeEvent`s
-/// (`events`) — the observe-mode data source for the M5 HUD, and also
-/// (`setVolume`/`adjustVolume`/`toggleMute`) the thing intercept mode calls
-/// to actually apply a swallowed key press.
+/// (`events`) — the observe-mode data source for the volume HUD. Also
+/// exposes a small write API (`setVolume`/`adjustVolume`/`toggleMute`/
+/// `setMute`) that M5's intercept mode used to call to actually apply a
+/// swallowed key press; M11 removed intercept mode (and the
+/// `MediaKeyInterceptor` that drove it) entirely, so nothing in this app
+/// currently calls the write side — kept as part of this monitor's own
+/// capability regardless.
 ///
 /// ## Why this C interop is simpler than `PowerMonitor`'s
 /// `AudioObjectAddPropertyListenerBlock` takes an
@@ -104,13 +105,11 @@ final class VolumeMonitor {
         }
     }
 
-    // MARK: - Reading + writing (used by observe-mode refresh + intercept mode)
+    // MARK: - Reading + writing (used by observe-mode refresh; write side unused since M11 removed intercept mode)
 
     /// The default output device's live volume/mute, read fresh from
-    /// CoreAudio on every call — this is what `MediaKeyInterceptor`'s
-    /// intercept-mode path (via `NotchActivityRouter`) consults right after
-    /// applying a change, and what `refresh()` reads on every listener fire.
-    /// `nil` when there's no default output device at all, or the device
+    /// CoreAudio on every call — what `refresh()` reads on every listener
+    /// fire. `nil` when there's no default output device at all, or the device
     /// exposes neither the virtual main volume nor a per-channel scalar
     /// volume (some digital/HDMI outputs report no software-controllable
     /// volume whatsoever).
@@ -134,11 +133,7 @@ final class VolumeMonitor {
     /// Whether the default output device currently exposes a software-
     /// settable volume scalar at all — `false` for several digital/HDMI
     /// outputs and some external DACs, which only ever publish a fixed or
-    /// read-only level. `MediaKeyInterceptor`'s `volumeControllable` closure
-    /// (wired by `NotchActivityRouter`) consults this so the volume keys
-    /// pass through to the system instead of being silently swallowed with
-    /// nothing this app can actually do about them — mirroring
-    /// `brightnessAvailable`'s existing pass-through for brightness keys.
+    /// read-only level.
     var hasVolumeControl: Bool {
         let device = resolvedDeviceID()
         guard device != kAudioObjectUnknown else { return false }
@@ -201,10 +196,7 @@ final class VolumeMonitor {
         _ = Self.writeMute(device: device, muted: !muted)
     }
 
-    /// Sets mute to an explicit state (rather than toggling) — used by
-    /// `NotchActivityRouter.applyVolumeKey`'s Volume-Up-while-muted-unmutes
-    /// fix, which needs to force mute *off* specifically, not flip whatever
-    /// it currently is.
+    /// Sets mute to an explicit state (rather than toggling).
     func setMute(_ muted: Bool) {
         let device = resolvedDeviceID()
         guard device != kAudioObjectUnknown else { return }

@@ -61,44 +61,16 @@ final class NotchActivityRouter {
     /// `viewModel.$state` for change notifications the same way
     /// `observeCalendar()` subscribes to `calendar.$upcoming`.
     private let viewModel: NotchViewModel
-    /// M5: the CoreAudio-backed observe-mode volume source, also the thing
-    /// `applyVolumeKey` calls to actually change volume/mute in intercept
-    /// mode. Owned outright, like `power`/`bluetooth` — this router is its
-    /// only consumer.
+    /// M5: the CoreAudio-backed observe-mode volume source. Owned outright,
+    /// like `power`/`bluetooth` — this router is its only consumer.
     private let volume: VolumeMonitor
-    /// M5: private-DisplayServices brightness reader/writer. No lifecycle of
-    /// its own (no `start()`/`stop()` — see its doc comment on why brightness
-    /// has no observe mode); only ever called from `applyBrightnessKey`, in
-    /// response to an already-intercepted key.
-    private let brightness: BrightnessMonitor
-    /// M5: the Accessibility-gated `CGEventTap` that, when running, swallows
-    /// volume/brightness keys instead of letting the system bezel handle
-    /// them. Whether it's actually live right now is read fresh from
-    /// `interceptor.isTapActive` every time `applyHUDState` runs (the code
-    /// review fix that replaced a stored `interceptorActive` flag, which
-    /// could go stale-true forever if the tap died underneath it — see
-    /// `MediaKeyInterceptor.isTapActive`'s own doc comment) rather than
-    /// cached here.
-    private let interceptor: MediaKeyInterceptor
-    /// M7: best-effort Focus status — see its own doc comment on why this is
-    /// inherently fragile (undocumented on-disk state, no public API). Owned
-    /// outright, like `power`/`bluetooth`/`volume` — this router is its only
-    /// consumer.
-    private let focus: FocusMonitor
-    /// Last time `applyVolumeKey` applied a volume/mute change through the
-    /// interceptor pipeline — the memory behind
-    /// `isVolumeMonitorEventSuppressed`'s dedupe window (see that function's
-    /// doc comment for why the CoreAudio listener fire this same change
-    /// triggers needs suppressing).
-    private var lastInterceptorVolumeApplyAt: Date?
-    /// Gates every real `power.start()`/`bluetooth.start()`/`volume.start()`/
-    /// `interceptor.start()` call (see `applyMonitorState`/`applyHUDState`) —
-    /// `false` only for `--selftest`, which feeds synthetic events straight
-    /// through `power.events`/`bluetooth.events`/`volume.events`/
-    /// `interceptor.events` (wired unconditionally by `observePower`/
-    /// `observeBluetooth`/`observeVolume`/`observeInterceptor` above) and must
-    /// never let this router's normal settings-driven lifecycle touch real
-    /// IOKit/CoreAudio/a real event tap on a headless CI runner.
+    /// Gates every real `power.start()`/`bluetooth.start()`/`volume.start()`
+    /// call (see `applyMonitorState`/`applyHUDState`) — `false` only for
+    /// `--selftest`, which feeds synthetic events straight through
+    /// `power.events`/`bluetooth.events`/`volume.events` (wired
+    /// unconditionally by `observePower`/`observeBluetooth`/`observeVolume`
+    /// above) and must never let this router's normal settings-driven
+    /// lifecycle touch real IOKit/CoreAudio on a headless CI runner.
     private let startsMonitors: Bool
     /// The latest value delivered by the injected `presentation` publisher —
     /// whether there's currently anywhere to actually show a wing. Cached
@@ -109,8 +81,8 @@ final class NotchActivityRouter {
 
     private var cancellables = Set<AnyCancellable>()
 
-    // `power`/`bluetooth`/`volume`/`brightness`/`interceptor` take optionals
-    // defaulting to `nil` — rather than defaulting directly to
+    // `power`/`bluetooth`/`volume` take optionals defaulting to `nil` —
+    // rather than defaulting directly to
     // `PowerMonitor()`/`DeviceMonitor()`/etc. — because default-argument
     // expressions are evaluated in a nonisolated context, and every one of
     // these types' initializers is `@MainActor`-isolated. Constructing them
@@ -135,9 +107,6 @@ final class NotchActivityRouter {
          power: PowerMonitor? = nil,
          bluetooth: DeviceMonitor? = nil,
          volume: VolumeMonitor? = nil,
-         brightness: BrightnessMonitor? = nil,
-         interceptor: MediaKeyInterceptor? = nil,
-         focus: FocusMonitor? = nil,
          startsMonitors: Bool = true,
          presentation: AnyPublisher<Bool, Never> = Just(true).eraseToAnyPublisher()) {
         self.activities = activities
@@ -150,45 +119,31 @@ final class NotchActivityRouter {
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? DeviceMonitor()
         self.volume = volume ?? VolumeMonitor()
-        self.brightness = brightness ?? BrightnessMonitor()
-        self.interceptor = interceptor ?? MediaKeyInterceptor()
-        self.focus = focus ?? FocusMonitor()
         self.startsMonitors = startsMonitors
-
-        // Wired once, here — not re-wired per `applyHUDState` call — because
-        // it's a closure: `MediaKeyInterceptor` re-invokes it live on every
-        // swallow decision, so it always sees whatever the CURRENT default
-        // output device's capability is, even if that changes while the tap
-        // stays running.
-        self.interceptor.volumeControllable = { [weak self] in self?.volume.hasVolumeControl ?? true }
 
         observePower()
         observeBluetooth()
         observeVolume()
-        observeInterceptor()
         observeOverflow()
         observeOverflowGating()
         observeCalendar()
         observeTimers()
-        observeFocus()
         observeMonitorGating()
         observeHUDGating()
         observeTimerGating()
-        observeFocusGating()
         observeNotchState()
         observeDuoActive()
         observePresentation(presentation)
         applyMonitorState()
         applyHUDState()
         recomputeTimerActivity()
-        recomputeFocusActivity()
     }
 
     deinit {
-        // `calendarThresholdTask`/`timerRefreshTask`/`focusRefreshTask` are
-        // each a `DeadlineTask` now (see their own doc comments) — its own
-        // `deinit` cancels whatever's pending when this router does, so
-        // there's nothing left to do here explicitly.
+        // `calendarThresholdTask`/`timerRefreshTask` are each a
+        // `DeadlineTask` now (see their own doc comments) — its own `deinit`
+        // cancels whatever's pending when this router does, so there's
+        // nothing left to do here explicitly.
     }
 
     // MARK: - Battery
@@ -577,12 +532,6 @@ final class NotchActivityRouter {
                 let calendarGranted = statuses[.calendar] == .granted
                 self?.applyMonitorState(calendarPermissionGranted: calendarGranted)
                 self?.recomputeCalendarActivity(calendarPermissionGranted: calendarGranted)
-                // Accessibility can be granted or revoked independently of
-                // every HUD settings toggle — re-evaluate whether intercept
-                // mode can actually run whenever permission itself changes,
-                // the same "grant-while-open" reasoning `recomputeCalendarActivity`
-                // above already applies to Calendar.
-                self?.applyHUDState(accessibilityGranted: statuses[.accessibility] == .granted)
             }
             .store(in: &cancellables)
     }
@@ -643,26 +592,17 @@ final class NotchActivityRouter {
             .store(in: &cancellables)
     }
 
-    // MARK: - HUD (volume/brightness, M5)
+    // MARK: - HUD (volume, M5; brightness/intercept mode removed M11)
     //
-    // Two data sources feed the same `.hudVolume`/`.hudBrightness` activity
-    // kinds, matching the M5 design's two modes:
-    //   - Observe mode: `VolumeMonitor`'s CoreAudio listeners fire for every
-    //     volume/mute change regardless of who caused it (a hardware key, a
-    //     Control Center slider drag, or this router's own intercept-mode
-    //     write) — see `handleVolumeEvent`. There is no brightness observe
-    //     mode at all (see `BrightnessMonitor`'s doc comment on why);
-    //     `.hudBrightness` only ever posts from intercept mode.
-    //   - Intercept mode: `MediaKeyInterceptor` swallows the key at the OS
-    //     level and hands this router a parsed `HUDKeyEvent`; this router
-    //     applies the actual volume/brightness change itself
-    //     (`applyVolumeKey`/`applyBrightnessKey`) and posts the activity with
-    //     the resulting value, rather than waiting for a listener to fire.
-    //
-    // Applying a volume change through `VolumeMonitor.setVolume`/
-    // `adjustVolume`/`toggleMute` also fires CoreAudio's own listener a
-    // moment later — `isVolumeMonitorEventSuppressed` is what keeps that from
-    // double-posting the same change.
+    // A single data source: `VolumeMonitor`'s CoreAudio listeners fire for
+    // every volume/mute change regardless of who caused it (a hardware key,
+    // a Control Center slider drag, another app) — see `handleVolumeEvent`.
+    // This is permission-free and needs no dedupe: M11 removed the
+    // Accessibility-gated intercept mode (`MediaKeyInterceptor`) and the
+    // brightness HUD (`BrightnessMonitor` — brightness had no observe mode to
+    // fall back to, so once intercept went, brightness had nothing left to
+    // show) entirely, so observe mode is now the only producer of
+    // `.hudVolume` and there's no second write path to double-post against.
 
     private func observeVolume() {
         volume.events
@@ -672,101 +612,15 @@ final class NotchActivityRouter {
 
     private func handleVolumeEvent(_ event: VolumeEvent) {
         guard settings.notchHudEnabled else { return }
-        guard !Self.isVolumeMonitorEventSuppressed(now: Date(), lastInterceptorApplyAt: lastInterceptorVolumeApplyAt)
-        else { return }
         switch event {
         case .volumeChanged(let level, let muted):
             activities.post(Self.volumeActivity(level: level, muted: muted))
         }
     }
 
-    private func observeInterceptor() {
-        interceptor.events
-            .sink { [weak self] event in self?.handleInterceptorEvent(event) }
-            .store(in: &cancellables)
-    }
-
-    private func handleInterceptorEvent(_ event: HUDKeyEvent) {
-        guard settings.notchHudEnabled else { return }
-        switch event {
-        case .key(let key, isRepeat: _, fine: let fine):
-            switch key {
-            case .volumeUp, .volumeDown, .mute:
-                applyVolumeKey(key, fine: fine)
-            case .brightnessUp, .brightnessDown:
-                applyBrightnessKey(key, fine: fine)
-            }
-        }
-    }
-
-    /// The standard per-key-press step, matching the system's own volume/
-    /// brightness key increment; halved to a much finer nudge under the
-    /// Shift+Option modifier, mirroring macOS's own built-in behavior for
-    /// these same keys.
-    private static let hudStep: Float = 1.0 / 16.0
-    private static let hudFineStep: Float = 1.0 / 64.0
-
-    private func applyVolumeKey(_ key: HUDKey, fine: Bool) {
-        // Recorded BEFORE calling into `volume` at all — not just before
-        // reading `.current` back — because the code-review fix here is that
-        // a device's CoreAudio listener can fire *synchronously* from
-        // *within* `adjustVolume`/`toggleMute`/`setMute` itself (observed on
-        // some devices), i.e. before any of those calls below have even
-        // returned. Setting this after the write (the old shape) left a
-        // window where that synchronous re-entrant fire would read
-        // `lastInterceptorVolumeApplyAt` still at its previous (stale, or
-        // `nil`) value and post a duplicate — `isVolumeMonitorEventSuppressed`
-        // can only suppress it if this is already set by the time that
-        // listener runs.
-        lastInterceptorVolumeApplyAt = Date()
-        switch key {
-        case .mute:
-            volume.toggleMute()
-        case .volumeUp:
-            // Matches the system's own behavior: raising the volume while
-            // muted also unmutes — a press of Volume Up is a request to make
-            // sound audible again, not to silently raise a still-silenced
-            // level. Volume Down deliberately does NOT symmetrically
-            // re-mute; only Up unmutes, mirroring the physical/system keys.
-            if volume.current?.muted == true {
-                volume.setMute(false)
-            }
-            let step = fine ? Self.hudFineStep : Self.hudStep
-            volume.adjustVolume(by: step)
-        case .volumeDown:
-            let step = fine ? Self.hudFineStep : Self.hudStep
-            volume.adjustVolume(by: -step)
-        case .brightnessUp, .brightnessDown:
-            return
-        }
-        // Read back the actual level/mute from `volume` rather than assuming
-        // any of the writes above landed at the requested value — if a write
-        // silently failed (an unsettable property, or a race with some other
-        // change), this posts whatever is REALLY now in effect, never a
-        // fabricated "what we asked for" value.
-        guard let current = volume.current else { return }
-        activities.post(Self.volumeActivity(level: current.level, muted: current.muted))
-    }
-
-    private func applyBrightnessKey(_ key: HUDKey, fine: Bool) {
-        let step = fine ? Self.hudFineStep : Self.hudStep
-        let delta = key == .brightnessUp ? step : -step
-        guard let level = brightness.adjust(by: delta) else { return }
-        activities.post(Self.brightnessActivity(level: level))
-    }
-
     static func volumeActivity(level: Float, muted: Bool) -> LiveActivity {
         let symbol = volumeSymbol(level: level, muted: muted)
         return LiveActivity(kind: .hudVolume,
-                             leading: .icon(systemName: symbol),
-                             trailing: .gauge(Double(level), systemName: symbol),
-                             duration: 1.5,
-                             priority: 300)
-    }
-
-    static func brightnessActivity(level: Float) -> LiveActivity {
-        let symbol = brightnessSymbol(level: level)
-        return LiveActivity(kind: .hudBrightness,
                              leading: .icon(systemName: symbol),
                              trailing: .gauge(Double(level), systemName: symbol),
                              duration: 1.5,
@@ -784,118 +638,48 @@ final class NotchActivityRouter {
         }
     }
 
-    static func brightnessSymbol(level: Float) -> String {
-        level <= 0.5 ? "sun.min.fill" : "sun.max.fill"
+    /// Whether the volume HUD should be observing right now — a pure
+    /// function of exactly the causes that decide it (the HUD master toggle,
+    /// whether there's anywhere to present), so `--selftest` can drive both
+    /// combinations directly. M11 collapsed this from a three-way
+    /// off/observe/intercept mode (gated on an Accessibility grant) down to
+    /// a plain on/off now that intercept mode is gone.
+    enum HUDMode: Equatable { case off, observe }
+
+    static func intendedHUDMode(hudEnabled: Bool, notchPresenting: Bool) -> HUDMode {
+        notchPresenting && hudEnabled ? .observe : .off
     }
 
-    /// The dedupe window after an intercept-mode write during which a
-    /// `VolumeMonitor` observe-mode event for the SAME change is suppressed
-    /// rather than posted a second time. `applyVolumeKey` already posts its
-    /// own activity with the authoritative post-write value the instant it
-    /// applies a change; the CoreAudio listener firing a moment later for
-    /// that identical change would otherwise re-post an equivalent (or,
-    /// worse, very slightly stale — read-back timing) duplicate activity,
-    /// restarting its 1.5s expiry for no reason. 300ms comfortably covers
-    /// CoreAudio's own notification latency (typically well under 50ms)
-    /// without silently swallowing a *genuinely separate* change (e.g. the
-    /// user immediately dragging Control Center's slider right after a key
-    /// press) — the plan's explicitly chosen tradeoff over the simpler
-    /// "ignore every VolumeMonitor event while intercept mode is on"
-    /// alternative, which would also hide changes made via Control Center or
-    /// a menu-bar slider while intercept mode is active.
-    static let interceptorApplyDedupeWindow: TimeInterval = 0.3
-
-    static func isVolumeMonitorEventSuppressed(now: Date, lastInterceptorApplyAt: Date?) -> Bool {
-        guard let lastInterceptorApplyAt else { return false }
-        return now.timeIntervalSince(lastInterceptorApplyAt) < interceptorApplyDedupeWindow
-    }
-
-    /// Which of the two M5 modes is (or would be) active — a pure function of
-    /// exactly the CAUSES that decide it (the HUD master toggle, whether
-    /// there's anywhere to present, the user's intercept request, and a live
-    /// Accessibility grant), so `--selftest` can drive every combination
-    /// directly. The code-review fix this replaced had a second, subtly
-    /// different decision inlined into `applyHUDState` itself (using
-    /// `interceptorActive`/`isTapActive` — an EFFECT of a previous decision —
-    /// as an input rather than a cause), so the selftest coverage of the old
-    /// `hudMode` was exercising logic production didn't actually run;
-    /// `applyHUDState` below now calls this exact function for its decision,
-    /// then only separately asks "is the tap I want already live" as a
-    /// health check on the way to actuating it (see `MediaKeyInterceptor.isTapActive`).
-    enum HUDMode: Equatable { case off, observe, intercept }
-
-    static func intendedHUDMode(hudEnabled: Bool, notchPresenting: Bool, interceptRequested: Bool,
-                                 accessibilityGranted: Bool) -> HUDMode {
-        guard notchPresenting, hudEnabled else { return .off }
-        return (interceptRequested && accessibilityGranted) ? .intercept : .observe
-    }
-
-    /// Starts/stops `volume`/`interceptor` to match the current settings —
-    /// called from every trigger that could change the answer: `init`'s
-    /// final call, `observeHUDGating`'s settings sink, and the permission/
-    /// presentation/notch-state sinks above (mirroring exactly which sinks
-    /// call `applyMonitorState`, for the same reasons). Also gated on
-    /// `startsMonitors`, like `applyMonitorState`.
-    ///
-    /// The decision itself is entirely `intendedHUDMode`'s — this function
-    /// only actuates it. `volume.start()`/`stop()` follows `.off` vs.
-    /// not-`.off` (observe mode needs it directly for its own posts, and
-    /// intercept mode needs it too — `applyVolumeKey` calls
-    /// `volume.adjustVolume`/`toggleMute`). `interceptor`'s start/stop is the
-    /// one place `isTapActive` is consulted — as a live health check, not a
-    /// mode input: a `.intercept` decision with the tap already live is a
-    /// no-op, a `.intercept` decision with a DEAD tap (Accessibility revoked
-    /// mid-session, or a timeout that didn't recover) re-arms it, and
-    /// anything else stops a tap that's still (unexpectedly) live. This is
-    /// what makes a revoked-then-re-granted Accessibility permission recover
-    /// on its own: the permission sink below calls `applyHUDState()` again,
-    /// `intendedHUDMode` now sees `accessibilityGranted: true`, and this
-    /// re-arms the tap.
-    private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil, hudInterceptEnabled: Bool? = nil,
-                                accessibilityGranted: Bool? = nil) {
+    /// Starts/stops `volume` to match the current settings — called from
+    /// every trigger that could change the answer: `init`'s final call,
+    /// `observeHUDGating`'s settings sink, and the presentation/notch-state
+    /// sinks above (mirroring exactly which sinks call `applyMonitorState`,
+    /// for the same reasons). Also gated on `startsMonitors`, like
+    /// `applyMonitorState`.
+    private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
-        let mode = Self.intendedHUDMode(
-            hudEnabled: hudEnabled ?? settings.notchHudEnabled,
-            notchPresenting: notchOn,
-            interceptRequested: hudInterceptEnabled ?? settings.notchHudInterceptEnabled,
-            accessibilityGranted: accessibilityGranted ?? MediaKeyInterceptor.isAccessibilityGranted(permissions))
+        let mode = Self.intendedHUDMode(hudEnabled: hudEnabled ?? settings.notchHudEnabled, notchPresenting: notchOn)
 
         switch mode {
         case .off:
             volume.stop()
             activities.dismiss(kind: .hudVolume)
-            activities.dismiss(kind: .hudBrightness)
-            if interceptor.isTapActive { interceptor.stop() }
         case .observe:
             volume.start()
-            if interceptor.isTapActive { interceptor.stop() }
-        case .intercept:
-            volume.start()
-            if !interceptor.isTapActive {
-                // `canChangeBrightness` — not the bare `isAvailable` — gates
-                // this: `isAvailable` only means the DisplayServices symbols
-                // loaded, not that THIS display can actually be changed
-                // (`DisplayServicesCanChangeBrightness` can still refuse, e.g.
-                // an MDM-locked brightness profile). Swallowing the key on
-                // `isAvailable` alone would silently eat it with nothing this
-                // app can do in response.
-                interceptor.brightnessAvailable = brightness.canChangeBrightness
-                interceptor.start()
-            }
         }
     }
 
-    /// Re-applies `applyHUDState` whenever the notch master switch or either
+    /// Re-applies `applyHUDState` whenever the notch master switch or the
     /// HUD toggle changes. `dropFirst` skips the redundant initial delivery,
     /// same as `observeMonitorGating` — `init` already calls `applyHUDState()`
     /// once directly.
     private func observeHUDGating() {
         settings.$notchEnabled
-            .combineLatest(settings.$notchHudEnabled, settings.$notchHudInterceptEnabled)
+            .combineLatest(settings.$notchHudEnabled)
             .dropFirst()
-            .sink { [weak self] notchEnabled, hudEnabled, interceptEnabled in
-                self?.applyHUDState(notchEnabled: notchEnabled, hudEnabled: hudEnabled, hudInterceptEnabled: interceptEnabled)
+            .sink { [weak self] notchEnabled, hudEnabled in
+                self?.applyHUDState(notchEnabled: notchEnabled, hudEnabled: hudEnabled)
             }
             .store(in: &cancellables)
     }
@@ -923,7 +707,6 @@ final class NotchActivityRouter {
                 self.recomputeCalendarActivity()
                 self.applyHUDState()
                 self.recomputeTimerActivity()
-                self.recomputeFocusActivity()
             }
             .store(in: &cancellables)
     }
@@ -969,7 +752,7 @@ final class NotchActivityRouter {
     /// publisher would otherwise see the STALE pre-change value.
     private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil,
                                     bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil,
-                                    focusEnabled: Bool? = nil, calendarPermissionGranted: Bool? = nil,
+                                    calendarPermissionGranted: Bool? = nil,
                                     state: NotchState? = nil, duoActive: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
@@ -986,15 +769,6 @@ final class NotchActivityRouter {
         } else {
             bluetooth.stop()
             activities.dismiss(kind: .bluetoothDevice)
-        }
-
-        if notchOn && (focusEnabled ?? settings.notchActivityFocusEnabled) {
-            focus.start()
-        } else {
-            focus.stop()
-            focusRefreshTask.cancel()
-            focusPeekUntil = nil
-            activities.dismiss(kind: .focus)
         }
 
         let shouldRunCalendar = Self.calendarServiceShouldRun(
@@ -1048,8 +822,7 @@ final class NotchActivityRouter {
 
     // MARK: - Timers (M6)
     //
-    // Two producers share the single `.timer` `LiveActivity.Kind`, matching
-    // how observe/intercept mode share `.hudVolume`/`.hudBrightness` above:
+    // Two producers share the single `.timer` `LiveActivity.Kind`:
     //   - `handleTimerCompletion`: a transient (10s), higher-priority (250)
     //     "<label> done" notice the instant `TimerService.completions` fires,
     //     plus a system sound — gated only on the settings toggle, not on
@@ -1260,158 +1033,5 @@ final class NotchActivityRouter {
         let epoch = now.timeIntervalSinceReferenceDate
         let nextEpoch = (epoch / interval).rounded(.down) * interval + interval
         return Date(timeIntervalSinceReferenceDate: nextEpoch)
-    }
-
-    // MARK: - Focus (M7)
-    //
-    // Mirrors the timer-completion/ambient-wing shape above exactly:
-    //   - `handleFocusEvent`: a transient (5s), higher-priority (130) "peek"
-    //     — the Focus's own icon + name (or "Focus off" turning one off) —
-    //     posted on every CHANGE, the moment `FocusMonitor` reports one.
-    //   - `recomputeFocusActivity`: an optional sticky (lower-priority, 105),
-    //     icon-only ambient indicator shown for as long as a Focus stays
-    //     active AND the opt-in sticky setting is on — gated behind
-    //     `focusPeekUntil` the same way `completionAlertUntil` protects the
-    //     timer completion notice: the peek is always left to run its full
-    //     5s before the ambient recompute is allowed to touch `.focus` at
-    //     all, so a rapid string of Focus changes never stomps its own
-    //     still-showing peek.
-    //
-    // Both share the single `.focus` `LiveActivity.Kind` — `post`'s own
-    // same-kind supersession means posting the sticky right after an
-    // in-progress peek would just replace it early, which is exactly what
-    // `focusPeekUntil`'s guard (mirroring `completionAlertUntil`) prevents.
-
-    private func observeFocus() {
-        focus.events
-            .sink { [weak self] event in self?.handleFocusEvent(event) }
-            .store(in: &cancellables)
-    }
-
-    private func handleFocusEvent(_ event: FocusMonitor.Event) {
-        guard settings.notchActivityFocusEnabled else { return }
-        let name: String?
-        let symbolName: String?
-        switch event {
-        case .focusChanged(let eventName, let eventSymbolName):
-            name = eventName
-            symbolName = eventSymbolName
-        }
-        currentFocusName = name
-        currentFocusSymbolName = symbolName
-
-        let expiresAt = Date().addingTimeInterval(Self.focusPeekDuration)
-        // Recorded BEFORE posting — see `completionAlertUntil`'s identical
-        // ordering note on the timer side: `recomputeFocusActivity` checks
-        // this on every call, so it must already be set before anything
-        // downstream of `post` could possibly race a recompute.
-        focusPeekUntil = expiresAt
-        activities.post(Self.focusPeekActivity(name: name, symbolName: symbolName))
-        armFocusRefresh(at: expiresAt.addingTimeInterval(0.1))
-    }
-
-    static let focusPeekDuration: TimeInterval = 5
-    static let focusPeekPriority = 130
-    static let focusStickyPriority = 105
-
-    /// The transient "peek" activity a Focus change posts immediately —
-    /// `name`/`symbolName` both `nil` reads as "Focus off."
-    static func focusPeekActivity(name: String?, symbolName: String?) -> LiveActivity {
-        LiveActivity(kind: .focus,
-                     leading: .icon(systemName: symbolName ?? "moon.fill"),
-                     trailing: .text(name ?? "Focus off"),
-                     duration: focusPeekDuration,
-                     priority: focusPeekPriority)
-    }
-
-    /// Pure core of "should the ambient sticky indicator show right now" —
-    /// matching `intendedHUDMode`/`timerWingState`/`calendarServiceShouldRun`'s
-    /// shape so `--selftest` can drive every combination directly.
-    static func focusStickyShouldShow(stickyEnabled: Bool, focusActive: Bool) -> Bool {
-        stickyEnabled && focusActive
-    }
-
-    /// Non-`nil` for exactly `focusPeekDuration` seconds after
-    /// `handleFocusEvent` posts a peek — see this section's own doc comment;
-    /// mirrors `completionAlertUntil` exactly.
-    private var focusPeekUntil: Date?
-    private var currentFocusName: String?
-    private var currentFocusSymbolName: String?
-    /// Backed by the shared `DeadlineTask` helper, matching
-    /// `calendarThresholdTask`/`timerRefreshTask`'s "exactly one deadline in
-    /// flight" shape.
-    private let focusRefreshTask = DeadlineTask()
-
-    private func armFocusRefresh(at date: Date) {
-        focusRefreshTask.reschedule(to: date) { [weak self] in self?.recomputeFocusActivity() }
-    }
-
-    /// Re-evaluates the ambient sticky indicator — called from every trigger
-    /// that could change the answer: the peek's own scheduled refresh
-    /// (`armFocusRefresh`), the settings/presentation/notch-state gating
-    /// sinks, and `init`'s final call.
-    /// `notchEnabled`/`focusEnabled`/`stickyEnabled` default to `nil` (read
-    /// live) — `observeFocusGating`'s combineLatest sink (below) passes its
-    /// three emitted values explicitly instead, for the same stale-`willSet`-
-    /// read reason documented on `applyMonitorState`: that sink is subscribed
-    /// to exactly the three `@Published` properties this function would
-    /// otherwise re-read.
-    private func recomputeFocusActivity(notchEnabled: Bool? = nil, focusEnabled: Bool? = nil,
-                                         stickyEnabled: Bool? = nil) {
-        let now = Date()
-        // While the peek is still showing, this must not touch `.focus` at
-        // all — see this section's own doc comment. Deliberately returns
-        // before cancelling `focusRefreshTask`: the refresh already armed by
-        // `handleFocusEvent` (for just past this exact expiry) is exactly
-        // what should run next.
-        if let focusPeekUntil, now < focusPeekUntil { return }
-        self.focusPeekUntil = nil
-
-        guard (notchEnabled ?? settings.notchEnabled), isPresenting,
-              (focusEnabled ?? settings.notchActivityFocusEnabled) else {
-            activities.dismiss(kind: .focus)
-            return
-        }
-
-        let focusActive = currentFocusName != nil || currentFocusSymbolName != nil
-        guard Self.focusStickyShouldShow(stickyEnabled: stickyEnabled ?? settings.notchActivityFocusStickyEnabled,
-                                          focusActive: focusActive) else {
-            activities.dismiss(kind: .focus)
-            return
-        }
-
-        activities.post(LiveActivity(kind: .focus,
-                                      leading: .icon(systemName: currentFocusSymbolName ?? "moon.fill"),
-                                      trailing: .none,
-                                      duration: nil,
-                                      priority: Self.focusStickyPriority))
-    }
-
-    /// Re-applies `applyMonitorState`/`recomputeFocusActivity` whenever the
-    /// notch master switch or either Focus toggle changes — mirrors
-    /// `observeTimerGating`'s exact shape. `dropFirst` skips the redundant
-    /// initial delivery; `init` already calls both once directly.
-    ///
-    /// Bot-review fix: this sink used to ignore its three emitted values
-    /// entirely (`_, _, _`) and call both functions with no arguments, which
-    /// made each of them turn around and re-read
-    /// `settings.notchEnabled`/`settings.notchActivityFocusEnabled`/
-    /// `settings.notchActivityFocusStickyEnabled` itself — exactly the three
-    /// `@Published` properties this combineLatest is subscribed to.
-    /// `@Published` delivers to subscribers from `willSet`, before its own
-    /// backing storage actually updates, so those re-reads saw the STALE
-    /// pre-change values (the same bug class M6's
-    /// `recomputeTimerActivity(timers:)` fix addressed for `timers.$timers`).
-    /// Now passes the emitted `notchEnabled`/`focusEnabled`/`stickyEnabled`
-    /// straight through to both calls instead.
-    private func observeFocusGating() {
-        settings.$notchEnabled
-            .combineLatest(settings.$notchActivityFocusEnabled, settings.$notchActivityFocusStickyEnabled)
-            .dropFirst()
-            .sink { [weak self] notchEnabled, focusEnabled, stickyEnabled in
-                self?.applyMonitorState(notchEnabled: notchEnabled, focusEnabled: focusEnabled)
-                self?.recomputeFocusActivity(notchEnabled: notchEnabled, focusEnabled: focusEnabled, stickyEnabled: stickyEnabled)
-            }
-            .store(in: &cancellables)
     }
 }

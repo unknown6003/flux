@@ -102,10 +102,6 @@ struct NotchTab: View {
                 .padding(.vertical, 11)
                 .padding(.horizontal, 14)
             RowDivider()
-            ToggleRow(title: "AppleScript fallback",
-                      subtitle: "Only needed if Now Playing stops updating: lets Flux fall back to controlling Music or Spotify via AppleScript when the built-in method is unavailable. Off by default — macOS will ask for Automation access the first time it's used.",
-                      isOn: $settings.notchNowPlayingAppleScriptFallbackEnabled)
-            RowDivider()
             ToggleRow(title: "Duo view",
                       subtitle: "Show Now Playing and Calendar side by side when Now Playing is expanded (needs Calendar enabled too).",
                       isOn: $settings.notchDuoEnabled)
@@ -164,50 +160,21 @@ struct NotchTab: View {
             ToggleRow(title: "Timer alerts",
                       subtitle: "Show a wing (and play a sound) when a timer finishes, plus an ambient countdown while one's running.",
                       isOn: $settings.notchActivityTimerEnabled)
-            RowDivider()
-            ToggleRow(title: "Focus",
-                      subtitle: "Show a wing when your Focus changes. Off by default — reads a system Focus file that macOS may protect; if it can't, this silently does nothing. Best-effort and may not work on every setup.",
-                      isOn: $settings.notchActivityFocusEnabled)
-            if settings.notchActivityFocusEnabled {
-                RowDivider()
-                ToggleRow(title: "Keep a persistent indicator",
-                          subtitle: "Show a small icon-only wing for as long as a Focus stays active, not just when it changes.",
-                          isOn: $settings.notchActivityFocusStickyEnabled)
-            }
         }
     }
 
-    /// M5: the volume/brightness HUD. `notchHudEnabled` is observe mode —
-    /// CoreAudio-driven wings posted alongside whatever system bezel macOS
-    /// still shows, needing no permission — and stays on by default.
-    /// `notchHudInterceptEnabled` escalates to swallowing the keys outright
-    /// (`MediaKeyInterceptor`) so only the notch HUD appears.
-    ///
-    /// The code-review fix here: the control is disabled only for turning the
-    /// toggle ON without Accessibility granted (`NotchActivityRouter` would
-    /// just silently keep falling back to observe mode anyway — see
-    /// `applyHUDState`) — NOT while it's already ON and permission gets
-    /// revoked later. The old `.disabled(... != .granted)` condition, with no
-    /// exception for "already on," left the persisted toggle stuck ON with no
-    /// way to switch it back OFF from this screen the moment Accessibility
-    /// was revoked in System Settings — the user's only way out would've been
-    /// editing the underlying default directly. `hudInterceptSubtitle` below
-    /// covers the resulting "on, but not actually doing anything" state so
-    /// that's visible rather than silent.
+    /// The volume HUD — CoreAudio-driven wings posted alongside whatever
+    /// system bezel macOS still shows, needing no permission. M11 removed
+    /// the opt-in "intercept mode" escalation (which swallowed the keys
+    /// outright via the now-deleted `MediaKeyInterceptor`, requiring
+    /// Accessibility) along with the brightness half of this HUD entirely
+    /// (brightness had no observe mode to fall back to) — this toggle is now
+    /// the whole feature.
     private var hudCard: some View {
-        FluxCard(title: "Volume & Brightness HUD") {
+        FluxCard(title: "Volume HUD") {
             ToggleRow(title: "Show in the notch",
-                      subtitle: "Flash a volume/brightness wing in the notch when either changes.",
+                      subtitle: "Shows volume changes next to the system overlay. No permission needed.",
                       isOn: $settings.notchHudEnabled)
-            if settings.notchHudEnabled {
-                RowDivider()
-                ToggleRow(title: "Replace the system overlay",
-                          subtitle: hudInterceptSubtitle,
-                          isOn: $settings.notchHudInterceptEnabled)
-                    .disabled(!settings.notchHudInterceptEnabled && permissions.statuses[.accessibility] != .granted)
-                RowDivider()
-                PermissionRow(kind: .accessibility, title: "Accessibility access", permissions: permissions)
-            }
         }
     }
 
@@ -224,8 +191,7 @@ struct NotchTab: View {
     /// each independently gates one lock-screen sub-feature, but every one of
     /// them is meaningless (and never even observed — see
     /// `LockScreenPresenter.startObserving`) unless the master toggle above
-    /// them is also on, mirroring how `hudCard`'s intercept toggle nests
-    /// under its own master switch.
+    /// them is also on.
     private var experimentalCard: some View {
         FluxCard(title: "Experimental") {
             ToggleRow(title: "Show on the lock screen",
@@ -250,18 +216,6 @@ struct NotchTab: View {
                           isOn: $settings.notchLockScreenUnlockSoundEnabled)
             }
         }
-    }
-
-    /// Reflects whether intercept mode is actually doing anything right now,
-    /// not just whether the toggle is persisted ON — the toggle can be ON
-    /// with Accessibility since revoked (see `hudCard`'s doc comment on why
-    /// it stays operable in that state), and the subtitle should say so
-    /// rather than keep promising behavior that isn't currently happening.
-    private var hudInterceptSubtitle: String {
-        guard settings.notchHudInterceptEnabled, permissions.statuses[.accessibility] != .granted else {
-            return "Take over the volume/brightness keys so only the notch HUD appears — never the system bezel. Requires Accessibility below."
-        }
-        return "Inactive until Accessibility access is granted below — the system bezel still appears in the meantime."
     }
 
     /// Never (`0`), 1/3/7 days — mapped onto `notchShelfExpiryDays`'s raw

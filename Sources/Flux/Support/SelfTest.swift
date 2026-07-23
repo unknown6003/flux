@@ -6,7 +6,6 @@ import Foundation
 import EventKit
 import AVFoundation
 import CoreGraphics
-import ApplicationServices
 import CoreAudio
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
@@ -762,55 +761,6 @@ enum SelfTest {
         let missingRateElapsed = rateService.currentElapsed(at: sampleTimestamp.addingTimeInterval(3))
         check(missingRateElapsed.map { abs($0 - 13) < 0.01 } ?? false,
               "NowPlaying: currentElapsed treats a missing playbackRate as normal 1x speed (got \(String(describing: missingRateElapsed)))")
-
-        // --- M9: NowPlayingService.shouldEngageScriptingFallback — the pure
-        // consent-gating decision behind the AppleScript failover, extracted
-        // so it's testable without a live Music/Spotify process (this
-        // environment can't run either). Both `setActive` and
-        // `observeSources`'s adapter-availability sink route through this
-        // one rule; the fallback must never engage while the consent toggle
-        // is off, even if the adapter is unavailable. ---
-        check(!NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: false, adapterAvailable: false),
-              "NowPlayingService: the scripting fallback never engages while the consent toggle is off, even with the adapter unavailable")
-        check(!NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: false, adapterAvailable: true),
-              "NowPlayingService: the scripting fallback stays off with the toggle off and the adapter alive too")
-        check(NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: true, adapterAvailable: false),
-              "NowPlayingService: opting in engages the fallback once the adapter is unavailable")
-        check(!NowPlayingService.shouldEngageScriptingFallback(allowScriptingFallback: true, adapterAvailable: true),
-              "NowPlayingService: even opted in, the fallback doesn't engage while the preferred adapter is alive")
-
-        // Behavioral check on a real instance: setting `allowScriptingFallback`
-        // is itself gated the same way — flipping it on while the widget
-        // isn't presented (`isActive == false`) must not start the scripting
-        // poller, honoring the same "widget hidden -> scripting poll MUST
-        // stop" contract `setActive` documents.
-        let consentService = NowPlayingService()
-        check(!consentService.allowScriptingFallback,
-              "NowPlayingService: allowScriptingFallback defaults to false on a fresh instance")
-        consentService.allowScriptingFallback = true
-        check(consentService.allowScriptingFallback,
-              "NowPlayingService: allowScriptingFallback is settable (wired from SettingsStore by AppDelegate)")
-
-        // --- ScriptingNowPlayingSource: per-poll player selection ---
-        // Pure functions (no AppleScript execution) so they're testable on a
-        // machine that can't run Music or Spotify at all.
-        check(ScriptingNowPlayingSource.primaryCandidate(current: nil, running: []) == nil,
-              "Scripting: primaryCandidate is nil when nothing is running")
-        check(ScriptingNowPlayingSource.primaryCandidate(current: nil, running: [.spotify]) == .spotify,
-              "Scripting: primaryCandidate picks the only running app")
-        check(ScriptingNowPlayingSource.primaryCandidate(current: nil, running: [.music, .spotify]) == .music,
-              "Scripting: primaryCandidate prefers Music first when nothing is already selected")
-        check(ScriptingNowPlayingSource.primaryCandidate(current: .spotify, running: [.music, .spotify]) == .spotify,
-              "Scripting: primaryCandidate sticks with the current app if it's still running, even if Music also is")
-        check(ScriptingNowPlayingSource.primaryCandidate(current: .spotify, running: [.music]) == .music,
-              "Scripting: primaryCandidate falls back once the current app is no longer running")
-
-        check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .music, running: [.music]) == nil,
-              "Scripting: fallbackCandidate is nil when the excluded app is the only one running")
-        check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .music, running: [.music, .spotify]) == .spotify,
-              "Scripting: fallbackCandidate — the fix for a stopped Music silently starving a playing Spotify — offers the other running app for a probe")
-        check(ScriptingNowPlayingSource.fallbackCandidate(excluding: .spotify, running: [.music, .spotify]) == .music,
-              "Scripting: fallbackCandidate works symmetrically the other direction (stopped Spotify, playing Music)")
 
         // --- Shelf: ShelfStore round-trip, remove, persistence, reconcile, expiry ---
         // Entirely against throwaway temp directories (never the user's real
@@ -1679,73 +1629,10 @@ enum SelfTest {
                 state: .expanded(.nowPlaying), activityToggleOn: false, duoActive: true),
               "NotchActivityRouter: calendarServiceShouldRun is still false without calendar permission even with the Duo pane showing")
 
-        // --- M5: MediaKeyInterceptor — NX_SYSDEFINED data1 parsing + decision
-        // logic, all pure (no real CGEventTap is ever created here) ---
-        do {
-            // data1 layout: bits 16-31 = NX_KEYTYPE_* key code, bits 8-15 of the
-            // low word = key state (0xA down / 0xB up), bit 0 = autorepeat.
-            let volUpDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000A00)
-            check(volUpDown.keyCode == 0 && volUpDown.keyDown && !volUpDown.isRepeat,
-                  "MediaKeyInterceptor: parseKeyEvent decodes a plain key-down (NX_KEYTYPE_SOUND_UP, non-repeat)")
-
-            let keyUp = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000B00)
-            check(!keyUp.keyDown, "MediaKeyInterceptor: parseKeyEvent decodes a key-up (state 0xB) as NOT keyDown")
-
-            let repeatDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00000A01)
-            check(repeatDown.keyDown && repeatDown.isRepeat,
-                  "MediaKeyInterceptor: parseKeyEvent decodes the autorepeat bit")
-
-            let brightnessDown = MediaKeyInterceptor.parseKeyEvent(data1: 0x00020A00)
-            check(brightnessDown.keyCode == 2 && brightnessDown.keyDown,
-                  "MediaKeyInterceptor: parseKeyEvent decodes a non-zero key code out of the high 16 bits (NX_KEYTYPE_BRIGHTNESS_UP)")
-
-            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 0) == .volumeUp,
-                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_SOUND_UP (0) to .volumeUp")
-            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 1) == .volumeDown,
-                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_SOUND_DOWN (1) to .volumeDown")
-            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 7) == .mute,
-                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_MUTE (7) to .mute")
-            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 2) == .brightnessUp,
-                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_BRIGHTNESS_UP (2) to .brightnessUp")
-            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 3) == .brightnessDown,
-                  "MediaKeyInterceptor: hudKey maps NX_KEYTYPE_BRIGHTNESS_DOWN (3) to .brightnessDown")
-            check(MediaKeyInterceptor.hudKey(forNXKeyCode: 16) == nil,
-                  "MediaKeyInterceptor: hudKey is nil for a system-defined key this app doesn't handle (e.g. play/pause)")
-
-            check(MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: false, volumeControllable: true),
-                  "MediaKeyInterceptor: volume keys are swallowed when the device has software volume control, brightness availability notwithstanding")
-            check(MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: false, volumeControllable: true),
-                  "MediaKeyInterceptor: mute is swallowed when the device has software volume control")
-            check(!MediaKeyInterceptor.shouldSwallow(key: .brightnessUp, brightnessAvailable: false, volumeControllable: true),
-                  "MediaKeyInterceptor: brightness keys pass through untouched when DisplayServices is unavailable")
-            check(MediaKeyInterceptor.shouldSwallow(key: .brightnessDown, brightnessAvailable: true, volumeControllable: true),
-                  "MediaKeyInterceptor: brightness keys are swallowed once DisplayServices is available")
-            // The code-review fix: a device with no software-settable volume
-            // (digital/HDMI out, some external DACs) must let volume keys
-            // pass through instead of swallowing them into a void — mirrors
-            // the existing brightnessAvailable pass-through above exactly.
-            check(!MediaKeyInterceptor.shouldSwallow(key: .volumeUp, brightnessAvailable: true, volumeControllable: false),
-                  "MediaKeyInterceptor: volume keys pass through when the output device has no software volume control")
-            check(!MediaKeyInterceptor.shouldSwallow(key: .volumeDown, brightnessAvailable: true, volumeControllable: false),
-                  "MediaKeyInterceptor: volume-down also passes through with no software volume control")
-            check(!MediaKeyInterceptor.shouldSwallow(key: .mute, brightnessAvailable: true, volumeControllable: false),
-                  "MediaKeyInterceptor: mute also passes through with no software volume control")
-
-            check(!MediaKeyInterceptor().isTapActive,
-                  "MediaKeyInterceptor: isTapActive is false for a fresh instance before start() is ever called")
-
-            check(!MediaKeyInterceptor.isFineStep(flags: []),
-                  "MediaKeyInterceptor: isFineStep is false with no modifiers")
-            check(!MediaKeyInterceptor.isFineStep(flags: .maskShift),
-                  "MediaKeyInterceptor: isFineStep requires BOTH Shift and Option, not Shift alone")
-            check(!MediaKeyInterceptor.isFineStep(flags: .maskAlternate),
-                  "MediaKeyInterceptor: isFineStep requires BOTH Shift and Option, not Option alone")
-            check(MediaKeyInterceptor.isFineStep(flags: [.maskShift, .maskAlternate]),
-                  "MediaKeyInterceptor: isFineStep is true with Shift+Option together")
-        }
-
         // --- M5: NotchActivityRouter — HUD symbol pickers, activity shape,
-        // dedupe window, and mode derivation, all pure ---
+        // and mode derivation, all pure. M11 removed intercept mode/
+        // brightness entirely, so the dedupe-window and brightness-related
+        // coverage that used to live here went with it. ---
         check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: true) == "speaker.slash.fill",
               "NotchActivityRouter: volumeSymbol shows the slashed glyph whenever muted, regardless of level")
         check(NotchActivityRouter.volumeSymbol(level: 0, muted: false) == "speaker.slash.fill",
@@ -1756,11 +1643,6 @@ enum SelfTest {
               "NotchActivityRouter: volumeSymbol picks the mid-wave glyph in the middle third")
         check(NotchActivityRouter.volumeSymbol(level: 0.9, muted: false) == "speaker.wave.3.fill",
               "NotchActivityRouter: volumeSymbol picks the full-wave glyph in the top third")
-
-        check(NotchActivityRouter.brightnessSymbol(level: 0.2) == "sun.min.fill",
-              "NotchActivityRouter: brightnessSymbol shows the dim glyph at or below half brightness")
-        check(NotchActivityRouter.brightnessSymbol(level: 0.8) == "sun.max.fill",
-              "NotchActivityRouter: brightnessSymbol shows the bright glyph above half brightness")
 
         let m5VolumeActivity = NotchActivityRouter.volumeActivity(level: 0.4, muted: false)
         check(m5VolumeActivity.kind == .hudVolume && m5VolumeActivity.priority == 300 && m5VolumeActivity.duration == 1.5,
@@ -1778,43 +1660,25 @@ enum SelfTest {
             check(false, "NotchActivityRouter: volumeActivity's trailing content is a gauge (got \(m5VolumeActivity.trailing))")
         }
 
-        let m5BrightnessActivity = NotchActivityRouter.brightnessActivity(level: 0.9)
-        check(m5BrightnessActivity.kind == .hudBrightness && m5BrightnessActivity.priority == 300,
-              "NotchActivityRouter: brightnessActivity posts at kind .hudBrightness, priority 300 (same tier as volume)")
-
-        let dedupeNow = Date()
-        check(NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: dedupeNow.addingTimeInterval(-0.1)),
-              "NotchActivityRouter: isVolumeMonitorEventSuppressed is true just after an interceptor apply (inside the 300ms window)")
-        check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: dedupeNow.addingTimeInterval(-0.5)),
-              "NotchActivityRouter: isVolumeMonitorEventSuppressed is false once the dedupe window has elapsed")
-        check(!NotchActivityRouter.isVolumeMonitorEventSuppressed(now: dedupeNow, lastInterceptorApplyAt: nil),
-              "NotchActivityRouter: isVolumeMonitorEventSuppressed is false with no prior interceptor apply at all")
-
-        // `intendedHUDMode` (the code-review fix's rename+refactor of
-        // `hudMode`): its inputs are strictly the CAUSES of the decision —
-        // notably `accessibilityGranted`, NOT whether some tap instance
-        // happens to be running — so this is the exact function
-        // `applyHUDState` now calls for its own decision (see that
-        // function's doc comment), not a second parallel implementation.
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: false, notchPresenting: true, interceptRequested: true, accessibilityGranted: true) == .off,
+        // `intendedHUDMode`: M11 collapsed this from a three-way
+        // off/observe/intercept decision (gated on an Accessibility grant)
+        // down to a plain on/off now that intercept mode is gone — this is
+        // the exact function `applyHUDState` calls for its own decision, not
+        // a second parallel implementation.
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: false, notchPresenting: true) == .off,
               "NotchActivityRouter: intendedHUDMode is .off whenever the HUD master toggle is off, regardless of everything else")
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: false, interceptRequested: true, accessibilityGranted: true) == .off,
-              "NotchActivityRouter: intendedHUDMode is .off with nowhere to present (notchPresenting false), even with Accessibility granted")
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: false, accessibilityGranted: false) == .observe,
-              "NotchActivityRouter: intendedHUDMode is .observe when the HUD is on but intercept was never requested")
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: true, accessibilityGranted: false) == .observe,
-              "NotchActivityRouter: intendedHUDMode falls back to .observe when intercept is requested but Accessibility isn't granted")
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true, interceptRequested: true, accessibilityGranted: true) == .intercept,
-              "NotchActivityRouter: intendedHUDMode is .intercept only when requested AND Accessibility is granted — actual tap health is a separate post-hoc check applyHUDState makes, not a mode input")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: false) == .off,
+              "NotchActivityRouter: intendedHUDMode is .off with nowhere to present (notchPresenting false)")
+        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true) == .observe,
+              "NotchActivityRouter: intendedHUDMode is .observe whenever the HUD is on and there's somewhere to present")
 
         // --- M5: NotchActivityRouter — observe-mode volume events post/gate
         // correctly, driven purely through VolumeMonitor's own `.events`
-        // subject. `hudVolume`/`hudBrightness`/`hudInterceptor` below are real
-        // instances (constructor seams, matching `testPower`/`testBluetooth`
-        // above), but `start()`/`adjustVolume()`/`toggleMute()`/`adjust(by:)`
-        // are never called on any of them here — only synthetic
-        // `VolumeEvent`s are fed in, so this never touches real CoreAudio or
-        // creates a real event tap on the CI runner. ---
+        // subject. `hudVolume` below is a real instance (constructor seam,
+        // matching `testPower`/`testBluetooth` above), but `start()`/
+        // `adjustVolume()`/`toggleMute()` are never called on it here — only
+        // synthetic `VolumeEvent`s are fed in, so this never touches real
+        // CoreAudio on the CI runner. ---
         do {
             let hudSuiteName = "flux.selftest.hud"
             let hudSuite = UserDefaults(suiteName: hudSuiteName)!
@@ -1827,18 +1691,15 @@ enum SelfTest {
             let hudTimers = TimerService()
             let hudViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
             let hudVolume = VolumeMonitor()
-            let hudBrightness = BrightnessMonitor()
-            let hudInterceptor = MediaKeyInterceptor()
             // `startsMonitors: false` — see this file's identical note on the
             // M3 router block above; must never let the router's real
-            // settings-driven lifecycle call `volume.start()`/
-            // `interceptor.start()` for real on a headless CI runner.
+            // settings-driven lifecycle call `volume.start()` for real on a
+            // headless CI runner.
             let hudRouter = NotchActivityRouter(activities: hudActivities, settings: hudSettings,
                                                  arranger: hudArranger, calendar: hudCalendar,
                                                  permissions: hudPermissions, viewModel: hudViewModel,
                                                  timers: hudTimers,
-                                                 volume: hudVolume, brightness: hudBrightness,
-                                                 interceptor: hudInterceptor, startsMonitors: false)
+                                                 volume: hudVolume, startsMonitors: false)
 
             withExtendedLifetime(hudRouter) {
                 hudVolume.events.send(.volumeChanged(level: 0.6, muted: false))
@@ -1859,15 +1720,6 @@ enum SelfTest {
                 hudVolume.events.send(.volumeChanged(level: 0.2, muted: true))
                 check(hudActivities.current?.leading == .icon(systemName: "speaker.slash.fill"),
                       "NotchActivityRouter: re-enabling the HUD toggle resumes posting, and a muted event shows the slashed glyph")
-
-                // The code-review fix's wiring: NotchActivityRouter.init sets
-                // `hudInterceptor.volumeControllable` to read
-                // `hudVolume.hasVolumeControl` live, rather than leaving it at
-                // its always-true default — verified by checking they agree,
-                // not by asserting a specific Bool (there's no guarantee what
-                // hardware/CI runner this executes on actually exposes).
-                check(hudInterceptor.volumeControllable() == hudVolume.hasVolumeControl,
-                      "NotchActivityRouter: wires the interceptor's volumeControllable closure to the router's own VolumeMonitor instance")
             }
             hudSuite.removePersistentDomain(forName: hudSuiteName)
         }
@@ -1914,43 +1766,6 @@ enum SelfTest {
             let missingChannel = VolumeMonitor.perChannelTargets(left: 0.4, right: nil, delta: 0.1)
             check(missingChannel.left != nil && missingChannel.right == nil,
                   "VolumeMonitor: perChannelTargets leaves an unreadable channel nil rather than fabricating a value for it")
-        }
-
-        // --- M5 bot-review fix: BrightnessMonitor.canChangeBrightness — a
-        // smoke test safe on a headless CI runner with no guaranteed real
-        // display brightness support: must not crash, and can never be true
-        // when `isAvailable` itself is false (missing DisplayServices symbols
-        // leaves nothing that could possibly change anything). This is the
-        // gate `NotchActivityRouter.applyHUDState` now wires into
-        // `interceptor.brightnessAvailable` instead of the weaker bare
-        // `isAvailable` (see that call site's doc comment) — `shouldSwallow`
-        // itself is unchanged (still a pure function of whatever Bool it's
-        // handed), so only the caller's choice of Bool needed new coverage. ---
-        do {
-            let brightnessProbe = BrightnessMonitor()
-            if !brightnessProbe.isAvailable {
-                check(!brightnessProbe.canChangeBrightness,
-                      "BrightnessMonitor: canChangeBrightness is false whenever isAvailable is false")
-            } else {
-                check(true,
-                      "BrightnessMonitor: canChangeBrightness computed without crashing (\(brightnessProbe.canChangeBrightness)) alongside isAvailable == true")
-            }
-        }
-
-        // --- M5 code review: PermissionCenter re-checks Accessibility on the
-        // undocumented-but-established "com.apple.accessibility.api"
-        // DistributedNotificationCenter post, so a revoke/grant while Flux
-        // stays the frontmost app is still caught (didBecomeActiveNotification
-        // alone wouldn't see it). Smoke test: posting it must not crash, and
-        // afterward .accessibility must match a fresh live query — proof the
-        // observer actually re-queried rather than merely surviving. ---
-        do {
-            let accessibilityPermCenter = PermissionCenter()
-            DistributedNotificationCenter.default().postNotificationName(
-                Notification.Name("com.apple.accessibility.api"), object: nil, userInfo: nil, deliverImmediately: true)
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-            check(accessibilityPermCenter.statuses[.accessibility] == (AXIsProcessTrusted() ? .granted : .denied),
-                  "PermissionCenter: the accessibility.api distributed notification refreshes .accessibility without crashing")
         }
 
         // --- M6: NotchTimer — pure countdown math, driven entirely by
@@ -2171,7 +1986,7 @@ enum SelfTest {
         // --- M6 smoke tests: CameraService/ClipboardMonitor/LockScreenPresenter
         // construct and tear down safely on a headless CI runner with no
         // guaranteed camera hardware, real pasteboard writes, or lock-screen
-        // session. Mirrors M5's BrightnessMonitor/VolumeMonitor smoke tests. ---
+        // session. Mirrors M5's VolumeMonitor smoke test. ---
         do {
             let cameraProbe = CameraService()
             check(!cameraProbe.isRunning, "CameraService: isRunning starts false")
@@ -2350,10 +2165,9 @@ enum SelfTest {
         // --- M9 (lock-screen Now Playing freshness): LockScreenPresenter.
         // shouldActivateForLock — the pure decision behind whether the
         // presenter itself needs to call `nowPlaying.setActive(true)` while
-        // locked, extracted the same way `NowPlayingService.
-        // shouldEngageScriptingFallback` is, so the on/off matrix is
-        // assertable without a real lock session or notched screen (this
-        // environment has neither). The core property under test: the
+        // locked, extracted so the on/off matrix is assertable without a
+        // real lock session or notched screen (this environment has
+        // neither). The core property under test: the
         // presenter only ever activates the service on its own behalf when
         // BOTH the master experiment flag and the Now Playing sub-toggle are
         // on AND nothing else has already made the service active — that
@@ -2602,38 +2416,31 @@ enum SelfTest {
         check(sixRegistry.enabledWidgets.map(\.id) == WidgetID.allCases,
               "NotchWidgetRegistry: all 6 widgets appear, in order, when every one is enabled")
 
-        // --- M7: SettingsStore — fresh-install defaults for the Duo view
-        // and Focus toggles, mirroring the M6 defaults block's own pattern. ---
+        // --- M7: SettingsStore — fresh-install default for the Duo view
+        // toggle, mirroring the M6 defaults block's own pattern. (This block
+        // used to also cover the Focus toggles; M11 deleted the Focus
+        // feature, and its settings keys, entirely.) ---
         do {
             let m7SettingsSuiteName = "flux.selftest.m7settings"
             UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
             let m7Settings = SettingsStore(defaults: UserDefaults(suiteName: m7SettingsSuiteName)!)
             check(!m7Settings.notchDuoEnabled, "SettingsStore: notchDuoEnabled defaults to false")
-            check(!m7Settings.notchActivityFocusEnabled,
-                  "SettingsStore: notchActivityFocusEnabled defaults to false (M9) — no protected-path read without opt-in")
-            check(!m7Settings.notchActivityFocusStickyEnabled,
-                  "SettingsStore: notchActivityFocusStickyEnabled defaults to false — the persistent indicator is opt-in")
             UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
         }
 
-        // --- M9/M10: SettingsStore — the privacy-audit defaults. Focus and
-        // the AppleScript fallback stay opt-in (they still read a protected
-        // file / trigger an Automation prompt respectively), so both must read
-        // `false` on a brand-new suite. Bluetooth, however, was RESTORED to
-        // on-by-default in M10: its old TCC cost is gone now that the
-        // permission-free `DeviceMonitor` (IOKit matching notifications +
-        // CoreAudio) replaced the IOBluetooth monitor, so a fresh install
-        // still produces zero TCC prompts with it ON. ---
+        // --- M9/M10: SettingsStore — the privacy-audit defaults. Bluetooth
+        // was RESTORED to on-by-default in M10: its old TCC cost is gone now
+        // that the permission-free `DeviceMonitor` (IOKit matching
+        // notifications + CoreAudio) replaced the IOBluetooth monitor, so a
+        // fresh install still produces zero TCC prompts with it ON. (This
+        // block used to also cover Focus and the AppleScript fallback; M11
+        // deleted both features, and their settings keys, entirely.) ---
         do {
             let m9SettingsSuiteName = "flux.selftest.m9settings"
             UserDefaults.standard.removePersistentDomain(forName: m9SettingsSuiteName)
             let m9Settings = SettingsStore(defaults: UserDefaults(suiteName: m9SettingsSuiteName)!)
             check(m9Settings.notchActivityBluetoothEnabled,
                   "SettingsStore: notchActivityBluetoothEnabled defaults to true (M10) — DeviceMonitor is permission-free (no Bluetooth TCC prompt), so there's no cost to gate behind opt-in and the wing is restored for everyone")
-            check(!m9Settings.notchActivityFocusEnabled,
-                  "SettingsStore: notchActivityFocusEnabled defaults to false (M9) — still reads a protected Focus file, so stays opt-in")
-            check(!m9Settings.notchNowPlayingAppleScriptFallbackEnabled,
-                  "SettingsStore: notchNowPlayingAppleScriptFallbackEnabled defaults to false (M9) — scripting Music/Spotify triggers an Automation prompt, so this is opt-in")
             UserDefaults.standard.removePersistentDomain(forName: m9SettingsSuiteName)
         }
 
@@ -2825,202 +2632,6 @@ enum SelfTest {
               "NotchViewModel: duoActive is false when the Calendar widget itself isn't enabled")
         check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: false),
               "NotchViewModel: duoActive is false without Calendar permission granted, even with everything else on")
-
-        // --- M7: FocusMonitor — JSON parsing over checked-in-style fixture
-        // strings, no real ~/Library/DoNotDisturb involved. ---
-        do {
-            let focusActiveAssertionsJSON = """
-            {"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":"com.apple.focus.work"}}]}]}
-            """
-            let focusActiveConfigJSON = """
-            {"data":[{"modeConfigurations":{"com.apple.focus.work":{"modeDescriptor":{"userTitle":"Work","symbolImageName":"briefcase.fill"}}}}]}
-            """
-            let focusEmptyAssertionsJSON = """
-            {"data":[]}
-            """
-            let focusEmptyConfigJSON = """
-            {"data":[]}
-            """
-            let focusActiveAssertionsData = Data(focusActiveAssertionsJSON.utf8)
-            let focusActiveConfigData = Data(focusActiveConfigJSON.utf8)
-            let focusEmptyAssertionsData = Data(focusEmptyAssertionsJSON.utf8)
-            let focusEmptyConfigData = Data(focusEmptyConfigJSON.utf8)
-
-            check(FocusMonitor.activeModeIdentifier(fromAssertionsData: focusActiveAssertionsData) == "com.apple.focus.work",
-                  "FocusMonitor: activeModeIdentifier reads the asserted mode's identifier out of the Assertions fixture")
-            check(FocusMonitor.activeModeIdentifier(fromAssertionsData: focusEmptyAssertionsData) == nil,
-                  "FocusMonitor: activeModeIdentifier is nil for an empty Assertions fixture (no Focus active)")
-
-            if case .focusChanged(let name, let symbolName) = FocusMonitor.parse(assertionsData: focusActiveAssertionsData, configData: focusActiveConfigData) {
-                check(name == "Work" && symbolName == "briefcase.fill",
-                      "FocusMonitor: parse cross-references Assertions + ModeConfigurations into the active mode's name/symbol")
-            } else {
-                check(false, "FocusMonitor: parse should decode a .focusChanged event with the active fixture pair")
-            }
-
-            check(FocusMonitor.parse(assertionsData: focusEmptyAssertionsData, configData: focusEmptyConfigData) == .focusChanged(name: nil, symbolName: nil),
-                  "FocusMonitor: parse reads as 'no Focus active' (nil/nil) for the empty fixture pair")
-
-            check(FocusMonitor.modeInfo(forIdentifier: "com.apple.focus.unknown", configData: focusActiveConfigData) == nil,
-                  "FocusMonitor: modeInfo is nil for an identifier the ModeConfigurations fixture doesn't contain")
-
-            // Defensive parsing: malformed/non-JSON input degrades to nil —
-            // never a crash — matching the type's own doc comment.
-            let malformedData = Data("not json at all".utf8)
-            check(FocusMonitor.activeModeIdentifier(fromAssertionsData: malformedData) == nil,
-                  "FocusMonitor: activeModeIdentifier degrades to nil for malformed JSON rather than crashing")
-            check(FocusMonitor.parse(assertionsData: malformedData, configData: malformedData) == .focusChanged(name: nil, symbolName: nil),
-                  "FocusMonitor: parse degrades to 'no Focus active' for malformed JSON on either side")
-        }
-
-        // --- M7 smoke test: FocusMonitor construct/start/stop safely on a
-        // headless CI runner with no guaranteed-readable DoNotDisturb DB —
-        // mirrors M5/M6's BrightnessMonitor/CameraService smoke tests. ---
-        do {
-            let focusProbe = FocusMonitor()
-            check(focusProbe.isAvailable, "FocusMonitor: isAvailable starts true before any read has been attempted")
-            focusProbe.start()
-            focusProbe.start() // idempotent
-            focusProbe.stop()
-            focusProbe.stop() // idempotent
-            check(true, "FocusMonitor: start()/stop() cycle without crashing regardless of whether the DoNotDisturb DB is readable on this runner")
-        }
-
-        // --- M7 bot-review fix: FocusMonitor.start()'s own baseline read
-        // must never emit — a Focus state (on OR off) that was already true
-        // before this app started watching isn't a "change" worth a spurious
-        // peek at every single launch. Exercises the real start()/emitCurrent()
-        // path (not the pure parse(...) core above, which the bug doesn't
-        // live in) against a fixture directory this instance CAN actually
-        // read — `directory` is injectable for exactly this. Deliberately
-        // does NOT depend on the real DispatchSourceFileSystemObject firing
-        // (unreliable to time in CI — see the M6 clipboard CI fix's own
-        // lesson on this): both reads below happen synchronously inside
-        // `start()` itself, before `resume()` is ever called on that source. ---
-        do {
-            let focusFixtureDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("flux-selftest-focus-\(UUID().uuidString)", isDirectory: true)
-            try? FileManager.default.createDirectory(at: focusFixtureDir, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: focusFixtureDir) }
-
-            let assertionsURL = focusFixtureDir.appendingPathComponent("Assertions.json")
-            let configURL = focusFixtureDir.appendingPathComponent("ModeConfigurations.json")
-            func writeFocusFixture(active: Bool) {
-                if active {
-                    try? Data("""
-                    {"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":"com.apple.focus.work"}}]}]}
-                    """.utf8).write(to: assertionsURL)
-                    try? Data("""
-                    {"data":[{"modeConfigurations":{"com.apple.focus.work":{"modeDescriptor":{"userTitle":"Work","symbolImageName":"briefcase.fill"}}}}]}
-                    """.utf8).write(to: configURL)
-                } else {
-                    try? Data("{\"data\":[]}".utf8).write(to: assertionsURL)
-                    try? Data("{\"data\":[]}".utf8).write(to: configURL)
-                }
-            }
-            writeFocusFixture(active: false)
-
-            var suppressionEvents: [FocusMonitor.Event] = []
-            let suppressionFocus = FocusMonitor(directory: focusFixtureDir)
-            let suppressionCancellable = suppressionFocus.events.sink { suppressionEvents.append($0) }
-            suppressionFocus.start()
-            check(suppressionEvents.isEmpty,
-                  "FocusMonitor: start()'s own baseline read never emits, even though what it found (no Focus active) is a perfectly real, decodable state — it's establishing a baseline, not reporting a change")
-
-            // A genuine change AFTER that suppressed baseline — restart
-            // (`stop()` then `start()` again) against different fixture
-            // content — must still emit normally: this is a one-time baseline
-            // suppression, not a blanket "this instance never emits" bug.
-            suppressionFocus.stop()
-            writeFocusFixture(active: true)
-            suppressionFocus.start()
-            check(suppressionEvents == [.focusChanged(name: "Work", symbolName: "briefcase.fill")],
-                  "FocusMonitor: a genuine change after the suppressed baseline still emits normally, exactly once")
-
-            suppressionFocus.stop()
-            suppressionCancellable.cancel()
-        }
-
-        // --- M7: NotchActivityRouter — Focus peek/sticky translation, driven
-        // purely through a real (but never-`start()`ed) FocusMonitor's own
-        // `.events` — mirrors the M3/M5/M6 router blocks' shape exactly. ---
-        check(NotchActivityRouter.focusStickyShouldShow(stickyEnabled: true, focusActive: true),
-              "NotchActivityRouter: focusStickyShouldShow is true only when the sticky setting is on AND a Focus is active")
-        check(!NotchActivityRouter.focusStickyShouldShow(stickyEnabled: false, focusActive: true),
-              "NotchActivityRouter: focusStickyShouldShow is false with the sticky setting off, even with a Focus active")
-        check(!NotchActivityRouter.focusStickyShouldShow(stickyEnabled: true, focusActive: false),
-              "NotchActivityRouter: focusStickyShouldShow is false with no Focus active, even with the sticky setting on")
-
-        let focusPeek = NotchActivityRouter.focusPeekActivity(name: "Work", symbolName: "briefcase.fill")
-        check(focusPeek.kind == .focus && focusPeek.priority == 130 && focusPeek.duration == 5,
-              "NotchActivityRouter: focusPeekActivity posts at kind .focus, priority 130, duration 5s")
-        check(focusPeek.leading == .icon(systemName: "briefcase.fill") && focusPeek.trailing == .text("Work"),
-              "NotchActivityRouter: focusPeekActivity's content is the Focus's own icon + name")
-        let focusOffPeek = NotchActivityRouter.focusPeekActivity(name: nil, symbolName: nil)
-        check(focusOffPeek.leading == .icon(systemName: "moon.fill") && focusOffPeek.trailing == .text("Focus off"),
-              "NotchActivityRouter: focusPeekActivity falls back to a moon icon and 'Focus off' text when both name and symbolName are nil")
-
-        do {
-            let focusRouterSuiteName = "flux.selftest.focusrouter"
-            let focusRouterSuite = UserDefaults(suiteName: focusRouterSuiteName)!
-            focusRouterSuite.removePersistentDomain(forName: focusRouterSuiteName)
-            let focusRouterSettings = SettingsStore(defaults: focusRouterSuite)
-            // M9 privacy audit: Focus now defaults to OFF — opt in
-            // explicitly so this block can keep exercising the
-            // FocusEvent -> LiveActivity translation logic below.
-            focusRouterSettings.notchActivityFocusEnabled = true
-            let focusRouterActivities = LiveActivityCenter()
-            let focusRouterArranger = MenuBarArranger()
-            let focusRouterCalendar = CalendarService()
-            let focusRouterPermissions = PermissionCenter()
-            let focusRouterTimers = TimerService()
-            let focusRouterViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
-            let testFocus = FocusMonitor()
-            // `startsMonitors: false` — as with every other router block in
-            // this file, this must never let the router's real
-            // settings-driven lifecycle call `focus.start()` for real and
-            // arm a live DispatchSource watch on the CI runner; only
-            // synthetic events fed straight through `testFocus.events` drive
-            // this block.
-            let focusRouter = NotchActivityRouter(activities: focusRouterActivities, settings: focusRouterSettings,
-                                                   arranger: focusRouterArranger, calendar: focusRouterCalendar,
-                                                   permissions: focusRouterPermissions, viewModel: focusRouterViewModel,
-                                                   timers: focusRouterTimers, focus: testFocus, startsMonitors: false)
-
-            withExtendedLifetime(focusRouter) {
-                testFocus.events.send(.focusChanged(name: "Work", symbolName: "briefcase.fill"))
-                check(focusRouterActivities.current?.kind == .focus,
-                      "NotchActivityRouter: a Focus change posts a .focus live activity")
-                check(focusRouterActivities.current?.priority == 130,
-                      "NotchActivityRouter: the Focus peek posts at priority 130")
-                check(focusRouterActivities.current?.duration == 5,
-                      "NotchActivityRouter: the Focus peek is transient (5s)")
-                check(focusRouterActivities.current?.trailing == .text("Work"),
-                      "NotchActivityRouter: the Focus peek's trailing text is the Focus's own name")
-                check(focusRouterActivities.current?.leading == .icon(systemName: "briefcase.fill"),
-                      "NotchActivityRouter: the Focus peek's leading icon is the Focus's own symbol")
-
-                // Turning the sticky setting on WHILE the peek is still
-                // showing must not replace it early — mirrors the M6 timer
-                // completion-alert guard (`completionAlertUntil`).
-                focusRouterSettings.notchActivityFocusStickyEnabled = true
-                check(focusRouterActivities.current?.trailing == .text("Work"),
-                      "NotchActivityRouter: enabling the sticky setting mid-peek doesn't stomp the still-showing peek")
-
-                // A Focus turning off posts its own peek.
-                testFocus.events.send(.focusChanged(name: nil, symbolName: nil))
-                check(focusRouterActivities.current?.trailing == .text("Focus off"),
-                      "NotchActivityRouter: a Focus turning off posts its own peek reading 'Focus off'")
-
-                // Settings gating: the toggle off suppresses further posts.
-                focusRouterActivities.dismiss(kind: .focus)
-                focusRouterSettings.notchActivityFocusEnabled = false
-                testFocus.events.send(.focusChanged(name: "Personal", symbolName: "person.fill"))
-                check(focusRouterActivities.current?.kind != .focus,
-                      "NotchActivityRouter: the Focus toggle off suppresses further posts")
-            }
-            focusRouterSuite.removePersistentDomain(forName: focusRouterSuiteName)
-        }
 
         // --- M7: MarqueeText.overflowWidth — the scroll-distance threshold
         // decision behind the Now Playing header's scrolling title/artist,

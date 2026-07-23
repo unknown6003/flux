@@ -30,10 +30,9 @@ import CoreGraphics
 ///   1. `"com.apple.screenIsLocked"`/`"com.apple.screenIsUnlocked"` on
 ///      `DistributedNotificationCenter` — undocumented but long-established;
 ///      screen savers and various lock-screen-aware utilities have relied on
-///      these exact names for years (the same "undocumented but
-///      long-established, treat as a nudge to re-check, never trust the
-///      payload" posture `PermissionCenter.observeAccessibilityChanges`
-///      already takes with `"com.apple.accessibility.api"`).
+///      these exact names for years (treat as a nudge to re-check, never
+///      trust the payload — the same posture every undocumented
+///      `DistributedNotificationCenter` name in this codebase takes).
 ///   2. `CGShieldingWindowLevel()` — the window level the lock screen's own
 ///      shield sits at. Drawing one level above it is what makes anything
 ///      visible over the shield at all, but that level is a private,
@@ -124,7 +123,7 @@ final class LockScreenPresenter {
 
     /// The single on/off gate — mirrors every other notch-suite `setEnabled`
     /// (`NotchWindowController.setEnabled`, `NotchWidgetRegistry.setEnabled`,
-    /// `MediaKeyInterceptor`'s start/stop shape): turning this off tears
+    /// `VolumeMonitor`'s start/stop shape): turning this off tears
     /// EVERYTHING down — the `DistributedNotificationCenter`/settings
     /// observers AND any panel currently showing (instantly, no fade — this
     /// is the master switch turning the whole experiment off, not an
@@ -168,9 +167,8 @@ final class LockScreenPresenter {
         // via `willSet`, so a sink that re-reads the stored properties
         // instead of using its own emitted values would see the OLD ones,
         // one toggle behind (the same stale-`willSet`-read class documented
-        // elsewhere in this codebase, e.g. `NowPlayingService.
-        // observeSources`'s `availabilityPublisher` sink and `AppDelegate.
-        // configureLockScreenPresenter`).
+        // elsewhere in this codebase, e.g. `NotchActivityRouter`'s several
+        // `observe*Gating` sinks and `AppDelegate.configureLockScreenPresenter`).
         settings.$notchLockScreenNowPlayingEnabled
             .combineLatest(settings.$notchLockScreenActivitiesEnabled, settings.$notchLockScreenUnlockPillEnabled)
             .dropFirst()
@@ -374,10 +372,8 @@ final class LockScreenPresenter {
     }
 
     /// Pure decision behind `activateNowPlayingForLockIfNeeded` — extracted
-    /// so `--selftest` can assert the on/off matrix directly, the same
-    /// reasoning `NowPlayingService.shouldEngageScriptingFallback` already
-    /// applies to its own consent gate (this environment can't run a real
-    /// lock session any more than it can run a real Music/Spotify process).
+    /// so `--selftest` can assert the on/off matrix directly, since this
+    /// environment can't run a real lock session.
     static func shouldActivateForLock(serviceActive: Bool, masterEnabled: Bool, nowPlayingAllowed: Bool) -> Bool {
         masterEnabled && nowPlayingAllowed && !serviceActive
     }

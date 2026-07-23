@@ -38,49 +38,30 @@ drag-and-drop, hover, or click/mouse pass-through.
       regresses, the accept region (`interactiveRect` +
       `NotchWindowController.dragSlop`) needs to shrink further.
 
-## M5 — Volume/brightness HUD
+## M5 — Volume HUD
 
-- [ ] **Observe mode, no permission granted**: with Accessibility NOT
-      granted, press a volume key. Confirm the notch shows a `.hudVolume`
-      wing AND the system's own volume bezel still appears (observe mode
-      never suppresses it — see `VolumeMonitor`'s doc comment). Repeat for
-      mute.
-- [ ] **Intercept mode swallows the system bezel**: grant Accessibility,
-      turn on "Replace the system overlay" in Settings → Notch, then press
-      volume/mute/brightness keys. Confirm ONLY the notch HUD appears —
-      no system bezel at all — and that the actual volume/mute/brightness
-      state genuinely changes (not just the wing's displayed number).
-- [ ] **Held-key repeat**: hold a volume or brightness key down in intercept
-      mode and confirm the notch HUD updates continuously/smoothly as the
-      level ramps, matching the system bezel's own held-key cadence.
-- [ ] **Shift+Option fine step**: in intercept mode, hold Shift+Option while
-      pressing a volume or brightness key and confirm the level moves in
-      much smaller increments than a plain key press.
-- [ ] **No double-post**: in intercept mode, press a volume key once and
-      confirm exactly ONE `.hudVolume` wing appears — not two overlapping/
-      back-to-back posts (the CoreAudio listener firing for the same
-      programmatic change this app just made is the dedupe this checks —
-      see `NotchActivityRouter.isVolumeMonitorEventSuppressed`).
-- [ ] **Control Center slider still works in intercept mode**: with intercept
-      mode on, drag the volume slider in Control Center (not a keyboard key)
-      and confirm the notch HUD still reflects it — this path is NOT
-      swallowed by the event tap (only hardware keys are), so it must still
-      flow through observe mode's CoreAudio listener.
-- [ ] **Accessibility revoked mid-session**: with intercept mode on, revoke
-      Accessibility for Flux in System Settings, then press a volume key.
-      Confirm Flux falls back to observe mode (system bezel returns) rather
-      than silently doing nothing, and that the Settings toggle's row
-      reflects the revoked permission.
-- [ ] **Non-notched external display + brightness**: on a setup with only an
-      external monitor active (built-in lid closed or no notch), confirm
-      brightness intercept simply does nothing harmful (no crash, no
-      dangling tap) — there is no built-in notched screen for
-      `BrightnessMonitor` to target.
+M11 removed intercept mode (and the Accessibility permission it needed) plus
+the brightness half of this HUD entirely — brightness had no observe mode to
+fall back to (see the deleted `BrightnessMonitor`'s doc comment), so once
+intercept went, brightness had nothing left to show. Volume observe mode is
+the only survivor; the items below cover just that.
+
+- [ ] **Volume observe mode**: press a volume/mute key (or drag Control
+      Center's slider) and confirm the notch shows a `.hudVolume` wing
+      alongside the system's own volume bezel — this app only ever observes
+      CoreAudio's own volume/mute changes, never suppresses the bezel (see
+      `VolumeMonitor`'s doc comment).
 - [ ] **A device with no settable volume**: switch the default output device
       to one that exposes no software volume control (some digital/HDMI
       outputs) and confirm Flux doesn't misbehave — no wing showing a
       nonsensical level, no crash from `VolumeMonitor`'s per-channel
       fallback path.
+
+REMOVED (M11): intercept mode swallowing the system bezel, held-key-repeat
+and Shift+Option fine-step behavior (both were `MediaKeyInterceptor`-only),
+the intercept/observe double-post dedupe, Accessibility grant/revoke
+handling, and the brightness HUD/intercept entirely (including the
+non-notched-external-display brightness check).
 
 ## M6 — Mirror, Clipboard, Timers, Lock Screen
 
@@ -178,7 +159,7 @@ every widget — the items below need a real notched Mac.
       collapsed notch without clicking and confirm the breathing scale cue is
       present but subtle (a small pulse, not an obvious "wiggle").
 
-## M7 — Alcove parity: activity cycling, Duo view, Focus
+## M7 — Alcove parity: activity cycling, Duo view
 
 - [ ] **Cycle through queued activities**: get two or more sticky live
       activities queued at once (e.g. a low-battery warning and an upcoming
@@ -206,16 +187,9 @@ every widget — the items below need a real notched Mac.
 - [ ] **Calendar solo is untouched**: with Duo view on, expand Calendar
       directly (not via Now Playing) and confirm it still renders as its own
       normal solo panel, not squeezed into the Duo layout.
-- [ ] **Focus peek**: turn on "Focus" in Settings → Notch → Live Activities,
-      change your Focus (or turn one on/off from Control Center) and confirm
-      a brief wing shows the Focus's name/icon (or "Focus off"). If nothing
-      appears at all, check Settings for whether Focus reads as available —
-      this is best-effort and may not work on every macOS version/security
-      posture (see `FocusMonitor`'s own doc comment).
-- [ ] **Focus sticky indicator**: with "Keep a persistent indicator" also
-      on, confirm a small icon-only wing stays up for as long as a Focus
-      stays active (after the initial peek fades), and disappears the moment
-      the Focus turns off.
+- REMOVED (M11): Focus peek and Focus sticky indicator — the Focus live
+  activity (and `FocusMonitor`, which read undocumented on-disk Focus/DND
+  state) was deleted outright.
 - [ ] **Option-click restores the last-dismissed activity**: swipe up on a
       showing live-activity wing to dismiss it (or otherwise let one get
       dismissed), then option-click the notch — in ANY state (collapsed,
@@ -285,32 +259,21 @@ CI environment.
 
 - [ ] **Fresh install, zero TCC prompts at launch**: reset Flux's TCC state
       (or use a clean account), launch Flux, and confirm **no** permission
-      prompt of any kind appears — no Calendar, Camera, Accessibility,
-      Bluetooth, or Automation dialog — just the chevron appearing near the
-      clock. Open Settings → Notch and confirm Bluetooth, Focus, and the
-      Now Playing AppleScript fallback all show as OFF.
+      prompt of any kind appears — no Calendar, Camera, or Bluetooth dialog —
+      just the chevron appearing near the clock.
 - [ ] **Bluetooth prompts only on enable**: with Bluetooth still off, connect
       a Bluetooth accessory and confirm nothing prompts and no wing appears.
       Turn "Bluetooth devices" on in Settings → Notch → Live Activities and
       confirm macOS's Bluetooth access prompt appears at that moment (not
       before) — grant it, then reconnect the accessory and confirm the wing
       now shows.
-- [ ] **Focus stays silent until enabled**: with Focus still off, change your
-      Focus and confirm no wing appears (and nothing prompts — this feature
-      needs no TCC permission at all). Turn "Focus" on and confirm the peek
-      wing now shows on the next Focus change.
-- [ ] **AppleScript fallback prompts only on first use**: with the fallback
-      still off, temporarily rename/remove whatever makes the MediaRemote
-      adapter available (or otherwise force it unavailable) and confirm Now
-      Playing just shows its empty state — no Automation prompt, no attempt
-      to control Music/Spotify. Turn "AppleScript fallback" on in Settings →
-      Notch and, with Music or Spotify playing, confirm macOS's Automation
-      permission prompt appears the first time Flux actually scripts that
-      app, and Now Playing then reflects it.
-- [ ] **Calendar/Camera/Accessibility unaffected**: confirm these three still
-      prompt exactly where they always have — the first time you click each
-      feature's own "Grant Access" button in Settings → Notch, not at
-      launch and not from any other action.
+- [ ] **Calendar/Camera unaffected**: confirm these two still prompt exactly
+      where they always have — the first time you click each feature's own
+      "Grant Access" button in Settings → Notch, not at launch and not from
+      any other action. (M11 removed Accessibility and the AppleScript
+      Automation prompt entirely — Calendar and Camera are now the only two
+      permissions Flux ever requests, so there's nothing else left to check
+      here.)
 
 ## M10 — Permission-free Bluetooth monitor (DeviceMonitor)
 

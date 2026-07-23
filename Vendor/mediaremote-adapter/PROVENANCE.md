@@ -54,10 +54,9 @@ more authoritative "is the adapter still functional" probe.
   `MediaRemoteAdapter.h`'s `MRACommand` enum.
 - `seek <MICROSECONDS>` — one-shot process; sets the playback position.
 - The adapter genuinely supports *sending* commands, not just reading — this
-  is the mechanism `MediaRemoteAdapterSource.send(_:)` uses directly. The
-  AppleScript path (`ScriptingNowPlayingSource`) is only a fallback for when
-  the adapter itself is unavailable/dead (e.g. a future OS locks this down
-  too), not the primary command channel.
+  is the mechanism `MediaRemoteAdapterSource.send(_:)` uses directly, and (as
+  of M11) the sole Now Playing command channel — Flux no longer ships an
+  AppleScript fallback for when the adapter is unavailable/dead.
 
 Payload keys actually observed in the vendored source (`src/adapter/keys.m`,
 `src/adapter/now_playing.m`) that Flux's `MediaRemoteAdapterPayload` decodes:

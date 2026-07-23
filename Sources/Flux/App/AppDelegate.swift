@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var shelfWidget = ShelfWidget(
         store: shelfStore, isEnabled: settings.notchShelfEnabled)
     // Unified TCC status/request center — first consumer is Calendar (M4);
-    // M5 (Accessibility) and M6 (Camera) reuse the same instance.
+    // M6 (Camera) reuses the same instance.
     private let permissionCenter = PermissionCenter()
     // EventKit is owned here, shared between `calendarWidget` (the agenda
     // UI, read-only) and `notchActivityRouter` (the event-soon live
@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var lockScreenPresenter = LockScreenPresenter(
         nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
     // Single home for every live-activity *producer* (menu-bar overflow,
-    // battery, Bluetooth, calendar, volume/brightness HUD) — see
+    // battery, Bluetooth, calendar, volume HUD) — see
     // `NotchActivityRouter`'s own doc comment for why this replaced the ad
     // hoc per-producer Combine sink that used to live directly on this
     // class. `lazy` (like the widgets
@@ -239,9 +239,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
-        // M9: consent gate for the AppleScript scripting-source failover —
-        // see `NowPlayingService.allowScriptingFallback`'s own doc comment.
-        nowPlayingService.allowScriptingFallback = settings.notchNowPlayingAppleScriptFallbackEnabled
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
         notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
         notchWindow.registry.setEnabled(.mirror, settings.notchMirrorEnabled)
@@ -362,14 +359,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchShelfEnabled
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.shelf, value) }
-            .store(in: &cancellables)
-
-        // M9: push the AppleScript-fallback consent toggle straight into the
-        // service the moment it changes, not just at launch — see
-        // `NowPlayingService.allowScriptingFallback`'s own doc comment.
-        settings.$notchNowPlayingAppleScriptFallbackEnabled
-            .dropFirst()
-            .sink { [weak self] value in self?.nowPlayingService.allowScriptingFallback = value }
             .store(in: &cancellables)
 
         settings.$notchCalendarEnabled

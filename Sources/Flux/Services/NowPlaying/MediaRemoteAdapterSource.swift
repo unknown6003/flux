@@ -1,5 +1,12 @@
 import Combine
 import Foundation
+import OSLog
+
+/// Shared logger for the whole Now Playing service layer. Created locally
+/// (per-subsystem, like every other corner of Flux) rather than added to
+/// `Support/Log.swift`, since this module is meant to be self-contained and
+/// independently vendorable/removable.
+let nowPlayingLog = Logger(subsystem: "com.flux.menubar", category: "nowPlaying")
 
 /// Reads (and controls) system-wide Now Playing metadata via the vendored
 /// `mediaremote-adapter` (see `Vendor/mediaremote-adapter/PROVENANCE.md`):
@@ -15,11 +22,12 @@ import Foundation
 ///     line per now-playing update until sent SIGTERM.
 ///   - `send <id>` / `seek <micros>` (one-shot): the adapter genuinely
 ///     supports *sending* MediaRemote commands, not just reading — see
-///     `send(_:)` below — so this is the primary transport-control channel;
-///     `ScriptingNowPlayingSource`'s AppleScript commands are the fallback,
-///     used only when this adapter is unavailable.
+///     `send(_:)` below — this is the sole transport-control channel;
+///     `NowPlayingService` treats an unavailable adapter as nothing playing
+///     rather than falling back to a second source (M11 removed the
+///     AppleScript-based fallback that used to exist for exactly that case).
 @MainActor
-final class MediaRemoteAdapterSource: NowPlayingSource {
+final class MediaRemoteAdapterSource {
 
     private let stateSubject = CurrentValueSubject<NowPlayingState?, Never>(nil)
     var statePublisher: AnyPublisher<NowPlayingState?, Never> { stateSubject.eraseToAnyPublisher() }
@@ -31,17 +39,7 @@ final class MediaRemoteAdapterSource: NowPlayingSource {
     /// more authoritative liveness probe, but Flux doesn't currently bundle
     /// that executable (see PROVENANCE.md), so a future OS lockdown that
     /// leaves the process running but silent wouldn't flip this to `false`.
-    private(set) var isAvailable = false {
-        didSet {
-            guard oldValue != isAvailable else { return }
-            availabilitySubject.send(isAvailable)
-        }
-    }
-
-    /// Lets `NowPlayingService` react to availability changes (e.g. to start
-    /// the AppleScript fallback) without polling `isAvailable`.
-    private let availabilitySubject = CurrentValueSubject<Bool, Never>(false)
-    var availabilityPublisher: AnyPublisher<Bool, Never> { availabilitySubject.eraseToAnyPublisher() }
+    private(set) var isAvailable = false
 
     private var process: Process?
     private var stdout: Pipe?
@@ -93,7 +91,7 @@ final class MediaRemoteAdapterSource: NowPlayingSource {
         if process?.isRunning == true { process?.terminate() }
     }
 
-    // MARK: - NowPlayingSource
+    // MARK: - Lifecycle
 
     func start() {
         guard process == nil else { return }

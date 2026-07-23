@@ -124,9 +124,9 @@ final class CameraService: ObservableObject {
     deinit {
         // Plain teardown of what this instance itself registered, called
         // directly from a nonisolated `deinit` — mirrors
-        // `BrightnessMonitor.deinit`/`VolumeMonitor.deinit`'s reasoning for
-        // doing the same with their own C/notification registrations rather
-        // than routing through an instance method. In practice this service
+        // `VolumeMonitor.deinit`'s reasoning for doing the same with its own
+        // C/notification registrations rather than routing through an
+        // instance method. In practice this service
         // is expected to live for the whole app lifetime (owned alongside
         // every other notch-suite service), so this is a defensive
         // safety-net rather than a path exercised in normal operation.
