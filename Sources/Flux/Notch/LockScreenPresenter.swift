@@ -86,6 +86,26 @@ final class LockScreenPresenter {
     /// real lock session.
     private(set) var isPresentingOnLockScreen = false
 
+    /// M9: set the moment THIS presenter is the one that called
+    /// `nowPlaying.setActive(true)` to keep the media pill fresh while
+    /// locked — see `shouldActivateForLock`'s own doc comment for the full
+    /// ownership contract. `false` the rest of the time, including whenever
+    /// the Now Playing widget itself was already active at lock time (this
+    /// presenter never touched it, so it has nothing to undo on unlock).
+    private var didActivateForLock = false
+
+    /// M9: guards against a second `"com.apple.screenIsUnlocked"` delivery
+    /// (that notification isn't documented as strictly one-shot per unlock,
+    /// the same "not documented, treat as a nudge, never trust it blindly"
+    /// posture this whole type already takes toward both notification names
+    /// — see the type doc comment's point 1) re-playing the unlock sound and
+    /// re-starting the fade-out on a panel that's already mid-fade. Set the
+    /// instant the first `handleUnlocked()` actually starts tearing things
+    /// down; cleared once the panel is actually gone (`dismissImmediately`)
+    /// or a fresh lock arrives (`handleLocked`) and decides the panel should
+    /// stay/fade back up instead.
+    private var isDismissing = false
+
     init(nowPlaying: NowPlayingService, activities: LiveActivityCenter, settings: SettingsStore) {
         self.nowPlaying = nowPlaying
         self.activities = activities
@@ -142,10 +162,23 @@ final class LockScreenPresenter {
         // right after `setEnabled(true)` (seeding a freshly-enabled
         // experiment's flags) and as defensive belt-and-suspenders — see
         // `updateHostingContent`'s own doc comment.
+        // Passes the sink's own emitted tuple straight into
+        // `updateHostingContent`/`makeContentView` rather than having them
+        // re-read `settings.notchLockScreen*Enabled` — `@Published` delivers
+        // via `willSet`, so a sink that re-reads the stored properties
+        // instead of using its own emitted values would see the OLD ones,
+        // one toggle behind (the same stale-`willSet`-read class documented
+        // elsewhere in this codebase, e.g. `NowPlayingService.
+        // observeSources`'s `availabilityPublisher` sink and `AppDelegate.
+        // configureLockScreenPresenter`).
         settings.$notchLockScreenNowPlayingEnabled
             .combineLatest(settings.$notchLockScreenActivitiesEnabled, settings.$notchLockScreenUnlockPillEnabled)
             .dropFirst()
-            .sink { [weak self] _, _, _ in self?.updateHostingContent() }
+            .sink { [weak self] nowPlayingEnabled, activitiesEnabled, unlockPillEnabled in
+                self?.updateHostingContent(allowNowPlaying: nowPlayingEnabled,
+                                            allowActivities: activitiesEnabled,
+                                            showUnlockPill: unlockPillEnabled)
+            }
             .store(in: &cancellables)
     }
 
@@ -186,6 +219,12 @@ final class LockScreenPresenter {
     /// `fadeOutThenDismiss()` only ever know about the CURRENT `panel`).
     private func handleLocked() {
         fadeOutDeadline.cancel()
+        // A fresh lock always supersedes any dismiss still winding down (or
+        // one that already finished) — see `isDismissing`'s own doc comment
+        // for why this must be unconditional here, the same reasoning
+        // `fadeOutDeadline.cancel()` right above already applies to the
+        // pending-dismiss deadline itself.
+        isDismissing = false
         guard isEnabled else { return }
         guard let screen = NSScreen.builtInNotchedScreen, let notchRect = screen.notchRect else { return }
         if let panel {
@@ -199,9 +238,13 @@ final class LockScreenPresenter {
     /// read live — see `playUnlockSoundIfEnabled`) and starts the fade-out;
     /// a no-op with no panel currently up (an unlock with the experiment
     /// disabled, or one that raced ahead of any lock ever actually showing
-    /// a panel).
+    /// a panel) OR with a dismiss already in flight (`isDismissing` — a
+    /// second `"com.apple.screenIsUnlocked"` delivery for the same unlock
+    /// must not replay the sound or restart the fade on a panel that's
+    /// already fading; see that flag's own doc comment).
     private func handleUnlocked() {
-        guard let panel else { return }
+        guard let panel, !isDismissing else { return }
+        isDismissing = true
         playUnlockSoundIfEnabled()
         fadeOutThenDismiss(panel)
     }
@@ -210,6 +253,7 @@ final class LockScreenPresenter {
 
     private func showPanel(on screen: NSScreen, notchRect: NSRect) {
         currentNotchSize = notchRect.size
+        activateNowPlayingForLockIfNeeded()
         let panel = makePanel(notchSize: notchRect.size)
         self.panel = panel
         position(panel, on: screen, notchRect: notchRect)
@@ -270,6 +314,72 @@ final class LockScreenPresenter {
         panel = nil
         hostingView = nil
         isPresentingOnLockScreen = false
+        // The panel is actually gone now — the point `isDismissing`'s own
+        // doc comment calls out as the other place (besides a fresh lock)
+        // that clears it.
+        isDismissing = false
+        deactivateNowPlayingForLockIfNeeded()
+    }
+
+    /// M9 (lock-screen Now Playing freshness): the media pill only ever
+    /// re-renders in response to `NowPlayingService.state` actually
+    /// changing, and `state` only changes while the service is `isActive`
+    /// (see `NowPlayingService.setActive`'s own doc comment on why the
+    /// scripting poll — the one piece of this pipeline that costs anything
+    /// while idle — is gated on it). Nothing else keeps that flag on while
+    /// the screen is locked: the Now Playing widget only calls `setActive`
+    /// from its own presentation lifecycle, and there is no widget
+    /// presented at all on the lock screen. Without this, the media pill
+    /// would only ever show whatever was already active the instant the
+    /// screen locked, then silently go stale for the rest of the session.
+    ///
+    /// Ownership is intentionally simple, not ref-counted: `didActivateForLock`
+    /// records whether THIS call is the one that flipped the service on, so
+    /// the matching `deactivateNowPlayingForLockIfNeeded()` on unlock only
+    /// ever undoes what this presenter itself did. If the Now Playing widget
+    /// was already active at lock time (its own owner already holds
+    /// `setActive(true)`), `shouldActivateForLock` returns `false`,
+    /// `didActivateForLock` stays `false`, and unlock leaves the widget's
+    /// own activation completely alone — this presenter simply never
+    /// touches a service some other owner is already keeping alive. The one
+    /// accepted gap: if the widget itself calls `setActive(false)` while
+    /// still locked (e.g. the user closes the notch panel mid-lock on a
+    /// build where that's reachable), this presenter has no way to notice
+    /// and reclaim ownership until the NEXT lock — `NowPlayingService`
+    /// tracks a single `isActive` bool, not a set of owners, so there is no
+    /// richer signal to observe here. That's an acceptable trade for a
+    /// permission-free, privacy-neutral adapter call (the AppleScript
+    /// scripting consent gate lives inside the service itself, entirely
+    /// unaffected by this) rather than real reference counting for a
+    /// best-effort lock-screen convenience feature.
+    private func activateNowPlayingForLockIfNeeded() {
+        guard Self.shouldActivateForLock(serviceActive: nowPlaying.isActive,
+                                          masterEnabled: isEnabled,
+                                          nowPlayingAllowed: settings.notchLockScreenNowPlayingEnabled)
+        else { return }
+        nowPlaying.setActive(true)
+        didActivateForLock = true
+    }
+
+    /// The unlock-side half of `activateNowPlayingForLockIfNeeded` — see that
+    /// function's doc comment for the full ownership contract. A no-op
+    /// whenever this presenter never activated the service in the first
+    /// place (`didActivateForLock == false`), which covers both "Now Playing
+    /// was never enabled for the lock screen" and "the widget already owned
+    /// activation at lock time."
+    private func deactivateNowPlayingForLockIfNeeded() {
+        guard didActivateForLock else { return }
+        didActivateForLock = false
+        nowPlaying.setActive(false)
+    }
+
+    /// Pure decision behind `activateNowPlayingForLockIfNeeded` — extracted
+    /// so `--selftest` can assert the on/off matrix directly, the same
+    /// reasoning `NowPlayingService.shouldEngageScriptingFallback` already
+    /// applies to its own consent gate (this environment can't run a real
+    /// lock session any more than it can run a real Music/Spotify process).
+    static func shouldActivateForLock(serviceActive: Bool, masterEnabled: Bool, nowPlayingAllowed: Bool) -> Bool {
+        masterEnabled && nowPlayingAllowed && !serviceActive
     }
 
     /// Rebuilds the hosted view's plain (non-`@ObservedObject`) inputs —
@@ -281,18 +391,39 @@ final class LockScreenPresenter {
     /// updates; it only exists for the handful of inputs SwiftUI can't
     /// observe on its own. A no-op with no panel currently up.
     private func updateHostingContent() {
+        updateHostingContent(allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
+                              allowActivities: settings.notchLockScreenActivitiesEnabled,
+                              showUnlockPill: settings.notchLockScreenUnlockPillEnabled)
+    }
+
+    /// The sink-facing overload above — takes the three flags explicitly
+    /// rather than reading `settings` itself, so the settings-changed sink in
+    /// `startObserving` can hand this its own freshly-emitted values instead
+    /// of this function re-reading (and risking a stale `willSet`-era read
+    /// of) the same properties. The no-arg overload above is what
+    /// `showPanel`/`refreshPanel` call, where reading `settings` live is
+    /// exactly right (they're not running inside that sink at all).
+    private func updateHostingContent(allowNowPlaying: Bool, allowActivities: Bool, showUnlockPill: Bool) {
         guard let hostingView else { return }
-        hostingView.rootView = makeContentView()
+        hostingView.rootView = makeContentView(allowNowPlaying: allowNowPlaying,
+                                                allowActivities: allowActivities,
+                                                showUnlockPill: showUnlockPill)
     }
 
     private func makeContentView() -> LockScreenContentView {
+        makeContentView(allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
+                         allowActivities: settings.notchLockScreenActivitiesEnabled,
+                         showUnlockPill: settings.notchLockScreenUnlockPillEnabled)
+    }
+
+    private func makeContentView(allowNowPlaying: Bool, allowActivities: Bool, showUnlockPill: Bool) -> LockScreenContentView {
         LockScreenContentView(
             notchSize: currentNotchSize,
             nowPlaying: nowPlaying,
             activities: activities,
-            allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
-            allowActivities: settings.notchLockScreenActivitiesEnabled,
-            showUnlockPill: settings.notchLockScreenUnlockPillEnabled)
+            allowNowPlaying: allowNowPlaying,
+            allowActivities: allowActivities,
+            showUnlockPill: showUnlockPill)
     }
 
     /// Builds the lock-screen panel: the `NotchHighlightWindow` recipe

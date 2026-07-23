@@ -23,7 +23,13 @@ final class NowPlayingService: ObservableObject {
     private let scriptingSource: ScriptingNowPlayingSource
     private var cancellables = Set<AnyCancellable>()
 
-    private var isActive = false
+    /// Read-only outside this file — `LockScreenPresenter` (M9) reads this to
+    /// decide whether IT needs to be the one calling `setActive(true)` while
+    /// locked (see that type's `shouldActivateForLock`/`didActivateForLock`
+    /// doc comments for the shared-ownership contract this makes possible),
+    /// without being able to flip it itself and step on whichever widget
+    /// might already own the active/inactive call.
+    private(set) var isActive = false
     private var latestAdapterState: NowPlayingState?
     private var latestScriptingState: NowPlayingState?
 

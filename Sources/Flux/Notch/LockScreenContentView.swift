@@ -37,7 +37,16 @@ struct LockScreenContentView: View {
                 pillView(for: pill)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        // `maxHeight: .infinity` alongside `maxWidth` — `LockScreenPresenter`
+        // gives this a fixed-height panel (`contentHeightBudget`, sized for
+        // the silhouette plus all three pills), not a height that hugs this
+        // stack's own intrinsic content. Without it, this frame only ever
+        // expanded horizontally, so the stack centered vertically in
+        // whatever extra height the panel had (fewer pills showing = more
+        // slack) instead of staying pinned under the notch the way the
+        // Alcove reference does; `alignment: .top` is what actually pins it
+        // once the frame has real slack to place it within.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// What actually renders right now, computed fresh every body evaluation

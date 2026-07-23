@@ -2210,6 +2210,28 @@ enum SelfTest {
             UserDefaults.standard.removePersistentDomain(forName: lockScreenSuiteName)
         }
 
+        // --- M9 (lock-screen Now Playing freshness): LockScreenPresenter.
+        // shouldActivateForLock — the pure decision behind whether the
+        // presenter itself needs to call `nowPlaying.setActive(true)` while
+        // locked, extracted the same way `NowPlayingService.
+        // shouldEngageScriptingFallback` is, so the on/off matrix is
+        // assertable without a real lock session or notched screen (this
+        // environment has neither). The core property under test: the
+        // presenter only ever activates the service on its own behalf when
+        // BOTH the master experiment flag and the Now Playing sub-toggle are
+        // on AND nothing else has already made the service active — that
+        // last clause is what keeps this presenter from stepping on the Now
+        // Playing widget's own ownership when it was already presented at
+        // lock time. ---
+        check(!LockScreenPresenter.shouldActivateForLock(serviceActive: false, masterEnabled: false, nowPlayingAllowed: true),
+              "LockScreenPresenter.shouldActivateForLock: never activates while the master experiment flag is off")
+        check(!LockScreenPresenter.shouldActivateForLock(serviceActive: false, masterEnabled: true, nowPlayingAllowed: false),
+              "LockScreenPresenter.shouldActivateForLock: never activates while the Now Playing sub-toggle is off")
+        check(!LockScreenPresenter.shouldActivateForLock(serviceActive: true, masterEnabled: true, nowPlayingAllowed: true),
+              "LockScreenPresenter.shouldActivateForLock: never activates when the service is already active — the widget (or a prior lock) already owns it")
+        check(LockScreenPresenter.shouldActivateForLock(serviceActive: false, masterEnabled: true, nowPlayingAllowed: true),
+              "LockScreenPresenter.shouldActivateForLock: activates when both flags are on and the service is currently inactive")
+
         // --- M9 (Alcove lock-screen parity): LockScreenPillLogic.visiblePills
         // — the pure derivation behind which of the (up to) three lock-screen
         // pills actually render, covering the on/off matrix headlessly. ---

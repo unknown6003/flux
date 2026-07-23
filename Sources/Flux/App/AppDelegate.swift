@@ -276,8 +276,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// EXPERIMENTAL — same "both this feature's own toggle AND the master
     /// notch switch" gating as `configureClipboardMonitor`, for the same
     /// reason: a disabled notch feature means off everywhere.
-    private func configureLockScreenPresenter() {
-        lockScreenPresenter.setEnabled(settings.notchEnabled && settings.notchLockScreenExperimentEnabled)
+    ///
+    /// `lockScreenExperimentEnabled` — like `recomputeDuoActive`'s own
+    /// optional params (see that function's doc comment) — takes the value a
+    /// `settings.$notchLockScreenExperimentEnabled` sink was just handed
+    /// rather than defaulting to a re-read of `settings.
+    /// notchLockScreenExperimentEnabled`: `@Published` delivers via `willSet`,
+    /// so a sink that re-reads the stored property instead of using its own
+    /// emitted value would see the OLD one, one toggle behind. Falls back to
+    /// a live read when called with no argument (every other call site here —
+    /// startup, and any other setting's sink recomputing this incidentally —
+    /// has no fresher value to hand it).
+    private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil) {
+        let experimentEnabled = lockScreenExperimentEnabled ?? settings.notchLockScreenExperimentEnabled
+        lockScreenPresenter.setEnabled(settings.notchEnabled && experimentEnabled)
     }
 
     /// M7 (Alcove parity): pushes the pure `NotchViewModel.duoActive(...)`
@@ -404,7 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchLockScreenExperimentEnabled
             .dropFirst()
-            .sink { [weak self] _ in self?.configureLockScreenPresenter() }
+            .sink { [weak self] value in self?.configureLockScreenPresenter(lockScreenExperimentEnabled: value) }
             .store(in: &cancellables)
 
         settings.$notchShelfExpiryDays
