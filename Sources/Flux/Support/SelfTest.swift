@@ -2017,6 +2017,21 @@ enum SelfTest {
             check(!cameraProbe.isRunning, "CameraService: start() without authorization never optimistically flips isRunning")
             cameraProbe.stop()
             check(!cameraProbe.isRunning, "CameraService: stop() after an unauthorized start() is still a safe no-op")
+
+            // --- M8 crash fix: the Mirror preview may only configure its
+            // capture connection's mirror once the session is actually running
+            // (never while startRunning() is still racing on the session
+            // queue) AND only when mirroring is supported — either violation
+            // throws an uncatchable NSInvalidArgumentException. The gate is a
+            // pure function so it's covered here without a camera. ---
+            check(CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: true),
+                  "CameraService.shouldConfigureMirroring: configures only when running AND supported")
+            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: true),
+                  "CameraService.shouldConfigureMirroring: never configures before the session is running (would race startRunning())")
+            check(!CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: false),
+                  "CameraService.shouldConfigureMirroring: never sets isVideoMirrored when mirroring is unsupported")
+            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: false),
+                  "CameraService.shouldConfigureMirroring: no-op when neither running nor supported")
         }
         do {
             let clipboardProbe = ClipboardMonitor(pasteboard: .general)
@@ -2036,6 +2051,43 @@ enum SelfTest {
             clipboardProbe.stop()
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: start()/stop() cycles alone never capture anything")
         }
+
+        // --- M8: fixture-injection seams behind NotchSnapshot's
+        // all-widgets snapshot coverage (`CalendarService.injectPreviewEvents`,
+        // `ClipboardMonitor.injectPreviewEntries`, `PermissionCenter.
+        // injectPreviewStatus`). Each is a direct passthrough into a
+        // service's own `@Published` state — mirroring `NowPlayingService.
+        // injectPreviewState`'s existing seam — so asserting the published
+        // value right after injecting is enough to prove each seam actually
+        // reaches what its widget reads. `NotchSnapshot` itself renders
+        // real SwiftUI offscreen and isn't exercised by `--selftest`; this is
+        // the seams' own regression net. ---
+        do {
+            let previewCalendar = CalendarService()
+            check(previewCalendar.upcoming.isEmpty, "CalendarService: upcoming starts empty")
+            let fixtureEvent = CalendarEvent(id: "preview-fixture", title: "Fixture Event",
+                                              start: Date(), end: Date().addingTimeInterval(3_600),
+                                              isAllDay: false, calendarColor: nil, location: nil)
+            previewCalendar.injectPreviewEvents([fixtureEvent])
+            check(previewCalendar.upcoming == [fixtureEvent],
+                  "CalendarService.injectPreviewEvents: published upcoming reflects exactly the injected fixture, bypassing EventKit entirely")
+
+            let previewClipboard = ClipboardMonitor(pasteboard: .general)
+            let fixtureEntry = ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .text,
+                                               preview: "preview", fullString: "preview", filePaths: nil)
+            previewClipboard.injectPreviewEntries([fixtureEntry])
+            check(previewClipboard.entries == [fixtureEntry],
+                  "ClipboardMonitor.injectPreviewEntries: published entries reflects exactly the injected fixture, bypassing the pasteboard poll entirely")
+
+            let previewPermissions = PermissionCenter()
+            previewPermissions.injectPreviewStatus(.calendar, .granted)
+            check(previewPermissions.statuses[.calendar] == .granted,
+                  "PermissionCenter.injectPreviewStatus: overwrites the published status for the given kind")
+            previewPermissions.injectPreviewStatus(.camera, .denied)
+            check(previewPermissions.statuses[.camera] == .denied && previewPermissions.statuses[.calendar] == .granted,
+                  "PermissionCenter.injectPreviewStatus: each PermissionKind's injected status is independent of the others")
+        }
+
         // --- M6 fix: ClipboardMonitor.shouldSuppressCapture — the pure
         // decision core behind suppressedChangeCount, split out of poll()
         // (mirroring classify(string:)'s own split, for the identical

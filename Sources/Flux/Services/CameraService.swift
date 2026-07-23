@@ -139,6 +139,33 @@ final class CameraService: ObservableObject {
         return nil
     }
 
+    // MARK: - Preview mirroring
+
+    /// Whether `MirrorWidget`'s preview-layer connection may have its mirror
+    /// configured *right now*. Pure so `--selftest` can cover it without a
+    /// camera — the actual `AVCaptureConnection` mutation lives in
+    /// `MirrorWidget.CameraPreviewView`, but the *decision* is centralized and
+    /// tested here.
+    ///
+    /// Both conditions are load-bearing against an uncatchable
+    /// `NSInvalidArgumentException` (an Obj-C exception Swift can't catch =
+    /// instant crash):
+    /// - `sessionRunning`: the connection's mirror MUST only be touched once
+    ///   `startRunning()` has actually returned. Configuring it while
+    ///   `startRunning()` is still executing on `sessionQueue` races that call
+    ///   — which re-initializes the connection's own
+    ///   `automaticallyAdjustsVideoMirroring` back to `true` as it activates
+    ///   connections — so a `isVideoMirrored = true` on the main thread can
+    ///   land in the window where auto-adjust flipped back to `true`, and
+    ///   setting `isVideoMirrored` while `automaticallyAdjustsVideoMirroring`
+    ///   is `true` throws. Gating on the session actually running is what keeps
+    ///   the configuration off that race entirely.
+    /// - `mirroringSupported`: setting `isVideoMirrored` on a connection whose
+    ///   `isVideoMirroringSupported` is `false` throws outright.
+    static func shouldConfigureMirroring(sessionRunning: Bool, mirroringSupported: Bool) -> Bool {
+        sessionRunning && mirroringSupported
+    }
+
     // MARK: - Lifecycle
 
     /// Starts the capture session. A no-op if there's no camera device

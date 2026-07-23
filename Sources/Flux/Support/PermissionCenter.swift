@@ -161,6 +161,22 @@ final class PermissionCenter: ObservableObject {
         }
     }
 
+    // MARK: - Fixture injection (dev/testing only)
+
+    /// Directly overwrites one permission's status, bypassing the real TCC
+    /// query entirely. Used by `NotchSnapshot` (`--snapshot-notch`) to render
+    /// a gated widget's GRANTED content (Calendar's agenda, the Mirror
+    /// preview) deterministically offscreen, without this process actually
+    /// holding that grant. Mirrors `NowPlayingService.injectPreviewState` —
+    /// never called from a live query path. `refresh(_:)` (and, for
+    /// `.accessibility`, the TCC change broadcast `observeAccessibilityChanges()`
+    /// listens for) would simply overwrite this on the next real check, so a
+    /// caller seeding a snapshot must inject AFTER anything — e.g. a widget's
+    /// own `willPresent()` — that could trigger one of those, not before.
+    func injectPreviewStatus(_ kind: PermissionKind, _ status: PermissionStatus) {
+        statuses[kind] = status
+    }
+
     // MARK: - Request
 
     /// Trigger the system prompt where one exists. Calendar and camera hand

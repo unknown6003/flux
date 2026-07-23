@@ -163,18 +163,24 @@ private struct CameraPreviewView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
-        view.previewLayer.session = service.session
-        view.configureMirroringIfNeeded()
+        view.bind(to: service.session)
         return view
     }
 
     func updateNSView(_ nsView: PreviewContainerView, context: Context) {
-        // `service.session` itself never changes identity across this
-        // `CameraService`'s lifetime (`session` is a `let`), so the only
-        // thing worth redoing on every SwiftUI update is the mirroring
-        // setup — see `configureMirroringIfNeeded()`'s own doc comment for
-        // why that can't always be finished in `makeNSView` alone.
-        nsView.configureMirroringIfNeeded()
+        // Deliberately empty. `service.session` never changes identity across
+        // this `CameraService`'s lifetime (`session` is a `let`), so there's
+        // nothing to rebind here — and, crucially, mirroring is NOT
+        // reconfigured from here anymore: `updateNSView` runs on the main
+        // thread for *any* SwiftUI invalidation (the "Starting camera…"
+        // caption, the panel's blur-morph, a hover repaint, …), which can
+        // fire *while* `CameraService.start()`'s `startRunning()` is still in
+        // flight on the session queue. Touching the capture connection's
+        // mirror in that window races `startRunning()` and can throw an
+        // uncatchable `NSInvalidArgumentException` (see
+        // `CameraService.shouldConfigureMirroring`). Mirroring is instead
+        // configured only once the session has actually started, from the
+        // `.AVCaptureSessionDidStartRunning` observer set up in `bind(to:)`.
     }
 
     /// A plain `NSView` whose backing layer *is* the preview layer (rather
@@ -184,6 +190,10 @@ private struct CameraPreviewView: NSViewRepresentable {
     /// preview layer's frame in sync.
     final class PreviewContainerView: NSView {
         let previewLayer = AVCaptureVideoPreviewLayer()
+
+        /// Token for the `.AVCaptureSessionDidStartRunning` observer set up in
+        /// `bind(to:)` — held only so `deinit` can remove it.
+        private var didStartRunningObserver: NSObjectProtocol?
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
@@ -196,26 +206,70 @@ private struct CameraPreviewView: NSViewRepresentable {
             fatalError("init(coder:) has not been implemented")
         }
 
+        deinit {
+            if let didStartRunningObserver {
+                NotificationCenter.default.removeObserver(didStartRunningObserver)
+            }
+        }
+
+        /// Binds the preview layer to `session` and arranges for mirroring to
+        /// be configured at the one moment it's safe to: *after* the session
+        /// has actually started.
+        ///
+        /// The preview-layer connection's mirror must never be touched while
+        /// `CameraService.start()`'s `startRunning()` is still executing on
+        /// its session queue — doing so races that call and can throw an
+        /// uncatchable `NSInvalidArgumentException` (the crash this widget's
+        /// M6 code shipped with; see `CameraService.shouldConfigureMirroring`).
+        /// So rather than reconfigure on every SwiftUI update (the old,
+        /// racy `updateNSView` path), this observes
+        /// `.AVCaptureSessionDidStartRunning` — posted only once
+        /// `startRunning()` has returned and the session is genuinely up — and
+        /// configures the mirror from there. `configureMirroringIfNeeded()` is
+        /// also called once here for the case where the session is *already*
+        /// running by the time this view mounts (a preview re-created during a
+        /// panel morph while the camera's still on), which the notification
+        /// alone would miss.
+        func bind(to session: AVCaptureSession) {
+            previewLayer.session = session
+            if didStartRunningObserver == nil {
+                didStartRunningObserver = NotificationCenter.default.addObserver(
+                    forName: .AVCaptureSessionDidStartRunning, object: session, queue: .main
+                ) { [weak self] _ in
+                    self?.configureMirroringIfNeeded()
+                }
+            }
+            configureMirroringIfNeeded()
+        }
+
         /// Flips the preview horizontally so it reads as an actual mirror —
         /// what the user sees matches what they'd see holding up a physical
         /// mirror, rather than the as-captured (left/right reversed from
         /// that) image most camera *recording* apps intentionally show.
-        /// `automaticallyAdjustsVideoMirroring = false` is required before
-        /// `isVideoMirrored` can be set explicitly; otherwise AVFoundation
-        /// manages mirroring on its own and won't apply it here.
         ///
-        /// `previewLayer.connection` is `nil` until the preview layer has
-        /// actually resolved a connection to `session` — which can't happen
-        /// until the session has a video input attached (`CameraService`
-        /// adds that input from `start()`, which may run after this view is
-        /// first created). Guarding on `automaticallyAdjustsVideoMirroring`
-        /// still being `true` makes this both safe to call before the
-        /// connection exists (a no-op) and idempotent once it does (only
-        /// ever configures the connection once).
+        /// Safe and idempotent to call repeatedly. It configures nothing until
+        /// `CameraService.shouldConfigureMirroring(sessionRunning:mirroringSupported:)`
+        /// says it's safe — see that function's doc comment for exactly which
+        /// two AVFoundation exceptions each gate prevents. Once past the gate,
+        /// `automaticallyAdjustsVideoMirroring` is forced `false` *immediately*
+        /// before `isVideoMirrored` is set (required, or the setter throws),
+        /// and both are written only when they'd actually change, so re-runs
+        /// (e.g. a second `.AVCaptureSessionDidStartRunning` after an
+        /// interruption restart) are no-ops.
         func configureMirroringIfNeeded() {
-            guard let connection = previewLayer.connection, connection.automaticallyAdjustsVideoMirroring else { return }
-            connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = true
+            guard let connection = previewLayer.connection,
+                  let session = previewLayer.session,
+                  CameraService.shouldConfigureMirroring(
+                    sessionRunning: session.isRunning,
+                    mirroringSupported: connection.isVideoMirroringSupported)
+            else { return }
+
+            if connection.automaticallyAdjustsVideoMirroring {
+                connection.automaticallyAdjustsVideoMirroring = false
+            }
+            if !connection.isVideoMirrored {
+                connection.isVideoMirrored = true
+            }
         }
     }
 }
