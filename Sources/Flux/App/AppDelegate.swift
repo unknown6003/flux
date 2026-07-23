@@ -52,11 +52,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let timerService = TimerService()
     private lazy var timersWidget = TimersWidget(
         service: timerService, isEnabled: settings.notchTimersEnabled)
-    // M6: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment. Gated
-    // from `configureLockScreenPresenter()` below; `currentActivityLine` is
-    // wired to `timersWidget`'s own nearest-remaining-timer line in
-    // `configureNotch()`.
-    private let lockScreenPresenter = LockScreenPresenter()
+    // M6/M9: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment.
+    // Gated from `configureLockScreenPresenter()` below. `lazy` (like the
+    // widgets above) because its initializer reads sibling instance
+    // properties (`nowPlayingService`, `notchWindow.activities`, `settings`),
+    // which isn't possible from a plain stored property's default-value
+    // expression; forced into existence by `configureLockScreenPresenter()`'s
+    // own `lockScreenPresenter.setEnabled(...)` call, so nothing extra is
+    // needed to touch it the way `notchActivityRouter` needs its explicit
+    // `_ = notchActivityRouter` line.
+    private lazy var lockScreenPresenter = LockScreenPresenter(
+        nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
     // Single home for every live-activity *producer* (menu-bar overflow,
     // battery, Bluetooth, calendar, volume/brightness HUD) — see
     // `NotchActivityRouter`'s own doc comment for why this replaced the ad
@@ -233,24 +239,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
+        // M9: consent gate for the AppleScript scripting-source failover —
+        // see `NowPlayingService.allowScriptingFallback`'s own doc comment.
+        nowPlayingService.allowScriptingFallback = settings.notchNowPlayingAppleScriptFallbackEnabled
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
         notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
         notchWindow.registry.setEnabled(.mirror, settings.notchMirrorEnabled)
         notchWindow.registry.setEnabled(.timers, settings.notchTimersEnabled)
         notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
-        // Read fresh every time the lock screen actually locks, not cached —
-        // see `LockScreenPresenter.currentActivityLine`'s own doc comment.
-        // Wired generically to whatever the notch's CURRENT live activity is
-        // (`LiveActivity.captionText`) rather than hardcoded to timers
-        // specifically, falling back to the timers widget's own countdown
-        // line only when nothing else is currently showing (e.g. no active
-        // wing at all, or the current one is icon/gauge/artwork-only with no
-        // text of its own to caption with).
-        lockScreenPresenter.currentActivityLine = { [weak self] in
-            guard let self else { return nil }
-            return self.notchWindow.activities.current?.captionText ?? self.timersWidget.nearestRemainingLine(at: Date())
-        }
         configureNotchOverflowCoexistence()
         configureNotchHotkey()
         configureClipboardMonitor()
@@ -353,6 +350,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchShelfEnabled
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.shelf, value) }
+            .store(in: &cancellables)
+
+        // M9: push the AppleScript-fallback consent toggle straight into the
+        // service the moment it changes, not just at launch — see
+        // `NowPlayingService.allowScriptingFallback`'s own doc comment.
+        settings.$notchNowPlayingAppleScriptFallbackEnabled
+            .dropFirst()
+            .sink { [weak self] value in self?.nowPlayingService.allowScriptingFallback = value }
             .store(in: &cancellables)
 
         settings.$notchCalendarEnabled

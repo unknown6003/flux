@@ -3,15 +3,26 @@ import SwiftUI
 import Combine
 import CoreGraphics
 
-/// EXPERIMENTAL — default OFF, behind a settings key the wiring agent gates
-/// this through `setEnabled(_:)` (e.g. `flux.notch.lockScreenExperiment`;
-/// this class has no opinion of its own about the default or the key name).
+/// EXPERIMENTAL — default OFF, gated by `flux.notch.lockScreenExperiment`
+/// (the wiring agent's `setEnabled(_:)` call, in `AppDelegate.
+/// configureLockScreenPresenter()` — this class has no opinion of its own
+/// about the default or the key name, and that master flag remains the ONE
+/// gate: every sub-feature below (`LockScreenContentView`'s Now Playing
+/// pill/activity pill/unlock pill, plus the unlock sound) only ever runs
+/// while this is enabled).
 ///
-/// Keeps a minimal, non-interactive notch silhouette visible on the macOS
-/// lock screen — purely a "the Mac is still here, still running" ambient
-/// presence, optionally captioned with a line from whatever the notch's
-/// current activity is (e.g. a running timer's countdown), via an injected
-/// closure rather than a live dependency on any concrete widget/service.
+/// M9 (Alcove lock-screen parity): keeps a LIVE `LockScreenContentView` —
+/// the notch silhouette plus up to three stacked pills (Now Playing, the
+/// current live activity's caption, an optional "Press any key to unlock"
+/// pill) — visible on the macOS lock screen, purely display-only, between
+/// `screenIsLocked`/`screenIsUnlocked` distributed notifications. Replaces
+/// the M6 static silhouette+caption (a plain `Text` captured once per panel
+/// build via an injected `currentActivityLine` closure): this class now
+/// holds direct, read-only references to `NowPlayingService`/
+/// `LiveActivityCenter`/`SettingsStore` instead, and the hosted SwiftUI view
+/// observes the first two directly (`@ObservedObject`) so it re-renders on
+/// its own as their state changes — no refresh-on-next-lock-notification
+/// workaround needed the way the old `refreshPanel` rebuilt a static struct.
 ///
 /// ## Why this is fragile by construction, and why that's the acceptable cost
 /// This mechanism rides on things Apple has never documented and could change
@@ -38,51 +49,67 @@ import CoreGraphics
 ///   - never force-unwraps anything anywhere on the lock path;
 ///   - never crashes if the notification never fires, if the computed window
 ///     level is nonsensical, or if the panel simply fails to show — the
-///     worst acceptable outcome is always "the silhouette doesn't appear,"
-///     never a hang or anything that could interfere with the user actually
+///     worst acceptable outcome is always "nothing extra appears," never a
+///     hang or anything that could interfere with the user actually
 ///     unlocking their own Mac (see `makePanel`'s `ignoresMouseEvents`).
 @MainActor
 final class LockScreenPresenter {
-    /// Supplies the caption line shown under the silhouette. The wiring
-    /// agent is expected to wire this generically to whatever the notch's
-    /// CURRENT live activity is — `notchWindow.activities.current?.captionText`
-    /// — falling back to `TimersWidget.nearestRemainingLine(at:)` only when
-    /// nothing else is currently showing, rather than hardcoding this to
-    /// timers specifically (`nil` from both means there's nothing worth
-    /// captioning, which renders no caption at all). Read fresh every time a
-    /// panel is built on lock, not cached at `init` or at `setEnabled` time —
-    /// a lock that happens long after launch should caption whatever's
-    /// current at THAT moment.
-    var currentActivityLine: (() -> String?)?
+    private let nowPlaying: NowPlayingService
+    private let activities: LiveActivityCenter
+    private let settings: SettingsStore
 
     private var isEnabled = false
     private var isObserving = false
     private var panel: NSPanel?
+    private var hostingView: NSHostingView<LockScreenContentView>?
+    private var currentNotchSize: CGSize = .zero
     private var cancellables = Set<AnyCancellable>()
+
+    /// The pending "finish fading out, THEN order the panel out" deadline —
+    /// see `fadeOutThenDismiss`'s own doc comment. The same cancellable
+    /// single-deadline `DeadlineTask` helper `LiveActivityCenter`'s expiry
+    /// tasks, `NotchActivityRouter`'s boundary tasks, and `TimerService`'s
+    /// own deadline all already share — no repeating timer/Task anywhere in
+    /// this pipeline either. Cancelled unconditionally at the top of every
+    /// `handleLocked()`/`setEnabled(false)` path so a rapid lock→unlock→lock
+    /// (or repeated unlock) cycle can never have a stale, already-superseded
+    /// fade tear down a panel a newer lock just decided should stay up.
+    private let fadeOutDeadline = DeadlineTask()
 
     /// True only while an actual panel is up and showing on the lock screen —
     /// `false` at every other time, including "enabled but not locked" and
-    /// "locked but disabled, or no built-in notched screen to hug". Exposed
-    /// (read-only) purely for `--selftest`/debug so the on/off transitions
-    /// can be asserted without a real lock session.
+    /// "locked but disabled, or no built-in notched screen to hug". Stays
+    /// `true` through a fade-OUT in progress (the panel is still visibly
+    /// there, just becoming transparent) and only flips `false` once the
+    /// panel is actually ordered out. Exposed (read-only) purely for
+    /// `--selftest`/debug so the on/off transitions can be asserted without a
+    /// real lock session.
     private(set) var isPresentingOnLockScreen = false
 
-    init() {}
+    init(nowPlaying: NowPlayingService, activities: LiveActivityCenter, settings: SettingsStore) {
+        self.nowPlaying = nowPlaying
+        self.activities = activities
+        self.settings = settings
+    }
 
     deinit {
-        // `Task`-free, observer-free teardown: `AnyCancellable`'s own
-        // deinit cancels each Combine subscription when this set is
-        // released, and `NSPanel.orderOut`/dropping `panel` needs no
-        // explicit call here — neither depends on `self` surviving past
-        // this point.
+        // Observer-free teardown: `AnyCancellable`'s own deinit cancels each
+        // Combine subscription when this set is released, `fadeOutDeadline`
+        // is its own object (its own `deinit` cancels whatever's pending —
+        // see `DeadlineTask`'s doc comment) rather than something this type
+        // needs to cancel itself, and `NSPanel.orderOut`/dropping `panel`
+        // needs no explicit call here either — none of it depends on `self`
+        // surviving past this point.
     }
 
     /// The single on/off gate — mirrors every other notch-suite `setEnabled`
     /// (`NotchWindowController.setEnabled`, `NotchWidgetRegistry.setEnabled`,
     /// `MediaKeyInterceptor`'s start/stop shape): turning this off tears
-    /// EVERYTHING down — the `DistributedNotificationCenter` observers AND
-    /// any panel currently showing — so a disabled experiment costs nothing
-    /// at idle: no observer, no window, nothing left that could misfire.
+    /// EVERYTHING down — the `DistributedNotificationCenter`/settings
+    /// observers AND any panel currently showing (instantly, no fade — this
+    /// is the master switch turning the whole experiment off, not an
+    /// ordinary unlock) — so a disabled experiment costs nothing at idle: no
+    /// observer, no window, nothing left that could misfire.
     func setEnabled(_ enabled: Bool) {
         guard enabled != isEnabled else { return }
         isEnabled = enabled
@@ -90,7 +117,7 @@ final class LockScreenPresenter {
             startObserving()
         } else {
             stopObserving()
-            dismissPanel()
+            dismissImmediately()
         }
     }
 
@@ -107,9 +134,22 @@ final class LockScreenPresenter {
         center.publisher(for: Notification.Name("com.apple.screenIsUnlocked"))
             .sink { [weak self] _ in self?.handleUnlocked() }
             .store(in: &cancellables)
+
+        // Live-update the already-showing panel's pill visibility the moment
+        // any of the three sub-feature toggles changes, without waiting for
+        // the next lock/unlock cycle. In practice the lock screen itself
+        // blocks reaching Settings while locked, so this mostly matters
+        // right after `setEnabled(true)` (seeding a freshly-enabled
+        // experiment's flags) and as defensive belt-and-suspenders — see
+        // `updateHostingContent`'s own doc comment.
+        settings.$notchLockScreenNowPlayingEnabled
+            .combineLatest(settings.$notchLockScreenActivitiesEnabled, settings.$notchLockScreenUnlockPillEnabled)
+            .dropFirst()
+            .sink { [weak self] _, _, _ in self?.updateHostingContent() }
+            .store(in: &cancellables)
     }
 
-    /// No-op if not observing. Cancels both subscriptions above by dropping
+    /// No-op if not observing. Cancels every subscription above by dropping
     /// them — `AnyCancellable.cancel()` runs on deinit, which `removeAll()`
     /// triggers immediately since nothing else retains them.
     private func stopObserving() {
@@ -124,21 +164,28 @@ final class LockScreenPresenter {
     /// but costs nothing to double-check on a path this defensive) and on
     /// there actually being a built-in notched screen to hug — an
     /// external-only clamshell setup, or a non-notch Mac, has nothing for
-    /// this silhouette to sit over, so this does nothing at all rather than
+    /// this content to sit over, so this does nothing at all rather than
     /// drawing an arbitrary rectangle somewhere on an external display.
+    ///
+    /// Cancels any in-flight fade-out-then-dismiss FIRST, unconditionally —
+    /// the rapid lock/unlock-cycling fix: a lock arriving while a previous
+    /// unlock's fade is still winding down must never let that fade's
+    /// pending `orderOut` fire later and tear down the panel this new lock
+    /// just decided should stay (or fade back) up.
     ///
     /// If a panel is ALREADY up (a second `"com.apple.screenIsLocked"`
     /// arrives with no intervening unlock — this notification's own delivery
     /// isn't documented as strictly one-shot per lock, and screen-lock/wake
     /// races are exactly the kind of thing that can double-fire it), this
-    /// refreshes that existing panel's caption/position in place rather than
+    /// refreshes that existing panel's content/position in place rather than
     /// building a brand new one: `showPanel` unconditionally overwrites
     /// `panel` with a fresh `NSPanel`, and dropping the old Swift reference
     /// does NOT order the old window out — it simply orphans it, still
     /// showing, above the lock screen shield, with nothing left able to
-    /// dismiss it on the next unlock (`dismissPanel()` only ever knows about
-    /// the CURRENT `panel`).
+    /// dismiss it on the next unlock (`dismissImmediately()`/
+    /// `fadeOutThenDismiss()` only ever know about the CURRENT `panel`).
     private func handleLocked() {
+        fadeOutDeadline.cancel()
         guard isEnabled else { return }
         guard let screen = NSScreen.builtInNotchedScreen, let notchRect = screen.notchRect else { return }
         if let panel {
@@ -148,44 +195,104 @@ final class LockScreenPresenter {
         }
     }
 
+    /// Plays the optional unlock sound (gated on its own settings toggle,
+    /// read live — see `playUnlockSoundIfEnabled`) and starts the fade-out;
+    /// a no-op with no panel currently up (an unlock with the experiment
+    /// disabled, or one that raced ahead of any lock ever actually showing
+    /// a panel).
     private func handleUnlocked() {
-        dismissPanel()
+        guard let panel else { return }
+        playUnlockSoundIfEnabled()
+        fadeOutThenDismiss(panel)
     }
 
     // MARK: - Panel
 
     private func showPanel(on screen: NSScreen, notchRect: NSRect) {
+        currentNotchSize = notchRect.size
         let panel = makePanel(notchSize: notchRect.size)
         self.panel = panel
         position(panel, on: screen, notchRect: notchRect)
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
+        animateAlpha(of: panel, to: 1, duration: Self.fadeInDuration)
     }
 
-    /// Updates an already-showing panel's caption and position in place
-    /// instead of building a new one — the `handleLocked()` re-entry path.
-    /// Rebuilds just the SwiftUI root (cheap — a static silhouette plus a
-    /// `Text`) via the existing `NSHostingView`, so the underlying `NSPanel`
-    /// itself, and this presenter's `panel` reference to it, never change.
+    /// Updates an already-showing panel's content/position in place instead
+    /// of building a new one — the `handleLocked()` re-entry path. Content
+    /// itself only needs re-derivation here for `notchSize` (a screen change
+    /// mid-lock is exotic but not impossible) and the `allow*`/
+    /// `showUnlockPill` flags; the Now Playing/activity DATA those pills
+    /// show is already live via `LockScreenContentView`'s own
+    /// `@ObservedObject` bindings, so there is nothing to re-inject there.
+    /// Also resumes the fade-in from wherever alpha currently sits (a lock
+    /// arriving while a still-in-progress fade-out is winding down — the
+    /// task itself was already cancelled by `handleLocked` before this runs)
+    /// rather than snapping to fully visible.
     private func refreshPanel(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
-        let capturedLine = currentActivityLine?()
-        if let hosting = panel.contentView as? NSHostingView<LockScreenSilhouetteView> {
-            hosting.rootView = LockScreenSilhouetteView(notchSize: notchRect.size, caption: capturedLine)
-        }
+        currentNotchSize = notchRect.size
+        updateHostingContent()
         position(panel, on: screen, notchRect: notchRect)
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
+        if panel.alphaValue < 1 {
+            animateAlpha(of: panel, to: 1, duration: Self.fadeInDuration)
+        }
     }
 
-    /// Orders out and releases the panel — matches `NotchWindowController.
-    /// setEnabled(false)`'s "tear down completely, don't just hide" shape for
-    /// the same reason: nothing about this feature should linger once it's
-    /// no longer meant to be shown. Safe to call whether or not a panel
-    /// currently exists.
-    private func dismissPanel() {
+    /// Fades `panel`'s alpha to 0 over `fadeOutDuration`, then — once that's
+    /// actually finished, via `fadeOutDeadline` (a cancellable deadline, not
+    /// an `NSAnimationContext` completion handler) — orders it out and
+    /// releases it. The deadline (not the animation itself) is what
+    /// `handleLocked()` cancels on a rapid re-lock: cancelling only stops the
+    /// PENDING dismiss, not the in-flight alpha animation, but that's fine —
+    /// `handleLocked()`'s own `refreshPanel`/`showPanel` immediately re-
+    /// targets alpha back toward 1 right after, and `NSAnimationContext`
+    /// animations smoothly retarget mid-flight rather than glitching.
+    private func fadeOutThenDismiss(_ panel: NSPanel) {
+        animateAlpha(of: panel, to: 0, duration: Self.fadeOutDuration)
+        fadeOutDeadline.reschedule(to: Date().addingTimeInterval(Self.fadeOutDuration)) { [weak self] in
+            self?.dismissImmediately()
+        }
+    }
+
+    /// Orders out and releases the panel with no fade — used by the master
+    /// `setEnabled(false)` switch (an instant, unconditional teardown, not
+    /// an ordinary unlock) and as the fade-out deadline's own completion.
+    /// Cancels any still-pending fade-out deadline first (idempotent — this
+    /// IS that deadline's own completion in the ordinary case, where nothing
+    /// is left pending by the time this runs). Safe to call whether or not a
+    /// panel currently exists.
+    private func dismissImmediately() {
+        fadeOutDeadline.cancel()
         panel?.orderOut(nil)
         panel = nil
+        hostingView = nil
         isPresentingOnLockScreen = false
+    }
+
+    /// Rebuilds the hosted view's plain (non-`@ObservedObject`) inputs —
+    /// `notchSize` and the three `allow*`/`showUnlockPill` settings-derived
+    /// flags — in place. `nowPlaying`/`activities` are the exact same
+    /// instances either way (this only ever reassigns `hostingView.rootView`
+    /// with a fresh `LockScreenContentView` value wrapping the SAME object
+    /// references), so this never disrupts their own live `@ObservedObject`
+    /// updates; it only exists for the handful of inputs SwiftUI can't
+    /// observe on its own. A no-op with no panel currently up.
+    private func updateHostingContent() {
+        guard let hostingView else { return }
+        hostingView.rootView = makeContentView()
+    }
+
+    private func makeContentView() -> LockScreenContentView {
+        LockScreenContentView(
+            notchSize: currentNotchSize,
+            nowPlaying: nowPlaying,
+            activities: activities,
+            allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
+            allowActivities: settings.notchLockScreenActivitiesEnabled,
+            showUnlockPill: settings.notchLockScreenUnlockPillEnabled)
     }
 
     /// Builds the lock-screen panel: the `NotchHighlightWindow` recipe
@@ -196,14 +303,13 @@ final class LockScreenPresenter {
     /// screen's own password field/UI sits at (or below) the shield level
     /// this panel draws just above; without `ignoresMouseEvents`, a
     /// borderless-but-still-hit-testable panel spanning that space could
-    /// intercept clicks/keystrokes meant for actually unlocking the Mac. This
-    /// view has no interactive content at all (see `LockScreenSilhouetteView`'s
-    /// own doc comment), so there is nothing lost by making that explicit and
-    /// unconditional here.
+    /// intercept clicks/keystrokes meant for actually unlocking the Mac.
+    /// `LockScreenContentView` has no interactive content at all (see its
+    /// own doc comment), so there is nothing lost by making that explicit
+    /// and unconditional here.
     private func makePanel(notchSize: CGSize) -> NSPanel {
-        let capturedLine = currentActivityLine?()
-        let root = LockScreenSilhouetteView(notchSize: notchSize, caption: capturedLine)
-        let hosting = NSHostingView(rootView: root)
+        let hosting = NSHostingView(rootView: makeContentView())
+        self.hostingView = hosting
 
         let panel = LockScreenPanel(contentRect: .zero,
                                     styleMask: [.borderless, .nonactivatingPanel],
@@ -227,15 +333,58 @@ final class LockScreenPresenter {
         return NSWindow.Level(rawValue: Int(raw) + 1)
     }
 
-    /// Centers the panel on the notch, top-anchored, with a little extra
-    /// height below for the optional caption — mirrors
-    /// `NotchWindowController.position`/`NotchHighlightWindowController.
-    /// position`'s identical centering math.
+    /// Centers the panel on the notch, top-anchored, with a fixed height
+    /// budget generous enough for the silhouette plus all three stacked
+    /// pills at once (the common case shows fewer — the extra vertical space
+    /// is simply empty and transparent, since `LockScreenContentView`'s own
+    /// `VStack` is top-aligned within it) and a width wide enough for the
+    /// ~260pt-wide media pill, which is itself wider than the physical notch
+    /// on every current Mac. Mirrors `NotchWindowController.position`'s
+    /// identical centering math, just against this feature's own (larger,
+    /// pill-stack-sized) bounds rather than `NotchMetrics.panelBounds`.
     private func position(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
-        let width = max(notchRect.width, 140)
-        let height = notchRect.height + 28
+        let width = max(notchRect.width, Self.minPanelWidth)
+        let height = notchRect.height + Self.contentHeightBudget
         let origin = NSPoint(x: notchRect.midX - width / 2, y: screen.frame.maxY - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
+    }
+
+    private static let minPanelWidth: CGFloat = 280
+    /// Silhouette + 3 pills (media ~34pt, activity ~24pt, unlock ~24pt) +
+    /// 3 `NotchDesign.space2` (8pt) gaps between them, rounded up with a
+    /// little slack.
+    private static let contentHeightBudget: CGFloat = 140
+
+    private static let fadeInDuration: TimeInterval = 0.4
+    private static let fadeOutDuration: TimeInterval = 0.25
+
+    /// Animates `panel`'s `alphaValue` via `NSAnimationContext` (a real,
+    /// Core-Animation-backed window fade — not a repeating `Timer`/`Task`
+    /// loop of manual alpha steps) with an ease-out timing curve, matching
+    /// the build spec's "fade in 0.4s ease-out, fade out 0.25s" — the
+    /// PENDING-dismiss half of a fade-out is the only part that needs an
+    /// actual cancellable deadline (`fadeOutDeadline`, see
+    /// `fadeOutThenDismiss`); the visual animation itself is a one-line
+    /// AppKit call either direction.
+    private func animateAlpha(of panel: NSPanel, to value: CGFloat, duration: TimeInterval) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = value
+        }
+    }
+
+    /// Best-effort, quietly defensive: `NSSound(named:)` returns `nil` for a
+    /// missing/renamed system sound rather than throwing, and `.play()`
+    /// returns `Bool` rather than throwing either — both are simply ignored
+    /// on failure, since a lock-screen sound failing to play is never worth
+    /// surfacing anywhere, let alone worth crashing over. Reads the setting
+    /// live (rather than caching it) since this only ever runs once per
+    /// unlock — there's no long-lived state to keep in sync the way the
+    /// pill-visibility flags need `updateHostingContent` for.
+    private func playUnlockSoundIfEnabled() {
+        guard settings.notchLockScreenUnlockSoundEnabled else { return }
+        NSSound(named: "Glass")?.play()
     }
 }
 
@@ -250,36 +399,4 @@ final class LockScreenPresenter {
 private final class LockScreenPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
-}
-
-/// The static (no ticking, no animation, no interaction, no tracking areas)
-/// silhouette: the black `NotchShape` at the physical notch's own size, plus
-/// — if `caption` is non-`nil`/non-empty — a small caption line hung just
-/// below it. `caption` is captured once per build of this view — at initial
-/// panel-build time (`LockScreenPresenter.makePanel`) or, if a lock
-/// notification fires again while a panel is already up, at that later
-/// refresh (`LockScreenPresenter.refreshPanel`) — never re-read on a timer of
-/// its own. The lock screen is a display-only surface with no controller left
-/// running to react to anything between those builds, so this deliberately
-/// shows a snapshot of "what was current the instant this view was last
-/// (re)built" rather than continuing to update on its own. There is no
-/// `@State`, `@ObservedObject`, tap gesture, or tracking area anywhere in
-/// this view — it renders once per build and then just sits there.
-private struct LockScreenSilhouetteView: View {
-    let notchSize: CGSize
-    let caption: String?
-
-    var body: some View {
-        VStack(spacing: 4) {
-            NotchShape.collapsed
-                .fill(Color.black)
-                .frame(width: max(notchSize.width, 1), height: max(notchSize.height, 8))
-            if let caption, !caption.isEmpty {
-                Text(caption)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.6))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .top)
-    }
 }

@@ -27,6 +27,41 @@ final class NowPlayingService: ObservableObject {
     private var latestAdapterState: NowPlayingState?
     private var latestScriptingState: NowPlayingState?
 
+    /// M9 (privacy audit): consent gate for the AppleScript scripting-source
+    /// failover — settings-driven; set by the wiring agent's Combine sink
+    /// from `SettingsStore.notchNowPlayingAppleScriptFallbackEnabled`.
+    /// Defaults to `false` so a fresh instance (this service is also
+    /// constructed standalone by `NotchSnapshot`/`SettingsRenderer`/
+    /// `SelfTest`) never risks scripting Music/Spotify — and the
+    /// Automation permission prompt that comes with it — without an
+    /// explicit opt-in. While this is `false` and the adapter is
+    /// unavailable, `state` simply publishes `nil` (see `recompute()`) so
+    /// the widget shows its ordinary empty state rather than nagging for
+    /// the fallback.
+    var allowScriptingFallback: Bool = false {
+        didSet {
+            guard allowScriptingFallback != oldValue else { return }
+            if Self.shouldEngageScriptingFallback(allowScriptingFallback: allowScriptingFallback,
+                                                   adapterAvailable: adapterSource.isAvailable) {
+                if isActive { scriptingSource.start() }
+            } else {
+                scriptingSource.stop()
+                latestScriptingState = nil
+                recompute()
+            }
+        }
+    }
+
+    /// Pure decision behind "should the scripting fallback actually run
+    /// right now" — extracted so `--selftest` can assert the consent gating
+    /// directly, without a live Music/Spotify process (this environment
+    /// can't run either). Both `setActive` and `observeSources`'s
+    /// availability sink route through this single rule rather than each
+    /// re-deriving `allowScriptingFallback && !adapterAvailable` inline.
+    static func shouldEngageScriptingFallback(allowScriptingFallback: Bool, adapterAvailable: Bool) -> Bool {
+        allowScriptingFallback && !adapterAvailable
+    }
+
     /// A cheap stand-in for the last artwork `Data` this service downsampled
     /// — `count` + `hashValue` rather than the encoded bytes themselves, so
     /// this service doesn't hold a *second* full-size copy of the artwork
@@ -82,7 +117,8 @@ final class NowPlayingService: ObservableObject {
         isActive = active
         if active {
             adapterSource.start()   // no-op if already running
-            if !adapterSource.isAvailable {
+            if Self.shouldEngageScriptingFallback(allowScriptingFallback: allowScriptingFallback,
+                                                   adapterAvailable: adapterSource.isAvailable) {
                 scriptingSource.start()
             }
         } else {
@@ -144,10 +180,15 @@ final class NowPlayingService: ObservableObject {
                 guard let self, self.isActive else { return }
                 // The adapter is the preferred source: as soon as it's alive
                 // again there's no reason to keep the AppleScript poller
-                // running (and burning its 2s timer) too.
+                // running (and burning its 2s timer) too. `available` is the
+                // value this sink was just handed (not a re-read of
+                // `adapterSource.isAvailable`) for the same stale-`willSet`
+                // read reason documented elsewhere in this codebase (e.g.
+                // `AppDelegate.recomputeDuoActive`'s doc comment).
                 if available {
                     self.scriptingSource.stop()
-                } else {
+                } else if Self.shouldEngageScriptingFallback(allowScriptingFallback: self.allowScriptingFallback,
+                                                              adapterAvailable: available) {
                     self.scriptingSource.start()
                 }
                 self.recompute()

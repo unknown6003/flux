@@ -38,6 +38,7 @@ final class SettingsStore: ObservableObject {
         self.notchShowInFullscreen = defaults.bool(forKey: Keys.notchShowInFullscreen)
         self.notchWidgetOrder = defaults.stringArray(forKey: Keys.notchWidgetOrder) ?? [WidgetID.nowPlaying.rawValue]
         self.notchNowPlayingEnabled = defaults.bool(forKey: Keys.notchNowPlayingEnabled)
+        self.notchNowPlayingAppleScriptFallbackEnabled = defaults.bool(forKey: Keys.notchNowPlayingAppleScriptFallbackEnabled)
         self.notchShelfEnabled = defaults.bool(forKey: Keys.notchShelfEnabled)
         self.notchShelfExpiryDays = defaults.double(forKey: Keys.notchShelfExpiryDays)
         self.notchCalendarEnabled = defaults.bool(forKey: Keys.notchCalendarEnabled)
@@ -54,6 +55,10 @@ final class SettingsStore: ObservableObject {
         self.notchTimersEnabled = defaults.bool(forKey: Keys.notchTimersEnabled)
         self.notchActivityTimerEnabled = defaults.bool(forKey: Keys.notchActivityTimerEnabled)
         self.notchLockScreenExperimentEnabled = defaults.bool(forKey: Keys.notchLockScreenExperimentEnabled)
+        self.notchLockScreenNowPlayingEnabled = defaults.bool(forKey: Keys.notchLockScreenNowPlayingEnabled)
+        self.notchLockScreenActivitiesEnabled = defaults.bool(forKey: Keys.notchLockScreenActivitiesEnabled)
+        self.notchLockScreenUnlockPillEnabled = defaults.bool(forKey: Keys.notchLockScreenUnlockPillEnabled)
+        self.notchLockScreenUnlockSoundEnabled = defaults.bool(forKey: Keys.notchLockScreenUnlockSoundEnabled)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
             carbonModifiers: UInt32(defaults.integer(forKey: Keys.notchHotkeyModifiers))
@@ -158,6 +163,22 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchNowPlayingEnabled, forKey: Keys.notchNowPlayingEnabled) }
     }
 
+    /// M9 (privacy audit): consent gate for `NowPlayingService`'s AppleScript
+    /// scripting-source failover — the safety net used only when the
+    /// preferred MediaRemote adapter is unavailable. Defaults to `false`:
+    /// the very first time Flux actually scripts Music or Spotify, macOS
+    /// shows an Automation permission prompt for that app, so this can't be
+    /// on by default without risking an unsolicited TCC prompt the moment
+    /// the adapter happens to be missing. Wired to
+    /// `NowPlayingService.allowScriptingFallback` by `AppDelegate`; while
+    /// this is `false`, the fallback never engages and the widget just shows
+    /// its ordinary empty state if the adapter can't be reached.
+    @Published var notchNowPlayingAppleScriptFallbackEnabled: Bool {
+        didSet {
+            defaults.set(notchNowPlayingAppleScriptFallbackEnabled, forKey: Keys.notchNowPlayingAppleScriptFallbackEnabled)
+        }
+    }
+
     /// Whether the File Shelf widget is enabled in the notch's cycle.
     @Published var notchShelfEnabled: Bool {
         didSet { defaults.set(notchShelfEnabled, forKey: Keys.notchShelfEnabled) }
@@ -196,7 +217,16 @@ final class SettingsStore: ObservableObject {
     }
 
     /// Whether `BluetoothMonitor` runs and posts `.bluetoothDevice` live
-    /// activities — same gating as `notchActivityBatteryEnabled`.
+    /// activities — same gating as `notchActivityBatteryEnabled`. Defaults to
+    /// `false` (M9 privacy audit): unlike every other Live Activity toggle,
+    /// turning this on has a real permission cost — `BluetoothMonitor.start()`
+    /// calls `IOBluetoothDevice.register(forConnectNotifications:)`, which
+    /// triggers macOS's Bluetooth TCC prompt on macOS 12+ the moment it's
+    /// first registered. A fresh install must show zero TCC prompts before
+    /// the user has touched anything, so this can't be on-by-default like
+    /// battery/calendar-event/timer are; the user opts in from Settings →
+    /// Notch → Live Activities, at which point seeing the system prompt is
+    /// expected rather than a surprise.
     @Published var notchActivityBluetoothEnabled: Bool {
         didSet { defaults.set(notchActivityBluetoothEnabled, forKey: Keys.notchActivityBluetoothEnabled) }
     }
@@ -215,9 +245,15 @@ final class SettingsStore: ObservableObject {
     /// shows in the notch — read by `NotchActivityRouter`, which also
     /// requires `notchEnabled` before actually starting `FocusMonitor`. Genuinely
     /// best-effort (see `FocusMonitor`'s own doc comment on the undocumented
-    /// on-disk state this reads) — defaults to `true` like every other Live
-    /// Activities toggle since it needs no permission and silently no-ops if
-    /// it can't read anything.
+    /// on-disk state this reads) and needs no TCC permission — but (M9
+    /// privacy audit) reading a system file under a protected location
+    /// without ever being asked isn't a zero-access posture just because
+    /// macOS itself doesn't gate it with a prompt, so this now defaults to
+    /// `false` rather than `true` like the rest of the on-by-default Live
+    /// Activities. Silently absent until the user opts in from Settings →
+    /// Notch → Live Activities, and — unchanged from before — a silent
+    /// no-op afterward on any setup where macOS won't let it read the file
+    /// at all.
     @Published var notchActivityFocusEnabled: Bool {
         didSet { defaults.set(notchActivityFocusEnabled, forKey: Keys.notchActivityFocusEnabled) }
     }
@@ -308,6 +344,46 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchLockScreenExperimentEnabled, forKey: Keys.notchLockScreenExperimentEnabled) }
     }
 
+    /// M9 (Alcove parity): gates the Now Playing media pill under the
+    /// lock-screen silhouette — read by `LockScreenPresenter`/
+    /// `LockScreenContentView`. Meaningless (never even observed) unless
+    /// `notchLockScreenExperimentEnabled` is also on; defaults to `true`
+    /// since — unlike the master experimental flag itself — this sub-toggle
+    /// carries no NEW undocumented-API risk of its own once the experiment
+    /// is already opted into, only a user-content-privacy consideration (a
+    /// passerby glancing at a locked Mac can see what's playing), the same
+    /// bar the rest of the on-by-default notch suite already clears.
+    @Published var notchLockScreenNowPlayingEnabled: Bool {
+        didSet { defaults.set(notchLockScreenNowPlayingEnabled, forKey: Keys.notchLockScreenNowPlayingEnabled) }
+    }
+
+    /// M9: gates the current live-activity caption pill (battery, Bluetooth,
+    /// calendar, timer, ...) under the lock-screen silhouette — same
+    /// default-`true`/master-flag-dependent reasoning as
+    /// `notchLockScreenNowPlayingEnabled`.
+    @Published var notchLockScreenActivitiesEnabled: Bool {
+        didSet { defaults.set(notchLockScreenActivitiesEnabled, forKey: Keys.notchLockScreenActivitiesEnabled) }
+    }
+
+    /// M9: shows a "Press any key to unlock" pill (the Alcove hero-shot
+    /// affordance) below the lock-screen silhouette. Defaults to `false`,
+    /// unlike the two toggles above — it's a purely decorative addition (macOS
+    /// already shows its own "press any key" hint on the real lock screen),
+    /// not something surfacing information the user would otherwise miss, so
+    /// there's less reason to default it on.
+    @Published var notchLockScreenUnlockPillEnabled: Bool {
+        didSet { defaults.set(notchLockScreenUnlockPillEnabled, forKey: Keys.notchLockScreenUnlockPillEnabled) }
+    }
+
+    /// M9: plays a short system sound (`NSSound(named: "Glass")`) the moment
+    /// `LockScreenPresenter` observes `"com.apple.screenIsUnlocked"`. Defaults
+    /// to `false` — an unsolicited sound on unlock is a bigger surprise than
+    /// a purely visual addition, so this stays opt-in even though the rest of
+    /// this experimental card's sub-toggles default on.
+    @Published var notchLockScreenUnlockSoundEnabled: Bool {
+        didSet { defaults.set(notchLockScreenUnlockSoundEnabled, forKey: Keys.notchLockScreenUnlockSoundEnabled) }
+    }
+
     /// The chord that toggles the notch panel from anywhere — independent of
     /// `hotkeyShortcut` (the menu-bar reveal toggle). User-recordable in Settings.
     @Published var notchHotkey: HotkeyShortcut {
@@ -342,13 +418,18 @@ final class SettingsStore: ObservableObject {
         Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue,
                                 WidgetID.mirror.rawValue, WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
         Keys.notchNowPlayingEnabled: true,
+        Keys.notchNowPlayingAppleScriptFallbackEnabled: false,
         Keys.notchShelfEnabled: true,
         Keys.notchShelfExpiryDays: 0.0,
         Keys.notchCalendarEnabled: true,
         Keys.notchActivityBatteryEnabled: true,
-        Keys.notchActivityBluetoothEnabled: true,
+        // M9 privacy audit: was `true` — see `notchActivityBluetoothEnabled`'s
+        // own doc comment for why this flipped to opt-in.
+        Keys.notchActivityBluetoothEnabled: false,
         Keys.notchActivityCalendarEventEnabled: true,
-        Keys.notchActivityFocusEnabled: true,
+        // M9 privacy audit: was `true` — see `notchActivityFocusEnabled`'s
+        // own doc comment for why this flipped to opt-in.
+        Keys.notchActivityFocusEnabled: false,
         Keys.notchActivityFocusStickyEnabled: false,
         Keys.notchDuoEnabled: false,
         Keys.notchHudEnabled: true,
@@ -358,6 +439,10 @@ final class SettingsStore: ObservableObject {
         Keys.notchTimersEnabled: true,
         Keys.notchActivityTimerEnabled: true,
         Keys.notchLockScreenExperimentEnabled: false,
+        Keys.notchLockScreenNowPlayingEnabled: true,
+        Keys.notchLockScreenActivitiesEnabled: true,
+        Keys.notchLockScreenUnlockPillEnabled: false,
+        Keys.notchLockScreenUnlockSoundEnabled: false,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]
@@ -379,6 +464,7 @@ final class SettingsStore: ObservableObject {
         static let notchShowInFullscreen = "flux.notch.showInFullscreen"
         static let notchWidgetOrder = "flux.notch.widgetOrder"
         static let notchNowPlayingEnabled = "flux.notch.nowPlayingEnabled"
+        static let notchNowPlayingAppleScriptFallbackEnabled = "flux.notch.nowPlaying.appleScriptFallback"
         static let notchShelfEnabled = "flux.notch.shelf.enabled"
         static let notchShelfExpiryDays = "flux.notch.shelf.expiryDays"
         static let notchCalendarEnabled = "flux.notch.calendar.enabled"
@@ -395,6 +481,10 @@ final class SettingsStore: ObservableObject {
         static let notchTimersEnabled = "flux.notch.timers.enabled"
         static let notchActivityTimerEnabled = "flux.notch.activities.timer"
         static let notchLockScreenExperimentEnabled = "flux.notch.lockScreenExperiment"
+        static let notchLockScreenNowPlayingEnabled = "flux.notch.lockScreen.nowPlaying"
+        static let notchLockScreenActivitiesEnabled = "flux.notch.lockScreen.activities"
+        static let notchLockScreenUnlockPillEnabled = "flux.notch.lockScreen.unlockPill"
+        static let notchLockScreenUnlockSoundEnabled = "flux.notch.lockScreen.unlockSound"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
     }

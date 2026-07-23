@@ -102,6 +102,10 @@ struct NotchTab: View {
                 .padding(.vertical, 11)
                 .padding(.horizontal, 14)
             RowDivider()
+            ToggleRow(title: "AppleScript fallback",
+                      subtitle: "Only needed if Now Playing stops updating: lets Flux fall back to controlling Music or Spotify via AppleScript when the built-in method is unavailable. Off by default — macOS will ask for Automation access the first time it's used.",
+                      isOn: $settings.notchNowPlayingAppleScriptFallbackEnabled)
+            RowDivider()
             ToggleRow(title: "Duo view",
                       subtitle: "Show Now Playing and Calendar side by side when Now Playing is expanded (needs Calendar enabled too).",
                       isOn: $settings.notchDuoEnabled)
@@ -150,7 +154,7 @@ struct NotchTab: View {
                       isOn: $settings.notchActivityBatteryEnabled)
             RowDivider()
             ToggleRow(title: "Bluetooth devices",
-                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect.",
+                      subtitle: "Show a wing when headphones or other Bluetooth accessories connect or disconnect. Off by default — turning this on lets macOS ask for Bluetooth access the first time.",
                       isOn: $settings.notchActivityBluetoothEnabled)
             RowDivider()
             ToggleRow(title: "Upcoming event alerts",
@@ -162,7 +166,7 @@ struct NotchTab: View {
                       isOn: $settings.notchActivityTimerEnabled)
             RowDivider()
             ToggleRow(title: "Focus",
-                      subtitle: "Show a wing when your Focus changes. Best-effort — relies on undocumented macOS state and may not work on every setup.",
+                      subtitle: "Show a wing when your Focus changes. Off by default — reads a system Focus file that macOS may protect; if it can't, this silently does nothing. Best-effort and may not work on every setup.",
                       isOn: $settings.notchActivityFocusEnabled)
             if settings.notchActivityFocusEnabled {
                 RowDivider()
@@ -215,11 +219,36 @@ struct NotchTab: View {
     /// what it leans on and why it could break); a future spike would join
     /// it here rather than being folded into `widgetsCard`/`liveActivitiesCard`
     /// as if it carried the same stability guarantee.
+    ///
+    /// M9 (Alcove parity): the master toggle now reveals four sub-toggles —
+    /// each independently gates one lock-screen sub-feature, but every one of
+    /// them is meaningless (and never even observed — see
+    /// `LockScreenPresenter.startObserving`) unless the master toggle above
+    /// them is also on, mirroring how `hudCard`'s intercept toggle nests
+    /// under its own master switch.
     private var experimentalCard: some View {
         FluxCard(title: "Experimental") {
             ToggleRow(title: "Show on the lock screen",
-                      subtitle: "⚠️ A minimal notch silhouette while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
+                      subtitle: "⚠️ Live media, notifications, and an optional unlock pill while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
                       isOn: $settings.notchLockScreenExperimentEnabled)
+            if settings.notchLockScreenExperimentEnabled {
+                RowDivider()
+                ToggleRow(title: "Now Playing",
+                          subtitle: "Show a media pill with artwork and title/artist while something's playing.",
+                          isOn: $settings.notchLockScreenNowPlayingEnabled)
+                RowDivider()
+                ToggleRow(title: "Notifications",
+                          subtitle: "Show the notch's current live activity (battery, Bluetooth, calendar, timer, ...) as a pill.",
+                          isOn: $settings.notchLockScreenActivitiesEnabled)
+                RowDivider()
+                ToggleRow(title: "Unlock pill",
+                          subtitle: "Show a \"Press any key to unlock\" pill below the notch.",
+                          isOn: $settings.notchLockScreenUnlockPillEnabled)
+                RowDivider()
+                ToggleRow(title: "Play a sound on unlock",
+                          subtitle: "Play a short sound the moment you unlock your Mac.",
+                          isOn: $settings.notchLockScreenUnlockSoundEnabled)
+            }
         }
     }
 

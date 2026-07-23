@@ -6,7 +6,7 @@ import Foundation
 /// `OffscreenRender`'s shared pipeline — for the notch panel, which (unlike
 /// Settings) has no window of its own to screenshot outside a real notch Mac.
 ///
-///   Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded]
+///   Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded|lockscreen]
 ///   Flux --snapshot-notch <dir> all [dark]   (batch mode — see `captureAll`)
 @MainActor
 enum NotchSnapshot {
@@ -22,7 +22,13 @@ enum NotchSnapshot {
         app.setActivationPolicy(.accessory)
         app.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
 
-        let (root, panelSize, tempShelfDirectory) = buildRoot(for: state)
+        // M9: `lockscreen` renders `LockScreenContentView` directly — a
+        // different fixture/size recipe than every other state (which all
+        // render `NotchRootView`) — so it's dispatched separately rather than
+        // taught to `buildRoot(for:)` itself.
+        let (root, panelSize, tempShelfDirectory) = state == "lockscreen"
+            ? buildLockScreenRoot()
+            : buildRoot(for: state)
 
         // M8 fix: `buildRoot` always creates a fresh temp `ShelfStore`
         // directory (whether or not `state` actually populates it) — calling
@@ -73,19 +79,25 @@ enum NotchSnapshot {
             ("expanded-clipboard", "expanded-clipboard.png"),
             ("expanded-mirror", "expanded-mirror.png"),
             ("expanded-duo", "expanded-duo.png"),
+            ("lockscreen", "lockscreen.png"),
         ]
 
         var allSucceeded = true
-        // M8 fix: every `buildRoot(for:)` call below creates its own fresh
-        // temp `ShelfStore` directory (used or not, depending on `state`) —
-        // with 11 states rendered per run, that used to leak 11 directories
-        // under the system temp dir on every CI run of this step (and every
-        // local one). Collected here and removed in one pass right before
-        // this function's own single `exit()` call, since nothing after
-        // `exit()` would ever run.
+        // M8 fix: every `buildRoot(for:)`/`buildLockScreenRoot()` call below
+        // creates its own fresh temp directory (used or not, depending on
+        // `state`) — with a dozen states rendered per run, that used to leak
+        // one directory per state under the system temp dir on every CI run
+        // of this step (and every local one). Collected here and removed in
+        // one pass right before this function's own single `exit()` call,
+        // since nothing after `exit()` would ever run.
         var tempShelfDirectories: [URL] = []
         for (state, file) in states {
-            let (root, panelSize, tempShelfDirectory) = buildRoot(for: state)
+            // M9: `lockscreen` renders `LockScreenContentView` directly —
+            // see `capture(to:dark:state:)`'s identical dispatch above for
+            // why this can't just be another `buildRoot(for:)` case.
+            let (root, panelSize, tempShelfDirectory) = state == "lockscreen"
+                ? buildLockScreenRoot()
+                : buildRoot(for: state)
             tempShelfDirectories.append(tempShelfDirectory)
             let path = (dir as NSString).appendingPathComponent(file)
             // Transparent (not opaque), matching `capture(to:dark:state:)`
@@ -257,6 +269,50 @@ enum NotchSnapshot {
         let snapshotRoot = root.environment(\.isSnapshotRender, true)
         let panelSize = NotchMetrics.panelBounds(for: notchSize.width)
         return (AnyView(snapshotRoot), panelSize, tempShelfDirectory)
+    }
+
+    /// M9 (Alcove lock-screen parity): builds `LockScreenContentView` at a
+    /// representative fixed size on the transparent background, with a
+    /// fixture Now Playing track, a fixture battery live activity, and the
+    /// unlock pill forced on — reviewing all three pill kinds stacked at
+    /// once in one CI artifact, the same reasoning `expanded-duo` already
+    /// applies to reviewing two widgets side by side. Deliberately separate
+    /// from `buildRoot(for:)` (which every other state shares): that
+    /// function's product is always `NotchRootView` wrapping a full
+    /// `NotchWidgetRegistry`/`NotchViewModel`, neither of which
+    /// `LockScreenContentView` needs at all — it only ever takes a
+    /// `NowPlayingService` and a `LiveActivityCenter` directly, mirroring
+    /// what `LockScreenPresenter` itself is now wired with (see that type's
+    /// own doc comment on the M9 dependency-injection change).
+    ///
+    /// Returns a `URL` for signature parity with `buildRoot(for:)` (so both
+    /// share `captureAll`'s single cleanup loop) even though nothing here
+    /// ever touches a `ShelfStore` — `makeTempShelfDirectory()` only computes
+    /// a path, it doesn't create anything on disk, so there is nothing for
+    /// the caller's `removeItem` to actually find (and its `try?` silently
+    /// no-ops on that).
+    private static func buildLockScreenRoot() -> (AnyView, CGSize, URL) {
+        let nowPlayingService = NowPlayingService()
+        seedFixtureState(into: nowPlayingService)
+
+        let activities = LiveActivityCenter()
+        activities.post(LiveActivity(
+            kind: .battery,
+            leading: .icon(systemName: "battery.75.bolt"),
+            trailing: .text("76%"),
+            duration: nil,
+            priority: 200))
+
+        let content = LockScreenContentView(
+            notchSize: notchSize,
+            nowPlaying: nowPlayingService,
+            activities: activities,
+            allowNowPlaying: true,
+            allowActivities: true,
+            showUnlockPill: true)
+
+        let panelSize = CGSize(width: 280, height: notchSize.height + 140)
+        return (AnyView(content), panelSize, makeTempShelfDirectory())
     }
 
     /// Decodes the checked-in `streamFullSnapshotJSON` fixture (see
