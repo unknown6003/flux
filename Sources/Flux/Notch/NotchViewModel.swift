@@ -62,6 +62,41 @@ final class NotchViewModel: ObservableObject {
     /// keeping it a purely declarative consumer.
     @Published var duoActive = false
 
+    /// Whether the most recent state transition SHRANK the visible shape
+    /// (e.g. `.expanded → .activity` or anything → `.collapsed`). The view's
+    /// `.animation(_:value:)` re-evaluates its animation against the freshly
+    /// published state, so keying the spring choice on the *target* alone
+    /// mislabels `.expanded → .activity` as a growth (it targets `.activity`,
+    /// not `.collapsed`) and plays the overshoot spring on a shrink. Set in
+    /// `transition(to:)` before `state` publishes so the view reads a
+    /// consistent pair.
+    @Published private(set) var lastTransitionWasShrink = false
+
+    /// Relative footprint order of the three states, for shrink/growth
+    /// classification in `transition(to:)`. Pure and selftest-covered.
+    static func footprintRank(_ state: NotchState) -> Int {
+        switch state {
+        case .collapsed: return 0
+        case .activity: return 1
+        case .expanded: return 2
+        }
+    }
+
+    /// Whether `old → new` shrinks the visible shape. Rank covers the
+    /// cross-tier cases; the expanded→expanded tie (widget→widget swipes)
+    /// compares the two widgets' actual panel heights, so cycling from a
+    /// taller widget (Calendar, 190) to a shorter one (Shelf, 150) settles
+    /// on the collapse spring instead of overshooting. Pure and
+    /// selftest-covered.
+    static func isShrink(from old: NotchState, to new: NotchState) -> Bool {
+        let oldRank = footprintRank(old), newRank = footprintRank(new)
+        if newRank != oldRank { return newRank < oldRank }
+        if case .expanded(let oldID) = old, case .expanded(let newID) = new {
+            return NotchMetrics.expandedHeight(for: newID) < NotchMetrics.expandedHeight(for: oldID)
+        }
+        return false
+    }
+
     /// Which gesture opens the notch. Switching to `.click` cancels any
     /// in-flight hover-intent delay so a stale timer can't fire an open/close
     /// after the mode that scheduled it no longer applies.
@@ -445,6 +480,7 @@ final class NotchViewModel: ObservableObject {
             registry.widget(for: oldID)?.didDismiss()
         }
 
+        lastTransitionWasShrink = Self.isShrink(from: state, to: newState)
         state = newState
 
         if newState == .collapsed {

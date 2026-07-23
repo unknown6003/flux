@@ -148,15 +148,7 @@ private struct MirrorExpandedView: View {
     }
 
     private var unavailableState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "video.slash")
-                .font(.system(size: 20))
-                .foregroundStyle(Color.white.opacity(0.3))
-            Text("No camera found")
-                .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.55))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        WidgetEmptyStateView(icon: "video.slash", message: "No camera found")
     }
 }
 

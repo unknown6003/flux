@@ -89,15 +89,7 @@ private struct ClipboardExpandedView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "doc.on.clipboard")
-                .font(.system(size: 20))
-                .foregroundStyle(Color.white.opacity(0.3))
-            Text("Nothing copied yet")
-                .font(.caption)
-                .foregroundStyle(Color.white.opacity(0.55))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        WidgetEmptyStateView(icon: "doc.on.clipboard", message: "Nothing copied yet")
     }
 
     /// Alcove refit (M7): this panel's total height budget is 190, leaving
