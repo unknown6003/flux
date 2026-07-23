@@ -91,7 +91,7 @@ final class FocusMonitor {
 
     /// `directory` is injectable purely for the (currently unused, but kept
     /// for parity with every other monitor's constructor-seam convention —
-    /// `PowerMonitor`, `BluetoothMonitor`, etc.) possibility of pointing this
+    /// `PowerMonitor`, `DeviceMonitor`, etc.) possibility of pointing this
     /// at a fixture directory in a future test; `--selftest` today only
     /// exercises the pure `parse(assertionsData:configData:)` core below, no
     /// real directory watch.

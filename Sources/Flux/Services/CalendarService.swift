@@ -104,7 +104,7 @@ final class CalendarService: ObservableObject {
 
     init(eventStore: EKEventStore? = nil) {
         // `?? EKEventStore()` constructed here in the body — mirroring
-        // `NowPlayingService`'s sources and `PowerMonitor`/`BluetoothMonitor`
+        // `NowPlayingService`'s sources and `PowerMonitor`/`DeviceMonitor`
         // being handed to `NotchActivityRouter` the same way — for
         // consistency with this codebase's `@MainActor`-isolated-type
         // convention, even though `EKEventStore` itself isn't one.

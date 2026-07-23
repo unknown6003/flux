@@ -7,6 +7,7 @@ import EventKit
 import AVFoundation
 import CoreGraphics
 import ApplicationServices
+import CoreAudio
 
 /// A minimal `NotchWidget` stub used only by the notch section of this test —
 /// counts `willPresent`/`didDismiss` calls so the state machine's "exactly
@@ -1091,20 +1092,84 @@ enum SelfTest {
                   "PowerMonitor: no power-source change means no event")
         }
 
-        // --- M3: BluetoothMonitor.isDuplicate — the reconnect-storm dedupe
-        // window, as a pure predicate over a plain address→timestamp map ---
+        // --- M10: DeviceMonitor.isDuplicate — the reconnect-storm + cross-
+        // source dedupe window, now keyed by device NAME (CoreAudio never
+        // exposes a BT address, so name is the only key both sources share) ---
         do {
             let t0 = Date()
             var lastEventAt: [String: Date] = [:]
-            check(!BluetoothMonitor.isDuplicate(address: "AA", now: t0, lastEventAt: lastEventAt),
-                  "BluetoothMonitor: a device's first event is never a duplicate")
-            lastEventAt["AA"] = t0
-            check(BluetoothMonitor.isDuplicate(address: "AA", now: t0.addingTimeInterval(2), lastEventAt: lastEventAt),
-                  "BluetoothMonitor: a same-device event 2s later falls inside the 5s dedupe window")
-            check(!BluetoothMonitor.isDuplicate(address: "AA", now: t0.addingTimeInterval(6), lastEventAt: lastEventAt),
-                  "BluetoothMonitor: a same-device event past 5s is treated as new")
-            check(!BluetoothMonitor.isDuplicate(address: "BB", now: t0.addingTimeInterval(1), lastEventAt: lastEventAt),
-                  "BluetoothMonitor: a different device's address is never deduped by another's window")
+            check(!DeviceMonitor.isDuplicate(name: "AirPods", now: t0, lastEventAt: lastEventAt),
+                  "DeviceMonitor: a device's first event is never a duplicate")
+            lastEventAt["AirPods"] = t0
+            check(DeviceMonitor.isDuplicate(name: "AirPods", now: t0.addingTimeInterval(2), lastEventAt: lastEventAt),
+                  "DeviceMonitor: a same-name event 2s later falls inside the 5s dedupe window (collapses the IOKit+CoreAudio double-report)")
+            check(!DeviceMonitor.isDuplicate(name: "AirPods", now: t0.addingTimeInterval(6), lastEventAt: lastEventAt),
+                  "DeviceMonitor: a same-name event past 5s is treated as new")
+            check(!DeviceMonitor.isDuplicate(name: "Magic Mouse", now: t0.addingTimeInterval(1), lastEventAt: lastEventAt),
+                  "DeviceMonitor: a different device's name is never deduped by another's window")
+        }
+
+        // --- M10: DeviceMonitor.isBluetoothTransport — the transport filter
+        // that surfaces only Bluetooth accessories (excludes USB/internal) ---
+        check(DeviceMonitor.isBluetoothTransport("Bluetooth"),
+              "DeviceMonitor: 'Bluetooth' transport is surfaced")
+        check(DeviceMonitor.isBluetoothTransport("Bluetooth Low Energy"),
+              "DeviceMonitor: 'Bluetooth Low Energy' transport is surfaced")
+        check(!DeviceMonitor.isBluetoothTransport("USB"),
+              "DeviceMonitor: a USB transport is filtered out — a wired keyboard/mouse is not a BT wing")
+        check(!DeviceMonitor.isBluetoothTransport("SPI"),
+              "DeviceMonitor: an internal SPI transport (built-in keyboard/trackpad) is filtered out")
+        check(DeviceMonitor.isBluetoothTransport(kAudioDeviceTransportTypeBluetooth),
+              "DeviceMonitor: the CoreAudio Bluetooth transport type is surfaced")
+        check(DeviceMonitor.isBluetoothTransport(kAudioDeviceTransportTypeBluetoothLE),
+              "DeviceMonitor: the CoreAudio Bluetooth LE transport type is surfaced")
+        check(!DeviceMonitor.isBluetoothTransport(kAudioDeviceTransportTypeUSB),
+              "DeviceMonitor: the CoreAudio USB transport type is filtered out")
+
+        // --- M10: DeviceMonitor.shouldEmitEvent — the baseline-vs-event +
+        // filtering pure decision (initial-drain baseline, built-in, transport) ---
+        check(!DeviceMonitor.shouldEmitEvent(isInitialDrain: true, transport: "Bluetooth", isBuiltIn: false),
+              "DeviceMonitor: an already-connected device drained at registration is baseline, never a startup wing")
+        check(DeviceMonitor.shouldEmitEvent(isInitialDrain: false, transport: "Bluetooth", isBuiltIn: false),
+              "DeviceMonitor: a fresh Bluetooth accessory (not initial drain, not built-in) emits an event")
+        check(!DeviceMonitor.shouldEmitEvent(isInitialDrain: false, transport: "Bluetooth", isBuiltIn: true),
+              "DeviceMonitor: a Built-In device (Apple internal keyboard) never emits")
+        check(!DeviceMonitor.shouldEmitEvent(isInitialDrain: false, transport: "USB", isBuiltIn: false),
+              "DeviceMonitor: a USB (wired) accessory never emits — transport filter")
+        check(!DeviceMonitor.shouldEmitEvent(isInitialDrain: false, transport: nil, isBuiltIn: false),
+              "DeviceMonitor: an entry with no readable Transport never emits (defensive)")
+
+        // --- M10: DeviceMonitor.category — the name + HID-usage-pairs heuristic ---
+        check(DeviceMonitor.category(name: "Ammar's AirPods Pro", usagePairs: [(page: 0x0C, usage: 0x01)]) == .audio,
+              "DeviceMonitor: an AirPods name (with only consumer usages) maps to .audio")
+        check(DeviceMonitor.category(name: "Sony WH-1000XM4", usagePairs: []) == .audio,
+              "DeviceMonitor: an audio-hinted name with no usage pairs maps to .audio")
+        check(DeviceMonitor.category(name: "Magic Keyboard", usagePairs: [(page: 0x01, usage: 0x06)]) == .peripheral,
+              "DeviceMonitor: a Generic-Desktop Keyboard usage maps to .peripheral")
+        check(DeviceMonitor.category(name: "Magic Mouse", usagePairs: [(page: 0x01, usage: 0x02)]) == .peripheral,
+              "DeviceMonitor: a Generic-Desktop Mouse usage maps to .peripheral")
+        check(DeviceMonitor.category(name: "Media Keyboard", usagePairs: [(page: 0x01, usage: 0x06), (page: 0x0C, usage: 0x01)]) == .peripheral,
+              "DeviceMonitor: a keyboard that also exposes consumer media keys still maps to .peripheral (GD usage wins)")
+        check(DeviceMonitor.category(name: "Some Gadget", usagePairs: [(page: 0x0C, usage: 0x01)]) == .audio,
+              "DeviceMonitor: a consumer-control-only device with no name hint maps to .audio (headset/remote surface)")
+        check(DeviceMonitor.category(name: "Xbox Wireless Controller", usagePairs: []) == .peripheral,
+              "DeviceMonitor: a controller-hinted name (no usage pairs) maps to .peripheral")
+        check(DeviceMonitor.category(name: "Unknown Thing", usagePairs: []) == .other,
+              "DeviceMonitor: an unclassifiable device falls back to .other")
+
+        // --- M10: DeviceMonitor construction + start/stop is safe headless.
+        // CI has no BT hardware; IOKit notification-port registration and the
+        // CoreAudio listener must arm and tear down without crashing on a
+        // headless runner. This is a real start()/stop() (unlike the router
+        // blocks, which pass `startsMonitors: false`), so it exercises the
+        // actual IOKit/CoreAudio interop end to end. ---
+        do {
+            let dm = DeviceMonitor()
+            dm.start()
+            dm.start() // idempotent — second start is a no-op
+            dm.stop()
+            dm.stop()  // idempotent — second stop is a no-op
+            check(true, "DeviceMonitor: start()/stop() (and their idempotent repeats) are safe on a headless runner with no BT hardware")
         }
 
         // --- M3: NotchActivityRouter — SF Symbol choice helpers ---
@@ -1128,22 +1193,23 @@ enum SelfTest {
               "NotchActivityRouter: a peripheral-category device whose name hints at no specific kind falls back to a generic accessory glyph, not headphones")
 
         // --- M3: NotchActivityRouter — event-to-LiveActivity translation and
-        // settings gating, with real PowerMonitor/BluetoothMonitor instances
+        // settings gating, with real PowerMonitor/DeviceMonitor instances
         // standing in only as event sources (their .events subjects are fed
-        // directly here — no real IOKit/IOBluetooth state is exercised) ---
+        // directly here — no real IOKit/CoreAudio state is exercised) ---
         do {
             let routerSuiteName = "flux.selftest.router"
             let routerSuite = UserDefaults(suiteName: routerSuiteName)!
             routerSuite.removePersistentDomain(forName: routerSuiteName)
             let routerSettings = SettingsStore(defaults: routerSuite)
-            // M9 privacy audit: Bluetooth now defaults to OFF — opt in
-            // explicitly so this block can keep exercising the
-            // BluetoothEvent -> LiveActivity translation logic below.
+            // M10: Bluetooth is permission-free again and defaults to ON — set
+            // explicitly anyway so this block's intent (exercise the
+            // BluetoothEvent -> LiveActivity translation below) is unambiguous
+            // regardless of the default.
             routerSettings.notchActivityBluetoothEnabled = true
             let routerActivities = LiveActivityCenter()
             let routerArranger = MenuBarArranger()
             let testPower = PowerMonitor()
-            let testBluetooth = BluetoothMonitor()
+            let testBluetooth = DeviceMonitor()
             let testCalendar = CalendarService()
             let testPermissions = PermissionCenter()
             let testTimers = TimerService()
@@ -1156,7 +1222,7 @@ enum SelfTest {
             // `testBluetooth` purely by feeding synthetic events straight
             // through their `.events` subjects (below); it must never let the
             // router's real settings-driven lifecycle call `start()` on
-            // either monitor, which would register real IOKit/IOBluetooth
+            // either monitor, which would register real IOKit/CoreAudio
             // run-loop sources and notifications on the CI runner (flaky and
             // slow in a headless environment with no real battery/Bluetooth
             // hardware to speak of). Same reasoning extends `testCalendar`/
@@ -2479,19 +2545,22 @@ enum SelfTest {
             UserDefaults.standard.removePersistentDomain(forName: m7SettingsSuiteName)
         }
 
-        // --- M9: SettingsStore — the privacy-audit defaults: Bluetooth and
-        // Focus flipped from on-by-default to opt-in, and the new AppleScript
-        // fallback consent toggle defaults off too. Fresh-install launch
-        // must produce zero TCC prompts, so every one of these three has to
-        // read `false` on a brand-new suite before anything else runs. ---
+        // --- M9/M10: SettingsStore — the privacy-audit defaults. Focus and
+        // the AppleScript fallback stay opt-in (they still read a protected
+        // file / trigger an Automation prompt respectively), so both must read
+        // `false` on a brand-new suite. Bluetooth, however, was RESTORED to
+        // on-by-default in M10: its old TCC cost is gone now that the
+        // permission-free `DeviceMonitor` (IOKit matching notifications +
+        // CoreAudio) replaced the IOBluetooth monitor, so a fresh install
+        // still produces zero TCC prompts with it ON. ---
         do {
             let m9SettingsSuiteName = "flux.selftest.m9settings"
             UserDefaults.standard.removePersistentDomain(forName: m9SettingsSuiteName)
             let m9Settings = SettingsStore(defaults: UserDefaults(suiteName: m9SettingsSuiteName)!)
-            check(!m9Settings.notchActivityBluetoothEnabled,
-                  "SettingsStore: notchActivityBluetoothEnabled defaults to false (M9) — registering for Bluetooth notifications triggers the TCC prompt, so this is opt-in")
+            check(m9Settings.notchActivityBluetoothEnabled,
+                  "SettingsStore: notchActivityBluetoothEnabled defaults to true (M10) — DeviceMonitor is permission-free (no Bluetooth TCC prompt), so there's no cost to gate behind opt-in and the wing is restored for everyone")
             check(!m9Settings.notchActivityFocusEnabled,
-                  "SettingsStore: notchActivityFocusEnabled defaults to false (M9)")
+                  "SettingsStore: notchActivityFocusEnabled defaults to false (M9) — still reads a protected Focus file, so stays opt-in")
             check(!m9Settings.notchNowPlayingAppleScriptFallbackEnabled,
                   "SettingsStore: notchNowPlayingAppleScriptFallbackEnabled defaults to false (M9) — scripting Music/Spotify triggers an Automation prompt, so this is opt-in")
             UserDefaults.standard.removePersistentDomain(forName: m9SettingsSuiteName)
