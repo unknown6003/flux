@@ -163,8 +163,13 @@ private struct TimersExpandedView: View {
     @State private var customMinutes = 10
 
     var body: some View {
+        // No "Timers" title row: unlike Shelf/Clipboard headers (which carry
+        // the Clear All action), it was purely decorative — and its ~19pt
+        // (text + row spacing) is exactly what the running list needs so the
+        // first timer's countdown renders clear of the bottom scroll fade
+        // (snapshot-verified: with the header, the countdown sat entirely
+        // inside the fade zone and was invisible without scrolling).
         VStack(alignment: .leading, spacing: NotchDesign.rowSpacing) {
-            header
             presetRow
             customRow
             // A plain `Divider()` leans on the system separator color, which
@@ -180,12 +185,6 @@ private struct TimersExpandedView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private var header: some View {
-        Text("Timers")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color.white.opacity(0.7))
     }
 
     // MARK: Start controls
