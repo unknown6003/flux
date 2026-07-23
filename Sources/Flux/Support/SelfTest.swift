@@ -1092,22 +1092,53 @@ enum SelfTest {
                   "PowerMonitor: no power-source change means no event")
         }
 
-        // --- M10: DeviceMonitor.isDuplicate — the reconnect-storm + cross-
-        // source dedupe window, now keyed by device NAME (CoreAudio never
-        // exposes a BT address, so name is the only key both sources share) ---
+        // --- M10 review: DeviceMonitor.shouldEmitConnect/shouldEmitDisconnect
+        // — the session-scoped connected-set dedupe that replaced the pure
+        // 5s time-window (which could double-post a connect when IOKit and
+        // CoreAudio report the same device more than 5s apart). The 5s
+        // window still exists, now scoped to ONLY disconnect→reconnect
+        // flapping, its original purpose. Keyed by device NAME (CoreAudio
+        // never exposes a BT address, so name is the only key both sources
+        // share) ---
         do {
             let t0 = Date()
-            var lastEventAt: [String: Date] = [:]
-            check(!DeviceMonitor.isDuplicate(name: "AirPods", now: t0, lastEventAt: lastEventAt),
-                  "DeviceMonitor: a device's first event is never a duplicate")
-            lastEventAt["AirPods"] = t0
-            check(DeviceMonitor.isDuplicate(name: "AirPods", now: t0.addingTimeInterval(2), lastEventAt: lastEventAt),
-                  "DeviceMonitor: a same-name event 2s later falls inside the 5s dedupe window (collapses the IOKit+CoreAudio double-report)")
-            check(!DeviceMonitor.isDuplicate(name: "AirPods", now: t0.addingTimeInterval(6), lastEventAt: lastEventAt),
-                  "DeviceMonitor: a same-name event past 5s is treated as new")
-            check(!DeviceMonitor.isDuplicate(name: "Magic Mouse", now: t0.addingTimeInterval(1), lastEventAt: lastEventAt),
-                  "DeviceMonitor: a different device's name is never deduped by another's window")
+            var connectedNames: Set<String> = []
+            var lastDisconnectAt: [String: Date] = [:]
+
+            check(DeviceMonitor.shouldEmitConnect(name: "AirPods", now: t0, connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt),
+                  "DeviceMonitor: a device's first connect is never absorbed")
+            connectedNames.insert("AirPods")
+
+            check(!DeviceMonitor.shouldEmitConnect(name: "AirPods", now: t0.addingTimeInterval(30), connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt),
+                  "DeviceMonitor: a connect report for an already-connected name is absorbed regardless of elapsed time (IOKit+CoreAudio reporting the same live device far apart)")
+
+            check(DeviceMonitor.shouldEmitDisconnect(name: "AirPods", connectedNames: connectedNames),
+                  "DeviceMonitor: a disconnect for a currently-connected name emits")
+            check(!DeviceMonitor.shouldEmitDisconnect(name: "Magic Mouse", connectedNames: connectedNames),
+                  "DeviceMonitor: a disconnect for a name that's not currently connected is absorbed (cross-source double disconnect)")
+
+            connectedNames.remove("AirPods")
+            lastDisconnectAt["AirPods"] = t0.addingTimeInterval(30)
+
+            check(!DeviceMonitor.shouldEmitConnect(name: "AirPods", now: t0.addingTimeInterval(32), connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt),
+                  "DeviceMonitor: a reconnect within 5s of a disconnect is absorbed — the reconnect-storm case")
+            check(DeviceMonitor.shouldEmitConnect(name: "AirPods", now: t0.addingTimeInterval(37), connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt),
+                  "DeviceMonitor: a reconnect more than 5s after a disconnect is treated as a genuinely new connect")
+            check(DeviceMonitor.shouldEmitConnect(name: "Magic Mouse", now: t0.addingTimeInterval(30), connectedNames: connectedNames, lastDisconnectAt: lastDisconnectAt),
+                  "DeviceMonitor: a different device's name is never absorbed by another's connected/disconnect state")
         }
+
+        // --- M10 review: DeviceMonitor.isTrackableAccessory — the shared
+        // Bluetooth+non-built-in test behind both the emit decision and the
+        // connect-time device-info cache population ---
+        check(DeviceMonitor.isTrackableAccessory(transport: "Bluetooth", isBuiltIn: false),
+              "DeviceMonitor: a non-built-in Bluetooth entry is trackable")
+        check(!DeviceMonitor.isTrackableAccessory(transport: "Bluetooth", isBuiltIn: true),
+              "DeviceMonitor: a Built-In device is never trackable, even over Bluetooth")
+        check(!DeviceMonitor.isTrackableAccessory(transport: "USB", isBuiltIn: false),
+              "DeviceMonitor: a USB (wired) entry is never trackable")
+        check(!DeviceMonitor.isTrackableAccessory(transport: nil, isBuiltIn: false),
+              "DeviceMonitor: an entry with no readable Transport is never trackable (defensive)")
 
         // --- M10: DeviceMonitor.isBluetoothTransport — the transport filter
         // that surfaces only Bluetooth accessories (excludes USB/internal) ---
