@@ -298,7 +298,7 @@ enum NotchSnapshot {
         let activities = LiveActivityCenter()
         activities.post(LiveActivity(
             kind: .battery,
-            leading: .icon(systemName: "battery.75.bolt"),
+            leading: .icon(systemName: "battery.100.bolt"),
             trailing: .text("76%"),
             duration: nil,
             priority: 200))

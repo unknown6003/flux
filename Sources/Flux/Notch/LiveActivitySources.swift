@@ -243,14 +243,19 @@ final class NotchActivityRouter {
 
     /// SF Symbols' battery glyphs only ship in 100/75/50/25/0 steps — this
     /// rounds `percent` DOWN to the nearest one (never up: a 74% battery
-    /// showing the 75% glyph would visually overstate the charge) and swaps
-    /// in the `.bolt` variant while charging, matching how the system's own
-    /// menu-bar battery item reads.
+    /// showing the 75% glyph would visually overstate the charge).
+    ///
+    /// Charging is ALWAYS `battery.100.bolt`: SF Symbols ships the `.bolt`
+    /// variant only at the 100 step — `battery.75.bolt` etc. simply don't
+    /// exist, and `Image(systemName:)` renders NOTHING for an unknown name
+    /// (caught via a lock-screen snapshot where a charging wing's icon was
+    /// silently blank). The bolt is what communicates "charging"; the percent
+    /// lives in the wing's trailing text, so no level information is lost.
     static func batterySymbol(percent: Int, charging: Bool) -> String {
+        guard !charging else { return "battery.100.bolt" }
         let clamped = max(0, min(100, percent))
         let step = (clamped / 25) * 25
-        let base = "battery.\(step)"
-        return charging ? "\(base).bolt" : base
+        return "battery.\(step)"
     }
 
     // MARK: - Bluetooth

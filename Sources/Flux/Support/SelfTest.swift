@@ -1112,8 +1112,8 @@ enum SelfTest {
               "NotchActivityRouter: a full battery maps to battery.100")
         check(NotchActivityRouter.batterySymbol(percent: 74, charging: false) == "battery.50",
               "NotchActivityRouter: percent rounds DOWN to the nearest SF Symbol step (74% -> 50, never up to 75)")
-        check(NotchActivityRouter.batterySymbol(percent: 50, charging: true) == "battery.50.bolt",
-              "NotchActivityRouter: charging adds the .bolt variant")
+        check(NotchActivityRouter.batterySymbol(percent: 50, charging: true) == "battery.100.bolt",
+              "NotchActivityRouter: charging always uses battery.100.bolt (the only .bolt step SF Symbols ships)")
         check(NotchActivityRouter.deviceSymbol(name: "Ammar's AirPods Pro", category: .audio) == "airpodspro",
               "NotchActivityRouter: AirPods-named devices map to the airpodspro glyph")
         check(NotchActivityRouter.deviceSymbol(name: "Sony WH-1000XM4", category: .audio) == "headphones",
