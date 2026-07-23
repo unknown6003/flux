@@ -321,10 +321,9 @@ final class LockScreenPresenter {
 
     /// M9 (lock-screen Now Playing freshness): the media pill only ever
     /// re-renders in response to `NowPlayingService.state` actually
-    /// changing, and `state` only changes while the service is `isActive`
-    /// (see `NowPlayingService.setActive`'s own doc comment on why the
-    /// scripting poll — the one piece of this pipeline that costs anything
-    /// while idle — is gated on it). Nothing else keeps that flag on while
+    /// changing, and the adapter source only starts once something calls
+    /// `setActive(true)` (see `NowPlayingService.setActive`'s own doc
+    /// comment). Nothing else turns the service on while
     /// the screen is locked: the Now Playing widget only calls `setActive`
     /// from its own presentation lifecycle, and there is no widget
     /// presented at all on the lock screen. Without this, the media pill
@@ -346,10 +345,10 @@ final class LockScreenPresenter {
     /// and reclaim ownership until the NEXT lock — `NowPlayingService`
     /// tracks a single `isActive` bool, not a set of owners, so there is no
     /// richer signal to observe here. That's an acceptable trade for a
-    /// permission-free, privacy-neutral adapter call (the AppleScript
-    /// scripting consent gate lives inside the service itself, entirely
-    /// unaffected by this) rather than real reference counting for a
-    /// best-effort lock-screen convenience feature.
+    /// permission-free, privacy-neutral adapter call (the adapter is the
+    /// service's ONLY source since M11 removed the AppleScript fallback)
+    /// rather than real reference counting for a best-effort lock-screen
+    /// convenience feature.
     private func activateNowPlayingForLockIfNeeded() {
         guard Self.shouldActivateForLock(serviceActive: nowPlaying.isActive,
                                           masterEnabled: isEnabled,
