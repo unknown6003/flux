@@ -52,7 +52,7 @@ struct LiveActivity: Identifiable, Equatable {
     /// until explicitly dismissed (e.g. a running timer).
     let duration: TimeInterval?
     /// Higher wins when multiple activities are queued. Suggested bands:
-    /// HUD (volume/brightness) 300 > battery 200 > menu-bar overflow 150 >
+    /// HUD (volume) 300 > battery 200 > menu-bar overflow 150 >
     /// bluetooth 100.
     let priority: Int
     /// Defaults to `.normal` so every pre-M3 call site (Now Playing, Shelf,
