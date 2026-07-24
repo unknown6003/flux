@@ -1,10 +1,9 @@
 import Foundation
 
-/// A single, source-agnostic snapshot of "what's playing" — produced by either
+/// A single snapshot of "what's playing" — produced by
 /// `MediaRemoteAdapterSource` (MediaRemote via the vendored perl+framework
-/// adapter, works for any app) or `ScriptingNowPlayingSource` (AppleScript,
-/// Music/Spotify only), and consumed by `NowPlayingService` and the Now
-/// Playing widget. `elapsed`/`timestamp` are a paired sample — see
+/// adapter, works for any app) and consumed by `NowPlayingService` and the
+/// Now Playing widget. `elapsed`/`timestamp` are a paired sample — see
 /// `NowPlayingService.currentElapsed(at:)` for extrapolating "now".
 struct NowPlayingState: Equatable {
     var title: String
@@ -17,20 +16,19 @@ struct NowPlayingState: Equatable {
     var elapsed: TimeInterval?
     var isPlaying: Bool
     /// Playback speed multiplier as of `timestamp` (1.0 = normal speed; 0.5x/
-    /// 2x/etc. for slowed-down or sped-up audiobooks/podcasts/videos).
-    /// `nil` when the source doesn't report one (the AppleScript fallback
-    /// never does) — `NowPlayingService.currentElapsed(at:)` treats that the
-    /// same as `1.0`. Defaults to `nil` so existing memberwise-init call
-    /// sites that predate this field keep compiling unchanged.
+    /// 2x/etc. for slowed-down or sped-up audiobooks/podcasts/videos). `nil`
+    /// when the source doesn't report one — `NowPlayingService.
+    /// currentElapsed(at:)` treats that the same as `1.0`. Defaults to `nil`
+    /// so existing memberwise-init call sites that predate this field keep
+    /// compiling unchanged.
     var playbackRate: Double? = nil
     /// Raw, undecoded image bytes (JPEG/PNG/TIFF — whatever the source app
     /// reports). Downsampling to a display-ready `NSImage` is
     /// `NowPlayingService`'s job, not this layer's.
     var artworkData: Data?
     var sourceBundleID: String?
-    /// When `elapsed` was sampled. For the MediaRemote adapter this is the
-    /// adapter's own `timestamp` field; for the AppleScript source it's the
-    /// moment the poll ran (AppleScript has no equivalent field).
+    /// When `elapsed` was sampled — the MediaRemote adapter's own
+    /// `timestamp` field.
     var timestamp: Date
 }
 

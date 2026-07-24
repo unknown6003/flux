@@ -3,11 +3,12 @@ import Combine
 import ImageIO
 
 /// The one thing the Now Playing widget (and anything else in Notch/) talks
-/// to. Composes `MediaRemoteAdapterSource` (preferred — works with any app,
-/// reads *and* controls playback) and `ScriptingNowPlayingSource` (fallback —
-/// Music/Spotify only) behind a single failover-aware facade, and owns the
-/// one artwork downsample/cache so the rest of the app never has to think
-/// about raw image bytes.
+/// to. Wraps `MediaRemoteAdapterSource` — works with any app, reads *and*
+/// controls playback — and owns the one artwork downsample/cache so the rest
+/// of the app never has to think about raw image bytes. M11 removed the
+/// AppleScript scripting-source fallback (Music/Spotify only, and required
+/// scripting either app the first time it engaged, prompting macOS's
+/// Automation permission) entirely — the adapter is now the sole source.
 @MainActor
 final class NowPlayingService: ObservableObject {
     @Published private(set) var state: NowPlayingState?
@@ -20,7 +21,6 @@ final class NowPlayingService: ObservableObject {
     @Published private(set) var artwork: NSImage?
 
     private let adapterSource: MediaRemoteAdapterSource
-    private let scriptingSource: ScriptingNowPlayingSource
     private var cancellables = Set<AnyCancellable>()
 
     /// Read-only outside this file — `LockScreenPresenter` (M9) reads this to
@@ -30,43 +30,6 @@ final class NowPlayingService: ObservableObject {
     /// without being able to flip it itself and step on whichever widget
     /// might already own the active/inactive call.
     private(set) var isActive = false
-    private var latestAdapterState: NowPlayingState?
-    private var latestScriptingState: NowPlayingState?
-
-    /// M9 (privacy audit): consent gate for the AppleScript scripting-source
-    /// failover — settings-driven; set by the wiring agent's Combine sink
-    /// from `SettingsStore.notchNowPlayingAppleScriptFallbackEnabled`.
-    /// Defaults to `false` so a fresh instance (this service is also
-    /// constructed standalone by `NotchSnapshot`/`SettingsRenderer`/
-    /// `SelfTest`) never risks scripting Music/Spotify — and the
-    /// Automation permission prompt that comes with it — without an
-    /// explicit opt-in. While this is `false` and the adapter is
-    /// unavailable, `state` simply publishes `nil` (see `recompute()`) so
-    /// the widget shows its ordinary empty state rather than nagging for
-    /// the fallback.
-    var allowScriptingFallback: Bool = false {
-        didSet {
-            guard allowScriptingFallback != oldValue else { return }
-            if Self.shouldEngageScriptingFallback(allowScriptingFallback: allowScriptingFallback,
-                                                   adapterAvailable: adapterSource.isAvailable) {
-                if isActive { scriptingSource.start() }
-            } else {
-                scriptingSource.stop()
-                latestScriptingState = nil
-                recompute()
-            }
-        }
-    }
-
-    /// Pure decision behind "should the scripting fallback actually run
-    /// right now" — extracted so `--selftest` can assert the consent gating
-    /// directly, without a live Music/Spotify process (this environment
-    /// can't run either). Both `setActive` and `observeSources`'s
-    /// availability sink route through this single rule rather than each
-    /// re-deriving `allowScriptingFallback && !adapterAvailable` inline.
-    static func shouldEngageScriptingFallback(allowScriptingFallback: Bool, adapterAvailable: Bool) -> Bool {
-        allowScriptingFallback && !adapterAvailable
-    }
 
     /// A cheap stand-in for the last artwork `Data` this service downsampled
     /// — `count` + `hashValue` rather than the encoded bytes themselves, so
@@ -79,72 +42,47 @@ final class NowPlayingService: ObservableObject {
     }
     private var lastArtworkFingerprint: ArtworkFingerprint?
 
-    /// Whichever source's data is currently authoritative — drives both
-    /// `activeSourceName` and command routing.
-    private var usingAdapter = false
-
-    init(adapterSource: MediaRemoteAdapterSource? = nil,
-         scriptingSource: ScriptingNowPlayingSource? = nil) {
+    init(adapterSource: MediaRemoteAdapterSource? = nil) {
         // Default parameter values are evaluated in a nonisolated context
         // even though this initializer itself is @MainActor (a quirk of how
         // Swift evaluates default arguments), so the @MainActor-isolated
-        // sources are constructed here in the body instead, where we're
+        // source is constructed here in the body instead, where we're
         // guaranteed to already be on the main actor.
         self.adapterSource = adapterSource ?? MediaRemoteAdapterSource()
-        self.scriptingSource = scriptingSource ?? ScriptingNowPlayingSource()
-        observeSources()
+        observeSource()
     }
 
-    /// For the Settings status row (plan: "for settings UI status row").
+    /// For the Settings status row.
     var activeSourceName: String {
-        if usingAdapter {
-            return state == nil ? "MediaRemote Adapter (idle)" : "MediaRemote Adapter"
-        }
-        if scriptingSource.isAvailable {
-            return "AppleScript (\(scriptingSource.activeAppName ?? "Music/Spotify"))"
-        }
-        return isActive ? "Unavailable" : "Inactive"
+        guard adapterSource.isAvailable else { return isActive ? "Unavailable" : "Inactive" }
+        return state == nil ? "MediaRemote Adapter (idle)" : "MediaRemote Adapter"
     }
 
     // MARK: - Lifecycle
 
     /// `active == false` means the Now Playing widget isn't visible (notch
     /// collapsed to a different widget, or the notch panel itself absent).
-    /// Per the perf contract, the *scripting* poll (a real repeating 2s
-    /// timer) must stop dead in that case — it's the only piece of this
-    /// service that spends CPU when nothing changed. The adapter's `stream`
-    /// process is event-driven (blocks in a run loop waiting on MediaRemote
-    /// notifications, no polling), so leaving it running while inactive
+    /// The adapter's `stream` process is event-driven (blocks in a run loop
+    /// waiting on MediaRemote notifications, no polling), so there's nothing
+    /// to stop on `active == false` — leaving it running while inactive
     /// costs nothing at idle and means the widget has an instant, already-
-    /// warm answer the moment it's shown again — that's the "may keep
-    /// running (cheap)" the widget-visibility contract allows for.
+    /// warm answer the moment it's shown again.
     func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
         if active {
             adapterSource.start()   // no-op if already running
-            if Self.shouldEngageScriptingFallback(allowScriptingFallback: allowScriptingFallback,
-                                                   adapterAvailable: adapterSource.isAvailable) {
-                scriptingSource.start()
-            }
-        } else {
-            scriptingSource.stop()
         }
     }
 
     // MARK: - Commands
 
-    /// Routes to the adapter when it's alive (it genuinely supports sending
-    /// MediaRemote commands, not just reading — see
-    /// `MediaRemoteAdapterSource`), falling back to the AppleScript source
-    /// otherwise. Neither source throws on a command it can't currently act
-    /// on; this never blocks.
+    /// The adapter genuinely supports sending MediaRemote commands, not just
+    /// reading (see `MediaRemoteAdapterSource`) — it's the sole source, so
+    /// this is a direct passthrough. A no-op while the adapter is
+    /// unavailable rather than throwing; this never blocks.
     func send(_ command: NowPlayingCommand) {
-        if adapterSource.isAvailable {
-            adapterSource.send(command)
-        } else {
-            scriptingSource.send(command)
-        }
+        adapterSource.send(command)
     }
 
     // MARK: - Elapsed-time extrapolation
@@ -154,13 +92,13 @@ final class NowPlayingService: ObservableObject {
     /// progress bar every frame without re-polling anything. The projection
     /// is scaled by `state.playbackRate` so a sped-up/slowed-down audiobook
     /// or podcast (1.5x, 2x, 0.5x, ...) doesn't visibly drift out of sync
-    /// with the real player between polls; a missing rate (the AppleScript
-    /// source never reports one) is treated as normal (1.0) speed. Clamped
-    /// to a sane `0.25...4` range first — a source reporting something wild
-    /// or malformed shouldn't be able to make this jump the scrubber by
-    /// absurd amounts per second. Clamped to `duration` when known, since the
-    /// extrapolation is necessarily a rough estimate (rate changes, seeks,
-    /// and buffering aren't reflected until the next real update arrives).
+    /// with the real player between polls; a missing rate is treated as
+    /// normal (1.0) speed. Clamped to a sane `0.25...4` range first — a
+    /// source reporting something wild or malformed shouldn't be able to
+    /// make this jump the scrubber by absurd amounts per second. Clamped to
+    /// `duration` when known, since the extrapolation is necessarily a rough
+    /// estimate (rate changes, seeks, and buffering aren't reflected until
+    /// the next real update arrives).
     func currentElapsed(at date: Date) -> TimeInterval? {
         guard let state, let elapsed = state.elapsed else { return nil }
         guard state.isPlaying else { return elapsed }
@@ -170,54 +108,15 @@ final class NowPlayingService: ObservableObject {
         return min(max(0, projected), duration)
     }
 
-    // MARK: - Source failover
+    // MARK: - Source
 
-    private func observeSources() {
+    private func observeSource() {
         adapterSource.statePublisher
-            .sink { [weak self] newState in
-                guard let self else { return }
-                self.latestAdapterState = newState
-                self.recompute()
-            }
-            .store(in: &cancellables)
-
-        adapterSource.availabilityPublisher
-            .sink { [weak self] available in
-                guard let self, self.isActive else { return }
-                // The adapter is the preferred source: as soon as it's alive
-                // again there's no reason to keep the AppleScript poller
-                // running (and burning its 2s timer) too. `available` is the
-                // value this sink was just handed (not a re-read of
-                // `adapterSource.isAvailable`) for the same stale-`willSet`
-                // read reason documented elsewhere in this codebase (e.g.
-                // `AppDelegate.recomputeDuoActive`'s doc comment).
-                if available {
-                    self.scriptingSource.stop()
-                } else if Self.shouldEngageScriptingFallback(allowScriptingFallback: self.allowScriptingFallback,
-                                                              adapterAvailable: available) {
-                    self.scriptingSource.start()
-                }
-                self.recompute()
-            }
-            .store(in: &cancellables)
-
-        scriptingSource.statePublisher
-            .sink { [weak self] newState in
-                guard let self else { return }
-                self.latestScriptingState = newState
-                self.recompute()
-            }
+            .sink { [weak self] newState in self?.applyState(newState) }
             .store(in: &cancellables)
     }
 
-    /// The adapter is authoritative whenever it's alive — including when
-    /// it's alive but reporting `nil` (nothing playing anywhere), which is
-    /// trusted as-is rather than falling back to the Music/Spotify-only
-    /// scripting source for a second opinion; MediaRemote already covers
-    /// every app scripting can't.
-    private func recompute() {
-        usingAdapter = adapterSource.isAvailable
-        let newState = usingAdapter ? latestAdapterState : latestScriptingState
+    private func applyState(_ newState: NowPlayingState?) {
         guard newState != state else { return }
         state = newState
         updateArtwork(from: newState?.artworkData)
@@ -227,9 +126,9 @@ final class NowPlayingService: ObservableObject {
 
     /// Directly sets `state`/`artwork`, bypassing the source pipeline
     /// entirely. Used by `NotchSnapshot` (`--snapshot-notch`) to render
-    /// deterministic fixture content offscreen, without a real MediaRemote/
-    /// AppleScript source running. Never called from a live source path —
-    /// `recompute()` would simply overwrite it on the next real update.
+    /// deterministic fixture content offscreen, without a real MediaRemote
+    /// source running. Never called from a live source path — `applyState`
+    /// would simply overwrite it on the next real update.
     func injectPreviewState(_ state: NowPlayingState?, artwork: NSImage? = nil) {
         self.state = state
         self.artwork = artwork

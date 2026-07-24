@@ -38,18 +38,14 @@ final class SettingsStore: ObservableObject {
         self.notchShowInFullscreen = defaults.bool(forKey: Keys.notchShowInFullscreen)
         self.notchWidgetOrder = defaults.stringArray(forKey: Keys.notchWidgetOrder) ?? [WidgetID.nowPlaying.rawValue]
         self.notchNowPlayingEnabled = defaults.bool(forKey: Keys.notchNowPlayingEnabled)
-        self.notchNowPlayingAppleScriptFallbackEnabled = defaults.bool(forKey: Keys.notchNowPlayingAppleScriptFallbackEnabled)
         self.notchShelfEnabled = defaults.bool(forKey: Keys.notchShelfEnabled)
         self.notchShelfExpiryDays = defaults.double(forKey: Keys.notchShelfExpiryDays)
         self.notchCalendarEnabled = defaults.bool(forKey: Keys.notchCalendarEnabled)
         self.notchActivityBatteryEnabled = defaults.bool(forKey: Keys.notchActivityBatteryEnabled)
         self.notchActivityBluetoothEnabled = defaults.bool(forKey: Keys.notchActivityBluetoothEnabled)
         self.notchActivityCalendarEventEnabled = defaults.bool(forKey: Keys.notchActivityCalendarEventEnabled)
-        self.notchActivityFocusEnabled = defaults.bool(forKey: Keys.notchActivityFocusEnabled)
-        self.notchActivityFocusStickyEnabled = defaults.bool(forKey: Keys.notchActivityFocusStickyEnabled)
         self.notchDuoEnabled = defaults.bool(forKey: Keys.notchDuoEnabled)
         self.notchHudEnabled = defaults.bool(forKey: Keys.notchHudEnabled)
-        self.notchHudInterceptEnabled = defaults.bool(forKey: Keys.notchHudInterceptEnabled)
         self.notchMirrorEnabled = defaults.bool(forKey: Keys.notchMirrorEnabled)
         self.notchClipboardEnabled = defaults.bool(forKey: Keys.notchClipboardEnabled)
         self.notchTimersEnabled = defaults.bool(forKey: Keys.notchTimersEnabled)
@@ -163,22 +159,6 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchNowPlayingEnabled, forKey: Keys.notchNowPlayingEnabled) }
     }
 
-    /// M9 (privacy audit): consent gate for `NowPlayingService`'s AppleScript
-    /// scripting-source failover — the safety net used only when the
-    /// preferred MediaRemote adapter is unavailable. Defaults to `false`:
-    /// the very first time Flux actually scripts Music or Spotify, macOS
-    /// shows an Automation permission prompt for that app, so this can't be
-    /// on by default without risking an unsolicited TCC prompt the moment
-    /// the adapter happens to be missing. Wired to
-    /// `NowPlayingService.allowScriptingFallback` by `AppDelegate`; while
-    /// this is `false`, the fallback never engages and the widget just shows
-    /// its ordinary empty state if the adapter can't be reached.
-    @Published var notchNowPlayingAppleScriptFallbackEnabled: Bool {
-        didSet {
-            defaults.set(notchNowPlayingAppleScriptFallbackEnabled, forKey: Keys.notchNowPlayingAppleScriptFallbackEnabled)
-        }
-    }
-
     /// Whether the File Shelf widget is enabled in the notch's cycle.
     @Published var notchShelfEnabled: Bool {
         didSet { defaults.set(notchShelfEnabled, forKey: Keys.notchShelfEnabled) }
@@ -240,53 +220,12 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityCalendarEventEnabled, forKey: Keys.notchActivityCalendarEventEnabled) }
     }
 
-    /// M7: whether a best-effort Focus-change "peek" wing (and, optionally,
-    /// a persistent sticky indicator — see `notchActivityFocusStickyEnabled`)
-    /// shows in the notch — read by `NotchActivityRouter`, which also
-    /// requires `notchEnabled` before actually starting `FocusMonitor`. Genuinely
-    /// best-effort (see `FocusMonitor`'s own doc comment on the undocumented
-    /// on-disk state this reads) and needs no TCC permission — but (M9
-    /// privacy audit) reading a system file under a protected location
-    /// without ever being asked isn't a zero-access posture just because
-    /// macOS itself doesn't gate it with a prompt, so this now defaults to
-    /// `false` rather than `true` like the rest of the on-by-default Live
-    /// Activities. Silently absent until the user opts in from Settings →
-    /// Notch → Live Activities, and — unchanged from before — a silent
-    /// no-op afterward on any setup where macOS won't let it read the file
-    /// at all.
-    @Published var notchActivityFocusEnabled: Bool {
-        didSet { defaults.set(notchActivityFocusEnabled, forKey: Keys.notchActivityFocusEnabled) }
-    }
-
-    /// Opt-in escalation from `notchActivityFocusEnabled`'s transient peek to
-    /// a persistent, icon-only sticky wing shown for as long as a Focus stays
-    /// active. Defaults to `false` — unlike the brief peek, a wing that's
-    /// permanently up whenever ANY Focus is on (including ones a user might
-    /// leave on for hours, like Sleep or a custom all-day mode) is a bigger
-    /// ongoing claim on the notch's limited wing space than this app should
-    /// make without the user opting in.
-    @Published var notchActivityFocusStickyEnabled: Bool {
-        didSet { defaults.set(notchActivityFocusStickyEnabled, forKey: Keys.notchActivityFocusStickyEnabled) }
-    }
-
-    /// Master on/off for the M5 volume/brightness HUD — governs both modes.
-    /// Defaults to `true`: observe mode (`VolumeMonitor`'s CoreAudio
-    /// listeners posting alongside the system bezel) needs no permission and
-    /// costs nothing at idle, so there's no reason to make a user opt in to
-    /// it the way `notchHudInterceptEnabled` requires.
+    /// Master on/off for the volume HUD — flashes a wing in the notch
+    /// alongside the system bezel whenever CoreAudio reports a volume/mute
+    /// change (`VolumeMonitor`'s listeners). Defaults to `true`: this needs
+    /// no permission and costs nothing at idle.
     @Published var notchHudEnabled: Bool {
         didSet { defaults.set(notchHudEnabled, forKey: Keys.notchHudEnabled) }
-    }
-
-    /// Opt-in escalation from observe mode to intercept mode — swallowing
-    /// volume/brightness keys via `MediaKeyInterceptor` so only the notch HUD
-    /// appears, never the system bezel. Defaults to `false`: this needs
-    /// Accessibility, an unavoidably scary-looking grant, so it stays off
-    /// until the user deliberately turns it on (`NotchActivityRouter` also
-    /// independently requires the permission to actually be granted before
-    /// honoring this toggle — see `applyHUDState`).
-    @Published var notchHudInterceptEnabled: Bool {
-        didSet { defaults.set(notchHudInterceptEnabled, forKey: Keys.notchHudInterceptEnabled) }
     }
 
     /// Whether the Mirror widget (a live camera preview) is enabled in the
@@ -418,7 +357,6 @@ final class SettingsStore: ObservableObject {
         Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue,
                                 WidgetID.mirror.rawValue, WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
         Keys.notchNowPlayingEnabled: true,
-        Keys.notchNowPlayingAppleScriptFallbackEnabled: false,
         Keys.notchShelfEnabled: true,
         Keys.notchShelfExpiryDays: 0.0,
         Keys.notchCalendarEnabled: true,
@@ -428,13 +366,8 @@ final class SettingsStore: ObservableObject {
         // `DeviceMonitor` is permission-free. See its doc comment.
         Keys.notchActivityBluetoothEnabled: true,
         Keys.notchActivityCalendarEventEnabled: true,
-        // M9 privacy audit: was `true` — see `notchActivityFocusEnabled`'s
-        // own doc comment for why this flipped to opt-in.
-        Keys.notchActivityFocusEnabled: false,
-        Keys.notchActivityFocusStickyEnabled: false,
         Keys.notchDuoEnabled: false,
         Keys.notchHudEnabled: true,
-        Keys.notchHudInterceptEnabled: false,
         Keys.notchMirrorEnabled: true,
         Keys.notchClipboardEnabled: false,
         Keys.notchTimersEnabled: true,
@@ -465,18 +398,14 @@ final class SettingsStore: ObservableObject {
         static let notchShowInFullscreen = "flux.notch.showInFullscreen"
         static let notchWidgetOrder = "flux.notch.widgetOrder"
         static let notchNowPlayingEnabled = "flux.notch.nowPlayingEnabled"
-        static let notchNowPlayingAppleScriptFallbackEnabled = "flux.notch.nowPlaying.appleScriptFallback"
         static let notchShelfEnabled = "flux.notch.shelf.enabled"
         static let notchShelfExpiryDays = "flux.notch.shelf.expiryDays"
         static let notchCalendarEnabled = "flux.notch.calendar.enabled"
         static let notchActivityBatteryEnabled = "flux.notch.activities.battery"
         static let notchActivityBluetoothEnabled = "flux.notch.activities.bluetooth"
         static let notchActivityCalendarEventEnabled = "flux.notch.activities.calendarEvent"
-        static let notchActivityFocusEnabled = "flux.notch.activities.focus"
-        static let notchActivityFocusStickyEnabled = "flux.notch.activities.focusSticky"
         static let notchDuoEnabled = "flux.notch.duo"
         static let notchHudEnabled = "flux.notch.hud.enabled"
-        static let notchHudInterceptEnabled = "flux.notch.hud.intercept"
         static let notchMirrorEnabled = "flux.notch.mirror.enabled"
         static let notchClipboardEnabled = "flux.notch.clipboard.enabled"
         static let notchTimersEnabled = "flux.notch.timers.enabled"

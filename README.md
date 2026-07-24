@@ -75,10 +75,8 @@ arrangement across launches.
   blur/opacity content morph as it expands. Hover (or click) the camera
   housing to expand a **Now Playing** widget: artwork, title/artist, a
   scrubber, and transport controls for whatever's playing (any app, via a
-  vendored MediaRemote adapter; falls back to AppleScript for Music/Spotify —
-  macOS may show an Automation permission prompt the first time that fallback
-  controls either app). Open gesture, hover delays, and which widgets are
-  enabled are all configurable in Settings → Notch.
+  vendored MediaRemote adapter). Open gesture, hover delays, and which
+  widgets are enabled are all configurable in Settings → Notch.
 - **Duo view (M7)** — an opt-in toggle in Settings → Notch shows Now Playing
   and Calendar side by side when Now Playing is expanded (needs Calendar
   enabled and its permission granted too); expanding Calendar on its own still
@@ -87,11 +85,6 @@ arrangement across launches.
   showing, swipe left/right to cycle through every other queued activity,
   swipe up to dismiss the one showing (restorable — the last 5 dismissed
   activities can be brought back), and swipe down to open the widget panel.
-- **Focus activity (M7, best-effort)** — a brief wing peeks the active Focus's
-  name/icon whenever it changes, with an optional persistent icon-only
-  indicator while one stays on. This rides on undocumented on-disk state (no
-  public Focus API exists) and silently does nothing if it can't read it —
-  see Settings → Notch → Live Activities.
 - **File Shelf** — drag files straight onto the notch to hold them: hovering a
   drag over the (collapsed) camera housing expands the shelf automatically,
   and dropping copies the files in (they survive the source being moved,
@@ -113,15 +106,8 @@ arrangement across launches.
   audio/HID accessory connects or disconnects, with a best-effort battery
   reading when the OS reports one, and a wing when a calendar event is about
   to start. Each is independently toggled in Settings → Notch.
-- **Volume & brightness HUD** — flashes a wing in the notch when either
-  changes. Works permission-free out of the box (**observe mode**: CoreAudio
-  reports volume/mute changes, alongside whatever bezel macOS still shows).
-  Opt in to **intercept mode** in Settings → Notch to take the system's
-  volume/brightness keys over entirely, so only the notch HUD ever appears —
-  this needs Accessibility, since swallowing a key system-wide requires it.
-  Brightness is intercept-mode only: macOS has no change notification for
-  display brightness to observe, so there's nothing to show without the
-  keys themselves being captured.
+- **Volume HUD** — flashes a wing in the notch when volume or mute changes,
+  alongside whatever bezel macOS still shows. Permission-free.
 - **Mirror** — a live camera preview right in the notch, for a quick
   "how do I look" check. The camera only ever runs while the widget is
   actually open; needs Camera access, with the same live grant/denied status
@@ -156,28 +142,21 @@ arrangement across launches.
 
 ## Privacy — zero permissions by default
 
-Flux's core (menu-bar hiding, the notch panel, widget cycling) runs with
-**no TCC access of any kind** — nothing prompts on a fresh install, and
-nothing runs that could prompt later without you turning it on first:
+**Calendar and Camera are the only two permissions Flux ever requests** —
+full stop. Both are opt-in and behind their own explicit **Grant Access**
+button in Settings → Notch; the permission-gated widget shows its own
+"access needed" state until you ask for it. Everything else in the app
+(menu-bar hiding, the notch panel, widget cycling, the volume HUD, Now
+Playing, battery/Bluetooth/timer/calendar-event wings) runs with **no TCC
+access of any kind** — nothing prompts on a fresh install, and nothing runs
+that could prompt later.
 
-- **Calendar, Camera, and the HUD's Accessibility intercept** are each
-  behind their own explicit **Grant Access** button in Settings → Notch —
-  the permission-gated widget/feature shows its own "access needed" state
-  until you ask for it.
 - **Bluetooth device wings need no permission at all.** Flux detects
   accessory connect/disconnect through the system's own device registry (the
   IOKit `AppleDeviceManagementHIDEventService` that already reports accessory
   battery, permission-free) plus CoreAudio's device list — it never requests
   Bluetooth access, so nothing prompts, and the wings are on by default like
   the rest of the notch suite.
-- **Focus wings are OFF by default.** This reads a system Focus-status file
-  that macOS may protect depending on your setup; it's opt-in, and silently
-  shows nothing if macOS won't let it read the file at all.
-- **The AppleScript Now Playing fallback is OFF by default.** The
-  MediaRemote adapter is the only thing driving Now Playing until you
-  explicitly enable the fallback in Settings → Notch — only then does Flux
-  ever script Music or Spotify, which is what prompts macOS's Automation
-  permission the first time each app is scripted.
 - **Clipboard history is opt-in and in-memory only** — nothing is captured
   until you turn it on, and nothing it captures is ever written to disk.
 
@@ -193,8 +172,8 @@ drag **Flux** into **Applications**. On first launch, right-click the app → **
 
 **A note on permissions:** Flux is ad-hoc signed rather than notarized with a paid
 Developer ID, which means macOS can — and sometimes does — treat an update as a new,
-untrusted binary and quietly drop a previously granted TCC permission (Calendar,
-Accessibility, and Camera). If a permission-gated widget suddenly shows its
+untrusted binary and quietly drop a previously granted TCC permission (Calendar
+or Camera). If a permission-gated widget suddenly shows its
 "access needed" state after updating Flux, that's why — Settings → Notch shows the
 live grant/denied status for each permission and a button to re-request it or jump
 straight to the right System Settings pane.
@@ -262,23 +241,20 @@ Sources/Flux/
     Widgets/ClipboardWidget.swift # history list, click-to-copy-back, Clear All
     LockScreenPresenter.swift  # EXPERIMENTAL: fade in/out, lock/unlock, unlock sound
     LockScreenContentView.swift # EXPERIMENTAL: live media/activity/unlock pills on the lock screen
-  Services/NowPlaying/       # MediaRemote adapter + AppleScript fallback, failover facade
+  Services/NowPlaying/       # MediaRemote adapter — the sole Now Playing source
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
   Services/DeviceMonitor.swift     # permission-free BT connect/disconnect: IOKit matching notifications + CoreAudio device list + IORegistry battery
-  Services/FocusMonitor.swift      # M7: best-effort Focus status from undocumented on-disk state, no polling
   Services/CameraService.swift    # AVCaptureSession behind Mirror, started/stopped by the widget itself
   Services/ClipboardMonitor.swift # NSPasteboard.changeCount poll, settings-driven start/stop
   Services/TimerService.swift     # countdown timers, single boundary Task, completions publisher
-  Services/HUD/VolumeMonitor.swift        # CoreAudio volume/mute listener + setter (observe + intercept)
-  Services/HUD/BrightnessMonitor.swift    # dlopen'd DisplayServices brightness get/set (intercept-only)
-  Services/HUD/MediaKeyInterceptor.swift  # CGEventTap swallowing volume/brightness keys (Accessibility)
+  Services/HUD/VolumeMonitor.swift        # CoreAudio volume/mute listener (observe-mode HUD source)
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
   Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults
   Hotkey/HotkeyRecorderView.swift # click-to-record shortcut field
-  Support/PermissionCenter.swift  # unified TCC status/request for Calendar/Camera/Accessibility
+  Support/PermissionCenter.swift  # unified TCC status/request for Calendar/Camera
   Support/                       # logging, app info, render/snapshot/selftest
 ```
 
