@@ -996,6 +996,56 @@ enum SelfTest {
         check(!NotchWindowController.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true),
               "Drag accept: a live activity showing declines")
 
+        // --- M12 hover-reliability fix: the collapsed notch's hover target is
+        // deliberately LARGER than the physical notch it's drawn over. The
+        // notch is camera housing with no pixels, and macOS hides the cursor
+        // while it's over it, so users can't see what they're aiming at and
+        // routinely land just beside or just below — which read as the notch
+        // ignoring them. These assert the slop is real, is asymmetric in the
+        // right direction (down, never up — the notch is flush with the top of
+        // the screen), and doesn't leak into the click target. ---
+        do {
+            // A stand-in for the physical notch's own footprint, in the
+            // top-left-origin space `interactiveRect` is published in.
+            let notch = CGRect(x: 200, y: 0, width: 200, height: 37)
+            let hover = NotchWindowController.hoverRect(for: .collapsed, interactiveRect: notch)
+            check(hover.contains(CGPoint(x: 300, y: 18)),
+                  "Notch hover: a point dead centre on the collapsed notch is inside")
+            check(hover.contains(CGPoint(x: 196, y: 18)),
+                  "Notch hover: a point just LEFT of the physical notch still counts (aim slop)")
+            check(hover.contains(CGPoint(x: 404, y: 18)),
+                  "Notch hover: a point just RIGHT of the physical notch still counts (aim slop)")
+            check(hover.contains(CGPoint(x: 300, y: 42)),
+                  "Notch hover: a point just BELOW the physical notch still counts — the direction users undershoot into")
+            check(hover.minY == notch.minY,
+                  "Notch hover: never extends ABOVE the notch — it's flush with the top of the screen, there is nothing up there")
+            check(!hover.contains(CGPoint(x: 300, y: 80)),
+                  "Notch hover: the slop is small — a point well below the menu bar is still outside")
+            check(!hover.contains(CGPoint(x: 150, y: 18)),
+                  "Notch hover: the slop is small — a point well into the menu bar beside the notch is still outside")
+
+            let click = NotchWindowController.collapsedClickRect(interactiveRect: notch)
+            check(click.contains(CGPoint(x: 196, y: 18)),
+                  "Notch click: gets the same horizontal aim slop as hover")
+            check(!click.contains(CGPoint(x: 300, y: 42)),
+                  "Notch click: does NOT extend below the notch — a click there belongs to the window underneath")
+
+            // The open shape needs no aim assistance (it's large and visible);
+            // its slop only exists to stop a cursor tracing the panel's own
+            // edge from flickering the hover-out timer.
+            let open = CGRect(x: 100, y: 0, width: 400, height: 190)
+            let openHover = NotchWindowController.hoverRect(for: .expanded(.nowPlaying), interactiveRect: open)
+            check(openHover.contains(CGPoint(x: 300, y: 100)),
+                  "Notch hover: a point inside the expanded panel is inside")
+            check(!openHover.contains(CGPoint(x: 300, y: 220)),
+                  "Notch hover: a point well outside the expanded panel is outside")
+
+            // A zero rect is what `interactiveRect` holds before the root
+            // view has ever laid out — it must never swallow the whole screen.
+            check(NotchWindowController.hoverRect(for: .collapsed, interactiveRect: .zero).isNull,
+                  "Notch hover: an unlaid-out (zero) interactive rect matches nothing rather than growing slop around the origin")
+        }
+
         // --- M3: PowerMonitor.lowBatteryEvent — the low-battery hysteresis,
         // testable as a pure function with no real IOKit power source ---
         do {
@@ -2005,20 +2055,24 @@ enum SelfTest {
             cameraProbe.stop()
             check(!cameraProbe.isRunning, "CameraService: stop() after an unauthorized start() is still a safe no-op")
 
-            // --- M8 crash fix: the Mirror preview may only configure its
-            // capture connection's mirror once the session is actually running
-            // (never while startRunning() is still racing on the session
-            // queue) AND only when mirroring is supported — either violation
-            // throws an uncatchable NSInvalidArgumentException. The gate is a
-            // pure function so it's covered here without a camera. ---
-            check(CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: true),
-                  "CameraService.shouldConfigureMirroring: configures only when running AND supported")
-            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: true),
-                  "CameraService.shouldConfigureMirroring: never configures before the session is running (would race startRunning())")
-            check(!CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: false),
-                  "CameraService.shouldConfigureMirroring: never sets isVideoMirrored when mirroring is unsupported")
-            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: false),
-                  "CameraService.shouldConfigureMirroring: no-op when neither running nor supported")
+            // --- M12 crash fix: mirroring is a Core Animation layer
+            // transform, NOT `AVCaptureConnection.isVideoMirrored`. M6 shipped
+            // the connection form and M8 narrowed the race around it; it still
+            // crashed, because `isVideoMirrored`'s setter throws an
+            // uncatchable NSInvalidArgumentException whenever AVFoundation has
+            // re-armed `automaticallyAdjustsVideoMirroring` — which it does
+            // from inside startRunning(), on the session queue, concurrently
+            // with any main-thread gate check. A layer transform touches no
+            // capture state at all, so there is nothing left to race. Assert
+            // it's a pure horizontal flip: mirrored on x, untouched on y, no
+            // rotation or translation. ---
+            let mirror = CameraService.previewMirrorTransform
+            check(mirror.a == -1 && mirror.d == 1,
+                  "CameraService.previewMirrorTransform: flips horizontally (a == -1) and leaves the vertical axis alone (d == 1)")
+            check(mirror.b == 0 && mirror.c == 0,
+                  "CameraService.previewMirrorTransform: no rotation/skew component")
+            check(mirror.tx == 0 && mirror.ty == 0,
+                  "CameraService.previewMirrorTransform: no translation — the flip is about the layer's own centre anchor")
 
             // --- M8 fix: CameraService(forcingUnavailable:) — the seam
             // `NotchSnapshot`'s expanded-mirror render uses so its "No camera

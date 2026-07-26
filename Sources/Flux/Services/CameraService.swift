@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
 import Combine
+import CoreGraphics
+import QuartzCore
 import OSLog
 
 /// Shared logging point for the camera subsystem (M6's Mirror widget) —
@@ -39,13 +41,38 @@ final class CameraService: ObservableObject {
     /// `observeSessionNotifications()`).
     @Published private(set) var isRunning = false
 
-    /// The live session — handed straight to `AVCaptureVideoPreviewLayer` by
-    /// `MirrorWidget`'s preview view. Exposed as a plain `let` (rather than
-    /// behind an accessor) since a preview layer needs a stable reference to
+    /// The live session. Exposed as a plain `let` (rather than behind an
+    /// accessor) since the preview layer below needs a stable reference to
     /// bind to for this instance's entire lifetime — the same way
     /// `ShelfStore.directory` is exposed directly rather than through a
     /// getter.
     let session = AVCaptureSession()
+
+    /// The ONE preview layer for this service's session, created on first use
+    /// and reused for this instance's whole lifetime.
+    ///
+    /// ## M12 crash fix: why the service owns this, not the view
+    /// `MirrorWidget`'s SwiftUI preview view is torn down and rebuilt every
+    /// time the notch collapses/expands. When it also owned the preview
+    /// layer, each cycle created a *fresh* `AVCaptureVideoPreviewLayer` and
+    /// pointed it at this same session — and because the outgoing view stays
+    /// alive for the ~0.35s of the collapse transition (see
+    /// `NotchRootView.ExpandedContentTransition`), a fast collapse→expand had
+    /// two live preview layers implicitly holding two connections on one
+    /// session at once. Owning a single, stable layer here means a
+    /// collapse/expand cycle re-parents an existing layer instead of
+    /// building and tearing down capture connections underneath a session
+    /// that may simultaneously be starting or stopping on `sessionQueue`.
+    var previewLayer: AVCaptureVideoPreviewLayer {
+        if let storedPreviewLayer { return storedPreviewLayer }
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.setAffineTransform(Self.previewMirrorTransform)
+        storedPreviewLayer = layer
+        return layer
+    }
+
+    private var storedPreviewLayer: AVCaptureVideoPreviewLayer?
 
     /// Whether a usable camera device exists on this Mac at all — resolved
     /// once, eagerly, at `init` (device presence doesn't change without a
@@ -56,7 +83,15 @@ final class CameraService: ObservableObject {
     private(set) var isAvailable: Bool
 
     private let device: AVCaptureDevice?
-    private var isConfigured = false
+
+    /// Guards the one-time `session` configuration. **Queue-confined**: only
+    /// ever read or written from `sessionQueue`. That's what keeps
+    /// `beginConfiguration()`/`addInput(_:)` serialized against the
+    /// `startRunning()`/`stopRunning()` calls running on the same queue —
+    /// AVFoundation requires every mutation of a session to be serialized,
+    /// and this used to configure from the main actor while the queue could
+    /// be mid-`startRunning()`.
+    private nonisolated(unsafe) var isConfigured = false
 
     /// Tracks whether the *widget* still wants the session running — set at
     /// the top of `start()`, cleared at the top of `stop()`. This is the only
@@ -168,30 +203,37 @@ final class CameraService: ObservableObject {
 
     // MARK: - Preview mirroring
 
-    /// Whether `MirrorWidget`'s preview-layer connection may have its mirror
-    /// configured *right now*. Pure so `--selftest` can cover it without a
-    /// camera — the actual `AVCaptureConnection` mutation lives in
-    /// `MirrorWidget.CameraPreviewView`, but the *decision* is centralized and
-    /// tested here.
+    /// Flips the preview horizontally so it reads as an actual mirror — what
+    /// the user sees matches what they'd see holding up a physical mirror,
+    /// rather than the as-captured (left/right reversed from that) image most
+    /// camera *recording* apps intentionally show.
     ///
-    /// Both conditions are load-bearing against an uncatchable
-    /// `NSInvalidArgumentException` (an Obj-C exception Swift can't catch =
-    /// instant crash):
-    /// - `sessionRunning`: the connection's mirror MUST only be touched once
-    ///   `startRunning()` has actually returned. Configuring it while
-    ///   `startRunning()` is still executing on `sessionQueue` races that call
-    ///   — which re-initializes the connection's own
-    ///   `automaticallyAdjustsVideoMirroring` back to `true` as it activates
-    ///   connections — so a `isVideoMirrored = true` on the main thread can
-    ///   land in the window where auto-adjust flipped back to `true`, and
-    ///   setting `isVideoMirrored` while `automaticallyAdjustsVideoMirroring`
-    ///   is `true` throws. Gating on the session actually running is what keeps
-    ///   the configuration off that race entirely.
-    /// - `mirroringSupported`: setting `isVideoMirrored` on a connection whose
-    ///   `isVideoMirroringSupported` is `false` throws outright.
-    static func shouldConfigureMirroring(sessionRunning: Bool, mirroringSupported: Bool) -> Bool {
-        sessionRunning && mirroringSupported
-    }
+    /// ## M12 crash fix: why this is a LAYER transform, not `isVideoMirrored`
+    /// M6 shipped this as `AVCaptureConnection.isVideoMirrored`, and M8
+    /// narrowed the race around it (only configure after
+    /// `.AVCaptureSessionDidStartRunning`, only when
+    /// `isVideoMirroringSupported`). That still crashed, because the gate
+    /// can't actually be held: `isVideoMirrored`'s setter throws an
+    /// **uncatchable** `NSInvalidArgumentException` (an Obj-C exception Swift
+    /// cannot `try`/`catch` — it terminates the process) whenever
+    /// `automaticallyAdjustsVideoMirroring` is `true` at the instant it runs,
+    /// and AVFoundation re-arms that flag itself as it activates connections
+    /// inside `startRunning()`. So a main-thread `isVideoMirrored = true` that
+    /// read `session.isRunning == true` a few instructions earlier can still
+    /// land inside a `startRunning()`/`stopRunning()` executing on
+    /// `sessionQueue` — which is exactly what collapsing and expanding the
+    /// notch with the Mirror widget open produces, a burst of
+    /// `start()`/`stop()` churn overlapping the widget's own view teardown and
+    /// M8's 500ms mirror-configuration retry loop.
+    ///
+    /// A `CGAffineTransform` on the preview layer produces a visually
+    /// identical mirror with zero AVFoundation involvement: it's plain Core
+    /// Animation geometry on a layer this process owns, so there is no
+    /// capture-connection state to race and no exception for it to throw.
+    /// This removes the crash class rather than narrowing its window a third
+    /// time. Exposed as a `static let` so `--selftest` can assert it without
+    /// a camera.
+    static let previewMirrorTransform = CGAffineTransform(scaleX: -1, y: 1)
 
     // MARK: - Lifecycle
 
@@ -220,10 +262,18 @@ final class CameraService: ObservableObject {
             return
         }
 
-        configureIfNeeded(device: device)
+        // Force the shared preview layer into existence HERE, on the main
+        // actor, before any session work is queued. Constructing an
+        // `AVCaptureVideoPreviewLayer` for a session implicitly establishes a
+        // connection on it — a session mutation — so it must not happen at
+        // the arbitrary moment SwiftUI happens to mount the preview view,
+        // which is otherwise mid-`startRunning()`. After this first call the
+        // `lazy` is resolved and mounting the view is a pure read.
+        _ = previewLayer
 
         let session = session
         sessionQueue.async { [weak self] in
+            self?.configureIfNeeded(session: session, device: device)
             if !session.isRunning {
                 session.startRunning()
             }
@@ -254,13 +304,25 @@ final class CameraService: ObservableObject {
     /// Adds the camera's device input to `session` exactly once. Wrapped in
     /// `beginConfiguration()`/`commitConfiguration()` per AVFoundation's own
     /// requirement that input/output/preset changes be batched that way.
-    /// Runs on whichever thread `start()` was called from (the main actor) —
-    /// deliberately not hopped to `sessionQueue`, since constructing an
-    /// `AVCaptureDeviceInput` and adding it is fast; only the actually-
-    /// blocking `startRunning()` call needs the background queue.
-    private func configureIfNeeded(device: AVCaptureDevice) {
+    ///
+    /// Runs on `sessionQueue`, immediately before that same block's
+    /// `startRunning()` — see `isConfigured`'s doc comment. It used to run on
+    /// the main actor on the theory that only the blocking `startRunning()`
+    /// needed the background queue; that's true of *cost* but not of
+    /// *correctness*, since AVFoundation requires all session mutation to be
+    /// serialized against itself.
+    ///
+    /// `isConfigured` is latched only once an input has ACTUALLY been added —
+    /// not eagerly on entry. Latching up front meant a single transient
+    /// failure (the camera momentarily claimed by another app, so
+    /// `AVCaptureDeviceInput(device:)` throws) permanently poisoned this
+    /// service: every later `start()` skipped configuration, ran an
+    /// input-less session that can never come up, and left the Mirror widget
+    /// showing "Starting camera…" forever with no way back short of quitting
+    /// Flux. Retrying on the next presentation costs nothing and recovers on
+    /// its own.
+    private nonisolated func configureIfNeeded(session: AVCaptureSession, device: AVCaptureDevice) {
         guard !isConfigured else { return }
-        isConfigured = true
 
         session.beginConfiguration()
         session.sessionPreset = .medium
@@ -273,6 +335,7 @@ final class CameraService: ObservableObject {
                 return
             }
             session.addInput(input)
+            isConfigured = true
         } catch {
             cameraLog.error("CameraService: failed to create a capture input for \(device.localizedName, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }

@@ -48,7 +48,27 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         onVisibilityChanged?(true)
     }
 
-    private func makeWindow() -> NSWindow {
+    /// Opens Settings on a specific tab — the notch's right-click menu jumps
+    /// straight to Notch rather than dropping the user on General to find it
+    /// themselves.
+    ///
+    /// `SettingsView` seeds its own `@State` selection from `initialTab`, so
+    /// an already-open window can't just be told to switch: its content
+    /// controller is rebuilt (cheap — the whole view is a few cards over
+    /// shared `EnvironmentObject`s) and re-fitted to the new tab's natural
+    /// height, exactly as a manual tab switch would.
+    func show(tab: SettingsTab) {
+        if currentTab != tab {
+            currentTab = tab
+            if let window {
+                window.contentViewController = makeContentController()
+                refitForTabChange()
+            }
+        }
+        show()
+    }
+
+    private func makeContentController() -> NSViewController {
         let root = SettingsView(initialTab: currentTab, onTabChange: { [weak self] tab in
             self?.currentTab = tab
             self?.refitForTabChange()
@@ -64,8 +84,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // auto-size the window would re-expand it to the full content height and
         // re-introduce the off-screen overflow this fixes.
         hosting.sizingOptions = []
+        return hosting
+    }
 
-        let window = NSWindow(contentViewController: hosting)
+    private func makeWindow() -> NSWindow {
+        let window = NSWindow(contentViewController: makeContentController())
         window.title = "Flux Settings"
         window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true

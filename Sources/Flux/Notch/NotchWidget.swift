@@ -6,6 +6,34 @@ import Combine
 /// settings never need to hold a live widget reference.
 enum WidgetID: String, CaseIterable, Codable {
     case nowPlaying, shelf, calendar, mirror, timers, clipboard
+
+    /// Human-readable name. The single source of truth for how a widget is
+    /// labelled anywhere outside its own view — currently the notch's
+    /// right-click menu. Kept here, on the id itself, rather than as another
+    /// string literal at each call site, so a widget can never end up called
+    /// two different things in two different places.
+    var title: String {
+        switch self {
+        case .nowPlaying: return "Now Playing"
+        case .shelf: return "File Shelf"
+        case .calendar: return "Calendar"
+        case .mirror: return "Mirror"
+        case .timers: return "Timers"
+        case .clipboard: return "Clipboard"
+        }
+    }
+
+    /// SF Symbol matching `title`, for menu items and any future picker.
+    var symbol: String {
+        switch self {
+        case .nowPlaying: return "play.circle"
+        case .shelf: return "tray.full"
+        case .calendar: return "calendar"
+        case .mirror: return "video"
+        case .timers: return "timer"
+        case .clipboard: return "doc.on.clipboard"
+        }
+    }
 }
 
 /// A single pane of notch content: something that can render into the

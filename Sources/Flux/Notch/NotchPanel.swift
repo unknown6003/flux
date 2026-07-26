@@ -263,9 +263,22 @@ final class NotchHostingView: NSHostingView<AnyView> {
     /// searching windows *beneath* this one instead of this (otherwise
     /// full-panel-sized) view claiming every click and hover in its frame.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        guard viewModel.interactiveRect.contains(local) else { return nil }
+        guard viewModel.interactiveRect.contains(notchSpacePoint(convert(point, from: superview))) else { return nil }
         return super.hitTest(point)
+    }
+
+    /// Maps a point in this view's own AppKit coordinate space into the space
+    /// `NotchViewModel.interactiveRect` is published in.
+    ///
+    /// `interactiveRect` is written by `NotchRootView` in SwiftUI's
+    /// top-left-origin space (y grows downward). An `NSView`'s space is
+    /// bottom-left-origin unless the view reports `isFlipped` — and whether
+    /// `NSHostingView` does is an undocumented implementation detail of
+    /// SwiftUI's AppKit bridge, not something to bet the notch's entire
+    /// click/hover surface on. Branching on `isFlipped` is correct either
+    /// way, and collapses to a no-op when it's already `true`.
+    private func notchSpacePoint(_ point: NSPoint) -> NSPoint {
+        isFlipped ? point : NSPoint(x: point.x, y: bounds.height - point.y)
     }
 
     /// A single `.activeAlways`/`.inVisibleRect` tracking area spanning the
@@ -293,8 +306,15 @@ final class NotchHostingView: NSHostingView<AnyView> {
     /// `interactiveRect` — not the tracking area's extent — is what actually
     /// decides hover, matching the same rect `hitTest` and `NotchRootView`'s
     /// published geometry use.
+    ///
+    /// Since M12 this is only a *second opinion*: `NotchWindowController`'s
+    /// global/local `.mouseMoved` monitors drive hover in every state,
+    /// because AppKit doesn't reliably deliver `mouseMoved:` to a
+    /// non-activating panel that never becomes key (see that controller's own
+    /// `globalMoveMonitor` doc comment). `NotchViewModel.hoverChanged` is
+    /// idempotent, so the two agreeing costs nothing.
     private func updateHover(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let point = notchSpacePoint(convert(event.locationInWindow, from: nil))
         viewModel.hoverChanged(inside: viewModel.interactiveRect.contains(point))
     }
 }

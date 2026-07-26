@@ -318,3 +318,79 @@ notifications and prompts don't happen at all in a headless CI environment.
       — and confirm a connect/disconnect wing appears with no Bluetooth
       prompt, same as an Apple accessory. This is the second, generic
       `IOHIDDevice` matching source added for exactly this case.
+
+## M12 — Camera crash, hover reliability, notch right-click
+
+The three items the user reported after living with v0.12.0. All three are
+inherently hardware-only: none of them can be exercised on a CI runner (no
+notch, no camera, no cursor).
+
+### Camera / Mirror crash on collapse+expand
+
+Mirroring is no longer `AVCaptureConnection.isVideoMirrored` — it's a
+`CGAffineTransform` on a preview layer `CameraService` owns for its whole
+lifetime. Both changes exist to make the crash *impossible* rather than
+*unlikely*, so the test is deliberately abusive:
+
+- [ ] **Rapid collapse/expand with the camera live**: open the Mirror widget,
+      wait for the preview, then hover in and out (or click, per your trigger)
+      as fast as you can for ~30 seconds. Flux must not crash, and the preview
+      must come back every time — not go black or freeze on a stale frame
+      permanently. This is the exact gesture that reproduced the M6/M8 crash.
+- [ ] **Preview is actually mirrored**: raise your right hand; it must appear
+      on the right side of the preview (a real mirror), not the left.
+- [ ] **Preview fills and rounds correctly**: no stretched/lagging video while
+      the panel springs open or closed, and the preview's corners stay rounded
+      to the panel's inner radius.
+- [ ] **Camera indicator still dies on collapse**: collapse the notch and
+      confirm the green camera LED goes out within a second — the perf/privacy
+      contract on `CameraService` is unchanged by this refactor.
+- [ ] **Recovers from a busy camera**: start a FaceTime/Photo Booth call,
+      then open Mirror (it should show its starting/interrupted state rather
+      than crash), quit the other app, and confirm Mirror recovers on its own
+      — and, separately, that opening Mirror *again* later still works. The
+      `isConfigured` latch now only sets on a successful input add, so a
+      transient failure no longer poisons the service for the session.
+
+### Hover reliability
+
+- [ ] **Hover works with a live activity showing**: plug/unplug power (or
+      connect Bluetooth headphones) to get a wing up, then hover the notch
+      while that wing is showing. It must expand. This is the case that
+      previously did nothing — the tracking-area path AppKit doesn't deliver
+      to a non-key, non-activating panel — and is the likeliest source of the
+      reported "works about half the time".
+- [ ] **Hover is forgiving about aim**: approach the notch from below and stop
+      just under it, and separately just to the left/right of the housing.
+      Both should open it. The cursor is *hidden* over the physical notch, so
+      this slop is the difference between the target being findable and not.
+- [ ] **Slop isn't too greedy**: move the pointer along the menu bar well to
+      the side of the notch, and across a window ~1cm below the menu bar.
+      Neither should open the notch.
+- [ ] **Close is precise**: with the notch expanded, move the cursor just off
+      the panel's edge. It should close after the close delay — not stay open
+      until the cursor leaves a much larger invisible region.
+- [ ] **Pass-through still intact**: with the notch collapsed, click and drag
+      normally in an app whose window is under the top strip. Nothing should
+      be swallowed.
+
+### Right-click context menu
+
+- [ ] **Right-click while collapsed**: right-click the physical notch. The
+      menu appears with the expand verb, a Widgets submenu, both Settings
+      items, Turn Off Notch, and Quit.
+- [ ] **Right-click while expanded and while a wing is showing**: both must
+      pop the same menu, and the panel must NOT collapse out from under the
+      open menu even though the cursor has left the notch to reach the items.
+- [ ] **Every item is enabled, not greyed**: the menu is popped from a
+      non-activating panel, so items are enabled explicitly rather than via
+      the responder chain.
+- [ ] **Widget checkmarks round-trip**: toggle a widget off from the submenu,
+      confirm it disappears from the notch's cycle AND that its toggle in
+      Settings → Notch flipped too; toggle it back on the same way.
+- [ ] **Notch Settings… jumps to the right tab**, both when Settings is closed
+      and when it's already open on a different tab.
+- [ ] **No double context menu**: right-click the collapsed notch while a
+      normal app window is underneath the top strip and confirm only Flux's
+      menu appears — the right-click target is confined to the menu-bar strip
+      precisely so the window beneath doesn't also pop its own.

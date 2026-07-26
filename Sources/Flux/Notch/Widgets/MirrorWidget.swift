@@ -125,8 +125,11 @@ private struct MirrorExpandedView: View {
     private var preview: some View {
         if service.isAvailable {
             ZStack(alignment: .bottom) {
+                // Corner rounding is applied by `PreviewContainerView`'s own
+                // layer rather than a SwiftUI `.clipShape`: the preview is a
+                // `CALayer` sublayer of an AppKit view, which a SwiftUI clip
+                // mask doesn't reliably reach.
                 CameraPreviewView(service: service)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 if !service.isRunning {
                     startingCaption
                 }
@@ -154,179 +157,102 @@ private struct MirrorExpandedView: View {
 
 // MARK: - Live preview (AppKit bridge)
 
-/// Hosts an `AVCaptureVideoPreviewLayer` bound to `service.session`. A plain
-/// `NSViewRepresentable` rather than any SwiftUI-native camera view, since
-/// SwiftUI has no such view — this is the standard AVFoundation-on-AppKit
-/// bridge.
+/// Hosts `CameraService.previewLayer`. A plain `NSViewRepresentable` rather
+/// than any SwiftUI-native camera view, since SwiftUI has no such view — this
+/// is the standard AVFoundation-on-AppKit bridge.
+///
+/// ## M12 crash fix: this view owns NO capture state
+/// It neither creates the preview layer nor touches its capture connection —
+/// it only re-parents the service's single, long-lived layer and keeps that
+/// layer's geometry matched to its own bounds. Both of the things it used to
+/// do (build a fresh `AVCaptureVideoPreviewLayer` per mount, and configure
+/// `AVCaptureConnection.isVideoMirrored` on a
+/// `.AVCaptureSessionDidStartRunning` observer plus a 500ms retry loop) were
+/// session mutations happening at SwiftUI's mount/teardown timing rather than
+/// the capture session's — which is precisely the timing that collapsing and
+/// expanding the notch scrambles. See `CameraService.previewLayer` and
+/// `CameraService.previewMirrorTransform` for the full reasoning.
 private struct CameraPreviewView: NSViewRepresentable {
     @ObservedObject var service: CameraService
 
     func makeNSView(context: Context) -> PreviewContainerView {
         let view = PreviewContainerView()
-        view.bind(to: service.session)
+        view.adopt(service.previewLayer)
         return view
     }
 
     func updateNSView(_ nsView: PreviewContainerView, context: Context) {
-        // Deliberately empty. `service.session` never changes identity across
-        // this `CameraService`'s lifetime (`session` is a `let`), so there's
-        // nothing to rebind here — and, crucially, mirroring is NOT
-        // reconfigured from here anymore: `updateNSView` runs on the main
-        // thread for *any* SwiftUI invalidation (the "Starting camera…"
-        // caption, the panel's blur-morph, a hover repaint, …), which can
-        // fire *while* `CameraService.start()`'s `startRunning()` is still in
-        // flight on the session queue. Touching the capture connection's
-        // mirror in that window races `startRunning()` and can throw an
-        // uncatchable `NSInvalidArgumentException` (see
-        // `CameraService.shouldConfigureMirroring`). Mirroring is instead
-        // configured only once the session has actually started, from the
-        // `.AVCaptureSessionDidStartRunning` observer set up in `bind(to:)`.
+        // Idempotent, and cheap when nothing changed — `adopt` no-ops if it's
+        // already hosting this exact layer. Re-asserted here (rather than
+        // only in `makeNSView`) because SwiftUI may reuse a representable's
+        // NSView across a re-render in which some *other* instance of this
+        // view took the shared layer away.
+        nsView.adopt(service.previewLayer)
     }
 
-    /// A plain `NSView` whose backing layer *is* the preview layer (rather
-    /// than a sublayer host), so `AVCaptureVideoPreviewLayer` automatically
-    /// tracks the view's size via AppKit's normal layer-backing resize
-    /// behavior, with no extra `layout()` override needed to keep the
-    /// preview layer's frame in sync.
+    /// A plain layer-backed `NSView` that HOSTS the service's shared preview
+    /// layer as a sublayer, and keeps its geometry matched to its own bounds.
+    ///
+    /// Deliberately a sublayer rather than the view's backing layer (which is
+    /// what this used to be): the layer outlives this view — it belongs to
+    /// `CameraService` — so it can't be handed to AppKit as a layer this view
+    /// owns and discards. Hosting it also means the geometry sync below is
+    /// explicit, which is what lets it be done with implicit CA animations
+    /// disabled: the notch panel resizes its content continuously through the
+    /// expand/collapse spring, and a preview layer that implicitly animated
+    /// each of those ~60-120 bounds changes visibly lagged and stretched
+    /// behind the shape it sits in.
     final class PreviewContainerView: NSView {
-        let previewLayer = AVCaptureVideoPreviewLayer()
+        /// Matches the expanded panel's inner corner rounding.
+        private static let cornerRadius: CGFloat = 16
 
-        /// Token for the `.AVCaptureSessionDidStartRunning` observer set up in
-        /// `bind(to:)` — held only so `deinit` can remove it.
-        private var didStartRunningObserver: NSObjectProtocol?
-
-        /// M8 fix: holds the retry loop started by `handleSessionDidStartRunning()`
-        /// for the case where the notification fires before `previewLayer.
-        /// connection` has actually materialized — see that method's doc
-        /// comment. At most one retry loop is ever in flight; cancelled here
-        /// in `deinit`, inside the loop itself once it succeeds or a new one
-        /// replaces it, and whenever a fresh `.AVCaptureSessionDidStartRunning`
-        /// arrives.
-        private var mirrorRetryTask: Task<Void, Never>?
+        /// The service-owned layer this view currently hosts, if any.
+        private weak var hostedLayer: CALayer?
 
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             wantsLayer = true
-            layer = previewLayer
-            previewLayer.videoGravity = .resizeAspectFill
+            layer?.cornerRadius = Self.cornerRadius
+            layer?.cornerCurve = .continuous
+            layer?.masksToBounds = true
         }
 
         required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
         }
 
-        deinit {
-            if let didStartRunningObserver {
-                NotificationCenter.default.removeObserver(didStartRunningObserver)
-            }
-            mirrorRetryTask?.cancel()
+        /// Re-parents `previewLayer` into this view. A no-op when it's already
+        /// hosted here, so `updateNSView` can call it on every SwiftUI
+        /// invalidation. `addSublayer` removes the layer from whatever
+        /// superlayer it had, which is exactly the handoff wanted when a
+        /// collapse's outgoing preview view is still alive (mid fade-out)
+        /// while an expand has already built its replacement.
+        func adopt(_ previewLayer: CALayer) {
+            // The second clause is what lets a view RE-adopt a layer some
+            // other instance took from it — without it, `hostedLayer` would
+            // still match and this view would stay permanently blank.
+            guard hostedLayer !== previewLayer || previewLayer.superlayer !== layer else { return }
+            hostedLayer = previewLayer
+            layer?.addSublayer(previewLayer)
+            layoutHostedLayer()
         }
 
-        /// Binds the preview layer to `session` and arranges for mirroring to
-        /// be configured at the one moment it's safe to: *after* the session
-        /// has actually started.
-        ///
-        /// The preview-layer connection's mirror must never be touched while
-        /// `CameraService.start()`'s `startRunning()` is still executing on
-        /// its session queue — doing so races that call and can throw an
-        /// uncatchable `NSInvalidArgumentException` (the crash this widget's
-        /// M6 code shipped with; see `CameraService.shouldConfigureMirroring`).
-        /// So rather than reconfigure on every SwiftUI update (the old,
-        /// racy `updateNSView` path), this observes
-        /// `.AVCaptureSessionDidStartRunning` — posted only once
-        /// `startRunning()` has returned and the session is genuinely up —
-        /// via `handleSessionDidStartRunning()`. `configureMirroringIfNeeded()`
-        /// is also called once here directly for the case where the session
-        /// is *already* running by the time this view mounts (a preview
-        /// re-created during a panel morph while the camera's still on),
-        /// which the notification alone would miss — that direct call
-        /// deliberately does NOT also fall through to the retry loop below:
-        /// if the session is already running and the connection still isn't
-        /// there yet, `.AVCaptureSessionDidStartRunning` won't fire again to
-        /// explain why, so there'd be nothing to retry against; the retry
-        /// loop only ever makes sense anchored to the notification actually
-        /// firing.
-        ///
-        /// `queue: .main` below is what makes it safe for the observer
-        /// closure (and everything it calls) to touch `previewLayer`/
-        /// `mirrorRetryTask` directly with no further hop — AVFoundation
-        /// posts this notification on an arbitrary background thread
-        /// otherwise, per Apple's own documentation, so this is deliberate,
-        /// not an oversight.
-        func bind(to session: AVCaptureSession) {
-            previewLayer.session = session
-            if didStartRunningObserver == nil {
-                didStartRunningObserver = NotificationCenter.default.addObserver(
-                    forName: .AVCaptureSessionDidStartRunning, object: session, queue: .main
-                ) { [weak self] _ in
-                    self?.handleSessionDidStartRunning()
-                }
-            }
-            configureMirroringIfNeeded()
+        override func layout() {
+            super.layout()
+            layoutHostedLayer()
         }
 
-        /// M8 fix: `.AVCaptureSessionDidStartRunning` firing doesn't
-        /// guarantee `previewLayer.connection` has actually materialized at
-        /// that exact instant — when it lands a beat later, the old
-        /// single-shot `configureMirroringIfNeeded()` call here would leave
-        /// this session's preview permanently unmirrored, since nothing else
-        /// ever re-tries. If the connection still isn't there right after
-        /// this fires, `scheduleMirrorConfigurationRetry()` polls for it a
-        /// few more times before giving up.
-        private func handleSessionDidStartRunning() {
-            configureMirroringIfNeeded()
-            guard previewLayer.connection == nil else { return }
-            scheduleMirrorConfigurationRetry()
-        }
-
-        /// Polls `configureMirroringIfNeeded()` up to 5 times, 100ms apart,
-        /// for the late-materializing-connection case described above. A
-        /// single Task at a time — a fresh call cancels whatever retry loop
-        /// was already running — and the loop bails out the moment a
-        /// connection actually shows up (whether or not mirroring itself
-        /// ends up configured for it, e.g. an unsupported device: at that
-        /// point there's a real connection to reason about, so further
-        /// blind polling wouldn't help).
-        private func scheduleMirrorConfigurationRetry() {
-            mirrorRetryTask?.cancel()
-            mirrorRetryTask = Task { @MainActor [weak self] in
-                for _ in 0..<5 {
-                    try? await Task.sleep(for: .milliseconds(100))
-                    guard !Task.isCancelled, let self else { return }
-                    self.configureMirroringIfNeeded()
-                    if self.previewLayer.connection != nil { return }
-                }
-            }
-        }
-
-        /// Flips the preview horizontally so it reads as an actual mirror —
-        /// what the user sees matches what they'd see holding up a physical
-        /// mirror, rather than the as-captured (left/right reversed from
-        /// that) image most camera *recording* apps intentionally show.
-        ///
-        /// Safe and idempotent to call repeatedly. It configures nothing until
-        /// `CameraService.shouldConfigureMirroring(sessionRunning:mirroringSupported:)`
-        /// says it's safe — see that function's doc comment for exactly which
-        /// two AVFoundation exceptions each gate prevents. Once past the gate,
-        /// `automaticallyAdjustsVideoMirroring` is forced `false` *immediately*
-        /// before `isVideoMirrored` is set (required, or the setter throws),
-        /// and both are written only when they'd actually change, so re-runs
-        /// (e.g. a second `.AVCaptureSessionDidStartRunning` after an
-        /// interruption restart) are no-ops.
-        func configureMirroringIfNeeded() {
-            guard let connection = previewLayer.connection,
-                  let session = previewLayer.session,
-                  CameraService.shouldConfigureMirroring(
-                    sessionRunning: session.isRunning,
-                    mirroringSupported: connection.isVideoMirroringSupported)
-            else { return }
-
-            if connection.automaticallyAdjustsVideoMirroring {
-                connection.automaticallyAdjustsVideoMirroring = false
-            }
-            if !connection.isVideoMirrored {
-                connection.isVideoMirrored = true
-            }
+        /// Sets `bounds`/`position` rather than `frame`: `frame` is a derived
+        /// property on a layer carrying a non-identity transform (this one
+        /// carries `CameraService.previewMirrorTransform`), so writing the two
+        /// underlying properties directly is the unambiguous form.
+        private func layoutHostedLayer() {
+            guard let hostedLayer, hostedLayer.superlayer === layer else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hostedLayer.bounds = CGRect(origin: .zero, size: bounds.size)
+            hostedLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            CATransaction.commit()
         }
     }
 }

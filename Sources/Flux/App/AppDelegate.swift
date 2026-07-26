@@ -133,6 +133,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arranger.setArranging(true)
             return true
         }
+        // Right-clicking the notch should feel like right-clicking the
+        // chevron does — same kind of menu, in the other place Flux draws
+        // itself. `NotchWindowController` decides *when* a right-click counts
+        // as on the notch; this closure is the only thing that knows what
+        // should be *in* the menu.
+        notchWindow.menuProvider = { [weak self] in self?.makeNotchMenu() ?? NSMenu() }
         // Screen changes (external display connect/disconnect, clamshell
         // open/close) flip `notchWindow.isPresenting` independently of every
         // settings toggle `notchActivityRouter` already reacts to.
@@ -463,6 +469,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
     }
+
+    // MARK: Notch context menu
+
+    /// Which `SettingsStore` flag backs each widget's enabled state — the one
+    /// mapping the menu's checkmark toggles need. Written as a table rather
+    /// than a `switch` in two places (read + write) so the two can't drift.
+    private static let widgetSettingKeys: [WidgetID: ReferenceWritableKeyPath<SettingsStore, Bool>] = [
+        .nowPlaying: \.notchNowPlayingEnabled,
+        .shelf: \.notchShelfEnabled,
+        .calendar: \.notchCalendarEnabled,
+        .mirror: \.notchMirrorEnabled,
+        .timers: \.notchTimersEnabled,
+        .clipboard: \.notchClipboardEnabled,
+    ]
+
+    /// Built fresh on every right-click (not cached) so every dynamic part —
+    /// the expand/collapse verb, the widget checkmarks — reflects the state
+    /// at the moment the menu opens rather than whenever it was last built.
+    private func makeNotchMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let isExpanded: Bool
+        if case .expanded = notchWindow.viewModel.state { isExpanded = true } else { isExpanded = false }
+        menu.addItem(makeNotchItem(isExpanded ? "Collapse Notch" : "Expand Notch",
+                                   #selector(notchMenuToggle)))
+
+        menu.addItem(.separator())
+
+        let widgets = NSMenuItem(title: "Widgets", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        // Walks `WidgetID.allCases` rather than `registry.enabledWidgets` on
+        // purpose: a *disabled* widget is exactly the one the user needs to
+        // find here to switch back on, and it's absent from `enabledWidgets`
+        // by definition.
+        for id in WidgetID.allCases {
+            guard let key = Self.widgetSettingKeys[id] else { continue }
+            let item = makeNotchItem(id.title, #selector(notchMenuToggleWidget))
+            item.state = settings[keyPath: key] ? .on : .off
+            item.image = NSImage(systemSymbolName: id.symbol, accessibilityDescription: nil)
+            item.representedObject = id.rawValue
+            submenu.addItem(item)
+        }
+        widgets.submenu = submenu
+        menu.addItem(widgets)
+
+        menu.addItem(.separator())
+        menu.addItem(makeNotchItem("Notch Settings…", #selector(notchMenuOpenNotchSettings)))
+        menu.addItem(makeNotchItem("Flux Settings…", #selector(notchMenuOpenSettings), key: ","))
+        menu.addItem(.separator())
+        menu.addItem(makeNotchItem("Turn Off Notch", #selector(notchMenuDisable)))
+        menu.addItem(.separator())
+        menu.addItem(makeNotchItem("Quit Flux", #selector(notchMenuQuit), key: "q"))
+        return menu
+    }
+
+    /// `isEnabled` is set explicitly because `menu.autoenablesItems` is off —
+    /// with automatic enabling on, AppKit validates against the responder
+    /// chain, and a menu popped from a non-activating panel in an accessory
+    /// app has no useful responder chain to validate against, so every item
+    /// would come up greyed out.
+    private func makeNotchItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = self
+        item.isEnabled = true
+        return item
+    }
+
+    @objc private func notchMenuToggle() { notchWindow.hotkeyToggled() }
+
+    @objc private func notchMenuToggleWidget(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let id = WidgetID(rawValue: raw),
+              let key = Self.widgetSettingKeys[id] else { return }
+        // Written through `settings` (not `registry.setEnabled` directly) so
+        // the change persists and the Settings window's own toggle updates
+        // with it — the registry is driven from the settings sink in
+        // `observeNotchSettings()`.
+        settings[keyPath: key].toggle()
+    }
+
+    @objc private func notchMenuOpenNotchSettings() { settingsWindow.show(tab: .notch) }
+
+    @objc private func notchMenuOpenSettings() { openSettings() }
+
+    @objc private func notchMenuDisable() { settings.notchEnabled = false }
+
+    @objc private func notchMenuQuit() { NSApp.terminate(nil) }
 
     // MARK: Software update
 
