@@ -112,20 +112,24 @@ final class PowerMonitor {
 
     /// Tears the run-loop source down and forgets the last-seen state, so a
     /// later `start()` begins with a clean baseline (a stale `previousState`
-    /// diffed against a fresh first read could otherwise fire a bogus event
-    /// for a transition that happened entirely while stopped). Also resets
-    /// the low-battery hysteresis (`lowBatteryArmed`) back to its armed
-    /// default — without this, stopping while disarmed (i.e. right after a
-    /// `.lowBattery` fired, before it recovered) and later restarting would
-    /// keep the monitor silently disarmed against a `previousState` it no
-    /// longer has any memory of, missing the very first recovery crossing
-    /// (`.batteryRecovered`) it should have caught after coming back up.
+    /// diffed against a fresh first read could otherwise fire a bogus
+    /// plug/unplug event for a transition that happened entirely while
+    /// stopped).
+    ///
+    /// `lowBatteryArmed` is deliberately NOT reset here. It used to be, so
+    /// the monitor couldn't come back up silently disarmed with no memory of
+    /// what disarmed it — but `refresh()` now evaluates the low-battery rule
+    /// on its very first sample, which covers that properly: a restart that
+    /// finds the battery already recovered emits `.batteryRecovered` and
+    /// re-arms on its own. Re-arming here instead caused the opposite and
+    /// worse bug: `NotchActivityRouter` stops and starts this monitor on
+    /// every screen change, lid open/close and settings toggle, so each of
+    /// those would re-fire the low-battery wing for the same discharge.
     func stop() {
         guard let runLoopSource else { return }
         CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         self.runLoopSource = nil
         previousState = nil
-        lowBatteryArmed = true
     }
 
     deinit {
@@ -145,10 +149,29 @@ final class PowerMonitor {
         let previous = previousState
         previousState = snapshot
 
-        // First read after (re)starting: nothing to diff against yet, so no
-        // event — only a real transition between two observed snapshots
-        // counts.
-        guard let previous else { return }
+        // First read after (re)starting. Plug/unplug is a genuine TRANSITION
+        // — with nothing to diff against, there is no event to derive and
+        // claiming one would be a lie.
+        //
+        // Low battery is not a transition, it's a LEVEL, and skipping it here
+        // was a real bug: this monitor is stopped and restarted on every
+        // screen change, lid open/close and settings toggle, and after each
+        // restart the percent can only ever fall — so it could never again
+        // cross 20% *from above*, and the low-battery wing was suppressed for
+        // the rest of that entire discharge. Close the lid at 15% on an
+        // external display and you'd never be warned again.
+        //
+        // `lowBatteryEvent` doesn't consult `previous` at all (see its doc
+        // comment — `armed` carries all the history the rule needs), so
+        // passing the snapshot as its own predecessor is honest rather than a
+        // fudge, and `armed` surviving `stop()` is what keeps this from
+        // re-firing on every restart.
+        guard let previous else {
+            if let low = Self.lowBatteryEvent(previous: snapshot, current: snapshot, armed: &lowBatteryArmed) {
+                events.send(low)
+            }
+            return
+        }
 
         if let plug = Self.plugEvent(previous: previous, current: snapshot) {
             events.send(plug)

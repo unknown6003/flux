@@ -25,16 +25,71 @@ enum MenuBarSpacing {
     private static let user = kCFPreferencesCurrentUser
     private static let host = kCFPreferencesCurrentHost
 
-    /// True when Flux's compact spacing is currently in effect (the key is set).
+    /// True when **Flux's** compact spacing is in effect — i.e. the key holds
+    /// exactly `compactValue`, not merely *some* value.
+    ///
+    /// This used to be `!= nil`, which read any pre-existing spacing (set by
+    /// the user with `defaults write`, or by Ice/Bartender) as Flux's own.
+    /// The toggle then showed ON at launch for a value Flux never wrote, and
+    /// switching it off called `apply(compact: false)` — which cleared the
+    /// key outright, destroying that setting instead of restoring it.
     static var isCompact: Bool {
-        (CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int) != nil
+        (CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int) == compactValue
     }
 
-    /// Write (compact) or clear (restore the system default) both spacing keys.
+    /// Write (compact) or restore both spacing keys.
+    ///
+    /// Turning compact ON stashes whatever was already there; turning it OFF
+    /// puts that back, falling through to clearing the key (the true system
+    /// default) only when there was nothing to restore. Blindly writing `nil`
+    /// on the way out is what used to eat a user's own `NSStatusItemSpacing`.
     static func apply(compact: Bool) {
-        let value: CFPropertyList? = compact ? NSNumber(value: compactValue) : nil
-        CFPreferencesSetValue(spacingKey, value, appID, user, host)
-        CFPreferencesSetValue(paddingKey, value, appID, user, host)
+        if compact {
+            stashCurrentValuesIfNeeded()
+            let value = NSNumber(value: compactValue) as CFPropertyList
+            CFPreferencesSetValue(spacingKey, value, appID, user, host)
+            CFPreferencesSetValue(paddingKey, value, appID, user, host)
+        } else {
+            CFPreferencesSetValue(spacingKey, stashedValue(forKey: stashedSpacingKey), appID, user, host)
+            CFPreferencesSetValue(paddingKey, stashedValue(forKey: stashedPaddingKey), appID, user, host)
+            UserDefaults.standard.removeObject(forKey: stashedSpacingKey)
+            UserDefaults.standard.removeObject(forKey: stashedPaddingKey)
+        }
         CFPreferencesSynchronize(appID, user, host)
+    }
+
+    // MARK: - Restore stash
+    //
+    // Kept in Flux's OWN defaults domain, not the global one being edited:
+    // this is Flux's bookkeeping about someone else's setting, and it must
+    // not itself become another stray key in the global domain.
+
+    private static let stashedSpacingKey = "flux.menuBar.previousStatusItemSpacing"
+    private static let stashedPaddingKey = "flux.menuBar.previousStatusItemSelectionPadding"
+
+    /// Records the pre-Flux values exactly once per compact session. Guarded
+    /// on `isCompact` so re-applying (a settings sink re-delivering on launch,
+    /// say) can't overwrite the real originals with Flux's own `compactValue`.
+    private static func stashCurrentValuesIfNeeded() {
+        guard !isCompact else { return }
+        stash(CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int, forKey: stashedSpacingKey)
+        stash(CFPreferencesCopyValue(paddingKey, appID, user, host) as? Int, forKey: stashedPaddingKey)
+    }
+
+    private static func stash(_ value: Int?, forKey key: String) {
+        if let value {
+            UserDefaults.standard.set(value, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    /// The stashed original, as something `CFPreferencesSetValue` accepts —
+    /// `nil` (clear the key, restoring the true system default) when nothing
+    /// was stashed, which is the common case of a user who never had a custom
+    /// spacing to begin with.
+    private static func stashedValue(forKey key: String) -> CFPropertyList? {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
+        return NSNumber(value: UserDefaults.standard.integer(forKey: key)) as CFPropertyList
     }
 }

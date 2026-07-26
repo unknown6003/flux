@@ -37,6 +37,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private static let contentWidth: CGFloat = 480
 
     func show() {
+        // A failure or a since-deleted download from an earlier session isn't
+        // news; clearing it here means the General tab's update card opens
+        // showing what's true now rather than a stale verdict.
+        updater.clearStaleOutcome()
         if window == nil {
             window = makeWindow()
             sizeToNaturalHeight()          // first open: fit content, clamp to screen, center

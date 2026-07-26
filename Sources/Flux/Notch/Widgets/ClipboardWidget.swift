@@ -164,6 +164,40 @@ private struct ClipboardRow: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: handleTap)
         .onHover { isHovering = $0 }
+        // Image/"other" entries have nothing to copy back, so they must not
+        // advertise themselves as tappable: no hover lift, dimmed, and no
+        // accessibility action. They used to look and highlight exactly like
+        // a copyable row and then do nothing at all when clicked.
+        .opacity(isCopyable ? 1 : NotchDesign.secondaryOpacity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isCopyable ? .isButton : [])
+        // The remove control is hover-only, so without this it doesn't exist
+        // in the accessibility tree — and, for anyone not using a pointer,
+        // doesn't exist at all. A context menu is reachable either way.
+        .contextMenu {
+            if isCopyable {
+                Button("Copy") { handleTap() }
+            }
+            Button("Remove", role: .destructive) { monitor.remove(entry.id) }
+        }
+    }
+
+    /// Whether this entry can actually be copied back — see `handleTap`.
+    private var isCopyable: Bool {
+        entry.fullString != nil || entry.filePaths != nil
+    }
+
+    private var accessibilityLabel: String {
+        let kind: String
+        switch entry.kind {
+        case .text: kind = "Text"
+        case .url: kind = "Link"
+        case .image: kind = "Image"
+        case .file: kind = "File"
+        case .other: kind = "Clipboard item"
+        }
+        return isCopyable ? "\(kind): \(entry.preview)" : "\(kind): \(entry.preview), not copyable"
     }
 
     /// A checkmark takes priority over the hover ✕ while the 1s copy
@@ -174,7 +208,11 @@ private struct ClipboardRow: View {
         if didConfirmCopy {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.white)
-        } else if isHovering {
+        } else {
+            // Always built, faded rather than conditionally created: a view
+            // that only exists while hovered also only exists in the
+            // accessibility tree while hovered, which puts the sole remove
+            // control out of reach of anyone not using a pointer.
             Button {
                 monitor.remove(entry.id)
             } label: {
@@ -182,6 +220,9 @@ private struct ClipboardRow: View {
                     .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
             }
             .buttonStyle(.plain)
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+            .accessibilityLabel("Remove clipboard item")
         }
     }
 
@@ -190,7 +231,7 @@ private struct ClipboardRow: View {
     /// tapping one of those rows is a deliberate no-op rather than silently
     /// clearing the pasteboard.
     private func handleTap() {
-        guard entry.fullString != nil || entry.filePaths != nil else { return }
+        guard isCopyable else { return }
         monitor.copyBack(entry.id)
         withAnimation(.easeInOut(duration: 0.15)) { didConfirmCopy = true }
         Task { @MainActor in

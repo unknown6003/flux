@@ -86,6 +86,7 @@ final class MediaRemoteAdapterSource {
     }
 
     deinit {
+        restartTask?.cancel()
         stdout?.fileHandleForReading.readabilityHandler = nil
         process?.terminationHandler = nil
         if process?.isRunning == true { process?.terminate() }
@@ -135,6 +136,16 @@ final class MediaRemoteAdapterSource {
     }
 
     func stop() {
+        // Cancelled unconditionally, before the `process == nil` bail below:
+        // a stop arriving *between* an unexpected exit and its scheduled
+        // restart has no process to tear down, but it absolutely must stop
+        // that restart from relaunching the helper after the owner asked for
+        // it to be off. Clearing the attempt count here is also what makes
+        // reopening the widget a clean slate after the retry budget ran out.
+        restartTask?.cancel()
+        restartTask = nil
+        restartAttempts = 0
+
         guard let process else { return }
         stdout?.fileHandleForReading.readabilityHandler = nil
         process.terminationHandler = nil
@@ -265,6 +276,25 @@ final class MediaRemoteAdapterSource {
         stateSubject.send(state)
     }
 
+    /// Consecutive UNEXPECTED exits since the last explicit `stop()`. Bounds
+    /// the restart loop below, so a permanently-broken adapter (an OS update
+    /// that locks MediaRemote down, a missing perl) retries a few times and
+    /// then stays quiet rather than relaunching a doomed subprocess forever.
+    private var restartAttempts = 0
+    private var restartTask: Task<Void, Never>?
+    private static let maxRestartAttempts = 3
+
+    /// The stream subprocess died on its own. `stop()` clears
+    /// `terminationHandler` before terminating, so reaching here always means
+    /// an *unexpected* exit — the owner still wants Now Playing running.
+    ///
+    /// Nothing used to retry, and nothing else would: `NowPlayingService.
+    /// setActive(true)` is `start()`'s only caller and it's guarded on the
+    /// active flag actually changing, so a widget that was already open never
+    /// re-armed it. One perl/MediaRemote hiccup therefore left the panel
+    /// stuck on "Nothing playing" until the user happened to swipe to another
+    /// widget and back. A bounded, backing-off restart fixes that without
+    /// turning a hard failure into a hot loop.
     private func handleTermination() {
         stdout?.fileHandleForReading.readabilityHandler = nil
         process = nil
@@ -272,7 +302,25 @@ final class MediaRemoteAdapterSource {
         resetAccumulatedState()
         isAvailable = false
         stateSubject.send(nil)
-        nowPlayingLog.notice("mediaremote-adapter stream process exited — Now Playing adapter unavailable")
+
+        guard restartAttempts < Self.maxRestartAttempts else {
+            nowPlayingLog.error(
+                "mediaremote-adapter stream exited repeatedly — giving up until Now Playing is reopened")
+            return
+        }
+        restartAttempts += 1
+        let attempt = restartAttempts
+        nowPlayingLog.notice(
+            "mediaremote-adapter stream process exited — restarting (attempt \(attempt, privacy: .public))")
+        restartTask?.cancel()
+        restartTask = Task { @MainActor [weak self] in
+            // 2s, 4s, 8s: long enough that a system briefly refusing to launch
+            // the helper isn't hammered, short enough that a transient blip is
+            // invisible to anyone watching the panel.
+            try? await Task.sleep(for: .seconds(1 << attempt))
+            guard !Task.isCancelled, let self, self.process == nil else { return }
+            self.start()
+        }
     }
 
     private func resetAccumulatedState() {

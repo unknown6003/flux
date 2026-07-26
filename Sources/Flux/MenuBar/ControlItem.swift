@@ -232,7 +232,10 @@ final class ControlItem {
     /// Collapse (hide left-neighbours) or reveal them. `NSStatusItem.length` is
     /// set directly: it isn't reliably animatable, and an instant change is both
     /// snappier and more robust than fighting the animator proxy.
-    func setCollapsed(_ collapsed: Bool, animated: Bool) {
+    /// (No `animated:` parameter: an earlier signature took one and never
+    /// read it, so five call sites were threading through a value that could
+    /// not possibly do anything.)
+    func setCollapsed(_ collapsed: Bool) {
         guard role == .divider else { return }
         let target = collapsed ? ControlItem.collapsedWidth : ControlItem.revealedWidth
         guard abs(statusItem.length - target) > 0.5 else { return }

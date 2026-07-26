@@ -50,12 +50,12 @@ enum SelfTest {
         check(chevron.statusItem.button?.image != nil,
               "Chevron control item shows an icon")
 
-        divider.setCollapsed(true, animated: false)
+        divider.setCollapsed(true)
         let collapsed = divider.statusItem.length
         check(collapsed > 5_000,
               "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
 
-        divider.setCollapsed(false, animated: false)
+        divider.setCollapsed(false)
         let revealed = divider.statusItem.length
         check(revealed < 5,
               "Revealing shrinks the divider to \(revealed)pt → neighbours return")
@@ -156,7 +156,7 @@ enum SelfTest {
               "Both dividers shrink when everything is revealed")
 
         // Collapse back to the resting state.
-        manager.collapse(animated: false)
+        manager.collapse()
         let s3 = manager.diagnostics
         check(!s3.revealHidden && !s3.revealAlwaysHidden, "Collapse hides every zone again")
         check(isHidden(s3.hiddenDividerLength) && isHidden(s3.alwaysHiddenDividerLength),
@@ -797,10 +797,12 @@ enum SelfTest {
         let shelfSrc1 = makeShelfSourceFile(named: "hello.txt", in: shelfSourceDir, contents: "hello shelf")
         let shelfStore1 = ShelfStore(directory: shelfDirA)
         let shelfAdded1 = shelfStore1.add(urls: [shelfSrc1])
-        check(shelfAdded1.count == 1,
+        check(shelfAdded1.added.count == 1,
               "Shelf: add() copies a single dropped file and returns exactly the item added")
+        check(shelfAdded1.accepted == 1 && shelfAdded1.queued == 0,
+              "Shelf: a small file is accepted synchronously — nothing left queued in the background")
 
-        if let shelfItem1 = shelfAdded1.first {
+        if let shelfItem1 = shelfAdded1.added.first {
             check(shelfStore1.items.contains(where: { $0.id == shelfItem1.id }),
                   "Shelf: the added item appears in items")
             check(FileManager.default.fileExists(atPath: shelfItem1.storedURL(in: shelfDirA).path),
@@ -835,7 +837,7 @@ enum SelfTest {
         // loads what the first one persisted.
         let shelfSrc2 = makeShelfSourceFile(named: "world.txt", in: shelfSourceDir, contents: "world shelf")
         let shelfAdded2 = shelfStore1.add(urls: [shelfSrc2])
-        if let shelfItem2 = shelfAdded2.first {
+        if let shelfItem2 = shelfAdded2.added.first {
             let shelfStore2 = ShelfStore(directory: shelfDirA)
             check(shelfStore2.items.contains(where: { $0.id == shelfItem2.id && $0.fileName == "world.txt" }),
                   "Shelf: persistence — a fresh ShelfStore on the same directory loads the manifest")
@@ -1987,6 +1989,16 @@ enum SelfTest {
         check(TimersWidget.formatCountdown(5) == "0:05", "TimersWidget: formatCountdown zero-pads seconds under 10")
         check(TimersWidget.formatCountdown(-3) == "0:00", "TimersWidget: formatCountdown never shows a negative value")
         check(TimersWidget.formatCountdown(.infinity) == "0:00", "TimersWidget: formatCountdown guards a non-finite input")
+        // `customMinutesRange` allows up to 120 minutes, and a plain m:ss
+        // rendered that as "120:00" — a malformed clock, not a long one.
+        check(TimersWidget.formatCountdown(3599) == "59:59",
+              "TimersWidget: formatCountdown stays m:ss right up to the hour boundary")
+        check(TimersWidget.formatCountdown(3600) == "1:00:00",
+              "TimersWidget: formatCountdown rolls over to h:mm:ss at exactly one hour")
+        check(TimersWidget.formatCountdown(120 * 60) == "2:00:00",
+              "TimersWidget: formatCountdown renders the longest allowed timer (120 min) as 2:00:00, not 120:00")
+        check(TimersWidget.formatCountdown(3661) == "1:01:01",
+              "TimersWidget: formatCountdown zero-pads both minutes and seconds past an hour")
 
         // --- M6 fix: TimersWidget.formatAmbientRemaining — the ambient wing's
         // own format, deliberately different from formatCountdown above:

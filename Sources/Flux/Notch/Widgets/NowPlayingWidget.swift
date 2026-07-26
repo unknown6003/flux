@@ -300,26 +300,32 @@ private struct NowPlayingExpandedView: View {
     private func transportRow(_ state: NowPlayingState) -> some View {
         HStack {
             Spacer()
-            transportButton("backward.fill", size: 17) { service.send(.previous) }
+            transportButton("backward.fill", size: 17, label: "Previous track") { service.send(.previous) }
             Spacer()
-            transportButton(state.isPlaying ? "pause.fill" : "play.fill", size: 22, prominent: true) {
+            transportButton(state.isPlaying ? "pause.fill" : "play.fill", size: 22, prominent: true,
+                            label: state.isPlaying ? "Pause" : "Play") {
                 service.send(.togglePlayPause)
             }
             Spacer()
-            transportButton("forward.fill", size: 17) { service.send(.next) }
+            transportButton("forward.fill", size: 17, label: "Next track") { service.send(.next) }
             Spacer()
             sourceButton(state)
             Spacer()
         }
     }
 
-    private func transportButton(_ systemName: String, size: CGFloat, prominent: Bool = false, action: @escaping () -> Void) -> some View {
+    /// `label` is required, not optional: these are glyph-only controls, so
+    /// without it VoiceOver announces every one of them as an unnamed
+    /// "button" and the transport row is unusable.
+    private func transportButton(_ systemName: String, size: CGFloat, prominent: Bool = false,
+                                 label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: prominent ? .semibold : .medium))
                 .foregroundStyle(Color.white)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     /// A generic "output" glyph rather than a per-app icon — mapping bundle
@@ -338,5 +344,6 @@ private struct NowPlayingExpandedView: View {
                 .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Open the app that\u{2019}s playing")
     }
 }

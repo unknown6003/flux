@@ -77,7 +77,9 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(autoRehide, forKey: Keys.autoRehide) }
     }
 
-    /// Seconds before revealed items collapse again. 0 disables the timer.
+    /// Seconds before revealed items collapse again. Always positive — the
+    /// `autoRehide` toggle, not a zero value, is what turns the timer off
+    /// (the Settings slider's range starts at 2).
     @Published var autoRehideDelay: Double {
         didSet { defaults.set(autoRehideDelay, forKey: Keys.autoRehideDelay) }
     }

@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar = MenuBarManager(settings: settings, arranger: arranger) { [weak self] in
             self?.openSettings()
         }
+        // Lets a background-found update surface somewhere the user actually
+        // looks — see `MenuBarManager.pendingUpdateVersion`.
+        menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
 
         // Reconcile the login-item registration with the saved preference. The OS
         // is the source of truth, so push the actual state back into settings.
@@ -123,7 +126,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // level (see `NotchPanel`/`NotchWindowController`), which has no
         // knowledge of `ShelfStore` itself — this is the one place that
         // knowledge gap is bridged.
-        notchWindow.onShelfDrop = { [weak self] urls in self?.shelfStore.add(urls: urls).count ?? 0 }
+        // `.accepted`, not `.added.count` — see `ShelfStore.AddResult`. A
+        // folder or a large file copies in the background, so counting only
+        // what finished synchronously made every such drop report zero, which
+        // `handlePerformDrag` turns into a declined drag (macOS animates the
+        // file snapping back) for something it accepted perfectly well.
+        notchWindow.onShelfDrop = { [weak self] urls in self?.shelfStore.add(urls: urls).accepted ?? 0 }
         // A tap on the overflow indicator's wings should open Arrange Mode,
         // same as the legacy `NotchHighlightWindowController` glow's
         // `onActivate` — not toggle the notch panel itself, which is what a
@@ -161,8 +169,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeSettings() {
         settings.$launchAtLogin
             .dropFirst()
-            .sink { enabled in
-                _ = LoginItemManager.setEnabled(enabled)
+            .sink { [weak self] enabled in
+                // `setEnabled` swallows the throw and hands back the state
+                // that ACTUALLY resulted — registration legitimately fails
+                // when the user hasn't approved Flux under System Settings ›
+                // General › Login Items. Discarding that (as this used to)
+                // left the switch showing "on" for something macOS refused,
+                // so Flux quietly didn't launch at login and nothing said so.
+                // Launch already reconciles this way; a live toggle now does
+                // too. The inequality guard is load-bearing: writing the same
+                // value back would re-enter this sink through the property's
+                // own `didSet`.
+                let actual = LoginItemManager.setEnabled(enabled)
+                if actual != enabled {
+                    self?.settings.launchAtLogin = actual
+                }
             }
             .store(in: &cancellables)
 
@@ -490,6 +511,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeNotchMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+
+        // Same signpost the chevron's menu carries — see
+        // `MenuBarManager.pendingUpdateVersion`.
+        if let version = updater.pendingRelease?.version {
+            let item = makeNotchItem("Update to \(version)…", #selector(notchMenuOpenSettings))
+            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         let isExpanded: Bool
         if case .expanded = notchWindow.viewModel.state { isExpanded = true } else { isExpanded = false }

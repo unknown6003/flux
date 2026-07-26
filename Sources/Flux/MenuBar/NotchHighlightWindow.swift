@@ -85,8 +85,16 @@ final class NotchHighlightWindowController {
     }
 
     private func show() {
-        // Only meaningful on a notched screen; elsewhere there's nothing to hug.
-        guard let screen = NSScreen.main, let notch = screen.notchRect else { hide(); return }
+        // Only meaningful on a notched screen; elsewhere there's nothing to
+        // hug. `builtInNotchedScreen`, NOT `NSScreen.main`: "main" is the
+        // screen holding the key window, which for an accessory app is
+        // wherever the user's frontmost app happens to be. On a MacBook
+        // driving an external display, with focus on the external, that
+        // resolved to a screen with no notch — so this overlay silently never
+        // appeared even while icons genuinely were clipped behind the
+        // built-in one. Every other notch consumer in the app already uses
+        // `builtInNotchedScreen`; this was the odd one out.
+        guard let screen = NSScreen.builtInNotchedScreen, let notch = screen.notchRect else { hide(); return }
         let panel = self.panel ?? makePanel(notch: notch)
         self.panel = panel
         position(panel, notch: notch, screen: screen)

@@ -40,9 +40,15 @@ struct PermissionGatedView<Content: View>: View {
             case .notDetermined:
                 explainer(message: notDeterminedMessage, actionTitle: "Grant Access",
                           action: { permissions.request(kind) })
-            case .denied, .restricted, .unavailable:
+            case .denied, .unavailable:
                 explainer(message: deniedMessage, actionTitle: "Open System Settings",
                           action: { permissions.openSystemSettings(kind) })
+            // No action for `.restricted`: an MDM/parental-controls policy
+            // greys the System Settings toggle out, so the button would take
+            // the user somewhere they can't change anything. Same reasoning
+            // as `PermissionRow.actionButton`.
+            case .restricted:
+                explainer(message: deniedMessage, actionTitle: nil, action: {})
             case .granted:
                 content()
             }
@@ -50,7 +56,11 @@ struct PermissionGatedView<Content: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func explainer(message: String, actionTitle: String, action: @escaping () -> Void) -> some View {
+    /// `actionTitle` is optional: `.restricted` gets the explanation with no
+    /// button, since there's nothing the user can do about a device policy
+    /// and deep-linking to a greyed-out System Settings toggle just wastes
+    /// the trip.
+    private func explainer(message: String, actionTitle: String?, action: @escaping () -> Void) -> some View {
         VStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 26))
@@ -60,9 +70,11 @@ struct PermissionGatedView<Content: View>: View {
                 .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(actionTitle, action: action)
-                .buttonStyle(.notchCapsule)
-                .frame(width: 170)
+            if let actionTitle {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.notchCapsule)
+                    .frame(width: 170)
+            }
         }
         .padding(.horizontal, NotchDesign.space3)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
