@@ -572,9 +572,13 @@ final class NotchWindowController {
               contextMenuRect.contains(local),
               let menu = menuProvider?() else { return }
 
+        // Set SYNCHRONOUSLY, not inside the block below: two right-clicks
+        // landing before the first block runs would both pass the guard
+        // above and queue two `popUp` calls, so the menu would reopen by
+        // itself the moment the user dismissed it.
+        isShowingMenu = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.isShowingMenu = true
             // `in: nil` makes `location` a screen coordinate, which is what
             // the monitors already hand us.
             menu.popUp(positioning: nil, at: location, in: nil)
