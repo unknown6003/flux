@@ -169,9 +169,12 @@ private struct ClipboardRow: View {
         // accessibility action. They used to look and highlight exactly like
         // a copyable row and then do nothing at all when clicked.
         .opacity(isCopyable ? 1 : NotchDesign.secondaryOpacity)
-        .accessibilityElement(children: .combine)
+        // `.contain`, NOT `.combine`: combining would fold the remove button
+        // into a single element for the whole row, which is the exact
+        // opposite of what the change just below is for — that button has to
+        // stay separately focusable and actionable.
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityAddTraits(isCopyable ? .isButton : [])
         // The remove control is hover-only, so without this it doesn't exist
         // in the accessibility tree — and, for anyone not using a pointer,
         // doesn't exist at all. A context menu is reachable either way.
