@@ -204,12 +204,6 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - Inputs
 
-    /// Debounced hover containment. `inside` is `interactiveRect.contains(point)`,
-    /// recomputed by the hosting view on every enter/exit/moved event — so this
-    /// is called far more often than the hover state actually changes; the
-    /// `isHovering` guard below turns the redundant calls into no-ops instead
-    /// of continuously restarting the open/close delay while the cursor merely
-    /// wanders inside (or stays outside) the same region.
     /// Suppresses every hover input while something modal is on top of the
     /// notch — currently the right-click context menu.
     ///
@@ -273,6 +267,13 @@ final class NotchViewModel: ObservableObject {
         hoverChanged(inside: inside)
     }
 
+    /// Debounced hover containment. `inside` is the pointer's containment in
+    /// whichever rect is relevant for the current state, recomputed on every
+    /// enter/exit/moved event — so this is called far more often than the
+    /// hover state actually changes; the `isHovering` guard below turns the
+    /// redundant calls into no-ops instead of continuously restarting the
+    /// open/close delay while the cursor merely wanders inside (or stays
+    /// outside) the same region.
     func hoverChanged(inside: Bool) {
         guard !suppressHover else { return }
         // `mouseMoved` redelivers on every pixel of movement inside/outside the

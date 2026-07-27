@@ -287,6 +287,11 @@ private struct CameraPreviewView: NSViewRepresentable {
             } else {
                 hostedLayer.removeFromSuperlayer()
             }
+            // Drop the claim as well as the layer. Nothing in this app
+            // re-inserts a departed preview view, but if anything ever did,
+            // a stale `hostedLayer` would make it steal back from whichever
+            // view legitimately owns the layer by then.
+            self.hostedLayer = nil
         }
 
         override func layout() {

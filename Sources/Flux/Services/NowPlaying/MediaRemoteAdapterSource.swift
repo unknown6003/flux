@@ -133,6 +133,19 @@ final class MediaRemoteAdapterSource {
             launchedAt = Date()
         } catch {
             nowPlayingLog.error("Failed to launch mediaremote-adapter stream: \(error.localizedDescription)")
+            // Tear the handlers down BEFORE scheduling anything. They were
+            // installed above, in anticipation of a launch that then didn't
+            // happen, and `stdout`/`process` were never assigned — so neither
+            // `stop()` nor `handleTermination()` can ever reach them, and the
+            // pipe's read end goes to EOF the moment `outPipe` falls out of
+            // scope. A `readabilityHandler` left on an EOF descriptor wakes
+            // in a tight loop forever (`availableData` empty every time,
+            // which the closure's own emptiness guard silently absorbs). One
+            // leaked spinner was bad; the retry below would have made it four
+            // on exactly the permanently-broken-perl box the retry exists for.
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            proc.terminationHandler = nil
+
             // A launch that never happened produces no process, so no
             // `terminationHandler` will ever fire and nothing downstream
             // would schedule a retry — one transient failure (a momentarily
@@ -148,8 +161,13 @@ final class MediaRemoteAdapterSource {
         // a stop arriving *between* an unexpected exit and its scheduled
         // restart has no process to tear down, but it absolutely must stop
         // that restart from relaunching the helper after the owner asked for
-        // it to be off. Clearing the attempt count here is also what makes
-        // reopening the widget a clean slate after the retry budget ran out.
+        // it to be off.
+        //
+        // The attempt count is cleared here too, but do NOT rely on that as
+        // the recovery route: nothing in the app currently calls this method
+        // at all (`NowPlayingService` deliberately leaves the stream running
+        // while inactive). Recovering an exhausted budget is
+        // `handleTermination()`'s credit-on-survival, not this.
         restartTask?.cancel()
         restartTask = nil
         restartAttempts = 0
