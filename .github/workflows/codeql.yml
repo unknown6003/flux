@@ -13,8 +13,14 @@ name: CodeQL
 # should be visible, not blocking.
 
 on:
+  # `push` is scoped to main only, deliberately. Adding feature branches here
+  # would double every branch push: the branch's own `push` event and the
+  # PR's `pull_request` event are different refs, so the concurrency group
+  # below doesn't collapse them, and each one spins up a macOS runner. The
+  # `pull_request` trigger already covers branch work — which is also where
+  # the findings are useful, since that's where they render as annotations.
   push:
-    branches: [main, 'notch-**']
+    branches: [main]
   pull_request:
     branches: [main]
   schedule:
