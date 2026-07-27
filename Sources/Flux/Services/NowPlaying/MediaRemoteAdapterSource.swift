@@ -358,8 +358,12 @@ final class MediaRemoteAdapterSource {
         if let launchedAt, Date().timeIntervalSince(launchedAt) > Self.healthyUptime {
             restartAttempts = 0
         }
-        // Cleared unconditionally: a buffered `consume` hopping to the main
-        // actor after the process died must not credit a run that's over.
+        // No run is in flight once this returns, and `launchedAt` is only
+        // meaningful between a successful `run()` and its matching
+        // termination. (This deliberately does NOT say anything about
+        // `consume` — crediting from there was removed as wrong, for the
+        // reason given just above, and a comment implying otherwise would
+        // invite someone to put it back.)
         launchedAt = nil
         resetAccumulatedState()
         isAvailable = false

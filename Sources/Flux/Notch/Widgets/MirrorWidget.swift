@@ -206,7 +206,12 @@ private struct CameraPreviewView: NSViewRepresentable {
         /// Matches the expanded panel's inner corner rounding.
         private static let cornerRadius: CGFloat = 16
 
-        /// The service-owned layer this view currently hosts, if any.
+        /// This view's CLAIM on the service-owned layer — deliberately not
+        /// "the layer this view hosts". `adopt` records it even when the view
+        /// has no window yet and therefore didn't re-parent anything, which
+        /// is exactly what lets such a view take the layer once it arrives.
+        /// Whether this view actually holds the layer right now is a
+        /// different question, answered by `hostedLayer.superlayer === layer`.
         private weak var hostedLayer: CALayer?
 
         /// Every live host, weakly. Exists so a view LEAVING the window can
@@ -281,6 +286,12 @@ private struct CameraPreviewView: NSViewRepresentable {
                 adopt(hostedLayer)
                 return
             }
+            // Leaving (or not yet arrived) without actually holding the
+            // layer: nothing to hand over. The claim is deliberately KEPT
+            // here rather than cleared — AppKit also fires this with a nil
+            // window when a view is added to a window-less superview, and
+            // that view still needs its claim to adopt when it lands. (So
+            // the nil write below must stay below this guard, not above it.)
             guard hostedLayer.superlayer === layer else { return }
             if let successor = Self.liveHosts.allObjects.first(where: { $0 !== self && $0.window != nil }) {
                 successor.adopt(hostedLayer)
