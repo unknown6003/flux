@@ -209,8 +209,22 @@ private struct CameraPreviewView: NSViewRepresentable {
         /// The service-owned layer this view currently hosts, if any.
         private weak var hostedLayer: CALayer?
 
+        /// Every live host, weakly. Exists so a view LEAVING the window can
+        /// hand the shared layer to one that's staying.
+        ///
+        /// The handoff has to be pushed by the departing view; the survivor
+        /// cannot reliably pull. Two views coexist for the ~0.35s of a
+        /// collapse transition, and the outgoing one can legitimately hold
+        /// the layer when it's removed (SwiftUI invalidates both, in
+        /// undefined order, and `updateNSView` re-asserts adoption). At that
+        /// moment nothing dirties the survivor's layout — the spring has
+        /// settled and its frame didn't change — so a reclaim that only runs
+        /// from `layout()` never fires and the preview stays black for good.
+        private static let liveHosts = NSHashTable<PreviewContainerView>.weakObjects()
+
         override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
+            Self.liveHosts.add(self)
             wantsLayer = true
             layer?.cornerRadius = Self.cornerRadius
             layer?.cornerCurve = .continuous
@@ -247,31 +261,49 @@ private struct CameraPreviewView: NSViewRepresentable {
             layoutHostedLayer()
         }
 
-        /// A view that was built before it had a window (SwiftUI mounts
+        /// Both halves of the handoff.
+        ///
+        /// Arriving: a view built before it had a window (SwiftUI mounts
         /// representables that way) claims the layer the moment it lands on
-        /// screen — the other half of the `window != nil` gate above.
+        /// screen — the other half of `adopt`'s `window != nil` gate.
+        ///
+        /// Leaving: if this view still holds the layer, it must actively give
+        /// it to a host that's staying, rather than disappearing with it — see
+        /// `liveHosts`. With nobody left to take it, the layer is detached
+        /// instead, so it isn't retained inside a dead view's layer tree
+        /// waiting for a `CameraService` that will hand it out again on the
+        /// next presentation.
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let hostedLayer { adopt(hostedLayer) }
+            guard let hostedLayer else { return }
+
+            if window != nil {
+                adopt(hostedLayer)
+                return
+            }
+            guard hostedLayer.superlayer === layer else { return }
+            if let successor = Self.liveHosts.allObjects.first(where: { $0 !== self && $0.window != nil }) {
+                successor.adopt(hostedLayer)
+            } else {
+                hostedLayer.removeFromSuperlayer()
+            }
         }
 
         override func layout() {
             super.layout()
-            // Reclaim the layer, but ONLY when it is genuinely orphaned —
-            // its current superlayer belongs to a view that has left the
-            // window (or to nothing at all).
+            // A safety net only. `viewDidMoveToWindow` is what actually
+            // performs the handoff; this catches a layer that ended up
+            // genuinely orphaned by some path that didn't.
             //
-            // The last clause is what keeps this from being worse than the
-            // problem. Without it the test is merely "somebody else has it",
-            // and during the ~0.35s when both preview views are alive and
-            // BOTH in the window, each would re-adopt on its own `layout()`.
+            // The orphan test (the last clause) is what keeps this from
+            // being worse than the problem it guards. Without it the
+            // condition is merely "somebody else has it", and during the
+            // ~0.35s when both preview views are alive and BOTH in the
+            // window, each would re-adopt on its own `layout()`:
             // `addSublayer` implicitly removes the layer from the other
-            // view's backing layer, which dirties that view's layout, which
-            // re-adopts, which dirties this one: a mutual loop that
-            // re-parents every frame rather than converging — and whichever
-            // view happens to hold it when the outgoing one is removed
-            // decides the outcome, so it can still end orphaned with no
-            // further `layout()` coming to rescue it.
+            // view's backing layer, dirtying that view's layout, which
+            // re-adopts, dirtying this one — a mutual loop that re-parents
+            // every frame instead of converging.
             if let hostedLayer, window != nil, hostedLayer.superlayer !== layer,
                (hostedLayer.superlayer?.delegate as? NSView)?.window == nil {
                 adopt(hostedLayer)

@@ -232,24 +232,6 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Re-derives hover from the pointer's ACTUAL position, bypassing both
-    /// debounces — `suppressHover` and the `isHovering` cache.
-    ///
-    /// Needed because `hoverChanged` is doubly guarded, and the two callers
-    /// here are precisely the cases where the cached value is the thing
-    /// that's wrong:
-    /// - After the context menu closes. `suppressHover`'s `didSet` cancelled
-    ///   any in-flight open/close task, but left `isHovering` alone — so a
-    ///   cursor that was already on the notch when the menu opened still
-    ///   reads as hovering, `hoverChanged` returns early, and the cancelled
-    ///   open is never rescheduled. The notch would sit collapsed under a
-    ///   hovering cursor until the pointer left and came back.
-    /// - When the monitors are torn down (screen lost, feature disabled).
-    ///   That path has to tell the view model hover ended, but it can fire
-    ///   while a menu is still up — "Turn Off Notch" is *in* that menu — so
-    ///   an ordinary `hoverChanged` would be swallowed by `suppressHover`
-    ///   and leave `isHovering` stuck true for the next time the notch
-    ///   returns.
     /// Forgets everything about hover WITHOUT reporting a transition.
     ///
     /// For teardown (the notch's screen was lost, or the feature was turned
@@ -272,6 +254,19 @@ final class NotchViewModel: ObservableObject {
         if hoverHint { hoverHint = false }
     }
 
+    /// Re-derives hover from the pointer's ACTUAL position, bypassing both
+    /// debounces — `suppressHover` and the `isHovering` cache.
+    ///
+    /// Its one caller is `NotchWindowController.refreshHover()`, run just
+    /// after the context menu closes, and the cached value is wrong there by
+    /// construction: `suppressHover`'s `didSet` cancelled any in-flight
+    /// open/close task but left `isHovering` alone, so a cursor that was
+    /// already on the notch when the menu opened still reads as hovering,
+    /// `hoverChanged` returns early, and the cancelled open is never
+    /// rescheduled — the notch would sit collapsed under a hovering pointer
+    /// until it left and came back.
+    ///
+    /// Teardown wants `resetHoverState()` instead, NOT this — see there.
     func resyncHover(inside: Bool) {
         suppressHover = false
         isHovering = !inside      // force the change-guard below to fire

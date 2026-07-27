@@ -133,6 +133,13 @@ final class MediaRemoteAdapterSource {
             launchedAt = Date()
         } catch {
             nowPlayingLog.error("Failed to launch mediaremote-adapter stream: \(error.localizedDescription)")
+            // A launch that never happened produces no process, so no
+            // `terminationHandler` will ever fire and nothing downstream
+            // would schedule a retry — one transient failure (a momentarily
+            // unavailable /usr/bin/perl, a sandbox hiccup) used to kill Now
+            // Playing for the rest of the session. Route it through the same
+            // bounded backoff as an unexpected exit.
+            scheduleRestartIfAllowed()
         }
     }
 
@@ -340,15 +347,27 @@ final class MediaRemoteAdapterSource {
         isAvailable = false
         stateSubject.send(nil)
 
+        scheduleRestartIfAllowed()
+    }
+
+    /// Schedules the next bounded, backing-off restart, or gives up.
+    ///
+    /// Shared by the unexpected-exit path and the launch-failure path — both
+    /// mean "the helper isn't running and nobody asked for that".
+    private func scheduleRestartIfAllowed() {
         guard restartAttempts < Self.maxRestartAttempts else {
+            // Deliberately not "until Now Playing is reopened": `stop()` is
+            // what would reset the budget, and nothing in the app calls it
+            // (`NowPlayingService` leaves the stream running while inactive).
+            // Recovery comes from the credit-at-death path above instead.
             nowPlayingLog.error(
-                "mediaremote-adapter stream exited repeatedly — giving up until Now Playing is reopened")
+                "mediaremote-adapter stream failed repeatedly — no further automatic restarts this session")
             return
         }
         restartAttempts += 1
         let attempt = restartAttempts
         nowPlayingLog.notice(
-            "mediaremote-adapter stream process exited — restarting (attempt \(attempt, privacy: .public))")
+            "mediaremote-adapter stream unavailable — restarting (attempt \(attempt, privacy: .public))")
         restartTask?.cancel()
         restartTask = Task { @MainActor [weak self] in
             // 2s, 4s, 8s: long enough that a system briefly refusing to launch
