@@ -65,9 +65,35 @@ final class CrashReporter: ObservableObject {
         var activityKind: String?
         /// Whether the Settings window was open.
         var settingsOpen: Bool = false
+
+        init() {}
+
+        /// Every field optional-with-default, for the same forward-
+        /// compatibility reason spelled out on `Session`.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            notchState = try container.decodeIfPresent(String.self, forKey: .notchState) ?? "collapsed"
+            cameraRunning = try container.decodeIfPresent(Bool.self, forKey: .cameraRunning) ?? false
+            activityKind = try container.decodeIfPresent(String.self, forKey: .activityKind)
+            settingsOpen = try container.decodeIfPresent(Bool.self, forKey: .settingsOpen) ?? false
+        }
     }
 
     /// One session's worth of bookkeeping, as persisted.
+    ///
+    /// ## Decoding is hand-written, and that is load-bearing
+    /// Swift's synthesized `init(from:)` does NOT fall back to a stored
+    /// property's default value — `= "collapsed"` and friends do nothing for
+    /// decoding. So the moment anyone adds a non-optional field to `Session`
+    /// or `Breadcrumb`, a synthesized decoder would throw on every file
+    /// written by the previous build, `readSession()`'s `try?` would swallow
+    /// it, and the first launch after that upgrade would report "no crash"
+    /// for a run that really did crash — precisely the case this whole file
+    /// exists to catch, failing silently and in the wrong direction.
+    ///
+    /// Decoding every field with `decodeIfPresent(...) ?? default` makes a
+    /// added-field upgrade a non-event. Anything added later must follow the
+    /// same pattern.
     struct Session: Codable, Equatable {
         var version: String
         var build: String
@@ -75,6 +101,29 @@ final class CrashReporter: ObservableObject {
         var updatedAt: Date
         var endedCleanly: Bool
         var breadcrumb: Breadcrumb
+
+        init(version: String, build: String, startedAt: Date, updatedAt: Date,
+             endedCleanly: Bool, breadcrumb: Breadcrumb) {
+            self.version = version
+            self.build = build
+            self.startedAt = startedAt
+            self.updatedAt = updatedAt
+            self.endedCleanly = endedCleanly
+            self.breadcrumb = breadcrumb
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decodeIfPresent(String.self, forKey: .version) ?? "unknown"
+            build = try container.decodeIfPresent(String.self, forKey: .build) ?? "unknown"
+            startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt) ?? Date(timeIntervalSince1970: 0)
+            updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date(timeIntervalSince1970: 0)
+            // The one field with a deliberately PESSIMISTIC default. A file
+            // that exists but can't be read as clean is, as far as this can
+            // tell, a session that never got to mark itself clean.
+            endedCleanly = try container.decodeIfPresent(Bool.self, forKey: .endedCleanly) ?? false
+            breadcrumb = try container.decodeIfPresent(Breadcrumb.self, forKey: .breadcrumb) ?? Breadcrumb()
+        }
     }
 
     /// The previous session, when it ended abnormally. `nil` on a first-ever
@@ -166,8 +215,13 @@ final class CrashReporter: ObservableObject {
         writeNow()
     }
 
-    /// The user has seen the notice. Clears the banner and the on-disk
-    /// record, so it can't reappear on the next launch.
+    /// The user has seen the notice. Clears the published banner only — the
+    /// on-disk record needs no clearing, because `beginSession()` already
+    /// overwrote the file with THIS session before publishing it, so there is
+    /// nothing left that could resurface at the next launch. (Said explicitly
+    /// because the previous wording claimed this cleared the file too, which
+    /// would have licensed moving that write later and quietly turning a
+    /// dismissed notice into a recurring one.)
     func dismissLastUncleanSession() {
         lastUncleanSession = nil
     }
@@ -301,7 +355,9 @@ final class CrashReporter: ObservableObject {
             // Long JSON lines from an `.ips` header would otherwise dump the
             // entire single-line payload into the report.
             picked.append("  " + String(trimmed.prefix(300)))
-            if picked.count > 8 { break }
+            // `>=`, checked after the append: the file-name line occupies
+            // slot 0, so this keeps the filename plus 8 signature lines.
+            if picked.count >= 9 { break }
         }
         return picked.joined(separator: "\n")
     }
@@ -322,8 +378,20 @@ final class CrashReporter: ObservableObject {
         }
     }
 
+    /// A missing file is the normal first-launch case and stays quiet. A file
+    /// that exists but won't decode is NOT normal — it means crash detection
+    /// is silently disabled for this launch, so it gets logged rather than
+    /// swallowed by a bare `try?`.
     private func readSession() -> Session? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return try? JSONDecoder().decode(Session.self, from: data)
+        do {
+            return try JSONDecoder().decode(Session.self, from: data)
+        } catch {
+            crashLog.error("""
+                Session file exists but could not be decoded — crash detection \
+                is inactive for this launch: \(error.localizedDescription, privacy: .public)
+                """)
+            return nil
+        }
     }
 }

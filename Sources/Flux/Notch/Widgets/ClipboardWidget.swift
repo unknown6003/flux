@@ -175,9 +175,14 @@ private struct ClipboardRow: View {
         // stay separately focusable and actionable.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
-        // The remove control is hover-only, so without this it doesn't exist
-        // in the accessibility tree — and, for anyone not using a pointer,
-        // doesn't exist at all. A context menu is reachable either way.
+        // `.contain` keeps the remove button separately focusable, but it
+        // also stops the ROW itself being an actionable element — so the
+        // copy-on-tap has no VoiceOver activation path of its own. This
+        // context menu is therefore load-bearing for accessibility, not a
+        // convenience: it is how a non-pointer user copies an entry at all.
+        // (Flagged for the hardware QA pass in docs/notch-checklist.md;
+        // whether SwiftUI routes an accessibility activation around
+        // `allowsHitTesting` is not something to assert from a Linux box.)
         .contextMenu {
             if isCopyable {
                 Button("Copy") { handleTap() }

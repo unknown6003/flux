@@ -72,9 +72,14 @@ final class UpdateChecker: ObservableObject {
     /// `.failed` and `.readyToInstall` used to be sticky for the process's
     /// whole life: Settings reopened days later still showed "No internet
     /// connection." from a check made on a train, or offered to install a DMG
-    /// the user had long since deleted from ~/Downloads. `.available` is
-    /// deliberately NOT cleared — that one stays true until a check says
-    /// otherwise, and it's the whole point of the background poll.
+    /// the user had long since deleted from ~/Downloads. `.upToDate` is
+    /// cleared for the same reason — it's an answer about a moment, not a
+    /// standing fact, and the "Check for Updates" button returning is the
+    /// honest state for a window opened later. (Note this does mean opening
+    /// Settings again right after a manual check drops the tick; that is the
+    /// intended trade, since the alternative is showing a days-old verdict.)
+    /// `.available` is deliberately NOT cleared — that one stays true until a
+    /// check says otherwise, and it's the whole point of the background poll.
     func clearStaleOutcome() {
         switch state {
         case .failed, .upToDate:

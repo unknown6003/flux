@@ -105,6 +105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var cancellables = Set<AnyCancellable>()
     private var settingsVisible = false
+    /// See the `$launchAtLogin` sink — guards its own write-back from
+    /// re-entering it.
+    private var isReconcilingLaunchAtLogin = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.menuBar.info("Flux launching")
@@ -236,10 +239,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // too. The inequality guard is load-bearing: writing the same
                 // value back would re-enter this sink through the property's
                 // own `didSet`.
+                guard let self, !self.isReconcilingLaunchAtLogin else { return }
                 let actual = LoginItemManager.setEnabled(enabled)
-                if actual != enabled {
-                    self?.settings.launchAtLogin = actual
-                }
+                guard actual != enabled else { return }
+                // Writing back re-enters this very sink (`@Published`
+                // publishes from `willSet`, and `dropFirst()` only drops the
+                // first element ever). The flag makes that a single clean
+                // correction instead of a second, pointless
+                // `LoginItemManager.setEnabled` call for the same failure.
+                self.isReconcilingLaunchAtLogin = true
+                self.settings.launchAtLogin = actual
+                self.isReconcilingLaunchAtLogin = false
             }
             .store(in: &cancellables)
 

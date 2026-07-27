@@ -267,8 +267,9 @@ final class CameraService: ObservableObject {
         // `AVCaptureVideoPreviewLayer` for a session implicitly establishes a
         // connection on it — a session mutation — so it must not happen at
         // the arbitrary moment SwiftUI happens to mount the preview view,
-        // which is otherwise mid-`startRunning()`. After this first call the
-        // `lazy` is resolved and mounting the view is a pure read.
+        // which is otherwise mid-`startRunning()`. After this first call
+        // `storedPreviewLayer` is populated and mounting the view is a pure
+        // read.
         _ = previewLayer
 
         let session = session

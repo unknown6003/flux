@@ -210,7 +210,30 @@ final class NotchViewModel: ObservableObject {
     /// `isHovering` guard below turns the redundant calls into no-ops instead
     /// of continuously restarting the open/close delay while the cursor merely
     /// wanders inside (or stays outside) the same region.
+    /// Suppresses every hover input while something modal is on top of the
+    /// notch — currently the right-click context menu.
+    ///
+    /// It lives here, on the view model, rather than on `NotchWindowController`
+    /// (which owns the menu) because hover reaches this type from TWO
+    /// independent places: the controller's own event monitors, and
+    /// `NotchHostingView`'s tracking area (`mouseExited` in particular). A
+    /// flag checked only in the controller left the tracking-area path wide
+    /// open — popping the menu over an expanded panel moves the cursor off
+    /// that panel, `mouseExited` fires `hoverChanged(inside: false)`, and the
+    /// close timer collapses the notch out from under the menu the user is
+    /// reading. Gating at the single point both paths funnel through is the
+    /// only placement that actually covers it.
+    var suppressHover = false {
+        didSet {
+            guard suppressHover, suppressHover != oldValue else { return }
+            // Anything already scheduled was scheduled on pre-menu
+            // information; the caller re-derives hover once the menu closes.
+            cancelHoverTasks()
+        }
+    }
+
     func hoverChanged(inside: Bool) {
+        guard !suppressHover else { return }
         // `mouseMoved` redelivers on every pixel of movement inside/outside the
         // same region, so guard the published write itself — not just the
         // debounced `isHovering` transition below — or every one of those

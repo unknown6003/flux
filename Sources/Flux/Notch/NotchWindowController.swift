@@ -153,11 +153,19 @@ final class NotchWindowController {
     /// redeliveries — only an actual inside/outside transition should reach
     /// `viewModel.hoverChanged`.
     private var lastMonitoredInside = false
+    /// See `installPointerMonitors()` — idempotence can't be keyed on a
+    /// monitor token, since `addGlobalMonitorForEvents` may return nil.
+    private var pointerMonitorsInstalled = false
     /// Set while the right-click context menu is tracking. `NSMenu.popUp`
     /// runs its own modal event loop, during which the cursor necessarily
     /// leaves the notch to reach the menu items — without this the hover-out
     /// timer would collapse the panel out from under the open menu.
-    private var isShowingMenu = false
+    private var isShowingMenu = false {
+        // Mirrored onto the view model so the panel's own tracking area is
+        // covered too, not just these monitors — see
+        // `NotchViewModel.suppressHover`.
+        didSet { viewModel.suppressHover = isShowingMenu }
+    }
 
     /// Horizontal slop added to the collapsed notch's own footprint when
     /// deciding whether the pointer counts as "over the notch".
@@ -382,8 +390,17 @@ final class NotchWindowController {
 
     /// No-op if already installed — callers (the `viewModel.$state` sink,
     /// `resolveScreen`) can call this freely without risking doubled monitors.
+    ///
+    /// The guard is an explicit flag, NOT `globalMoveMonitor == nil`.
+    /// `NSEvent.addGlobalMonitorForEvents` is documented to return `nil` on
+    /// failure, and since M12 this is called on *every* state transition
+    /// rather than only when collapsing — so keying idempotence on a token
+    /// that can legitimately be nil would re-add the other three monitors on
+    /// every collapse/expand: an unbounded monitor leak, N-fold duplicate
+    /// hover handling, and N stacked context menus per right-click.
     private func installPointerMonitors() {
-        guard globalMoveMonitor == nil else { return }
+        guard !pointerMonitorsInstalled else { return }
+        pointerMonitorsInstalled = true
         lastMonitoredInside = false
 
         globalMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
@@ -420,7 +437,20 @@ final class NotchWindowController {
         localMoveMonitor = nil
         globalRightClickMonitor = nil
         localRightClickMonitor = nil
-        lastMonitoredInside = false
+        pointerMonitorsInstalled = false
+
+        // Resetting `lastMonitoredInside` alone leaves the two sides
+        // disagreeing: this controller would come back believing the cursor
+        // is outside while `NotchViewModel.isHovering` still says it's in.
+        // `hoverChanged`'s own change-debounce would then swallow the first
+        // genuine hover-in after the notch returned (a screen reattach, or
+        // the feature being switched back on), so hovering would appear dead
+        // until the cursor left and came back. `forceCollapse()` doesn't
+        // cover this — it only moves `state`, never `isHovering`.
+        if lastMonitoredInside {
+            lastMonitoredInside = false
+            viewModel.hoverChanged(inside: false)
+        }
     }
 
     private func installCollapsedClickMonitors() {

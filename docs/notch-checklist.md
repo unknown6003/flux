@@ -394,3 +394,43 @@ lifetime. Both changes exist to make the crash *impossible* rather than
       normal app window is underneath the top strip and confirm only Flux's
       menu appears — the right-click target is confined to the menu-bar strip
       precisely so the window beneath doesn't also pop its own.
+
+### M12 review follow-ups (Codex + adversarial pass)
+
+Behaviour changes from the two review rounds that can only be judged on real
+hardware:
+
+- [ ] **Right-click only hits the notch strip**: with the notch expanded on
+      the Shelf or Clipboard, right-click a tile/row. You should get ONLY the
+      widget's own menu (AirDrop / Show in Finder / Copy / Remove) — Flux's
+      shell menu must not also appear or pop up after you dismiss it. Then
+      right-click the notch cutout itself at the top of the panel: that should
+      give the shell menu.
+- [ ] **Nothing is clickable below the notch just after a collapse**: expand
+      the notch, collapse it, and immediately click where the panel *was*
+      (well below the menu bar, over another app's window). It must do nothing
+      to Flux — only the app underneath should react.
+- [ ] **The panel survives its own context menu**: with the notch expanded,
+      right-click the notch strip and move the pointer down the menu items.
+      The panel must stay open the whole time, not collapse behind the menu.
+- [ ] **Turning the notch off actually turns it off**: Settings → Notch →
+      "Enable the notch panel" off (and separately, the right-click menu's
+      Turn Off Notch). The panel must disappear immediately, the camera
+      indicator must not be lit, and clipboard collection must stop — all
+      without relaunching Flux.
+- [ ] **Mirror survives a fast collapse/expand without going black**: the
+      preview layer is now handed between views; confirm re-expanding always
+      shows live video rather than a black panel.
+- [ ] **Low battery at launch**: with the Mac unplugged and already under 20%,
+      launch Flux. It should now post one low-battery wing immediately (this
+      is new — it previously stayed silent until the percent crossed 20% from
+      above, which after a monitor restart could never happen again).
+- [ ] **VoiceOver on the clipboard/shelf rows**: with VoiceOver on, navigate to
+      a clipboard row and a shelf tile. Confirm you can reach and activate
+      Remove, and copy a clipboard entry, without using the mouse. The remove
+      buttons are present-but-transparent until hover; whether an accessibility
+      activation routes around that is the specific thing to check.
+- [ ] **Compact spacing round-trip**: if you have a custom `NSStatusItemSpacing`
+      (`defaults -currentHost read -g NSStatusItemSpacing`), note it, toggle
+      Flux's compact spacing on then off, and confirm the original value came
+      back rather than being cleared.

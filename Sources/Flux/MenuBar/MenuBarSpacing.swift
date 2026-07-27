@@ -61,10 +61,8 @@ enum MenuBarSpacing {
             CFPreferencesSetValue(paddingKey, value, appID, user, host)
             UserDefaults.standard.set(true, forKey: ownershipKey)
         } else {
-            CFPreferencesSetValue(spacingKey, stashedValue(forKey: stashedSpacingKey), appID, user, host)
-            CFPreferencesSetValue(paddingKey, stashedValue(forKey: stashedPaddingKey), appID, user, host)
-            UserDefaults.standard.removeObject(forKey: stashedSpacingKey)
-            UserDefaults.standard.removeObject(forKey: stashedPaddingKey)
+            restore(spacingKey, from: stashedSpacingKey)
+            restore(paddingKey, from: stashedPaddingKey)
             UserDefaults.standard.set(false, forKey: ownershipKey)
         }
         CFPreferencesSynchronize(appID, user, host)
@@ -90,16 +88,37 @@ enum MenuBarSpacing {
     /// `compactValue`, while a genuine external 6 is still stashed properly.
     private static func stashCurrentValuesIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: ownershipKey) else { return }
-        stash(CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int, forKey: stashedSpacingKey)
-        stash(CFPreferencesCopyValue(paddingKey, appID, user, host) as? Int, forKey: stashedPaddingKey)
+        stash(CFPreferencesCopyValue(spacingKey, appID, user, host), forKey: stashedSpacingKey)
+        stash(CFPreferencesCopyValue(paddingKey, appID, user, host), forKey: stashedPaddingKey)
     }
 
-    private static func stash(_ value: Int?, forKey key: String) {
-        if let value {
-            UserDefaults.standard.set(value, forKey: key)
+    /// Records a pre-existing value, distinguishing three cases that
+    /// `stashedValue(forKey:)` has to tell apart on the way back out:
+    /// there was an `Int` (reproduce it), there was something else (leave the
+    /// key alone — Flux can't reproduce a type it doesn't understand, and
+    /// clearing it would be the same destruction this whole mechanism exists
+    /// to prevent), or there was nothing (clear, restoring the true default).
+    private static func stash(_ value: CFPropertyList?, forKey key: String) {
+        let defaults = UserDefaults.standard
+        if let intValue = value as? Int {
+            defaults.set(intValue, forKey: key)
+            defaults.removeObject(forKey: key + foreignSuffix)
+        } else if value != nil {
+            defaults.removeObject(forKey: key)
+            defaults.set(true, forKey: key + foreignSuffix)
         } else {
-            UserDefaults.standard.removeObject(forKey: key)
+            defaults.removeObject(forKey: key)
+            defaults.removeObject(forKey: key + foreignSuffix)
         }
+    }
+
+    /// Marks "there was a value here, but not one Flux can round-trip".
+    private static let foreignSuffix = ".wasForeignType"
+
+    /// Whether restoring `key` should leave the global preference untouched
+    /// rather than writing anything — the non-`Int` case above.
+    private static func shouldLeaveAlone(_ key: String) -> Bool {
+        UserDefaults.standard.bool(forKey: key + foreignSuffix)
     }
 
     /// The stashed original, as something `CFPreferencesSetValue` accepts —
@@ -109,5 +128,17 @@ enum MenuBarSpacing {
     private static func stashedValue(forKey key: String) -> CFPropertyList? {
         guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
         return NSNumber(value: UserDefaults.standard.integer(forKey: key)) as CFPropertyList
+    }
+
+    /// Puts `preferenceKey` back the way it was before Flux touched it, then
+    /// forgets the stash. Leaves the preference completely alone when the
+    /// original was a type Flux can't reproduce — see `stash(_:forKey:)`.
+    private static func restore(_ preferenceKey: CFString, from stashKey: String) {
+        defer {
+            UserDefaults.standard.removeObject(forKey: stashKey)
+            UserDefaults.standard.removeObject(forKey: stashKey + foreignSuffix)
+        }
+        guard !shouldLeaveAlone(stashKey) else { return }
+        CFPreferencesSetValue(preferenceKey, stashedValue(forKey: stashKey), appID, user, host)
     }
 }

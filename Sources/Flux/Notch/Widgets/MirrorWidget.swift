@@ -227,14 +227,32 @@ private struct CameraPreviewView: NSViewRepresentable {
         /// superlayer it had, which is exactly the handoff wanted when a
         /// collapse's outgoing preview view is still alive (mid fade-out)
         /// while an expand has already built its replacement.
+        ///
+        /// ## Only a view that is actually on screen may take the layer
+        /// The `window != nil` gate is load-bearing, not defensive. Two
+        /// `PreviewContainerView`s genuinely coexist for the ~0.35s of a
+        /// collapse transition, `updateNSView` re-asserts adoption on EVERY
+        /// SwiftUI invalidation, and the order SwiftUI updates the two
+        /// instances in is undefined. `service.isRunning` flipping true is
+        /// exactly such an invalidation and lands squarely inside that
+        /// window — so without this gate the *outgoing*, fading-out view
+        /// could win the race and pull the layer back out of the panel the
+        /// user is actually looking at, leaving it black until something
+        /// else happened to trigger a re-layout.
         func adopt(_ previewLayer: CALayer) {
-            // The second clause is what lets a view RE-adopt a layer some
-            // other instance took from it — without it, `hostedLayer` would
-            // still match and this view would stay permanently blank.
-            guard hostedLayer !== previewLayer || previewLayer.superlayer !== layer else { return }
             hostedLayer = previewLayer
+            guard window != nil else { return }
+            guard previewLayer.superlayer !== layer else { return }
             layer?.addSublayer(previewLayer)
             layoutHostedLayer()
+        }
+
+        /// A view that was built before it had a window (SwiftUI mounts
+        /// representables that way) claims the layer the moment it lands on
+        /// screen — the other half of the `window != nil` gate above.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let hostedLayer { adopt(hostedLayer) }
         }
 
         override func layout() {
