@@ -250,6 +250,28 @@ final class NotchViewModel: ObservableObject {
     ///   an ordinary `hoverChanged` would be swallowed by `suppressHover`
     ///   and leave `isHovering` stuck true for the next time the notch
     ///   returns.
+    /// Forgets everything about hover WITHOUT reporting a transition.
+    ///
+    /// For teardown (the notch's screen was lost, or the feature was turned
+    /// off). Distinct from `resyncHover` because "report a hover-out" is
+    /// actively wrong here: `hoverChanged(inside: false)` schedules a real
+    /// `hoverCloseTask`, and nothing on the teardown path cancels it —
+    /// `forceCollapse()` moves `state` but never touches the hover tasks. So
+    /// 0.4s after the panel was torn down, that task would fire `collapse()`,
+    /// which re-surfaces any current live activity — landing the state
+    /// machine on `.activity` with no panel and the feature disabled, the
+    /// exact invariant `forceCollapse()` exists to hold.
+    ///
+    /// It also deliberately does NOT clear `suppressHover`: teardown is
+    /// reachable from inside the context menu ("Turn Off Notch" is one of its
+    /// items), and un-suppressing there would re-open the tracking-area path
+    /// that suppression exists to close.
+    func resetHoverState() {
+        cancelHoverTasks()
+        isHovering = false
+        if hoverHint { hoverHint = false }
+    }
+
     func resyncHover(inside: Bool) {
         suppressHover = false
         isHovering = !inside      // force the change-guard below to fire

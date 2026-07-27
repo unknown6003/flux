@@ -202,25 +202,6 @@ final class MediaRemoteAdapterSource {
     // MARK: - Stream line parsing
 
     private func consume(_ data: Data) {
-        // Proof of life, but gated on the process having SURVIVED rather
-        // than merely having spoken. The budget counts consecutive failed
-        // restarts and has to clear once a restarted stream is genuinely
-        // working — `stop()` alone isn't enough, since `NowPlayingService`
-        // deliberately leaves the stream running while inactive and may
-        // never call it, so three unrelated exits across days of uptime
-        // would otherwise exhaust it (Codex PR13 finding).
-        //
-        // But clearing on the FIRST byte would remove the bound entirely: a
-        // helper that prints one line and dies would reset the budget on
-        // every relaunch, so `restartAttempts` could never exceed 1 and the
-        // 2s-backoff loop would spawn a perl process every two seconds for
-        // the life of the app — exactly the hot loop the budget exists to
-        // prevent. Surviving `healthyUptime` is the weakest condition that
-        // actually distinguishes the two.
-        if let launchedAt, Date().timeIntervalSince(launchedAt) > Self.healthyUptime {
-            restartAttempts = 0
-            self.launchedAt = nil     // budget already cleared; stop re-checking
-        }
         lineBuffer.append(data)
         while let newline = lineBuffer.firstIndex(of: 0x0A) {
             let line = lineBuffer.subdata(in: lineBuffer.startIndex..<newline)
@@ -305,8 +286,9 @@ final class MediaRemoteAdapterSource {
     private var restartTask: Task<Void, Never>?
     private static let maxRestartAttempts = 3
 
-    /// When the current process was launched, or `nil` once this run has
-    /// already been credited as healthy — see `consume(_:)`.
+    /// When the current process was launched, or `nil` when none is running.
+    /// Read once, at termination, to decide whether that run counts as having
+    /// worked — see `handleTermination()`.
     private var launchedAt: Date?
 
     /// How long a restarted stream must stay up before its restart counts as
@@ -329,6 +311,31 @@ final class MediaRemoteAdapterSource {
         stdout?.fileHandleForReading.readabilityHandler = nil
         process = nil
         stdout = nil
+
+        // Credit the run that just ended, if it lasted. The budget counts
+        // CONSECUTIVE failed restarts, so it has to clear once a restart has
+        // demonstrably worked — `stop()` alone can't do that, since
+        // `NowPlayingService` deliberately leaves the stream running while
+        // inactive and may never call it, and three unrelated exits across
+        // days of uptime would otherwise exhaust it (Codex PR13 finding).
+        //
+        // Judged on SURVIVAL, not on output, and evaluated here rather than
+        // when bytes arrive. Two earlier placements were both wrong: crediting
+        // on the first byte removed the bound entirely (a helper that prints
+        // one line then dies would reset the budget on every relaunch,
+        // spawning a perl process every 2s forever), and crediting from
+        // `consume` on an uptime threshold never fired at all — the adapter
+        // only prints when now-playing info *changes*, so on an idle Mac it
+        // emits once in the first second and then stays silent for hours,
+        // never re-entering `consume` past the threshold. Uptime at death is
+        // data-independent and still bounds a crash loop, since a doomed run
+        // dies far inside `healthyUptime`.
+        if let launchedAt, Date().timeIntervalSince(launchedAt) > Self.healthyUptime {
+            restartAttempts = 0
+        }
+        // Cleared unconditionally: a buffered `consume` hopping to the main
+        // actor after the process died must not credit a run that's over.
+        launchedAt = nil
         resetAccumulatedState()
         isAvailable = false
         stateSubject.send(nil)

@@ -257,22 +257,26 @@ private struct CameraPreviewView: NSViewRepresentable {
 
         override func layout() {
             super.layout()
-            // Re-assert ownership, not just geometry. The `window != nil`
-            // gate in `adopt` stops a not-yet-inserted view from stealing the
-            // layer, but it does NOT stop an outgoing view that's still in
-            // the window (mid fade-out) from taking it back on one last
-            // `updateNSView` — and once that view is removed, the layer is
-            // parented inside a detached layer tree with nothing scheduled
-            // to rescue it. `layoutHostedLayer()` alone can't: it early-
-            // returns precisely when the layer isn't ours. `layout()` runs
-            // continuously through the panel's spring, so re-adopting here
-            // means any on-screen view reclaims an orphaned layer within a
-            // frame instead of leaving the preview black indefinitely.
-            if let hostedLayer, window != nil, hostedLayer.superlayer !== layer {
+            // Reclaim the layer, but ONLY when it is genuinely orphaned —
+            // its current superlayer belongs to a view that has left the
+            // window (or to nothing at all).
+            //
+            // The last clause is what keeps this from being worse than the
+            // problem. Without it the test is merely "somebody else has it",
+            // and during the ~0.35s when both preview views are alive and
+            // BOTH in the window, each would re-adopt on its own `layout()`.
+            // `addSublayer` implicitly removes the layer from the other
+            // view's backing layer, which dirties that view's layout, which
+            // re-adopts, which dirties this one: a mutual loop that
+            // re-parents every frame rather than converging — and whichever
+            // view happens to hold it when the outgoing one is removed
+            // decides the outcome, so it can still end orphaned with no
+            // further `layout()` coming to rescue it.
+            if let hostedLayer, window != nil, hostedLayer.superlayer !== layer,
+               (hostedLayer.superlayer?.delegate as? NSView)?.window == nil {
                 adopt(hostedLayer)
-            } else {
-                layoutHostedLayer()
             }
+            layoutHostedLayer()
         }
 
         /// Sets `bounds`/`position` rather than `frame`: `frame` is a derived

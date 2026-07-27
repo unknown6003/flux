@@ -453,15 +453,13 @@ final class NotchWindowController {
         // the feature being switched back on), so hovering would appear dead
         // until the cursor left and came back. `forceCollapse()` doesn't
         // cover this — it only moves `state`, never `isHovering`.
-        if lastMonitoredInside {
-            lastMonitoredInside = false
-            // `resyncHover` clears `suppressHover` first. This path is
-            // reachable *from inside the context menu* — "Turn Off Notch"
-            // is one of its items — where a plain `hoverChanged` would be
-            // swallowed by the suppression it set, leaving `isHovering`
-            // stuck true for the next time the notch comes back.
-            viewModel.resyncHover(inside: false)
-        }
+        // `resetHoverState`, NOT `resyncHover`: this is teardown, so the
+        // cache has to be forgotten without reporting a hover-out — see that
+        // method's doc comment. Reporting one schedules a close task that
+        // outlives the panel by 0.4s and can land the state machine on
+        // `.activity` with nothing to show it in.
+        lastMonitoredInside = false
+        viewModel.resetHoverState()
     }
 
     private func installCollapsedClickMonitors() {
