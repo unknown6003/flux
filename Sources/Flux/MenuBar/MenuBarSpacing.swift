@@ -92,33 +92,27 @@ enum MenuBarSpacing {
         stash(CFPreferencesCopyValue(paddingKey, appID, user, host), forKey: stashedPaddingKey)
     }
 
-    /// Records a pre-existing value, distinguishing three cases that
-    /// `stashedValue(forKey:)` has to tell apart on the way back out:
-    /// there was an `Int` (reproduce it), there was something else (leave the
-    /// key alone — Flux can't reproduce a type it doesn't understand, and
-    /// clearing it would be the same destruction this whole mechanism exists
-    /// to prevent), or there was nothing (clear, restoring the true default).
+    /// Records a pre-existing value so `restore(_:from:)` can put it back.
+    ///
+    /// Only an `Int` is stashed, because that's the only type these two keys
+    /// are documented to hold and the only one `CFPreferencesSetValue` can be
+    /// handed back unambiguously. Anything else is treated as "nothing to
+    /// restore", which means the key is CLEARED on the way out — restoring
+    /// macOS's true default.
+    ///
+    /// An earlier version tried to be cleverer, marking a foreign type as
+    /// "leave this key alone on restore". That was strictly worse: `apply
+    /// (compact: true)` overwrites the key regardless, so the foreign value
+    /// is already gone by then — declining to write on the way back out just
+    /// left *Flux's* `6` sitting in the global domain with the toggle
+    /// reading "off", and no way to undo it through the UI. Clearing is both
+    /// recoverable and closer to what the user asked for.
     private static func stash(_ value: CFPropertyList?, forKey key: String) {
-        let defaults = UserDefaults.standard
         if let intValue = value as? Int {
-            defaults.set(intValue, forKey: key)
-            defaults.removeObject(forKey: key + foreignSuffix)
-        } else if value != nil {
-            defaults.removeObject(forKey: key)
-            defaults.set(true, forKey: key + foreignSuffix)
+            UserDefaults.standard.set(intValue, forKey: key)
         } else {
-            defaults.removeObject(forKey: key)
-            defaults.removeObject(forKey: key + foreignSuffix)
+            UserDefaults.standard.removeObject(forKey: key)
         }
-    }
-
-    /// Marks "there was a value here, but not one Flux can round-trip".
-    private static let foreignSuffix = ".wasForeignType"
-
-    /// Whether restoring `key` should leave the global preference untouched
-    /// rather than writing anything — the non-`Int` case above.
-    private static func shouldLeaveAlone(_ key: String) -> Bool {
-        UserDefaults.standard.bool(forKey: key + foreignSuffix)
     }
 
     /// The stashed original, as something `CFPreferencesSetValue` accepts —
@@ -131,14 +125,10 @@ enum MenuBarSpacing {
     }
 
     /// Puts `preferenceKey` back the way it was before Flux touched it, then
-    /// forgets the stash. Leaves the preference completely alone when the
-    /// original was a type Flux can't reproduce — see `stash(_:forKey:)`.
+    /// forgets the stash. A `nil` stash clears the key, which restores
+    /// macOS's own default — see `stash(_:forKey:)`.
     private static func restore(_ preferenceKey: CFString, from stashKey: String) {
-        defer {
-            UserDefaults.standard.removeObject(forKey: stashKey)
-            UserDefaults.standard.removeObject(forKey: stashKey + foreignSuffix)
-        }
-        guard !shouldLeaveAlone(stashKey) else { return }
+        defer { UserDefaults.standard.removeObject(forKey: stashKey) }
         CFPreferencesSetValue(preferenceKey, stashedValue(forKey: stashKey), appID, user, host)
     }
 }

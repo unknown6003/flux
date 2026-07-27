@@ -257,7 +257,22 @@ private struct CameraPreviewView: NSViewRepresentable {
 
         override func layout() {
             super.layout()
-            layoutHostedLayer()
+            // Re-assert ownership, not just geometry. The `window != nil`
+            // gate in `adopt` stops a not-yet-inserted view from stealing the
+            // layer, but it does NOT stop an outgoing view that's still in
+            // the window (mid fade-out) from taking it back on one last
+            // `updateNSView` — and once that view is removed, the layer is
+            // parented inside a detached layer tree with nothing scheduled
+            // to rescue it. `layoutHostedLayer()` alone can't: it early-
+            // returns precisely when the layer isn't ours. `layout()` runs
+            // continuously through the panel's spring, so re-adopting here
+            // means any on-screen view reclaims an orphaned layer within a
+            // frame instead of leaving the preview black indefinitely.
+            if let hostedLayer, window != nil, hostedLayer.superlayer !== layer {
+                adopt(hostedLayer)
+            } else {
+                layoutHostedLayer()
+            }
         }
 
         /// Sets `bounds`/`position` rather than `frame`: `frame` is a derived

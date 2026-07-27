@@ -232,6 +232,30 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// Re-derives hover from the pointer's ACTUAL position, bypassing both
+    /// debounces — `suppressHover` and the `isHovering` cache.
+    ///
+    /// Needed because `hoverChanged` is doubly guarded, and the two callers
+    /// here are precisely the cases where the cached value is the thing
+    /// that's wrong:
+    /// - After the context menu closes. `suppressHover`'s `didSet` cancelled
+    ///   any in-flight open/close task, but left `isHovering` alone — so a
+    ///   cursor that was already on the notch when the menu opened still
+    ///   reads as hovering, `hoverChanged` returns early, and the cancelled
+    ///   open is never rescheduled. The notch would sit collapsed under a
+    ///   hovering cursor until the pointer left and came back.
+    /// - When the monitors are torn down (screen lost, feature disabled).
+    ///   That path has to tell the view model hover ended, but it can fire
+    ///   while a menu is still up — "Turn Off Notch" is *in* that menu — so
+    ///   an ordinary `hoverChanged` would be swallowed by `suppressHover`
+    ///   and leave `isHovering` stuck true for the next time the notch
+    ///   returns.
+    func resyncHover(inside: Bool) {
+        suppressHover = false
+        isHovering = !inside      // force the change-guard below to fire
+        hoverChanged(inside: inside)
+    }
+
     func hoverChanged(inside: Bool) {
         guard !suppressHover else { return }
         // `mouseMoved` redelivers on every pixel of movement inside/outside the

@@ -254,7 +254,11 @@ final class CrashReporter: ObservableObject {
 
         // Matched against the unclean session's own time window, not merely
         // "newest recent" — see `latestCrashReportSummary`.
-        if let report = Self.latestCrashReportSummary(session: lastUncleanSession) {
+        if let report = Self.latestCrashReportSummary(
+            session: lastUncleanSession,
+            // This launch's own start is the upper bound: whatever killed the
+            // previous session necessarily happened before Flux came back.
+            nextSessionStart: current?.startedAt ?? Date()) {
             lines.append("")
             lines.append("System crash report")
             lines.append(report)
@@ -271,24 +275,32 @@ final class CrashReporter: ObservableObject {
         return formatter.string(from: date)
     }
 
-    /// How far after a session's last breadcrumb a crash report may still be
-    /// written and count as that session's. The OS takes a moment to collect
-    /// and flush a report after the process dies.
+    /// Slack on the upper bound, for the gap between the previous process
+    /// dying and this one starting.
     static let reportMatchGrace: TimeInterval = 120
 
-    /// Whether a crash report written at `reportDate` belongs to `session`.
+    /// Whether a crash report written at `reportDate` belongs to `session`,
+    /// given that the NEXT session started at `nextSessionStart`.
     ///
-    /// Matched against the session's OWN window rather than "the newest
-    /// report from the last week" (Codex PR13 finding). A user who crashed
-    /// once on Monday and force-quit on Friday would otherwise get Monday's
-    /// exception signature attached to Friday's unclean exit — sending
-    /// whoever reads the report after a bug that may already be fixed. A
-    /// report from before this session even started cannot be its crash;
-    /// one from long after it stopped updating isn't either.
+    /// The window is `[session.startedAt, nextSessionStart + grace]`.
+    ///
+    /// Bounding by the next launch rather than by `session.updatedAt` is
+    /// load-bearing. `updatedAt` only advances when a breadcrumb actually
+    /// changes — there is no heartbeat — so a Flux left collapsed and idle
+    /// has `updatedAt == startedAt`, i.e. launch time. Bounding on it (as a
+    /// first pass at this did) meant a crash three hours into an idle run
+    /// sat hours outside the window and was discarded, silently degrading
+    /// every report to breadcrumb-only. For a menu-bar app that idles most
+    /// of its life, that's the common case, not the corner.
+    ///
+    /// The lower bound still matters, and is the whole reason this exists:
+    /// without it, crashing on Monday and force-quitting on Friday stapled
+    /// Monday's exception signature onto Friday's unclean exit.
     ///
     /// Pure, so `--selftest` can cover it without a crash to find.
-    static func reportMatches(session: Session, reportDate: Date) -> Bool {
-        reportDate >= session.startedAt && reportDate <= session.updatedAt.addingTimeInterval(reportMatchGrace)
+    static func reportMatches(session: Session, reportDate: Date, nextSessionStart: Date) -> Bool {
+        reportDate >= session.startedAt
+            && reportDate <= nextSessionStart.addingTimeInterval(reportMatchGrace)
     }
 
     /// The crash report belonging to `session`, if one exists and is
@@ -299,7 +311,8 @@ final class CrashReporter: ObservableObject {
     ///
     /// With no session to match against there is nothing to attribute a
     /// report to, so this returns nil rather than guessing.
-    static func latestCrashReportSummary(session: Session?, directory: URL? = nil) -> String? {
+    static func latestCrashReportSummary(session: Session?, nextSessionStart: Date,
+                                         directory: URL? = nil) -> String? {
         guard let session else { return nil }
 
         let reportsDir = directory ?? FileManager.default
@@ -319,7 +332,7 @@ final class CrashReporter: ObservableObject {
                     .contentModificationDate else { return nil }
                 return (url, date)
             }
-            .filter { reportMatches(session: session, reportDate: $0.1) }
+            .filter { reportMatches(session: session, reportDate: $0.1, nextSessionStart: nextSessionStart) }
             // Newest *within the matching window*: if a session somehow
             // produced more than one report, the last one is the fatal one.
             .sorted { $0.1 > $1.1 }

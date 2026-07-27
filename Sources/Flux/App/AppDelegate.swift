@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // for why the drag's success and the confirmation wing's wording must
         // come from different numbers.
         notchWindow.onShelfDrop = { [weak self] urls in
-            guard let outcome = self?.shelfStore.add(urls: urls) else { return .none }
+            guard let outcome = self?.shelfStore.add(urls: urls) else { return .declined }
             return .init(accepted: outcome.accepted, ready: outcome.added.count)
         }
         // A tap on the overflow indicator's wings should open Arrange Mode,

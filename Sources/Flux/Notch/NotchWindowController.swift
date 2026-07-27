@@ -58,7 +58,11 @@ final class NotchWindowController {
         let accepted: Int
         let ready: Int
 
-        static let none = ShelfDropResult(accepted: 0, ready: 0)
+        /// Named `declined` rather than `none`: `??` has two overloads, and
+        /// `x ?? .none` is ambiguous between this member and `Optional.none`
+        /// — which one the solver picks decides whether the result is
+        /// optional at all. Not a name to leave to chance.
+        static let declined = ShelfDropResult(accepted: 0, ready: 0)
     }
 
     /// Builds the context menu a right-click on the notch pops up. Set once
@@ -301,6 +305,7 @@ final class NotchWindowController {
         guard isEnabled else { return }
         guard let screen = NSScreen.builtInNotchedScreen, let notchRect = screen.notchRect else {
             isPresenting = false
+            physicalNotchRect = .null
             removePointerMonitors()
             removeCollapsedClickMonitors()
             panel?.orderOut(nil)
@@ -308,6 +313,7 @@ final class NotchWindowController {
             return
         }
 
+        physicalNotchRect = notchRect
         let panel = panel ?? makePanel()
         self.panel = panel
         hostingView?.rootView = makeRootView(notchSize: notchRect.size)
@@ -449,7 +455,12 @@ final class NotchWindowController {
         // cover this — it only moves `state`, never `isHovering`.
         if lastMonitoredInside {
             lastMonitoredInside = false
-            viewModel.hoverChanged(inside: false)
+            // `resyncHover` clears `suppressHover` first. This path is
+            // reachable *from inside the context menu* — "Turn Off Notch"
+            // is one of its items — where a plain `hoverChanged` would be
+            // swallowed by the suppression it set, leaving `isHovering`
+            // stuck true for the next time the notch comes back.
+            viewModel.resyncHover(inside: false)
         }
     }
 
@@ -559,9 +570,17 @@ final class NotchWindowController {
 
     /// The physical notch's own footprint in screen coordinates, or `.null`
     /// when there is no notched screen to speak of.
-    private var physicalNotchRect: CGRect {
-        NSScreen.builtInNotchedScreen?.notchRect ?? .null
-    }
+    ///
+    /// Cached from `resolveScreen()` rather than re-derived per event. Two
+    /// reasons: `NSScreen.builtInNotchedScreen` scans every screen calling
+    /// `CGDisplayIsBuiltin`, and this is now read on every single
+    /// `mouseMoved` delivery; and, more importantly, `notchRect`'s own guard
+    /// chain depends on `auxiliaryTopLeftArea`/`auxiliaryTopRightArea` being
+    /// resolvable at that instant — a transient nil would silently kill
+    /// collapsed hover AND click with no recovery, since the screen is only
+    /// re-resolved on `didChangeScreenParametersNotification`. The cache is
+    /// written at exactly the moment that notification is handled.
+    private var physicalNotchRect: CGRect = .null
 
     /// Whether a screen-space point counts as hovering, for the current
     /// state. Collapsed tests the physical notch directly; the open states
@@ -621,7 +640,10 @@ final class NotchWindowController {
         guard isPresenting else { return }
         let inside = isHovering(screenPoint: NSEvent.mouseLocation)
         lastMonitoredInside = inside
-        viewModel.hoverChanged(inside: inside)
+        // `resyncHover`, not `hoverChanged`: the view model's own
+        // `isHovering` cache is stale by construction here — see that
+        // method's doc comment.
+        viewModel.resyncHover(inside: inside)
     }
 
     /// A click landing on the notch while collapsed would otherwise be lost
@@ -791,7 +813,7 @@ final class NotchWindowController {
             return false
         }
 
-        let result = onShelfDrop?(urls) ?? .none
+        let result = onShelfDrop?(urls) ?? .declined
         guard result.accepted > 0 else { return false }
 
         // Present tense while anything is still copying — see

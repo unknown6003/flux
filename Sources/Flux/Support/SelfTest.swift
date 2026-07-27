@@ -2962,11 +2962,12 @@ enum SelfTest {
                 startedAt: Date(timeIntervalSince1970: 1_000_000),
                 updatedAt: Date(timeIntervalSince1970: 1_000_500),
                 endedCleanly: false, breadcrumb: .init())
+            let nextStart = Date(timeIntervalSince1970: 1_020_000)
             check(CrashReporter.latestCrashReportSummary(
-                    session: probeSession,
+                    session: probeSession, nextSessionStart: nextStart,
                     directory: URL(fileURLWithPath: "/nonexistent/DiagnosticReports")) == nil,
                   "CrashReporter: an unreadable reports directory yields nil rather than throwing")
-            check(CrashReporter.latestCrashReportSummary(session: nil) == nil,
+            check(CrashReporter.latestCrashReportSummary(session: nil, nextSessionStart: nextStart) == nil,
                   "CrashReporter: with no unclean session there is nothing to attribute a report to")
 
             // Codex PR13 finding: a report is matched to the session's own
@@ -2974,17 +2975,30 @@ enum SelfTest {
             // Monday and force-quitting on Friday must not staple Monday's
             // exception signature to Friday's unclean exit.
             check(CrashReporter.reportMatches(session: probeSession,
-                                              reportDate: Date(timeIntervalSince1970: 1_000_400)),
+                                              reportDate: Date(timeIntervalSince1970: 1_000_400),
+                                              nextSessionStart: nextStart),
                   "CrashReporter.reportMatches: a report written during the session matches it")
+            // The upper bound is the NEXT launch, not the session's last
+            // breadcrumb. `updatedAt` only advances when a breadcrumb
+            // changes, so an idle Flux has updatedAt == startedAt — bounding
+            // on it discarded the crash report for every long idle run,
+            // which for a menu-bar app is most of them.
             check(CrashReporter.reportMatches(session: probeSession,
-                                              reportDate: Date(timeIntervalSince1970: 1_000_560)),
-                  "CrashReporter.reportMatches: a report flushed shortly after the process died still matches (grace window)")
+                                              reportDate: Date(timeIntervalSince1970: 1_010_000),
+                                              nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a crash hours after the last breadcrumb still matches — idling is not evidence of anything")
+            check(CrashReporter.reportMatches(session: probeSession,
+                                              reportDate: nextStart.addingTimeInterval(60),
+                                              nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a report flushed just after the next launch began still matches (grace window)")
             check(!CrashReporter.reportMatches(session: probeSession,
-                                               reportDate: Date(timeIntervalSince1970: 999_000)),
+                                               reportDate: Date(timeIntervalSince1970: 999_000),
+                                               nextSessionStart: nextStart),
                   "CrashReporter.reportMatches: a report predating the session cannot be its crash")
             check(!CrashReporter.reportMatches(session: probeSession,
-                                               reportDate: Date(timeIntervalSince1970: 1_100_000)),
-                  "CrashReporter.reportMatches: a much later report belongs to some other run, not this one")
+                                               reportDate: Date(timeIntervalSince1970: 1_100_000),
+                                               nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a report from well after the next launch belongs to some other run")
 
             // End-to-end: a session that never ends cleanly is surfaced at
             // the next launch; one that does isn't.
