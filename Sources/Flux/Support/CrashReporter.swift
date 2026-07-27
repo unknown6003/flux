@@ -198,7 +198,9 @@ final class CrashReporter: ObservableObject {
             lines.append("  settings open:  \(session.breadcrumb.settingsOpen)")
         }
 
-        if let report = Self.latestCrashReportSummary() {
+        // Matched against the unclean session's own time window, not merely
+        // "newest recent" — see `latestCrashReportSummary`.
+        if let report = Self.latestCrashReportSummary(session: lastUncleanSession) {
             lines.append("")
             lines.append("System crash report")
             lines.append(report)
@@ -215,12 +217,37 @@ final class CrashReporter: ObservableObject {
         return formatter.string(from: date)
     }
 
-    /// The newest Flux crash report's identifying lines, if one exists and is
+    /// How far after a session's last breadcrumb a crash report may still be
+    /// written and count as that session's. The OS takes a moment to collect
+    /// and flush a report after the process dies.
+    static let reportMatchGrace: TimeInterval = 120
+
+    /// Whether a crash report written at `reportDate` belongs to `session`.
+    ///
+    /// Matched against the session's OWN window rather than "the newest
+    /// report from the last week" (Codex PR13 finding). A user who crashed
+    /// once on Monday and force-quit on Friday would otherwise get Monday's
+    /// exception signature attached to Friday's unclean exit — sending
+    /// whoever reads the report after a bug that may already be fixed. A
+    /// report from before this session even started cannot be its crash;
+    /// one from long after it stopped updating isn't either.
+    ///
+    /// Pure, so `--selftest` can cover it without a crash to find.
+    static func reportMatches(session: Session, reportDate: Date) -> Bool {
+        reportDate >= session.startedAt && reportDate <= session.updatedAt.addingTimeInterval(reportMatchGrace)
+    }
+
+    /// The crash report belonging to `session`, if one exists and is
     /// readable. Deliberately extracts only a handful of *signature* fields
     /// rather than pasting the whole `.ips` — a full report is hundreds of
     /// lines of address soup, and includes loaded-library paths that leak
     /// more about the user's machine than a bug report needs.
-    static func latestCrashReportSummary(directory: URL? = nil, now: Date = Date()) -> String? {
+    ///
+    /// With no session to match against there is nothing to attribute a
+    /// report to, so this returns nil rather than guessing.
+    static func latestCrashReportSummary(session: Session?, directory: URL? = nil) -> String? {
+        guard let session else { return nil }
+
         let reportsDir = directory ?? FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/DiagnosticReports", isDirectory: true)
@@ -238,10 +265,9 @@ final class CrashReporter: ObservableObject {
                     .contentModificationDate else { return nil }
                 return (url, date)
             }
-            // A report older than a week is almost certainly not the crash
-            // being reported now, and pasting it would send someone chasing
-            // a bug that's already fixed.
-            .filter { now.timeIntervalSince($0.1) < 7 * 24 * 3600 }
+            .filter { reportMatches(session: session, reportDate: $0.1) }
+            // Newest *within the matching window*: if a session somehow
+            // produced more than one report, the last one is the fatal one.
             .sorted { $0.1 > $1.1 }
 
         guard let newest = candidates.first,

@@ -531,11 +531,18 @@ final class MenuBarManager {
     /// the menu they already use, only when there's actually something to say.
     var pendingUpdateVersion: (() -> String?)?
 
+    /// Opens Settings on a specific tab. Separate from `onOpenSettings`
+    /// because that one deliberately preserves whichever tab the user last
+    /// had open — right for a generic "Flux Settings…", wrong for the update
+    /// signpost, which is only useful if it lands on General where the
+    /// download/install controls actually are.
+    var onOpenSettingsTab: ((SettingsTab) -> Void)?
+
     private func showMenu() {
         let menu = NSMenu()
 
         if let version = pendingUpdateVersion?() {
-            let item = makeItem("Update to \(version)…", #selector(menuOpenSettings))
+            let item = makeItem("Update to \(version)…", #selector(menuOpenUpdateSettings))
             // The actual download/install lives in Settings › General; this
             // is a signpost, not a second install path to keep in sync.
             item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
@@ -615,6 +622,16 @@ final class MenuBarManager {
     }
 
     @objc private func menuOpenSettings() { onOpenSettings() }
+
+    /// Falls back to the generic path if nothing wired the tab-specific one —
+    /// a stale General tab still beats doing nothing.
+    @objc private func menuOpenUpdateSettings() {
+        if let onOpenSettingsTab {
+            onOpenSettingsTab(.general)
+        } else {
+            onOpenSettings()
+        }
+    }
 
     @objc private func menuQuit() { NSApp.terminate(nil) }
 

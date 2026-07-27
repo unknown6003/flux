@@ -119,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Lets a background-found update surface somewhere the user actually
         // looks — see `MenuBarManager.pendingUpdateVersion`.
         menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
+        menuBar?.onOpenSettingsTab = { [weak self] tab in self?.settingsWindow.show(tab: tab) }
 
         // Reconcile the login-item registration with the saved preference. The OS
         // is the source of truth, so push the actual state back into settings.
@@ -135,12 +136,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // level (see `NotchPanel`/`NotchWindowController`), which has no
         // knowledge of `ShelfStore` itself — this is the one place that
         // knowledge gap is bridged.
-        // `.accepted`, not `.added.count` — see `ShelfStore.AddResult`. A
-        // folder or a large file copies in the background, so counting only
-        // what finished synchronously made every such drop report zero, which
-        // `handlePerformDrag` turns into a declined drag (macOS animates the
-        // file snapping back) for something it accepted perfectly well.
-        notchWindow.onShelfDrop = { [weak self] urls in self?.shelfStore.add(urls: urls).accepted ?? 0 }
+        // Both counts are forwarded — see `NotchWindowController.ShelfDropResult`
+        // for why the drag's success and the confirmation wing's wording must
+        // come from different numbers.
+        notchWindow.onShelfDrop = { [weak self] urls in
+            guard let outcome = self?.shelfStore.add(urls: urls) else { return .none }
+            return .init(accepted: outcome.accepted, ready: outcome.added.count)
+        }
         // A tap on the overflow indicator's wings should open Arrange Mode,
         // same as the legacy `NotchHighlightWindowController` glow's
         // `onActivate` — not toggle the notch panel itself, which is what a
@@ -309,13 +311,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Push every notch-related preference into the live controller. Called
     /// once at launch (to apply whatever was persisted) and again from each
     /// setting's own Combine sink.
-    private func configureNotch() {
+    /// `notchEnabled` follows the same emitted-value convention as
+    /// `recomputeDuoActive`/`configureLockScreenPresenter` below, and for the
+    /// same reason — but this one was missing it, which made the master notch
+    /// toggle itself unreliable.
+    ///
+    /// `@Published` delivers to subscribers from `willSet`, BEFORE its own
+    /// backing storage updates. `settings.$notchEnabled`'s sink calls this
+    /// function, which then re-read `settings.notchEnabled` synchronously and
+    /// saw the value from *before* the change. Turning the notch off left the
+    /// panel, its monitors, the clipboard monitor and the lock-screen
+    /// presenter all running until the next launch, even though the
+    /// preference itself displayed and persisted as off.
+    private func configureNotch(notchEnabled: Bool? = nil) {
+        let notchOn = notchEnabled ?? settings.notchEnabled
         // Applied before `setEnabled` so a fresh panel is built with the
         // right collection behavior from the start, rather than defaulting
         // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
         // tick and then immediately being corrected.
         notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
-        notchWindow.setEnabled(settings.notchEnabled)
+        notchWindow.setEnabled(notchOn)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
         notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
@@ -327,10 +342,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.setEnabled(.timers, settings.notchTimersEnabled)
         notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
-        configureNotchOverflowCoexistence()
-        configureNotchHotkey()
-        configureClipboardMonitor()
-        configureLockScreenPresenter()
+        configureNotchOverflowCoexistence(notchEnabled: notchOn)
+        configureNotchHotkey(notchEnabled: notchOn)
+        configureClipboardMonitor(notchEnabled: notchOn)
+        configureLockScreenPresenter(notchEnabled: notchOn)
         recomputeDuoActive()
         // Force the lazy router into existence — see its property doc
         // comment for why nothing else naturally touches it. Its own `init`
@@ -344,8 +359,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// including a background monitor with nothing to actually show its
     /// history in (see `ClipboardMonitor`'s own doc comment on why its
     /// lifecycle is settings-, not presentation-, driven).
-    private func configureClipboardMonitor() {
-        if settings.notchEnabled && settings.notchClipboardEnabled {
+    private func configureClipboardMonitor(notchEnabled: Bool? = nil) {
+        if (notchEnabled ?? settings.notchEnabled) && settings.notchClipboardEnabled {
             clipboardMonitor.start()
         } else {
             clipboardMonitor.stop()
@@ -366,9 +381,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a live read when called with no argument (every other call site here —
     /// startup, and any other setting's sink recomputing this incidentally —
     /// has no fresher value to hand it).
-    private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil) {
+    private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil,
+                                              notchEnabled: Bool? = nil) {
         let experimentEnabled = lockScreenExperimentEnabled ?? settings.notchLockScreenExperimentEnabled
-        lockScreenPresenter.setEnabled(settings.notchEnabled && experimentEnabled)
+        lockScreenPresenter.setEnabled((notchEnabled ?? settings.notchEnabled) && experimentEnabled)
     }
 
     /// M7 (Alcove parity): pushes the pure `NotchViewModel.duoActive(...)`
@@ -403,7 +419,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeNotchSettings() {
         settings.$notchEnabled
             .dropFirst()
-            .sink { [weak self] _ in self?.configureNotch() }
+            // The emitted value, NOT a re-read — see `configureNotch`'s doc
+            // comment. This is the repo's recurring Combine footgun.
+            .sink { [weak self] enabled in self?.configureNotch(notchEnabled: enabled) }
             .store(in: &cancellables)
 
         settings.$notchExpansionTrigger
@@ -510,14 +528,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `configureHotkey()`'s pattern for the menu-bar chord. Only meaningful
     /// while the notch feature itself is on — there's nothing to toggle
     /// otherwise.
-    private func configureNotchHotkey() {
+    private func configureNotchHotkey(notchEnabled: Bool? = nil) {
         // Routed through `NotchWindowController.hotkeyToggled()` (not the
         // view model directly) so it's a no-op while the controller has
         // nothing presenting — the hotkey stays registered even on an
         // external-only clamshell setup with no built-in notched screen,
         // and must not drive a headless expand in that case.
         hotkey.onTrigger[.notchToggle] = { [weak self] in self?.notchWindow.hotkeyToggled() }
-        guard settings.notchEnabled, settings.notchHotkey.isValid else {
+        guard (notchEnabled ?? settings.notchEnabled), settings.notchHotkey.isValid else {
             hotkey.unregister(.notchToggle)
             settings.notchHotkeyConflict = false
             return
@@ -535,8 +553,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// off. This method now only owns that overlay's lifecycle — the
     /// live-activity side of this coexistence moved to `NotchActivityRouter`
     /// (see its doc comment for why).
-    private func configureNotchOverflowCoexistence() {
-        if settings.notchEnabled {
+    private func configureNotchOverflowCoexistence(notchEnabled: Bool? = nil) {
+        if notchEnabled ?? settings.notchEnabled {
             notchHighlight = nil
         } else if notchHighlight == nil {
             notchHighlight = NotchHighlightWindowController(
@@ -570,7 +588,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Same signpost the chevron's menu carries — see
         // `MenuBarManager.pendingUpdateVersion`.
         if let version = updater.pendingRelease?.version {
-            let item = makeNotchItem("Update to \(version)…", #selector(notchMenuOpenSettings))
+            // `.general`, not the generic open — the install controls are
+            // there, and `show()` alone would preserve whatever tab the user
+            // last had open (Codex PR13 finding).
+            let item = makeNotchItem("Update to \(version)…", #selector(notchMenuOpenUpdateSettings))
             item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
             menu.addItem(item)
             menu.addItem(.separator())
@@ -637,6 +658,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func notchMenuOpenNotchSettings() { settingsWindow.show(tab: .notch) }
+
+    @objc private func notchMenuOpenUpdateSettings() { settingsWindow.show(tab: .general) }
 
     @objc private func notchMenuOpenSettings() { openSettings() }
 

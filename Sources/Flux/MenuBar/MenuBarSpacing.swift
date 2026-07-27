@@ -25,16 +25,26 @@ enum MenuBarSpacing {
     private static let user = kCFPreferencesCurrentUser
     private static let host = kCFPreferencesCurrentHost
 
-    /// True when **Flux's** compact spacing is in effect — i.e. the key holds
-    /// exactly `compactValue`, not merely *some* value.
+    /// True when **Flux's** compact spacing is in effect.
     ///
-    /// This used to be `!= nil`, which read any pre-existing spacing (set by
-    /// the user with `defaults write`, or by Ice/Bartender) as Flux's own.
-    /// The toggle then showed ON at launch for a value Flux never wrote, and
-    /// switching it off called `apply(compact: false)` — which cleared the
-    /// key outright, destroying that setting instead of restoring it.
+    /// Ownership is tracked explicitly, in Flux's own defaults, rather than
+    /// inferred. Two earlier forms were both wrong:
+    /// - `!= nil` read ANY pre-existing spacing (set by the user with
+    ///   `defaults write`, or by Ice/Bartender) as Flux's own. The toggle
+    ///   showed ON at launch for a value Flux never wrote, and switching it
+    ///   off cleared the key outright, destroying that setting.
+    /// - `== compactValue` fixed the common case but not the one where the
+    ///   external value *already was* 6 (Codex PR13 finding). Flux would
+    ///   still claim it, `stashCurrentValuesIfNeeded()` would record nothing,
+    ///   and turning the toggle off would clear both keys — recreating the
+    ///   exact destruction this is meant to prevent.
+    ///
+    /// The value is still checked alongside the marker, so a spacing changed
+    /// out from under Flux (by another tool, or a `defaults write`) correctly
+    /// reads as no longer Flux's.
     static var isCompact: Bool {
-        (CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int) == compactValue
+        guard UserDefaults.standard.bool(forKey: ownershipKey) else { return false }
+        return (CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int) == compactValue
     }
 
     /// Write (compact) or restore both spacing keys.
@@ -49,11 +59,13 @@ enum MenuBarSpacing {
             let value = NSNumber(value: compactValue) as CFPropertyList
             CFPreferencesSetValue(spacingKey, value, appID, user, host)
             CFPreferencesSetValue(paddingKey, value, appID, user, host)
+            UserDefaults.standard.set(true, forKey: ownershipKey)
         } else {
             CFPreferencesSetValue(spacingKey, stashedValue(forKey: stashedSpacingKey), appID, user, host)
             CFPreferencesSetValue(paddingKey, stashedValue(forKey: stashedPaddingKey), appID, user, host)
             UserDefaults.standard.removeObject(forKey: stashedSpacingKey)
             UserDefaults.standard.removeObject(forKey: stashedPaddingKey)
+            UserDefaults.standard.set(false, forKey: ownershipKey)
         }
         CFPreferencesSynchronize(appID, user, host)
     }
@@ -64,14 +76,20 @@ enum MenuBarSpacing {
     // this is Flux's bookkeeping about someone else's setting, and it must
     // not itself become another stray key in the global domain.
 
+    /// Whether Flux is the one that wrote the current spacing. The load-
+    /// bearing bit: equality with `compactValue` cannot distinguish "Flux set
+    /// this" from "someone else happened to pick the same number".
+    private static let ownershipKey = "flux.menuBar.ownsStatusItemSpacing"
     private static let stashedSpacingKey = "flux.menuBar.previousStatusItemSpacing"
     private static let stashedPaddingKey = "flux.menuBar.previousStatusItemSelectionPadding"
 
     /// Records the pre-Flux values exactly once per compact session. Guarded
-    /// on `isCompact` so re-applying (a settings sink re-delivering on launch,
-    /// say) can't overwrite the real originals with Flux's own `compactValue`.
+    /// on the ownership marker — NOT on `isCompact`, and not on a value
+    /// comparison — so re-applying (a settings sink re-delivering on launch,
+    /// say) can't overwrite the real originals with Flux's own
+    /// `compactValue`, while a genuine external 6 is still stashed properly.
     private static func stashCurrentValuesIfNeeded() {
-        guard !isCompact else { return }
+        guard !UserDefaults.standard.bool(forKey: ownershipKey) else { return }
         stash(CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int, forKey: stashedSpacingKey)
         stash(CFPreferencesCopyValue(paddingKey, appID, user, host) as? Int, forKey: stashedPaddingKey)
     }

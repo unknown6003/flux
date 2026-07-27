@@ -200,6 +200,16 @@ final class MediaRemoteAdapterSource {
     // MARK: - Stream line parsing
 
     private func consume(_ data: Data) {
+        // Proof of life. The restart budget counts CONSECUTIVE failed
+        // restarts, so it has to be cleared once a restarted stream is
+        // actually working — otherwise three unrelated exits spread over
+        // days of uptime would exhaust it, and the fourth would strand an
+        // open Now Playing widget with nothing to retry (Codex PR13
+        // finding). `stop()` is not enough on its own: `NowPlayingService`
+        // deliberately leaves the stream running while inactive and may
+        // never call it. Receiving a byte from the helper is the earliest
+        // point at which "the restart worked" is known to be true.
+        restartAttempts = 0
         lineBuffer.append(data)
         while let newline = lineBuffer.firstIndex(of: 0x0A) {
             let line = lineBuffer.subdata(in: lineBuffer.startIndex..<newline)

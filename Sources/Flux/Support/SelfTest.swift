@@ -998,54 +998,79 @@ enum SelfTest {
         check(!NotchWindowController.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true),
               "Drag accept: a live activity showing declines")
 
-        // --- M12 hover-reliability fix: the collapsed notch's hover target is
-        // deliberately LARGER than the physical notch it's drawn over. The
+        // --- M12 hover-reliability fix: the collapsed notch's hover target
+        // is deliberately LARGER than the physical notch it's drawn over. The
         // notch is camera housing with no pixels, and macOS hides the cursor
         // while it's over it, so users can't see what they're aiming at and
         // routinely land just beside or just below — which read as the notch
-        // ignoring them. These assert the slop is real, is asymmetric in the
-        // right direction (down, never up — the notch is flush with the top of
-        // the screen), and doesn't leak into the click target. ---
+        // ignoring them.
+        //
+        // These targets come from the PHYSICAL notch rect (screen
+        // coordinates, y growing UP), NOT from `viewModel.interactiveRect`:
+        // that rect is widened to the union of both shapes for ~0.35s during
+        // a collapse, so deriving from it briefly made the entire former
+        // expanded panel a click target over another app's window. ---
         do {
-            // A stand-in for the physical notch's own footprint, in the
-            // top-left-origin space `interactiveRect` is published in.
-            let notch = CGRect(x: 200, y: 0, width: 200, height: 37)
-            let hover = NotchWindowController.hoverRect(for: .collapsed, interactiveRect: notch)
-            check(hover.contains(CGPoint(x: 300, y: 18)),
+            // A stand-in for the physical notch on a screen 1000pt tall:
+            // flush with the top, so maxY is the screen's top edge.
+            let notch = CGRect(x: 200, y: 963, width: 200, height: 37)
+            let hover = NotchWindowController.collapsedHoverRect(notchRect: notch)
+            check(hover.contains(CGPoint(x: 300, y: 980)),
                   "Notch hover: a point dead centre on the collapsed notch is inside")
-            check(hover.contains(CGPoint(x: 196, y: 18)),
+            check(hover.contains(CGPoint(x: 196, y: 980)),
                   "Notch hover: a point just LEFT of the physical notch still counts (aim slop)")
-            check(hover.contains(CGPoint(x: 404, y: 18)),
+            check(hover.contains(CGPoint(x: 404, y: 980)),
                   "Notch hover: a point just RIGHT of the physical notch still counts (aim slop)")
-            check(hover.contains(CGPoint(x: 300, y: 42)),
+            check(hover.contains(CGPoint(x: 300, y: 958)),
                   "Notch hover: a point just BELOW the physical notch still counts — the direction users undershoot into")
-            check(hover.minY == notch.minY,
+            check(hover.maxY == notch.maxY,
                   "Notch hover: never extends ABOVE the notch — it's flush with the top of the screen, there is nothing up there")
-            check(!hover.contains(CGPoint(x: 300, y: 80)),
+            check(!hover.contains(CGPoint(x: 300, y: 900)),
                   "Notch hover: the slop is small — a point well below the menu bar is still outside")
-            check(!hover.contains(CGPoint(x: 150, y: 18)),
+            check(!hover.contains(CGPoint(x: 150, y: 980)),
                   "Notch hover: the slop is small — a point well into the menu bar beside the notch is still outside")
 
-            let click = NotchWindowController.collapsedClickRect(interactiveRect: notch)
-            check(click.contains(CGPoint(x: 196, y: 18)),
+            let click = NotchWindowController.collapsedClickRect(notchRect: notch)
+            check(click.contains(CGPoint(x: 196, y: 980)),
                   "Notch click: gets the same horizontal aim slop as hover")
-            check(!click.contains(CGPoint(x: 300, y: 42)),
+            check(!click.contains(CGPoint(x: 300, y: 958)),
                   "Notch click: does NOT extend below the notch — a click there belongs to the window underneath")
+            check(click.height == notch.height && click.minY == notch.minY,
+                  "Notch click: vertically it is exactly the notch, so a collapse-transition rect can never widen it")
+
+            // Codex PR13 finding: the right-click target is the physical
+            // notch in EVERY state, never the open shape. The expanded Shelf
+            // and Clipboard widgets attach their own SwiftUI `.contextMenu`
+            // to tiles/rows, and a monitor observes a right-click without
+            // consuming it — so a shell menu covering the panel body would
+            // fight the widget's own menu over one click.
+            check(NotchWindowController.collapsedClickRect(notchRect: notch)
+                    .contains(CGPoint(x: 300, y: 980)),
+                  "Notch context menu: the physical notch strip is the target")
+            check(!NotchWindowController.collapsedClickRect(notchRect: notch)
+                    .contains(CGPoint(x: 300, y: 800)),
+                  "Notch context menu: the expanded panel's body is NOT a target — widgets own their own context menus there")
 
             // The open shape needs no aim assistance (it's large and visible);
             // its slop only exists to stop a cursor tracing the panel's own
-            // edge from flickering the hover-out timer.
+            // edge from flickering the hover-out timer. This one IS derived
+            // from `interactiveRect`, in the panel's top-left-origin space.
             let open = CGRect(x: 100, y: 0, width: 400, height: 190)
-            let openHover = NotchWindowController.hoverRect(for: .expanded(.nowPlaying), interactiveRect: open)
+            let openHover = NotchWindowController.openHoverRect(interactiveRect: open)
             check(openHover.contains(CGPoint(x: 300, y: 100)),
                   "Notch hover: a point inside the expanded panel is inside")
             check(!openHover.contains(CGPoint(x: 300, y: 220)),
                   "Notch hover: a point well outside the expanded panel is outside")
 
-            // A zero rect is what `interactiveRect` holds before the root
-            // view has ever laid out — it must never swallow the whole screen.
-            check(NotchWindowController.hoverRect(for: .collapsed, interactiveRect: .zero).isNull,
-                  "Notch hover: an unlaid-out (zero) interactive rect matches nothing rather than growing slop around the origin")
+            // A zero rect is what these hold with no notched screen attached,
+            // or before the root view has ever laid out — it must never
+            // swallow the whole screen.
+            check(NotchWindowController.collapsedHoverRect(notchRect: .zero).isNull,
+                  "Notch hover: no notched screen (zero rect) matches nothing rather than growing slop around the origin")
+            check(NotchWindowController.collapsedClickRect(notchRect: .null).isNull,
+                  "Notch click: a null notch rect matches nothing")
+            check(NotchWindowController.openHoverRect(interactiveRect: .zero).isNull,
+                  "Notch hover: an unlaid-out (zero) interactive rect matches nothing")
         }
 
         // --- M3: PowerMonitor.lowBatteryEvent — the low-battery hysteresis,
@@ -2932,9 +2957,34 @@ enum SelfTest {
             // A missing/unreadable DiagnosticReports directory must be a
             // quiet nil, never a throw — the report is a bonus on top of the
             // breadcrumb, and this runs on CI where the directory is empty.
+            let probeSession = CrashReporter.Session(
+                version: "0.13.0", build: "20",
+                startedAt: Date(timeIntervalSince1970: 1_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_000_500),
+                endedCleanly: false, breadcrumb: .init())
             check(CrashReporter.latestCrashReportSummary(
+                    session: probeSession,
                     directory: URL(fileURLWithPath: "/nonexistent/DiagnosticReports")) == nil,
                   "CrashReporter: an unreadable reports directory yields nil rather than throwing")
+            check(CrashReporter.latestCrashReportSummary(session: nil) == nil,
+                  "CrashReporter: with no unclean session there is nothing to attribute a report to")
+
+            // Codex PR13 finding: a report is matched to the session's own
+            // window, not merely "newest in the last week". Crashing once on
+            // Monday and force-quitting on Friday must not staple Monday's
+            // exception signature to Friday's unclean exit.
+            check(CrashReporter.reportMatches(session: probeSession,
+                                              reportDate: Date(timeIntervalSince1970: 1_000_400)),
+                  "CrashReporter.reportMatches: a report written during the session matches it")
+            check(CrashReporter.reportMatches(session: probeSession,
+                                              reportDate: Date(timeIntervalSince1970: 1_000_560)),
+                  "CrashReporter.reportMatches: a report flushed shortly after the process died still matches (grace window)")
+            check(!CrashReporter.reportMatches(session: probeSession,
+                                               reportDate: Date(timeIntervalSince1970: 999_000)),
+                  "CrashReporter.reportMatches: a report predating the session cannot be its crash")
+            check(!CrashReporter.reportMatches(session: probeSession,
+                                               reportDate: Date(timeIntervalSince1970: 1_100_000)),
+                  "CrashReporter.reportMatches: a much later report belongs to some other run, not this one")
 
             // End-to-end: a session that never ends cleanly is surfaced at
             // the next launch; one that does isn't.

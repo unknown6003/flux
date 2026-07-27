@@ -40,7 +40,26 @@ final class NotchWindowController {
     /// LiveActivity. `NotchWindowController` deliberately never references
     /// the store type directly — that keeps this UI-shell file free of any
     /// dependency on `Services/Shelf`.
-    var onShelfDrop: (([URL]) -> Int)?
+    var onShelfDrop: (([URL]) -> ShelfDropResult)?
+
+    /// What a drop actually achieved. Two numbers, because they answer
+    /// different questions and conflating them made the notch lie in one
+    /// direction or the other (Codex PR13 finding).
+    ///
+    /// `accepted` decides whether `performDragOperation` returns `true` — a
+    /// large file or a folder copies on a background task, and reporting
+    /// those as zero made macOS play its drag-snaps-back rejection animation
+    /// over a drop that was working fine. But `accepted` must NOT be what the
+    /// confirmation wing claims, since a background copy can still fail (the
+    /// source vanishes, permissions change, the disk fills) — announcing
+    /// "Added 3" for items that never arrive is the same lie pointing the
+    /// other way. `ready` is the count actually on the shelf right now.
+    struct ShelfDropResult {
+        let accepted: Int
+        let ready: Int
+
+        static let none = ShelfDropResult(accepted: 0, ready: 0)
+    }
 
     /// Builds the context menu a right-click on the notch pops up. Set once
     /// by the wiring agent (`AppDelegate`), which is the only layer that
@@ -458,66 +477,103 @@ final class NotchWindowController {
         return NSPoint(x: windowPoint.x, y: panel.frame.height - windowPoint.y)
     }
 
-    /// The region the pointer must be inside for hover to count, in
-    /// `notchSpacePoint`'s space. See `hoverSlopX`/`hoverSlopBelow` for why
-    /// the collapsed case is deliberately larger than what's drawn.
+    // Collapsed-state targets are derived from the PHYSICAL notch, in screen
+    // coordinates — deliberately not from `viewModel.interactiveRect`.
+    //
+    // `interactiveRect` is not the collapsed footprint during a transition:
+    // `NotchRootView.updateInteractiveRect` widens it to the UNION of the
+    // outgoing and incoming shapes for the ~0.35s a collapse spring takes to
+    // settle (correct for its own purpose — it keeps the still-visible
+    // shrinking shape hit-testable). Deriving collapsed targets from it meant
+    // that, for a third of a second after every close, a click or hover
+    // anywhere in the *former expanded panel* — well below the menu bar,
+    // over another app's window — counted as being on the notch. That both
+    // reached the app underneath and re-toggled Flux, which is exactly the
+    // horizontal-slop-only invariant the click target is supposed to hold.
+    // The physical notch never moves, so it has no such window.
+
+    /// Screen-space hover target for the collapsed notch. Screen coordinates
+    /// put y growing UP, so extending "below" the notch means lowering
+    /// `minY` — see `hoverSlopBelow` for why that direction gets slop at all.
     ///
-    /// Pure and `static` — the same seam `shouldAcceptDrag` uses — so
-    /// `--selftest` can drive every state/geometry combination headlessly,
-    /// with no window, screen or physical notch.
-    static func hoverRect(for state: NotchState, interactiveRect rect: CGRect) -> CGRect {
+    /// Pure and `static`, the same seam `shouldAcceptDrag` uses, so
+    /// `--selftest` can drive the geometry headlessly with no window, screen
+    /// or physical notch.
+    static func collapsedHoverRect(notchRect rect: CGRect) -> CGRect {
         guard rect.width > 0, rect.height > 0 else { return .null }
-        switch state {
-        case .collapsed:
-            // y grows downward here, so growing `height` extends the region
-            // below the notch — the direction users actually undershoot into.
-            return CGRect(x: rect.minX - hoverSlopX,
-                          y: rect.minY,
-                          width: rect.width + hoverSlopX * 2,
-                          height: rect.height + hoverSlopBelow)
-        case .activity, .expanded:
-            return rect.insetBy(dx: -openHoverSlop, dy: -openHoverSlop)
-        }
+        return CGRect(x: rect.minX - hoverSlopX,
+                      y: rect.minY - hoverSlopBelow,
+                      width: rect.width + hoverSlopX * 2,
+                      height: rect.height + hoverSlopBelow)
     }
 
-    /// The click target while collapsed. Horizontal slop only — unlike hover,
-    /// a click that lands *below* the menu-bar strip is a click the user
-    /// aimed at the window underneath, and toggling the notch for it would be
-    /// a genuine misfire rather than a helpful assist.
-    static func collapsedClickRect(interactiveRect rect: CGRect) -> CGRect {
+    /// Screen-space click target for the collapsed notch. Horizontal slop
+    /// only — unlike hover, a click that lands *below* the menu-bar strip is
+    /// a click the user aimed at the window underneath, and toggling the
+    /// notch for it would be a genuine misfire rather than a helpful assist.
+    static func collapsedClickRect(notchRect rect: CGRect) -> CGRect {
         guard rect.width > 0, rect.height > 0 else { return .null }
         return CGRect(x: rect.minX - hoverSlopX, y: rect.minY,
                       width: rect.width + hoverSlopX * 2, height: rect.height)
     }
 
-    private func hoverRect(for state: NotchState) -> CGRect {
-        Self.hoverRect(for: state, interactiveRect: viewModel.interactiveRect)
+    /// Panel-space hover target for the open shape. The transition union is
+    /// wanted here (unlike the collapsed case above): while the shape is
+    /// mid-morph the union is a superset of what's actually drawn, which is
+    /// what keeps a cursor resting on the still-animating panel from being
+    /// read as having left it.
+    static func openHoverRect(interactiveRect rect: CGRect) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return .null }
+        return rect.insetBy(dx: -openHoverSlop, dy: -openHoverSlop)
     }
 
-    private var collapsedClickRect: CGRect {
-        Self.collapsedClickRect(interactiveRect: viewModel.interactiveRect)
+    /// The physical notch's own footprint in screen coordinates, or `.null`
+    /// when there is no notched screen to speak of.
+    private var physicalNotchRect: CGRect {
+        NSScreen.builtInNotchedScreen?.notchRect ?? .null
     }
 
-    /// Where a right-click pops the context menu. While collapsed this uses
-    /// the CLICK rect, not the hover one: a global monitor can't consume the
-    /// event it observes, so a right-click that reaches past the menu-bar
-    /// strip would pop this menu *and* whatever context menu the window
-    /// underneath shows for the same click. Confining it to the notch's own
-    /// strip — where nothing else has a context menu — keeps that from
-    /// happening, at the cost of aim assist users don't need for a
-    /// deliberate right-click.
-    private var contextMenuRect: CGRect {
+    /// Whether a screen-space point counts as hovering, for the current
+    /// state. Collapsed tests the physical notch directly; the open states
+    /// convert into the panel's own space and test the drawn shape.
+    private func isHovering(screenPoint: NSPoint) -> Bool {
         switch viewModel.state {
-        case .collapsed: return collapsedClickRect
-        case .activity, .expanded: return hoverRect(for: viewModel.state)
+        case .collapsed:
+            return Self.collapsedHoverRect(notchRect: physicalNotchRect).contains(screenPoint)
+        case .activity, .expanded:
+            guard let local = notchSpacePoint(screenPoint) else { return false }
+            return Self.openHoverRect(interactiveRect: viewModel.interactiveRect).contains(local)
         }
+    }
+
+    /// Where a right-click pops the context menu: the physical notch's own
+    /// strip, in EVERY state.
+    ///
+    /// Not the whole open shape, which is what this first did. Two separate
+    /// problems with that:
+    /// - The expanded Shelf and Clipboard widgets attach their own SwiftUI
+    ///   `.contextMenu` to their tiles/rows (AirDrop, Show in Finder, Copy,
+    ///   Remove). A local monitor observes the right-click without consuming
+    ///   it, so the same event would open the widget's menu *and* schedule
+    ///   this shell menu — two menus fighting over one click, with the shell
+    ///   one reopening after the intended one was dismissed.
+    /// - A global monitor can't consume the event either, so while collapsed
+    ///   a right-click reaching past the menu-bar strip would pop this menu
+    ///   on top of whatever context menu the window underneath shows.
+    ///
+    /// The physical notch is the one region that is always Flux's own chrome
+    /// and never a widget's content — expanded content clears it by
+    /// `notchSize.height + 6` of top padding (see `NotchRootView.
+    /// ExpandedChrome`) — so confining the shell menu to it resolves both.
+    private var contextMenuRect: CGRect {
+        Self.collapsedClickRect(notchRect: physicalNotchRect)
     }
 
     // MARK: - Monitored input
 
     private func handleMonitoredMove(at location: NSPoint) {
-        guard isPresenting, !isShowingMenu, let local = notchSpacePoint(location) else { return }
-        let inside = hoverRect(for: viewModel.state).contains(local)
+        guard isPresenting, !isShowingMenu else { return }
+        let inside = isHovering(screenPoint: location)
         guard inside != lastMonitoredInside else { return }
         lastMonitoredInside = inside
         viewModel.hoverChanged(inside: inside)
@@ -532,8 +588,8 @@ final class NotchWindowController {
     /// believing a hover that ended is still in progress and the panel
     /// pinned open indefinitely.
     private func refreshHover() {
-        guard isPresenting, let local = notchSpacePoint(NSEvent.mouseLocation) else { return }
-        let inside = hoverRect(for: viewModel.state).contains(local)
+        guard isPresenting else { return }
+        let inside = isHovering(screenPoint: NSEvent.mouseLocation)
         lastMonitoredInside = inside
         viewModel.hoverChanged(inside: inside)
     }
@@ -550,8 +606,8 @@ final class NotchWindowController {
     /// handling for the activity/expanded states (where the panel itself
     /// receives the click instead of these monitors).
     private func handleMonitoredClick(at location: NSPoint, optionDown: Bool) {
-        guard isPresenting, !isShowingMenu, let local = notchSpacePoint(location),
-              collapsedClickRect.contains(local) else { return }
+        guard isPresenting, !isShowingMenu,
+              Self.collapsedClickRect(notchRect: physicalNotchRect).contains(location) else { return }
         viewModel.clicked(optionDown: optionDown)
     }
 
@@ -568,8 +624,8 @@ final class NotchWindowController {
     /// `isShowingMenu` suppresses hover for the menu's lifetime — see that
     /// property's doc comment.
     private func handleMonitoredRightClick(at location: NSPoint) {
-        guard isPresenting, !isShowingMenu, let local = notchSpacePoint(location),
-              contextMenuRect.contains(local),
+        guard isPresenting, !isShowingMenu,
+              contextMenuRect.contains(location),
               let menu = menuProvider?() else { return }
 
         // Set SYNCHRONOUSLY, not inside the block below: two right-clicks
@@ -705,13 +761,20 @@ final class NotchWindowController {
             return false
         }
 
-        let added = onShelfDrop?(urls) ?? 0
-        guard added > 0 else { return false }
+        let result = onShelfDrop?(urls) ?? .none
+        guard result.accepted > 0 else { return false }
+
+        // Present tense while anything is still copying — see
+        // `ShelfDropResult`. The shelf itself is the honest, live answer:
+        // items appear in it as their copies finish, and one that fails
+        // simply never shows up.
+        let stillCopying = result.accepted - result.ready
+        let caption = stillCopying > 0 ? "Adding \(result.accepted)…" : "Added \(result.ready)"
 
         activities.post(LiveActivity(
             kind: .shelfDrop,
             leading: .icon(systemName: "tray.and.arrow.down.fill"),
-            trailing: .text("Added \(added)"),
+            trailing: .text(caption),
             duration: 2.5,
             priority: 120))
         return true
