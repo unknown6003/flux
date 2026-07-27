@@ -2880,6 +2880,118 @@ enum SelfTest {
                   "Formatters.age: exactly at the 60s boundary the item is old enough for real relative text (got \(age60)), not 'now' or future tense")
         }
 
+        // --- M12: CrashReporter. The notch/camera crashes this exists to
+        // diagnose can only happen on real hardware, so the parts covered
+        // here are the pure ones: which DiagnosticReports files count as
+        // Flux's, and what gets pulled out of a report's text. The
+        // unclean-exit detection itself is exercised end-to-end below,
+        // against a temp file rather than the real container. ---
+        do {
+            check(CrashReporter.isFluxCrashReport("Flux-2026-07-27-134500.ips"),
+                  "CrashReporter: a modern .ips report for Flux is recognised")
+            check(CrashReporter.isFluxCrashReport("Flux-2026-07-27-134500.crash"),
+                  "CrashReporter: the older .crash extension is recognised too")
+            check(!CrashReporter.isFluxCrashReport("Safari-2026-07-27-134500.ips"),
+                  "CrashReporter: another app's crash report is NOT picked up")
+            check(!CrashReporter.isFluxCrashReport("Flux-2026-07-27-134500.diag"),
+                  "CrashReporter: a non-crash diagnostic (.diag, e.g. a CPU-usage report) is ignored")
+            check(!CrashReporter.isFluxCrashReport("FluxCapacitor-2026-07-27.ips"),
+                  "CrashReporter: the prefix match requires the separator, so a differently-named app isn't captured")
+
+            // Modern .ips: a JSON header line carrying the signature.
+            let ips = """
+                {"app_name":"Flux","timestamp":"2026-07-27 13:45:00.00 +0000","app_version":"0.13.0"}
+                {"exceptionType":"EXC_CRASH (SIGABRT)","faultingThread":0,"termination":{"code":0,"flags":518}}
+                """
+            let ipsSummary = CrashReporter.summarize(reportContents: ips, fileName: "Flux-x.ips")
+            check(ipsSummary.contains("Flux-x.ips"),
+                  "CrashReporter.summarize: names the report file it came from")
+            check(ipsSummary.contains("exceptionType"),
+                  "CrashReporter.summarize: keeps the .ips exception signature")
+
+            // Older plain-text .crash layout — a different macOS writes this
+            // one, and which it'll be isn't something Flux controls.
+            let plain = """
+                Process:               Flux [5123]
+                Exception Type:        EXC_BAD_ACCESS (SIGSEGV)
+                Termination Reason:    Namespace SIGNAL
+                Crashed Thread:        0  Dispatch queue: com.apple.main-thread
+                """
+            let plainSummary = CrashReporter.summarize(reportContents: plain, fileName: "Flux-y.crash")
+            check(plainSummary.contains("Exception Type"),
+                  "CrashReporter.summarize: keeps the plain-text .crash exception type")
+            check(plainSummary.contains("Crashed Thread"),
+                  "CrashReporter.summarize: keeps the plain-text crashed-thread line")
+            check(!plainSummary.contains("Process:"),
+                  "CrashReporter.summarize: drops non-signature lines rather than pasting the whole report")
+
+            let noise = String(repeating: "exceptionType filler ", count: 400)
+            check(CrashReporter.summarize(reportContents: noise, fileName: "Flux-z.ips").count < 3_000,
+                  "CrashReporter.summarize: a pathological single-line .ips payload is truncated, not dumped whole")
+
+            // A missing/unreadable DiagnosticReports directory must be a
+            // quiet nil, never a throw — the report is a bonus on top of the
+            // breadcrumb, and this runs on CI where the directory is empty.
+            check(CrashReporter.latestCrashReportSummary(
+                    directory: URL(fileURLWithPath: "/nonexistent/DiagnosticReports")) == nil,
+                  "CrashReporter: an unreadable reports directory yields nil rather than throwing")
+
+            // End-to-end: a session that never ends cleanly is surfaced at
+            // the next launch; one that does isn't.
+            let crashDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("flux-selftest-crash-\(UUID().uuidString)", isDirectory: true)
+            let sessionFile = crashDir.appendingPathComponent("session.json")
+
+            let died = CrashReporter(fileURL: sessionFile)
+            died.beginSession()
+            check(died.lastUncleanSession == nil,
+                  "CrashReporter: a first-ever launch reports no previous crash")
+            died.update { breadcrumb in
+                breadcrumb.notchState = "expanded(mirror)"
+                breadcrumb.cameraRunning = true
+            }
+            // Deliberately NO endSession() — this stands in for the crash.
+
+            let afterCrash = CrashReporter(fileURL: sessionFile)
+            afterCrash.beginSession()
+            if let recovered = afterCrash.lastUncleanSession {
+                check(!recovered.endedCleanly,
+                      "CrashReporter: the session that never ended cleanly is the one surfaced")
+                check(recovered.breadcrumb.cameraRunning,
+                      "CrashReporter: the breadcrumb survives the crash — the camera was recorded as running")
+                check(recovered.breadcrumb.notchState == "expanded(mirror)",
+                      "CrashReporter: the breadcrumb records WHICH widget was open, not just that one was")
+                check(afterCrash.diagnosticsText().contains("expanded(mirror)"),
+                      "CrashReporter: the copyable report includes the breadcrumb")
+            } else {
+                check(false, "CrashReporter: an unclean previous session should be detected at the next launch")
+            }
+            afterCrash.endSession()
+
+            let afterCleanExit = CrashReporter(fileURL: sessionFile)
+            afterCleanExit.beginSession()
+            check(afterCleanExit.lastUncleanSession == nil,
+                  "CrashReporter: a session that DID end cleanly raises no notice at the next launch")
+            afterCleanExit.endSession()
+
+            afterCrash.dismissLastUncleanSession()
+            check(afterCrash.lastUncleanSession == nil,
+                  "CrashReporter: dismissing clears the notice")
+
+            try? FileManager.default.removeItem(at: crashDir)
+        }
+
+        // --- M12: the breadcrumb's NotchState rendering. Deliberately not
+        // `String(describing:)` — `.activity` carries a UUID that would churn
+        // the breadcrumb (and its file write) on every activity change while
+        // saying nothing useful. ---
+        check(AppDelegate.describe(.collapsed) == "collapsed",
+              "CrashReporter breadcrumb: collapsed renders as a stable string")
+        check(AppDelegate.describe(.expanded(.mirror)) == "expanded(mirror)",
+              "CrashReporter breadcrumb: an expanded state names the widget — the whole point for a camera crash")
+        check(AppDelegate.describe(.activity(UUID())) == AppDelegate.describe(.activity(UUID())),
+              "CrashReporter breadcrumb: two different activities render identically, so the UUID can't churn the file")
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }

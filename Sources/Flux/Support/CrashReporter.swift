@@ -1,0 +1,303 @@
+import Foundation
+import AppKit
+import Combine
+import OSLog
+
+/// Shared logging point for crash bookkeeping — mirrors `shelfLog`'s/
+/// `cameraLog`'s file-scope-constant pattern rather than adding a case to
+/// `Log.swift`, since this is a self-contained subsystem.
+let crashLog = Logger(subsystem: "com.flux.menubar", category: "crash")
+
+/// Detects that the previous run of Flux ended abnormally, and remembers
+/// enough about what it was doing to make the next bug report actionable.
+///
+/// ## Why this exists
+/// Every part of the notch suite that can plausibly crash — the capture
+/// session, the panel's own AppKit/SwiftUI bridge — is only reachable on real
+/// notched hardware with a real camera. Development happens on a Linux box
+/// where none of it can be driven, so a crash report from the user is the
+/// *only* signal available, and "it crashed again, something to do with the
+/// camera" isn't one that can be acted on. This turns that into "Flux quit
+/// unexpectedly while the Mirror widget was open and the camera session was
+/// running", plus the OS's own exception signature when it can be read.
+///
+/// ## Why not just read `~/Library/Logs/DiagnosticReports`?
+/// It does, but only as a bonus and only when the user explicitly asks for
+/// the report (`diagnosticsText()`), never at launch. Two reasons: that
+/// directory isn't guaranteed readable, and this app has a hard invariant
+/// that no potentially-TCC-touching API runs before an explicit user action.
+/// The primary mechanism below touches nothing outside Flux's own
+/// Application Support container, so it works unconditionally.
+///
+/// ## How the detection works
+/// A session file is written at launch with `endedCleanly: false` and
+/// rewritten as breadcrumbs change. `applicationWillTerminate` flips it to
+/// `true`. A crash never gets to run that, so finding `false` at the *next*
+/// launch means the last session died. This deliberately can't distinguish a
+/// crash from a force-quit or a logout that killed the app — hence the
+/// wording "quit unexpectedly" rather than "crashed", and hence the OS
+/// crash-report lookup, which is what actually disambiguates them.
+///
+/// ## Privacy
+/// `Breadcrumb` is a closed set of enum-ish strings describing Flux's own UI
+/// state. It carries no clipboard contents, no file names, no event titles,
+/// no window titles — nothing derived from user data at all. That's a
+/// deliberate constraint, not an accident of the current fields: this file is
+/// written to disk and shown in a copyable report, so anything added to it
+/// must be Flux's own state, never the user's.
+@MainActor
+final class CrashReporter: ObservableObject {
+
+    /// A tiny, privacy-safe description of what Flux was doing. Every field
+    /// is Flux's own UI state — see the type's doc comment on why that's a
+    /// hard constraint.
+    struct Breadcrumb: Codable, Equatable {
+        /// `NotchState` rendered as a stable string ("collapsed",
+        /// "activity", "expanded(mirror)"). Not the enum itself: `NotchState`
+        /// carries a `UUID` and would tie this file's on-disk format to a
+        /// type that changes for UI reasons.
+        var notchState: String = "collapsed"
+        /// Whether `CameraService`'s capture session was running. Called out
+        /// separately from `notchState` because the session outliving its
+        /// widget is exactly the class of bug this is here to catch.
+        var cameraRunning: Bool = false
+        /// The kind of the live activity showing, if any.
+        var activityKind: String?
+        /// Whether the Settings window was open.
+        var settingsOpen: Bool = false
+    }
+
+    /// One session's worth of bookkeeping, as persisted.
+    struct Session: Codable, Equatable {
+        var version: String
+        var build: String
+        var startedAt: Date
+        var updatedAt: Date
+        var endedCleanly: Bool
+        var breadcrumb: Breadcrumb
+    }
+
+    /// The previous session, when it ended abnormally. `nil` on a first-ever
+    /// launch, after a clean previous run, or once the user dismisses it.
+    /// Settings renders a card from this.
+    @Published private(set) var lastUncleanSession: Session?
+
+    /// Whether `beginSession()` has run. Guards the double-call that a
+    /// `--selftest`/`--snapshot` invocation could otherwise produce.
+    private var started = false
+    private var current: Session?
+    private let fileURL: URL
+    private let fileManager: FileManager
+
+    init(fileURL: URL? = nil, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        self.fileURL = fileURL ?? Self.defaultFileURL()
+    }
+
+    private static func defaultFileURL() -> URL {
+        let base = fileManagerBase()
+        return base.appendingPathComponent("Flux", isDirectory: true)
+            .appendingPathComponent("session.json")
+    }
+
+    /// Matches `ShelfStore.defaultDirectory()`'s reasoning: practically never
+    /// nil on macOS, but fall back to a still-per-user location rather than
+    /// force-unwrapping.
+    private static func fileManagerBase() -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+    }
+
+    // MARK: - Session lifecycle
+
+    /// Reads the previous session (publishing it as `lastUncleanSession` when
+    /// it never ended cleanly), then opens a fresh one. Call once, early in
+    /// `applicationDidFinishLaunching`.
+    func beginSession() {
+        guard !started else { return }
+        started = true
+
+        if let previous = readSession(), !previous.endedCleanly {
+            lastUncleanSession = previous
+            crashLog.error("""
+                Previous Flux session (v\(previous.version, privacy: .public) build \
+                \(previous.build, privacy: .public)) ended without a clean shutdown — \
+                notch was \(previous.breadcrumb.notchState, privacy: .public), \
+                camera running: \(previous.breadcrumb.cameraRunning, privacy: .public)
+                """)
+        }
+
+        let now = Date()
+        current = Session(version: AppInfo.version, build: AppInfo.build,
+                          startedAt: now, updatedAt: now,
+                          endedCleanly: false, breadcrumb: Breadcrumb())
+        writeNow()
+    }
+
+    /// Marks this session clean. Call from `applicationWillTerminate` — a
+    /// crash never reaches it, which is precisely the signal.
+    func endSession() {
+        guard var session = current else { return }
+        session.endedCleanly = true
+        session.updatedAt = Date()
+        current = session
+        writeNow()
+    }
+
+    /// Mutates the live breadcrumb and persists it IMMEDIATELY.
+    ///
+    /// Deliberately not coalesced onto a later runloop turn, which is the
+    /// obvious optimisation and the wrong one: the single most valuable
+    /// breadcrumb is the one describing the state Flux was in when it died,
+    /// and a crash arriving between the state change and a deferred write
+    /// would lose exactly that. The write is a couple of hundred bytes, and
+    /// these are discrete UI events (a notch transition, the camera starting)
+    /// — not a per-frame path — so paying for it synchronously is cheap
+    /// insurance. The no-op guard below means an unchanged breadcrumb costs
+    /// nothing at all.
+    func update(_ mutate: (inout Breadcrumb) -> Void) {
+        guard var session = current else { return }
+        var breadcrumb = session.breadcrumb
+        mutate(&breadcrumb)
+        guard breadcrumb != session.breadcrumb else { return }
+        session.breadcrumb = breadcrumb
+        session.updatedAt = Date()
+        current = session
+        writeNow()
+    }
+
+    /// The user has seen the notice. Clears the banner and the on-disk
+    /// record, so it can't reappear on the next launch.
+    func dismissLastUncleanSession() {
+        lastUncleanSession = nil
+    }
+
+    // MARK: - Report
+
+    /// A copyable plain-text report: Flux's own version/state breadcrumb plus,
+    /// best effort, the OS's crash-report signature for the matching crash.
+    ///
+    /// The `DiagnosticReports` read happens HERE and nowhere else — i.e. only
+    /// in response to the user pressing "Copy Report" — so nothing this app
+    /// does at launch or in the background ever touches a directory outside
+    /// its own container. A failure is silent by design: the breadcrumb half
+    /// is still worth having on its own.
+    func diagnosticsText() -> String {
+        var lines: [String] = []
+        lines.append("Flux \(AppInfo.version) (build \(AppInfo.build))")
+        lines.append("macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
+
+        if let session = lastUncleanSession {
+            lines.append("")
+            lines.append("Previous session ended unexpectedly")
+            lines.append("  ran:            \(Self.format(session.startedAt)) → \(Self.format(session.updatedAt))")
+            lines.append("  version:        \(session.version) (build \(session.build))")
+            lines.append("  notch state:    \(session.breadcrumb.notchState)")
+            lines.append("  camera running: \(session.breadcrumb.cameraRunning)")
+            lines.append("  live activity:  \(session.breadcrumb.activityKind ?? "none")")
+            lines.append("  settings open:  \(session.breadcrumb.settingsOpen)")
+        }
+
+        if let report = Self.latestCrashReportSummary() {
+            lines.append("")
+            lines.append("System crash report")
+            lines.append(report)
+        } else {
+            lines.append("")
+            lines.append("System crash report: none found (or not readable) in ~/Library/Logs/DiagnosticReports")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func format(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
+    }
+
+    /// The newest Flux crash report's identifying lines, if one exists and is
+    /// readable. Deliberately extracts only a handful of *signature* fields
+    /// rather than pasting the whole `.ips` — a full report is hundreds of
+    /// lines of address soup, and includes loaded-library paths that leak
+    /// more about the user's machine than a bug report needs.
+    static func latestCrashReportSummary(directory: URL? = nil, now: Date = Date()) -> String? {
+        let reportsDir = directory ?? FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/DiagnosticReports", isDirectory: true)
+
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: reportsDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles])
+        else { return nil }
+
+        let candidates = entries
+            .filter { isFluxCrashReport($0.lastPathComponent) }
+            .compactMap { url -> (URL, Date)? in
+                guard let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate else { return nil }
+                return (url, date)
+            }
+            // A report older than a week is almost certainly not the crash
+            // being reported now, and pasting it would send someone chasing
+            // a bug that's already fixed.
+            .filter { now.timeIntervalSince($0.1) < 7 * 24 * 3600 }
+            .sorted { $0.1 > $1.1 }
+
+        guard let newest = candidates.first,
+              let contents = try? String(contentsOf: newest.0, encoding: .utf8)
+        else { return nil }
+
+        return summarize(reportContents: contents, fileName: newest.0.lastPathComponent)
+    }
+
+    /// Whether a `DiagnosticReports` filename is one of Flux's own crashes.
+    /// macOS names them `Flux-2026-07-27-134500.ips` (and historically
+    /// `.crash`); the `Flux-` prefix check is what keeps this from reading
+    /// every other app's reports. Pure, so `--selftest` can cover it without
+    /// a crash to find.
+    static func isFluxCrashReport(_ fileName: String) -> Bool {
+        guard fileName.hasPrefix("\(AppInfo.name)-") else { return false }
+        return fileName.hasSuffix(".ips") || fileName.hasSuffix(".crash")
+    }
+
+    /// Pulls the signature lines out of a crash report's text. Pure and
+    /// selftest-covered against both the modern JSON-ish `.ips` header and
+    /// the older plain-text `.crash` layout, since which one a given macOS
+    /// writes isn't something this can control.
+    static func summarize(reportContents: String, fileName: String) -> String {
+        var picked: [String] = ["  file: \(fileName)"]
+        let interesting = ["exceptionType", "Exception Type", "termination",
+                           "Termination Reason", "faultingThread", "Crashed Thread"]
+        for line in reportContents.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard interesting.contains(where: { trimmed.contains($0) }) else { continue }
+            // Long JSON lines from an `.ips` header would otherwise dump the
+            // entire single-line payload into the report.
+            picked.append("  " + String(trimmed.prefix(300)))
+            if picked.count > 8 { break }
+        }
+        return picked.joined(separator: "\n")
+    }
+
+    // MARK: - Persistence
+
+    private func writeNow() {
+        guard let current else { return }
+        do {
+            try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(current)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            // Never fatal: this is diagnostics. Losing it costs a nicer bug
+            // report, not correctness.
+            crashLog.error("Could not write the session file: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func readSession() -> Session? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(Session.self, from: data)
+    }
+}

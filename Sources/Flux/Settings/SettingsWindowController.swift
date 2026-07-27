@@ -10,6 +10,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let updater: UpdateChecker
     private let nowPlaying: NowPlayingService
     private let permissions: PermissionCenter
+    private let crashReporter: CrashReporter
     private var window: NSWindow?
 
     /// Fires with the new visibility whenever the window is shown or closed.
@@ -23,12 +24,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var currentTab: SettingsTab = .general
 
     init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker,
-         nowPlaying: NowPlayingService, permissions: PermissionCenter) {
+         nowPlaying: NowPlayingService, permissions: PermissionCenter,
+         crashReporter: CrashReporter) {
         self.settings = settings
         self.arranger = arranger
         self.updater = updater
         self.nowPlaying = nowPlaying
         self.permissions = permissions
+        self.crashReporter = crashReporter
         super.init()
     }
 
@@ -82,6 +85,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         .environmentObject(updater)
         .environmentObject(nowPlaying)
         .environmentObject(permissions)
+        .environmentObject(crashReporter)
         let hosting = NSHostingController(rootView: root)
         // We own the window's size (measured + clamped to the screen below); the
         // SwiftUI ScrollView absorbs any overflow. Letting the hosting controller
@@ -116,7 +120,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             .environmentObject(arranger)
             .environmentObject(updater)
             .environmentObject(nowPlaying)
-            .environmentObject(permissions))
+            .environmentObject(permissions)
+            .environmentObject(crashReporter))
         probe.layoutSubtreeIfNeeded()
         return ceil(probe.fittingSize.height)
     }

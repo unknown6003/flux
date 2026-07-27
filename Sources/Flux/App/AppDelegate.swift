@@ -6,6 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = SettingsStore.shared
     private let arranger = MenuBarArranger()
     private let updater = UpdateChecker()
+    /// Notices that the last run died without a clean shutdown, and remembers
+    /// what the notch/camera were doing at the time — see `CrashReporter`'s
+    /// own doc comment on why a hardware-only crash needs this.
+    private let crashReporter = CrashReporter()
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
     private var updateTimer: Timer?
@@ -88,7 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, updater: updater,
-        nowPlaying: nowPlayingService, permissions: permissionCenter)
+        nowPlaying: nowPlayingService, permissions: permissionCenter,
+        crashReporter: crashReporter)
     private lazy var arrangeHint = ArrangeHintWindowController(
         arranger: arranger,
         showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
@@ -103,6 +108,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.menuBar.info("Flux launching")
+
+        // First thing: reading the previous session has to happen before
+        // anything this launch does can overwrite it.
+        crashReporter.beginSession()
 
         menuBar = MenuBarManager(settings: settings, arranger: arranger) { [weak self] in
             self?.openSettings()
@@ -162,6 +171,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureNotch()
         configureUpdateChecks()
         observeSettings()
+        observeCrashBreadcrumbs()
+    }
+
+    /// Flipping the session file to "clean" is the entire crash-detection
+    /// mechanism: a crash never reaches this method, so finding the flag
+    /// still false at the next launch is what identifies an abnormal exit.
+    func applicationWillTerminate(_ notification: Notification) {
+        crashReporter.endSession()
+    }
+
+    /// Keeps `CrashReporter`'s breadcrumb tracking the two things most likely
+    /// to matter in a crash report — what the notch was showing, and whether
+    /// the capture session was live — plus the current live activity. All of
+    /// it is Flux's own UI state; see `CrashReporter`'s privacy note on why
+    /// nothing user-derived may be added here.
+    private func observeCrashBreadcrumbs() {
+        notchWindow.viewModel.$state
+            .sink { [weak self] state in
+                self?.crashReporter.update { $0.notchState = Self.describe(state) }
+            }
+            .store(in: &cancellables)
+
+        cameraService.$isRunning
+            .sink { [weak self] running in
+                self?.crashReporter.update { $0.cameraRunning = running }
+            }
+            .store(in: &cancellables)
+
+        notchWindow.activities.$current
+            .sink { [weak self] activity in
+                self?.crashReporter.update { $0.activityKind = activity.map { "\($0.kind)" } }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// `NotchState` as a stable string. Deliberately not `String(describing:)`
+    /// on the whole value — `.activity` carries a `UUID` that would churn the
+    /// breadcrumb (and the file write behind it) on every activity change
+    /// while saying nothing useful.
+    static func describe(_ state: NotchState) -> String {
+        switch state {
+        case .collapsed: return "collapsed"
+        case .activity: return "activity"
+        case .expanded(let id): return "expanded(\(id.rawValue))"
+        }
     }
 
     // MARK: Settings reactions
@@ -211,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onVisibilityChanged = { [weak self] visible in
             self?.settingsVisible = visible
             self?.refreshArrangeHint()
+            self?.crashReporter.update { $0.settingsOpen = visible }
         }
 
         // Float the "how to arrange" hint next to the menu bar whenever Arrange
