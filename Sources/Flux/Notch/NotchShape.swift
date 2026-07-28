@@ -1,97 +1,80 @@
 import SwiftUI
 
-/// The notch's silhouette.
+/// The notch's silhouette: a rounded rectangle with independently animatable
+/// top and bottom corner radii, drawn with **continuous** (squircle)
+/// curvature.
 ///
-/// A real notch housing isn't a plain rounded rectangle: the top edge is
-/// flush and square (it's fused to the physical screen bezel, so rounding it
-/// would look like a gap), but right where that top edge meets each top
-/// corner there's a tiny concave "flare" — the outline hooks outward for a
-/// few points before sweeping down into the housing, the way the bezel is
-/// countersunk around the camera. The bottom two corners are ordinary convex
-/// rounding, like any panel.
+/// ## M12: this is now Apple's curve, not a hand-rolled one
+/// The previous version built the path by hand — circular `addArc` corners at
+/// the bottom, and a bespoke cubic at each top corner whose control points
+/// were pulled to 35% toward the outer corner to suggest a "flare" where the
+/// panel meets the bezel. Two problems. The bottom corners were true circular
+/// arcs, so curvature jumped discontinuously from zero along the straight
+/// edge to `1/r` at the tangent point — the hard corner Apple's design
+/// language specifically avoids. And the top cubic wasn't a circular arc, a
+/// squircle, or anything else with a name; at a 6pt radius it read as an
+/// ill-defined smudge rather than an intentional detail.
 ///
-/// `topFlareRadius`/`bottomRadius` are both part of `animatableData`, so
-/// `NotchRootView` can spring between the collapsed/activity/expanded corner
-/// sets by animating this one shape rather than cross-fading three fixed
-/// shapes (which would tear/pop instead of morphing).
+/// `UnevenRoundedRectangle(style: .continuous)` is Apple's own implementation
+/// of the corner they use everywhere from app icons to sheets, so this now
+/// matches the platform by construction instead of approximating it. Both
+/// radii stay in `animatableData`, so `NotchRootView` can still spring
+/// between the collapsed/activity/expanded corner sets by morphing one shape
+/// rather than cross-fading three.
+///
+/// The top radius stays small. The panel's top edge is fused to the physical
+/// notch, which is itself a cutout in the bezel — a large radius there would
+/// read as a gap between the drawer and the screen edge.
 struct NotchShape: Shape {
-    var topFlareRadius: CGFloat
+    var topRadius: CGFloat
     var bottomRadius: CGFloat
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(topFlareRadius, bottomRadius) }
+        get { AnimatablePair(topRadius, bottomRadius) }
         set {
-            topFlareRadius = newValue.first
+            topRadius = newValue.first
             bottomRadius = newValue.second
         }
     }
 
-    init(topFlareRadius: CGFloat, bottomRadius: CGFloat) {
-        self.topFlareRadius = topFlareRadius
+    init(topRadius: CGFloat, bottomRadius: CGFloat) {
+        self.topRadius = topRadius
         self.bottomRadius = bottomRadius
     }
 
     func path(in rect: CGRect) -> Path {
-        // Clamp so a tiny collapsed rect (or a mid-spring overshoot past the
-        // target value) never inverts a curve past the shape's own center.
+        // Clamp so a tiny collapsed rect — or a mid-spring overshoot past the
+        // target radius — can never ask for a corner larger than the shape
+        // can contain. A continuous corner degenerates visibly before it
+        // degenerates gracefully, so this is clamped here rather than left to
+        // whatever the shape does with an over-large radius.
         let half = min(rect.width, rect.height) / 2
-        let top = min(max(topFlareRadius, 0), half)
+        let top = min(max(topRadius, 0), half)
         let bottom = min(max(bottomRadius, 0), half)
 
-        var path = Path()
-
-        // Flush top edge, inset by the flare radius on each side.
-        path.move(to: CGPoint(x: rect.minX + top, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.minY))
-
-        // Top-right flare: a cubic from the top edge to the right edge whose
-        // control points sit close to the sharp outer corner (rather than
-        // pulled toward the shape's interior, as a plain round corner would
-        // be) — that bias is what reads as a concave "hook" instead of a
-        // simple rounded corner.
-        path.addCurve(
-            to: CGPoint(x: rect.maxX, y: rect.minY + top),
-            control1: CGPoint(x: rect.maxX - top * 0.35, y: rect.minY),
-            control2: CGPoint(x: rect.maxX, y: rect.minY + top * 0.35))
-
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottom))
-
-        // Bottom-right: ordinary convex rounding, swept through the true
-        // outer corner (increasing angle, counter-clockwise in SwiftUI's
-        // y-down space, matches the standard rounded-rect corner idiom).
-        path.addArc(center: CGPoint(x: rect.maxX - bottom, y: rect.maxY - bottom),
-                    radius: bottom, startAngle: .degrees(0), endAngle: .degrees(90),
-                    clockwise: false)
-
-        path.addLine(to: CGPoint(x: rect.minX + bottom, y: rect.maxY))
-
-        // Bottom-left: ordinary convex rounding.
-        path.addArc(center: CGPoint(x: rect.minX + bottom, y: rect.maxY - bottom),
-                    radius: bottom, startAngle: .degrees(90), endAngle: .degrees(180),
-                    clockwise: false)
-
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + top))
-
-        // Top-left flare, mirrored.
-        path.addCurve(
-            to: CGPoint(x: rect.minX + top, y: rect.minY),
-            control1: CGPoint(x: rect.minX, y: rect.minY + top * 0.35),
-            control2: CGPoint(x: rect.minX + top * 0.35, y: rect.minY))
-
-        path.closeSubpath()
-        return path
+        return UnevenRoundedRectangle(
+            topLeadingRadius: top,
+            bottomLeadingRadius: bottom,
+            bottomTrailingRadius: bottom,
+            topTrailingRadius: top,
+            style: .continuous
+        ).path(in: rect)
     }
 }
 
 extension NotchShape {
-    /// Collapsed: tight against the physical notch — small flare, tight
-    /// bottom rounding.
-    static let collapsed = NotchShape(topFlareRadius: 6, bottomRadius: 10)
-    /// Activity: notch + wings — same flare, slightly softer bottom corners.
-    static let activity = NotchShape(topFlareRadius: 6, bottomRadius: 16)
-    /// Expanded: the full panel — same flare (it's still fused to the
-    /// physical notch above it), generously rounded, continuous-feeling
-    /// bottom corners — the M7 Alcove redesign's large, soft "island" bottom
-    /// rounding rather than the earlier, comparatively tight 24pt radius.
-    static let expanded = NotchShape(topFlareRadius: 6, bottomRadius: 32)
+    /// Collapsed: tight against the physical notch. The bottom radius sits
+    /// close to the real housing's own rounding, so the idle shape disappears
+    /// into it.
+    static let collapsed = NotchShape(topRadius: 6, bottomRadius: 12)
+
+    /// Activity: notch + wings — same top, a touch softer at the bottom, to
+    /// signal something has opened without committing to the full panel.
+    static let activity = NotchShape(topRadius: 6, bottomRadius: 18)
+
+    /// Expanded: the full drawer. A generous bottom radius, which continuous
+    /// curvature carries at this size without reading as a stadium — a
+    /// circular arc at the same radius is exactly where the old shape looked
+    /// worst.
+    static let expanded = NotchShape(topRadius: 6, bottomRadius: 34)
 }

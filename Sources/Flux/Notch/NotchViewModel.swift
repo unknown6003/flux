@@ -82,19 +82,20 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Whether `old → new` shrinks the visible shape. Rank covers the
-    /// cross-tier cases; the expanded→expanded tie (widget→widget swipes)
-    /// compares the two widgets' actual panel heights, so cycling from a
-    /// taller widget (Calendar, 190) to a shorter one (Shelf, 150) settles
-    /// on the collapse spring instead of overshooting. Pure and
-    /// selftest-covered.
+    /// Whether `old → new` shrinks the visible shape.
+    ///
+    /// Rank is now the whole answer. It used to also compare the two widgets'
+    /// panel heights for the expanded→expanded tie, because cycling from a
+    /// taller widget to a shorter one really did shrink the shape — but M12
+    /// gave every widget one shared footprint (see `NotchMetrics`), so a
+    /// widget→widget swipe changes no size at all and is neither a growth nor
+    /// a shrink. Reporting `false` puts it on the expand spring, which is the
+    /// right call for a same-size content cross-fade: the collapse spring's
+    /// job is to make *closing* feel decisive, and nothing is closing here.
+    ///
+    /// Pure and selftest-covered.
     static func isShrink(from old: NotchState, to new: NotchState) -> Bool {
-        let oldRank = footprintRank(old), newRank = footprintRank(new)
-        if newRank != oldRank { return newRank < oldRank }
-        if case .expanded(let oldID) = old, case .expanded(let newID) = new {
-            return NotchMetrics.expandedHeight(for: newID) < NotchMetrics.expandedHeight(for: oldID)
-        }
-        return false
+        footprintRank(new) < footprintRank(old)
     }
 
     /// Which gesture opens the notch. Switching to `.click` cancels any

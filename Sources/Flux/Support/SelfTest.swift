@@ -2788,28 +2788,62 @@ enum SelfTest {
                   "ArtworkPalette: switching back to blueImage after redAgain re-derives its own correct colors too — no track's colors ever leak into another's")
         }
 
-        // --- M7 code-review fix: NotchMetrics.maxExpandedHeight is derived
-        // from expandedHeight(for:) across every WidgetID rather than a
-        // hand-maintained duplicate constant, so a future per-widget height
-        // bump can't silently drift past a stale hardcoded ceiling again. ---
+        // --- M12: ONE expanded size for every widget. The panel used to
+        // size itself to each widget's content (150-190pt, plus a 220pt
+        // widening for Duo), so the drawer grew and shrank as you swiped
+        // between pages. These assert the property that replaced it —
+        // the footprint is a function of the NOTCH, never of the page. ---
         do {
-            let expectedMax = WidgetID.allCases.map { NotchMetrics.expandedHeight(for: $0) }.max() ?? 0
-            check(NotchMetrics.maxExpandedHeight == expectedMax,
-                  "NotchMetrics: maxExpandedHeight equals the tallest expandedHeight(for:) across every WidgetID")
-            check(NotchMetrics.expandedHeight(for: .calendar) == NotchMetrics.maxExpandedHeight,
-                  "NotchMetrics: setup — Calendar (190) is currently the tallest widget, matching maxExpandedHeight")
+            let notchWidth: CGFloat = 200
+            let width = NotchMetrics.expandedWidth(for: notchWidth)
+            let height = NotchMetrics.expandedHeight(for: notchWidth)
 
-            // --- M7 code-review fix: panelBounds reserves a shadow-bleed
-            // margin beyond maxExpandedHeight/the widest visible footprint —
-            // it used to equal them exactly, leaving zero room for the
-            // expanded shape's own drop shadow (radius 16, y offset 4) and
-            // clipping it at the panel edge. ---
-            let notchWidth: CGFloat = 180
+            check(height == (width / NotchMetrics.expandedAspectRatio).rounded(),
+                  "NotchMetrics: expanded height is derived from the width and the aspect ratio, so the two can't drift")
+            check(abs(width / height - NotchMetrics.expandedAspectRatio) < 0.02,
+                  "NotchMetrics: the realised width:height lands on the intended aspect ratio (rounding aside)")
+            check(width > height,
+                  "NotchMetrics: the drawer is wider than it is tall — it hangs off the notch, it isn't a window")
+
+            // The regression this whole change exists to prevent: nothing in
+            // the sizing API takes a WidgetID any more, so a page swipe
+            // cannot resize the drawer. This is enforced by the signature
+            // (`expandedHeight(for: CGFloat)`), and asserted here as intent.
+            check(NotchMetrics.expandedHeight(for: notchWidth) == NotchMetrics.expandedHeight(for: notchWidth),
+                  "NotchMetrics: expanded height depends only on the notch width — there is no per-widget height to differ")
+
+            // Duo has to fit the shared box rather than widen it. Its pane
+            // split is a fraction, so check it leaves a workable remainder
+            // for Now Playing rather than swallowing the panel.
+            check(NotchMetrics.duoCalendarPaneFraction > 0.25 && NotchMetrics.duoCalendarPaneFraction < 0.5,
+                  "NotchMetrics: Duo's Calendar pane takes a minority share, leaving Now Playing the larger half")
+
+            // --- M7 code-review fix, still standing: panelBounds reserves a
+            // shadow-bleed margin beyond the visible footprint. It used to
+            // equal it exactly, clipping the expanded shape's drop shadow at
+            // the panel edge. ---
             let bounds = NotchMetrics.panelBounds(for: notchWidth)
-            check(bounds.height == NotchMetrics.maxExpandedHeight + NotchMetrics.shadowMarginHeight,
-                  "NotchMetrics: panelBounds' height is maxExpandedHeight PLUS a shadow-bleed margin, not maxExpandedHeight exactly")
-            check(bounds.width == NotchMetrics.expandedWidth(for: notchWidth) + NotchMetrics.duoExtraWidth + NotchMetrics.shadowMarginWidth,
-                  "NotchMetrics: panelBounds' width is expandedWidth + duoExtraWidth PLUS the same shadow-bleed margin")
+            check(bounds.height == height + NotchMetrics.shadowMarginHeight,
+                  "NotchMetrics: panelBounds' height is the expanded height PLUS a shadow-bleed margin, not the height exactly")
+            check(bounds.width == width + NotchMetrics.shadowMarginWidth,
+                  "NotchMetrics: panelBounds' width is the expanded width PLUS the same shadow-bleed margin")
+            check(bounds.width > width && bounds.height > height,
+                  "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
+        }
+
+        // --- M12: widget-to-widget swipes are no longer classified as a
+        // shrink, because with one shared footprint they change no size. ---
+        do {
+            check(!NotchViewModel.isShrink(from: .expanded(.calendar), to: .expanded(.shelf)),
+                  "NotchViewModel.isShrink: a page swipe is not a shrink — every widget now shares one footprint")
+            check(!NotchViewModel.isShrink(from: .expanded(.shelf), to: .expanded(.calendar)),
+                  "NotchViewModel.isShrink: nor is the reverse swipe a growth-then-shrink")
+            check(NotchViewModel.isShrink(from: .expanded(.calendar), to: .collapsed),
+                  "NotchViewModel.isShrink: closing the drawer is still a shrink")
+            check(!NotchViewModel.isShrink(from: .collapsed, to: .expanded(.calendar)),
+                  "NotchViewModel.isShrink: opening the drawer is still a growth")
+            check(NotchViewModel.isShrink(from: .expanded(.calendar), to: .activity(UUID())),
+                  "NotchViewModel.isShrink: expanded down to a activity wing is still a shrink")
         }
 
         // --- M7 code-review fix: option-click wires the previously-dead
