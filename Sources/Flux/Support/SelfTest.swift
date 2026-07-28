@@ -536,12 +536,16 @@ enum SelfTest {
               "Notch: footprint ranks order collapsed < activity < expanded")
         check(notchVM.lastTransitionWasShrink == false,
               "Notch: opening from collapsed records a growth, not a shrink")
-        // Widget→widget tie-break: equal rank, decided by panel heights
-        // (calendar 190 → shelf 150 is a shrink; the reverse is a growth).
-        check(NotchViewModel.isShrink(from: .expanded(.calendar), to: .expanded(.shelf)),
-              "Notch: cycling to a shorter widget classifies as a shrink")
+        // M12: there is no widget→widget tie-break any more. Every widget
+        // shares one footprint (see `NotchMetrics`), so cycling changes no
+        // size in either direction — it's a content cross-fade, not a
+        // resize. This pair used to assert the opposite (calendar 190 →
+        // shelf 150 was a shrink) and is inverted deliberately; the fuller
+        // coverage lives with the other M12 sizing checks further down.
+        check(!NotchViewModel.isShrink(from: .expanded(.calendar), to: .expanded(.shelf)),
+              "Notch: cycling between widgets is neither a shrink nor a growth — they are all the same size now")
         check(!NotchViewModel.isShrink(from: .expanded(.shelf), to: .expanded(.calendar)),
-              "Notch: cycling to a taller widget classifies as a growth")
+              "Notch: nor is the reverse cycle")
         notchVM.collapse()
         check(notchVM.lastTransitionWasShrink == true,
               "Notch: collapsing records a shrink so the collapse spring is used")
