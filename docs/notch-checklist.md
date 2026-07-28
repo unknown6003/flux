@@ -434,3 +434,52 @@ hardware:
       (`defaults -currentHost read -g NSStatusItemSpacing`), note it, toggle
       Flux's compact spacing on then off, and confirm the original value came
       back rather than being cleared.
+
+## M12 — drawer size, corners, page-switch crash
+
+The three follow-up reports. The first two were verified against CI-rendered
+snapshots (`--snapshot-notch`, downloaded from the `notch-snapshots`
+artifact), so they are further along than "reasoned about" — but a PNG on a
+transparent background can't show how the shape sits against a real bezel.
+
+### Fixed drawer size
+
+- [ ] **The drawer never changes size**: swipe through every page — Now
+      Playing, Shelf, Calendar, Mirror, Timers, Clipboard — and confirm the
+      black panel's outline stays exactly put. Nothing should grow, shrink or
+      shift as the content cross-fades.
+- [ ] **Duo doesn't widen it either**: with Now Playing + Calendar both on and
+      Duo enabled, confirm entering and leaving Duo changes the *content*
+      inside the panel but not the panel.
+- [ ] **Nothing is clipped at the new size**: each page's content should fit
+      without its last row cut awkwardly, and Now Playing's transport row
+      should sit near the bottom rather than leaving a dead band under it.
+
+### Corners and proportions
+
+- [ ] **The top edge is flush**: the single most important one. With the
+      drawer open, look at where its top corners meet the notch/bezel — there
+      must be NO sliver of desktop visible in either corner. The top edge is
+      square by design for exactly this reason.
+- [ ] **Bottom corners read as Apple squircles**: soft and continuous, not the
+      hard circular arc of the old shape. Compare against a Control Centre
+      panel or an app icon at a glance.
+- [ ] **The morph still looks right**: collapsed → activity → expanded should
+      spring smoothly with corners interpolating, not popping between shapes.
+
+### Page-switch crash
+
+- [ ] **Swipe between pages as fast as you can** for ~30 seconds, in both
+      directions, including through Mirror with the camera live. This is the
+      reported crash; it must survive.
+- [ ] **A swipe no longer scrolls the page you're leaving**: swipe off
+      Clipboard or Timers (both scrolling lists) and confirm the list doesn't
+      visibly scroll as it fades out.
+- [ ] **Mouse-wheel scrolling still works**: with a mouse (not the trackpad),
+      scroll a Clipboard/Calendar/Timers list. Trackpad gestures are claimed
+      by the notch, wheel scrolls are not — if wheel scrolling is dead, the
+      phase gate is too aggressive.
+- [ ] **The drawer still takes clicks after an activity fires**: open the
+      drawer, then trigger a live activity (plug/unplug power). Clicking the
+      open drawer must still work — a re-entrancy bug used to leave it
+      ignoring mouse events entirely in this exact sequence.
