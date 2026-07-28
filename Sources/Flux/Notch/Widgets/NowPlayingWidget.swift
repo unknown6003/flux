@@ -173,9 +173,21 @@ private struct NowPlayingExpandedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// The `Spacer` is what makes this fill the panel instead of clinging to
+    /// its top edge.
+    ///
+    /// Every other widget is a list, so short content sitting at the top with
+    /// room below it looks entirely normal. This one is a fixed composition —
+    /// artwork, scrubber, transport — and with M12's single (taller) panel
+    /// size the same top-alignment left an obvious dead band under the
+    /// transport row, which reads as a layout bug rather than an empty list.
+    /// Anchoring the header to the top and the scrubber/transport pair to the
+    /// bottom puts the slack where a music player wants it, at any panel
+    /// height.
     private func content(for state: NowPlayingState) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             headerRow(state)
+            Spacer(minLength: 0)
             scrubberSection(state)
             transportRow(state)
         }
