@@ -630,21 +630,34 @@ enum ArtworkPalette {
     /// Downsamples `cgImage` into a tiny (4×4) RGBA bitmap and averages it —
     /// "tiny" per the design spec, since this only ever backs a 2-stop
     /// gradient nobody scrutinizes pixel-by-pixel.
+    /// The buffer is handed to Core Graphics inside
+    /// `withUnsafeMutableBytes`, not as `&pixels`.
+    ///
+    /// `&pixels` looks equivalent and isn't: an `inout` argument's pointer is
+    /// only guaranteed valid for the duration of the call it's passed to —
+    /// here, `CGContext.init`. Drawing through the context *after* that
+    /// initializer returns means writing through a pointer whose lifetime has
+    /// formally ended. It happens to work today because the array's buffer
+    /// isn't reallocated in between, which is exactly the kind of thing that
+    /// stops being true under a different optimiser or allocator.
     private static func sampleColor(of cgImage: CGImage) -> Color? {
         let side = 4
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
-        guard let context = CGContext(
-            data: &pixels,
-            width: side,
-            height: side,
-            bitsPerComponent: 8,
-            bytesPerRow: side * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
-        context.interpolationQuality = .low
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(side), height: CGFloat(side)))
-        guard let average = averageColor(ofRGBA: pixels) else { return nil }
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: side,
+                height: side,
+                bitsPerComponent: 8,
+                bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.interpolationQuality = .low
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: CGFloat(side), height: CGFloat(side)))
+            return true
+        }
+        guard drawn, let average = averageColor(ofRGBA: pixels) else { return nil }
         return Color(red: average.red, green: average.green, blue: average.blue)
     }
 }

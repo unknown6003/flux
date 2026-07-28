@@ -162,6 +162,26 @@ final class NotchViewModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] activity in
                 guard let self else { return }
+                // Never act on `state` while a transition is in flight — the
+                // value read here would be stale, and acting on it nests a
+                // second `transition()` inside the first.
+                //
+                // This is reachable, and not theoretically: `state` is
+                // `@Published`, so subscribers run during its `willSet`, when
+                // `self.state` still reads the OLD value.
+                // `NotchActivityRouter.observeNotchState` is one of those
+                // subscribers, and it calls `calendar.start()` → `refresh()`
+                // → publishes `upcoming` → recomputes the calendar activity →
+                // `activities.post`/`dismiss` → straight back into this sink.
+                // The nested transition then runs to completion, and the
+                // outer setter's own storage write lands afterwards and wins
+                // — leaving every subscriber's last-seen value wrong. The
+                // visible symptom was an OPEN drawer with
+                // `panel.ignoresMouseEvents` left `true` (so it stopped
+                // accepting clicks), because `updatePassThrough` had been
+                // told the state was `.collapsed`.
+                guard !self.isTransitioning else { return }
+
                 switch self.state {
                 case .collapsed:
                     if let activity { self.transition(to: .activity(activity.id)) }
@@ -539,8 +559,14 @@ final class NotchViewModel: ObservableObject {
     /// once per visibility change — including widget→widget swipes, which
     /// move directly from one `.expanded` case to another without an
     /// intermediate collapse.
+    /// Set for the duration of `transition(to:)`. See `observeActivities()`
+    /// for what reads it and why.
+    private var isTransitioning = false
+
     private func transition(to newState: NotchState) {
         guard newState != state else { return }
+        isTransitioning = true
+        defer { isTransitioning = false }
 
         if case .expanded(let oldID) = state {
             registry.widget(for: oldID)?.didDismiss()

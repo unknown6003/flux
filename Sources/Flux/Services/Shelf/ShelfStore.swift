@@ -67,6 +67,10 @@ final class ShelfStore: ObservableObject {
     private let fileManager = FileManager.default
     private var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
 
+    /// Items with a QuickLook request currently in flight — see
+    /// `generateThumbnail(for:)`.
+    private var thumbnailRequests: Set<UUID> = []
+
     init(directory: URL? = nil) {
         self.directory = directory ?? Self.defaultDirectory()
 
@@ -402,6 +406,14 @@ final class ShelfStore: ObservableObject {
     /// the generic Finder icon for the file's type on failure (unreadable
     /// file, unsupported type, generator error, etc.).
     private func generateThumbnail(for item: ShelfItem) {
+        // Dedupe in flight. `ensureThumbnails()` runs on every `willPresent()`,
+        // so cycling onto the Shelf page repeatedly — which is exactly what
+        // swiping through the drawer does — used to issue a fresh QuickLook
+        // request per item per visit, with none of the earlier batches having
+        // completed. Cleared in the completion handler below, both on success
+        // and on failure, so a request that fails can be retried by a later
+        // visit rather than being permanently suppressed.
+        guard thumbnailRequests.insert(item.id).inserted else { return }
         let url = item.storedURL(in: directory)
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         let request = QLThumbnailGenerator.Request(
@@ -412,9 +424,14 @@ final class ShelfStore: ObservableObject {
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, error in
             Task { @MainActor in
+                guard let self else { return }
+                // Cleared whatever the outcome, so a failed request can be
+                // retried by a later visit rather than being suppressed for
+                // the rest of the session.
+                self.thumbnailRequests.remove(item.id)
                 // The item may have been removed while the request was in
                 // flight — don't resurrect a thumbnail entry for it.
-                guard let self, self.items.contains(where: { $0.id == item.id }) else { return }
+                guard self.items.contains(where: { $0.id == item.id }) else { return }
                 if let representation {
                     self.thumbnails[item.id] = representation.nsImage
                 } else {

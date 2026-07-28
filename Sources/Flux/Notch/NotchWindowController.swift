@@ -436,9 +436,13 @@ final class NotchWindowController {
     }
 
     private func removePointerMonitors() {
-        [globalMoveMonitor, localMoveMonitor, globalRightClickMonitor, localRightClickMonitor]
-            .compactMap { $0 }
-            .forEach { NSEvent.removeMonitor($0) }
+        // Deferred for the same reason as `removeCollapsedClickMonitors()` —
+        // these local monitors also call their handlers synchronously.
+        let monitors = [globalMoveMonitor, localMoveMonitor,
+                        globalRightClickMonitor, localRightClickMonitor].compactMap { $0 }
+        if !monitors.isEmpty {
+            DispatchQueue.main.async { monitors.forEach { NSEvent.removeMonitor($0) } }
+        }
         globalMoveMonitor = nil
         localMoveMonitor = nil
         globalRightClickMonitor = nil
@@ -480,12 +484,25 @@ final class NotchWindowController {
         }
     }
 
+    /// Removal is DEFERRED one runloop turn, and this is load-bearing.
+    ///
+    /// The local click monitor invokes `handleMonitoredClick` synchronously,
+    /// from inside its own block. That calls `viewModel.clicked()` →
+    /// `transition` → the `$state` sink → `updatePassThrough(for: .expanded)`
+    /// → here. So the common case — clicking the collapsed notch to open it —
+    /// reaches this method with the very monitor being removed still on the
+    /// stack. `NSEvent.removeMonitor` deallocates the monitor and its block
+    /// while AppKit is still executing it. (The global twin is unaffected: it
+    /// hops through `Task { @MainActor }` before touching anything.)
+    ///
+    /// The tokens are nil'd immediately, so nothing can queue a second
+    /// removal of the same monitor before the deferred one runs.
     private func removeCollapsedClickMonitors() {
-        [globalClickMonitor, localClickMonitor]
-            .compactMap { $0 }
-            .forEach { NSEvent.removeMonitor($0) }
+        let monitors = [globalClickMonitor, localClickMonitor].compactMap { $0 }
         globalClickMonitor = nil
         localClickMonitor = nil
+        guard !monitors.isEmpty else { return }
+        DispatchQueue.main.async { monitors.forEach { NSEvent.removeMonitor($0) } }
     }
 
     // MARK: - Geometry
