@@ -91,6 +91,31 @@ final class NotchPanel: NSPanel {
     /// more swipes — one physical gesture is one logical swipe.
     private var gestureConsumed = false
 
+    /// The axis this gesture belongs to, latched ONCE per gesture and never
+    /// re-evaluated until the next `.began`.
+    ///
+    /// Recomputing it per frame from the running accumulators — which a first
+    /// pass did — lets ownership flip mid-gesture, both ways. A vertical
+    /// scroll with a little horizontal drift forwards frames to the inner
+    /// list until `|x|` overtakes `|y|`, at which point the whole accumulated
+    /// X is already past the threshold and the page flips instantly under the
+    /// list the user was scrolling. And the noisy opening frames of a
+    /// horizontal swipe, where `|y| > |x|`, leak into the widget being left.
+    private var gestureAxisIsVertical: Bool?
+
+    /// Whether momentum frames trailing the current gesture should still be
+    /// swallowed. Kept apart from `gestureConsumed`, which is now strictly
+    /// per-gesture: conflating them let a claim that ended while the panel
+    /// was non-interactive (an `.activity` dismiss flips
+    /// `ignoresMouseEvents`, so `.ended` never arrives) freeze the flag true
+    /// and swallow a later gesture outright.
+    private var swallowMomentum = false
+
+    /// Movement required before the axis is latched. Small enough to be
+    /// imperceptible, large enough that the first frame's noise doesn't
+    /// decide the gesture.
+    private static let axisDeadZone: CGFloat = 5
+
     /// Intercepts `scrollWheel` ahead of normal event dispatch so a two-finger
     /// gesture over the notch cycles/opens/closes it. Every other event type
     /// passes straight through to the normal AppKit dispatch.
@@ -142,6 +167,23 @@ final class NotchPanel: NSPanel {
         super.sendEvent(event)
     }
 
+    /// Clears all in-flight gesture state.
+    ///
+    /// Called by `NotchWindowController` whenever `ignoresMouseEvents` flips,
+    /// because that is exactly when a gesture can be cut off mid-flight: an
+    /// `.activity` swipe-up dismisses the activity, the state machine lands
+    /// on `.collapsed`, the panel stops receiving events, and this gesture's
+    /// `.ended` never arrives. Without this reset the accumulators and flags
+    /// stay frozen, and the next gesture — whose `.began` was also eaten
+    /// while collapsed — gets swallowed wholesale.
+    func resetGestureState() {
+        accumulatedX = 0
+        accumulatedY = 0
+        gestureConsumed = false
+        swallowMomentum = false
+        gestureAxisIsVertical = nil
+    }
+
     /// Whether a gesture along `axis` is one the notch itself acts on in the
     /// current state — i.e. whether claiming it is correct.
     private func notchOwnsGesture(vertical: Bool) -> Bool {
@@ -150,9 +192,16 @@ final class NotchPanel: NSPanel {
             // Horizontal cycles pages; vertical belongs to whatever the
             // widget is showing, which is the only way its list can scroll.
             return !vertical
-        case .collapsed, .activity:
+        case .activity:
             // Nothing here scrolls, and both axes mean something: down
-            // expands, up dismisses an activity, left/right cycle activities.
+            // expands, up dismisses the activity, left/right cycle them.
+            return true
+        case .collapsed:
+            // Unreachable in practice — `ignoresMouseEvents` is `true` while
+            // collapsed, so no scroll event reaches this panel at all, and
+            // there is no scroll monitor standing in for it the way there is
+            // for hover and clicks. Kept exhaustive rather than folded into
+            // the case above so that stays visible.
             return true
         }
     }
@@ -172,7 +221,13 @@ final class NotchPanel: NSPanel {
             accumulatedX = 0
             accumulatedY = 0
             gestureConsumed = false
-            return false
+            swallowMomentum = false
+            gestureAxisIsVertical = nil
+            // Swallowed until the axis latches — see `gestureAxisIsVertical`.
+            // A gesture this panel is going to claim must never have
+            // delivered anything to the content, or the inner scroll view is
+            // started and then never sent its `ended`.
+            return true
         case .changed:
             // Everything after the claim is swallowed: recognition already
             // tore the outgoing subtree down.
@@ -180,14 +235,24 @@ final class NotchPanel: NSPanel {
             accumulatedX += event.scrollingDeltaX
             accumulatedY += event.scrollingDeltaY
 
-            let vertical = abs(accumulatedY) > abs(accumulatedX)
-            // Not ours on this axis in this state — hand every frame of it to
-            // the content, including the ones still to come.
+            if gestureAxisIsVertical == nil {
+                guard max(abs(accumulatedX), abs(accumulatedY)) >= Self.axisDeadZone else {
+                    return true   // still undecided; keep swallowing
+                }
+                gestureAxisIsVertical = abs(accumulatedY) > abs(accumulatedX)
+            }
+            guard let vertical = gestureAxisIsVertical else { return true }
+
+            // Not ours on this axis in this state — hand this and every
+            // later frame of the gesture to the content.
             guard notchOwnsGesture(vertical: vertical) else { return false }
 
             let travelled = vertical ? abs(accumulatedY) : abs(accumulatedX)
-            guard travelled >= Self.swipeThreshold else { return false }
+            // Ours, but not yet decisive: still swallowed, so a gesture that
+            // never reaches the threshold leaks nothing either.
+            guard travelled >= Self.swipeThreshold else { return true }
             gestureConsumed = true
+            swallowMomentum = true
             if vertical {
                 viewModel.swiped(accumulatedY > 0 ? .down : .up)
             } else {
@@ -205,19 +270,22 @@ final class NotchPanel: NSPanel {
             }
             return true
         case .ended, .cancelled:
-            let claimed = gestureConsumed
+            let owned = gestureConsumed || gestureAxisIsVertical == nil
+                || notchOwnsGesture(vertical: gestureAxisIsVertical == true)
             accumulatedX = 0
             accumulatedY = 0
-            // Kept set so the momentum frames that follow this `ended` are
-            // swallowed too; cleared by the next `began`, or below.
-            return claimed
+            // Strictly per-gesture now. `swallowMomentum` carries the claim
+            // forward to the momentum tail instead.
+            gestureConsumed = false
+            gestureAxisIsVertical = nil
+            return owned
         default:
             // Momentum frames report an empty `phase`, which is also what a
             // plain mouse wheel reports — so the momentum test is what stops
             // one trackpad swipe suppressing every later wheel scroll.
-            guard gestureConsumed, !event.momentumPhase.isEmpty else { return false }
+            guard swallowMomentum, !event.momentumPhase.isEmpty else { return false }
             if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) {
-                gestureConsumed = false
+                swallowMomentum = false
             }
             return true
         }

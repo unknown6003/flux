@@ -55,15 +55,34 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// relies on), and a bounded, inspectable size.
     var imageData: Data?
 
+    /// A small (≤`ClipboardMonitor.thumbnailPixels`) PNG for the row's
+    /// thumbnail, kept separately from `imageData`.
+    ///
+    /// Two reasons it isn't just derived from `imageData` on demand. The row
+    /// re-renders on every hover, and decoding a multi-megabyte PNG to draw
+    /// it at 18×18 each time is absurd. And the full payload can be dropped
+    /// by `trimImagePayloads()` when history grows, which must not also cost
+    /// the entry its thumbnail — a recognisable, un-pasteable entry is far
+    /// better than an anonymous "Image (W×H)" label.
+    var thumbnailData: Data?
+
     /// The parsed colour for a `.color` entry, so the row can show a real
     /// swatch. Components rather than an `NSColor` for the same
     /// `Equatable`/value-type reason.
     var colorComponents: ColorComponents?
 
     /// A `.url` entry's destination, when it parses as something openable.
+    /// Restricted to `http`/`https`, because the affordance is labelled
+    /// "Open in Browser" and `NSWorkspace.open` will happily hand `ftp:`,
+    /// `smb:` or any third-party custom scheme to whatever registered for it.
+    /// A copied string should not be able to launch an arbitrary handler
+    /// from a one-click control that says "browser".
     var linkURL: URL? {
         guard kind == .url, let fullString else { return nil }
-        return URL(string: fullString.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let url = URL(string: fullString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return url
     }
 
     struct ColorComponents: Equatable {
@@ -75,7 +94,9 @@ struct ClipboardEntry: Identifiable, Equatable {
 
     init(id: UUID, capturedAt: Date, kind: Kind, preview: String,
          fullString: String?, filePaths: [String]?,
-         imageData: Data? = nil, colorComponents: ColorComponents? = nil) {
+         imageData: Data? = nil, thumbnailData: Data? = nil,
+         colorComponents: ColorComponents? = nil) {
+        self.thumbnailData = thumbnailData
         self.id = id
         self.capturedAt = capturedAt
         self.kind = kind
@@ -208,11 +229,22 @@ final class ClipboardMonitor: ObservableObject {
         // 0.35s, not 1s. `changeCount` only ever reports the LATEST change,
         // so two copies inside one poll window collapse into one and the
         // first is lost outright — a large part of "it doesn't detect
-        // everything I copy". The poll reads a single integer; running it
-        // three times as often is not measurable against that miss rate.
-        timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+        // everything I copy". This NARROWS that window rather than closing
+        // it; NSPasteboard offers no change notification, so some rate of
+        // miss is inherent.
+        //
+        // `tolerance` is set deliberately. `changeCount` is a Mach IPC
+        // round-trip to `pbs`, not the local integer read an earlier comment
+        // here claimed, and an untoleranced 2.9Hz timer defeats both timer
+        // coalescing and App Nap — which is a real cost for an app that
+        // advertises ~0% at idle. A 0.15s tolerance lets the system batch
+        // these wakeups against others without materially widening the miss
+        // window.
+        let poll = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+        poll.tolerance = 0.15
+        timer = poll
     }
 
     func stop() {
@@ -284,6 +316,7 @@ final class ClipboardMonitor: ObservableObject {
         if entries.count > Self.historyLimit {
             entries.removeLast(entries.count - Self.historyLimit)
         }
+        trimImagePayloads()
         clipboardLog.debug("Clipboard: captured a \(entry.kind.rawValue, privacy: .public) entry")
     }
 
@@ -304,7 +337,7 @@ final class ClipboardMonitor: ObservableObject {
             return fileEntry(urls: urls)
         }
         if let image = NSImage(pasteboard: pasteboard) {
-            return imageEntry(image: image)
+            return imageEntry(from: pasteboard, image: image)
         }
         if let string = plainText(from: pasteboard), !string.isEmpty {
             switch classify(string: string) {
@@ -323,14 +356,29 @@ final class ClipboardMonitor: ObservableObject {
     /// `public.utf8-plain-text` flavour, so capture fell through to a
     /// contentless `.other` entry — one of the "it doesn't detect everything
     /// I copy" cases. Falls back through the rich flavours and flattens them.
+    /// RTF and RTFD only — **never HTML**, and that exclusion is a hard
+    /// security boundary, not a scope cut.
+    ///
+    /// `NSAttributedString(data:options:[.documentType: .html])` is the
+    /// WebKit-backed importer: it resolves and FETCHES subresources the HTML
+    /// references — remote images, stylesheets — synchronously, on the main
+    /// thread. Copying a page fragment containing a tracking pixel would make
+    /// Flux issue an outbound request to whoever wrote it, and hang the UI
+    /// until it returned. For an app whose headline invariant is that it
+    /// needs no permissions and phones nowhere (see the README's Privacy
+    /// section), that is disqualifying, and there is no public option to
+    /// disable remote loading on that importer.
+    ///
+    /// The RTF importers are plain parsers with no such behaviour. An
+    /// HTML-only copy therefore still falls through to `.other` — a narrower
+    /// miss than the one this method was added to fix, and the correct
+    /// trade.
     static func plainText(from pasteboard: NSPasteboard) -> String? {
         if let plain = pasteboard.string(forType: .string), !plain.isEmpty { return plain }
-        for type in [NSPasteboard.PasteboardType.rtf, .rtfd, .html] {
-            guard let data = pasteboard.data(forType: type) else { continue }
-            let options: [NSAttributedString.DocumentReadingOptionKey: Any] =
-                type == .html ? [.documentType: NSAttributedString.DocumentType.html] : [:]
-            guard let attributed = try? NSAttributedString(
-                data: data, options: options, documentAttributes: nil) else { continue }
+        for type in [NSPasteboard.PasteboardType.rtf, .rtfd] {
+            guard let data = pasteboard.data(forType: type),
+                  let attributed = try? NSAttributedString(data: data, options: [:],
+                                                           documentAttributes: nil) else { continue }
             let text = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { return text }
         }
@@ -399,6 +447,21 @@ final class ClipboardMonitor: ObservableObject {
         return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .file, preview: basenames, fullString: nil, filePaths: paths)
     }
 
+    /// Longest edge of the stored thumbnail, in pixels. Generous enough for
+    /// a retina 18pt row glyph with room to spare.
+    static let thumbnailPixels: CGFloat = 64
+
+    /// Total image bytes `entries` may retain across the WHOLE history, not
+    /// per entry.
+    ///
+    /// A per-entry cap alone doesn't bound anything: 50 entries × an 8MB cap
+    /// is 400MB, which is precisely the concern the original
+    /// "no image payload at all" decision was avoiding. `trimImagePayloads()`
+    /// drops the oldest full payloads past this budget while keeping their
+    /// thumbnails, so old images stay recognisable and merely stop being
+    /// pasteable.
+    static let totalImageBudget = 48 * 1024 * 1024
+
     /// Images larger than this are kept as a label without their bytes.
     /// History holds up to `historyLimit` entries entirely in memory (never
     /// on disk — see the type's own doc comment), so a run of full-resolution
@@ -407,21 +470,52 @@ final class ClipboardMonitor: ObservableObject {
     /// explicitly is better than refusing the feature.
     static let imageDataCap = 8 * 1024 * 1024
 
-    private static func imageEntry(image: NSImage) -> ClipboardEntry {
+    /// Builds an image entry from the pasteboard's OWN bytes, deciding on
+    /// size before doing any decoding work.
+    ///
+    /// The obvious shape — decode to `NSImage`, re-encode to PNG, then check
+    /// the result against a cap — is what a first pass did, and it is
+    /// backwards in an expensive way. A 16" full-screen screenshot is ~31MB
+    /// of TIFF plus a same-sized bitmap rep plus a 7.7-megapixel PNG encode,
+    /// all synchronously on the main actor inside the poll timer, and then
+    /// discarded for exceeding the cap — hanging the app on every ⌃⇧⌘4 and
+    /// leaving the commonest image copy of all with no payload, which is the
+    /// exact "clicking it does nothing" bug the payload was added to fix.
+    ///
+    /// Checking the raw pasteboard bytes first means an oversized image costs
+    /// one `count`. The thumbnail is still produced either way, so even an
+    /// image too large to paste back is recognisable in the list.
+    private static func imageEntry(from pasteboard: NSPasteboard, image: NSImage) -> ClipboardEntry {
         let size = image.size
         let preview = "Image (\(Int(size.width))×\(Int(size.height)))"
-        let data = pngData(from: image)
-        let withinCap = data.map { $0.count <= imageDataCap } ?? false
+        let raw = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
+        let withinCap = (raw?.count ?? .max) <= imageDataCap
         return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview,
                               fullString: nil, filePaths: nil,
-                              imageData: withinCap ? data : nil)
+                              imageData: withinCap ? raw : nil,
+                              thumbnailData: thumbnailData(from: image))
     }
 
-    /// Re-encodes to PNG so the stored payload is one predictable format,
-    /// whatever flavour the source app happened to write.
-    private static func pngData(from image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+    /// A small PNG for the row glyph. Drawn once, at capture, into a
+    /// `thumbnailPixels`-bounded bitmap rather than scaling the original on
+    /// every render.
+    private static func thumbnailData(from image: NSImage) -> Data? {
+        let source = image.size
+        guard source.width > 0, source.height > 0 else { return nil }
+        let scale = min(1, thumbnailPixels / max(source.width, source.height))
+        let target = NSSize(width: max(1, (source.width * scale).rounded()),
+                            height: max(1, (source.height * scale).rounded()))
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(target.width), pixelsHigh: Int(target.height),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: target),
+                   from: .zero, operation: .copy, fraction: 1)
         return rep.representation(using: .png, properties: [:])
     }
 
@@ -478,6 +572,25 @@ final class ClipboardMonitor: ObservableObject {
     /// that property's own doc comment for why comparing by that precise
     /// value (rather than unconditionally skipping whatever the next poll
     /// tick sees) is the fix.
+    /// Drops the oldest full image payloads once the history's total image
+    /// bytes exceed `totalImageBudget`, keeping their thumbnails.
+    ///
+    /// The per-entry `imageDataCap` bounds one entry; only this bounds the
+    /// set. Without it, 50 entries at the cap is 400MB retained in memory for
+    /// a glanceable history — the exact cost the original no-image-payload
+    /// decision was avoiding.
+    private func trimImagePayloads() {
+        var used = 0
+        for index in entries.indices where entries[index].imageData != nil {
+            let size = entries[index].imageData?.count ?? 0
+            if used + size > Self.totalImageBudget {
+                entries[index].imageData = nil   // thumbnail deliberately kept
+            } else {
+                used += size
+            }
+        }
+    }
+
     func copyBack(_ id: UUID) {
         guard let entry = entries.first(where: { $0.id == id }) else { return }
 

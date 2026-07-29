@@ -275,7 +275,7 @@ private struct ClipboardRow: View {
     /// recognisable — every screenshot looks identical.
     @ViewBuilder
     private var leadingGlyph: some View {
-        if entry.kind == .image, let data = entry.imageData, let image = NSImage(data: data) {
+        if entry.kind == .image, let data = entry.thumbnailData, let image = NSImage(data: data) {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
