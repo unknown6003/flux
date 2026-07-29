@@ -24,16 +24,8 @@ enum NotchMetrics {
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// The expanded panel's width-to-height ratio.
-    ///
-    /// 2.35:1 is chosen, not inherited. Two constraints fix it: it has to be
-    /// wide enough to seat Duo view (Now Playing beside Calendar) inside the
-    /// *same* box every other widget gets — so Duo no longer needs a width of
-    /// its own — and flat enough that a panel hanging off the notch still
-    /// reads as a drawer rather than a window. The old effective ratio
-    /// wandered between roughly 2.2:1 and 2.8:1 depending on which widget was
-    /// showing, which is a large part of why the proportions looked arbitrary.
-    /// 2.1:1 — 400x190 on a current MacBook.
+    /// The expanded panel's width-to-height ratio: 2.1:1 — 400x190 on a
+    /// current MacBook.
     ///
     /// Arrived at by rendering, not by taste. M12 shipped 2.35 at 500 wide,
     /// which was both too wide against the notch (2.5x its width reads as a
@@ -75,8 +67,8 @@ enum NotchMetrics {
     /// its Calendar pane; Now Playing takes the rest.
     ///
     /// A fraction rather than the old fixed 200pt, because with one fixed
-    /// panel size Duo has to fit the box instead of growing it — so its split
-    /// has to scale with whatever that box is on the current hardware.
+    /// panel size Duo has to fit the box instead of growing it.
+    ///
     /// 0.36, down from 0.42 when the panel was 100pt wider. Duo has to fit
     /// the one shared footprint rather than widen it, so the narrower panel
     /// has to come out of somewhere — and the Calendar pane degrades more

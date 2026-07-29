@@ -66,6 +66,12 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// better than an anonymous "Image (W×H)" label.
     var thumbnailData: Data?
 
+    /// The pasteboard's own bytes, held only long enough for the off-main
+    /// thumbnail pass to consume them — see
+    /// `ClipboardMonitor.attachThumbnailIfNeeded`. Cleared as soon as the
+    /// thumbnail lands, so it never contributes to steady-state memory.
+    var rawImageBytes: Data?
+
     /// The parsed colour for a `.color` entry, so the row can show a real
     /// swatch. Components rather than an `NSColor` for the same
     /// `Equatable`/value-type reason.
@@ -95,8 +101,9 @@ struct ClipboardEntry: Identifiable, Equatable {
     init(id: UUID, capturedAt: Date, kind: Kind, preview: String,
          fullString: String?, filePaths: [String]?,
          imageData: Data? = nil, thumbnailData: Data? = nil,
-         colorComponents: ColorComponents? = nil) {
+         rawImageBytes: Data? = nil, colorComponents: ColorComponents? = nil) {
         self.thumbnailData = thumbnailData
+        self.rawImageBytes = rawImageBytes
         self.id = id
         self.capturedAt = capturedAt
         self.kind = kind
@@ -317,6 +324,7 @@ final class ClipboardMonitor: ObservableObject {
             entries.removeLast(entries.count - Self.historyLimit)
         }
         trimImagePayloads()
+        attachThumbnailIfNeeded(for: entry)
         clipboardLog.debug("Clipboard: captured a \(entry.kind.rawValue, privacy: .public) entry")
     }
 
@@ -379,8 +387,12 @@ final class ClipboardMonitor: ObservableObject {
             guard let data = pasteboard.data(forType: type),
                   let attributed = try? NSAttributedString(data: data, options: [:],
                                                            documentAttributes: nil) else { continue }
-            let text = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { return text }
+            // Trim only to DECIDE emptiness — return the string verbatim.
+            // Leading indentation and trailing newlines are often the point
+            // of a copied snippet, and pasting back something subtly
+            // different from what was copied is its own bug.
+            let text = attributed.string
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
         }
         return nil
     }
@@ -490,16 +502,28 @@ final class ClipboardMonitor: ObservableObject {
         let preview = "Image (\(Int(size.width))×\(Int(size.height)))"
         let raw = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
         let withinCap = (raw?.count ?? .max) <= imageDataCap
+        // No thumbnail yet — see `attachThumbnail(to:from:)`. Building it
+        // here would mean decoding a full-resolution screenshot on the main
+        // actor, inside the poll timer.
         return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview,
                               fullString: nil, filePaths: nil,
                               imageData: withinCap ? raw : nil,
-                              thumbnailData: thumbnailData(from: image))
+                              rawImageBytes: raw)
     }
 
-    /// A small PNG for the row glyph. Drawn once, at capture, into a
-    /// `thumbnailPixels`-bounded bitmap rather than scaling the original on
-    /// every render.
-    private static func thumbnailData(from image: NSImage) -> Data? {
+    /// A small PNG for the row glyph, from raw image bytes.
+    ///
+    /// `nonisolated` and pure so it can run off the main actor — decoding a
+    /// full-resolution screenshot is hundreds of milliseconds, and doing it
+    /// inline in `poll()` froze the whole app on every ⌃⇧⌘4.
+    nonisolated static func thumbnailData(fromRaw raw: Data) -> Data? {
+        guard let image = NSImage(data: raw) else { return nil }
+        return thumbnailData(from: image)
+    }
+
+    /// Drawn into a `thumbnailPixels`-bounded bitmap rather than scaling the
+    /// original on every render.
+    nonisolated private static func thumbnailData(from image: NSImage) -> Data? {
         let source = image.size
         guard source.width > 0, source.height > 0 else { return nil }
         let scale = min(1, thumbnailPixels / max(source.width, source.height))
@@ -572,6 +596,34 @@ final class ClipboardMonitor: ObservableObject {
     /// that property's own doc comment for why comparing by that precise
     /// value (rather than unconditionally skipping whatever the next poll
     /// tick sees) is the fix.
+    /// Builds an image entry's thumbnail off the main actor, then folds it
+    /// back in.
+    ///
+    /// Decoding happens on a detached task because the source can be a
+    /// multi-megapixel screenshot, and `record` runs on the main actor inside
+    /// the poll timer. The entry is inserted immediately without a thumbnail
+    /// and gains one a moment later — the row simply shows its SF Symbol
+    /// until then, which is what it did for every image before this feature
+    /// existed.
+    ///
+    /// Deliberately built from the RAW bytes rather than `imageData`, so an
+    /// image too large to paste back still gets a thumbnail. An unrecognisable
+    /// entry is worse than an unpasteable one.
+    private func attachThumbnailIfNeeded(for entry: ClipboardEntry) {
+        guard entry.kind == .image, let raw = entry.rawImageBytes else { return }
+        let id = entry.id
+        Task.detached(priority: .utility) {
+            guard let thumbnail = Self.thumbnailData(fromRaw: raw) else { return }
+            await MainActor.run { [weak self] in
+                guard let self, let index = self.entries.firstIndex(where: { $0.id == id }) else { return }
+                self.entries[index].thumbnailData = thumbnail
+                // The raw copy has done its job; it would otherwise double
+                // this entry's footprint for the rest of its life.
+                self.entries[index].rawImageBytes = nil
+            }
+        }
+    }
+
     /// Drops the oldest full image payloads once the history's total image
     /// bytes exceed `totalImageBudget`, keeping their thumbnails.
     ///

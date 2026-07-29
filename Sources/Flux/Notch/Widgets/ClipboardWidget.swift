@@ -132,6 +132,10 @@ private struct ClipboardRow: View {
 
     @State private var isHovering = false
     @State private var didConfirmCopy = false
+    /// Decoded once per entry rather than on every body pass. `leadingGlyph`
+    /// is recomputed whenever `isHovering`/`didConfirmCopy` changes, so
+    /// decoding inline meant re-decoding the thumbnail on every hover.
+    @State private var thumbnail: NSImage?
 
     var body: some View {
         HStack(spacing: NotchDesign.rowSpacing) {
@@ -165,6 +169,12 @@ private struct ClipboardRow: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: handleTap)
         .onHover { isHovering = $0 }
+        // Keyed on the entry so a recycled row re-decodes for its new
+        // content, and on the data so a thumbnail that lands asynchronously
+        // (see `ClipboardMonitor.attachThumbnailIfNeeded`) is picked up.
+        .task(id: entry.thumbnailData) {
+            thumbnail = entry.thumbnailData.flatMap { NSImage(data: $0) }
+        }
         // Image/"other" entries have nothing to copy back, so they must not
         // advertise themselves as tappable: no hover lift, dimmed, and no
         // accessibility action. They used to look and highlight exactly like
@@ -275,7 +285,7 @@ private struct ClipboardRow: View {
     /// recognisable — every screenshot looks identical.
     @ViewBuilder
     private var leadingGlyph: some View {
-        if entry.kind == .image, let data = entry.thumbnailData, let image = NSImage(data: data) {
+        if entry.kind == .image, let image = thumbnail {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)

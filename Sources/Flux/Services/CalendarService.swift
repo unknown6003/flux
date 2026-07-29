@@ -146,6 +146,15 @@ final class CalendarService: ObservableObject {
     /// Tears down the change observation and the midnight-rollover task.
     /// No-op if already stopped.
     func stop() {
+        // Also clears the store-reset latch. `refresh()`'s denied branch is
+        // the other place that clears it, but a revoke doesn't go through
+        // `refresh()` at all: the permission observer stops the service
+        // outright. Without this, revoking and re-granting inside one session
+        // would take the `start()` → `refresh()` path with the latch still
+        // set, skip `eventStore.reset()`, and reproduce exactly the stale-
+        // store behaviour the latch exists to prevent.
+        hasResetSinceAuthorization = false
+
         guard isStarted else { return }
         isStarted = false
         cancellables.removeAll()
