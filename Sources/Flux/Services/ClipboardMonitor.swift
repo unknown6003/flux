@@ -383,10 +383,19 @@ final class ClipboardMonitor: ObservableObject {
     /// trade.
     static func plainText(from pasteboard: NSPasteboard) -> String? {
         if let plain = pasteboard.string(forType: .string), !plain.isEmpty { return plain }
-        for type in [NSPasteboard.PasteboardType.rtf, .rtfd] {
-            guard let data = pasteboard.data(forType: type),
-                  let attributed = try? NSAttributedString(data: data, options: [:],
-                                                           documentAttributes: nil) else { continue }
+        // `.documentType` is pinned per flavour, and that is the other half
+        // of the HTML exclusion. With the option omitted, the initializer
+        // best-effort SNIFFS the format — so data read from the RTF flavour
+        // could still be routed to the WebKit HTML importer, and the remote
+        // fetch this method exists to avoid would happen anyway. Naming the
+        // type removes the sniffing entirely.
+        let flavours: [(NSPasteboard.PasteboardType, NSAttributedString.DocumentType)] =
+            [(.rtf, .rtf), (.rtfd, .rtfd)]
+        for (pasteboardType, documentType) in flavours {
+            guard let data = pasteboard.data(forType: pasteboardType),
+                  let attributed = try? NSAttributedString(
+                    data: data, options: [.documentType: documentType],
+                    documentAttributes: nil) else { continue }
             // Trim only to DECIDE emptiness — return the string verbatim.
             // Leading indentation and trailing newlines are often the point
             // of a copied snippet, and pasting back something subtly
@@ -633,9 +642,18 @@ final class ClipboardMonitor: ObservableObject {
     /// decision was avoiding.
     private func trimImagePayloads() {
         var used = 0
+        var overBudget = false
         for index in entries.indices where entries[index].imageData != nil {
             let size = entries[index].imageData?.count ?? 0
-            if used + size > Self.totalImageBudget {
+            // Once the budget is gone it stays gone for the rest of the pass.
+            // Merely skipping an oversized entry without latching this let a
+            // SMALLER, strictly OLDER entry slip into the untouched remainder
+            // — so a newer image could lose its payload while an older one
+            // kept it. The total stayed within budget either way, but
+            // "newest wins" is the property that makes the eviction
+            // predictable.
+            if overBudget || used + size > Self.totalImageBudget {
+                overBudget = true
                 entries[index].imageData = nil   // thumbnail deliberately kept
             } else {
                 used += size

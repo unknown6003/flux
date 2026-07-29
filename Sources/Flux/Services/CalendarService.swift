@@ -154,6 +154,11 @@ final class CalendarService: ObservableObject {
         // set, skip `eventStore.reset()`, and reproduce exactly the stale-
         // store behaviour the latch exists to prevent.
         hasResetSinceAuthorization = false
+        // Cached events go too. A revoke reaches this method rather than
+        // `refresh()`, so without this the agenda would keep rendering
+        // calendar data the user has just withdrawn access to — for as long
+        // as the app stays running.
+        if !upcoming.isEmpty { upcoming = [] }
 
         guard isStarted else { return }
         isStarted = false
