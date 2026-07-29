@@ -28,6 +28,10 @@ enum SettingsSnapshot {
             .environmentObject(UpdateChecker())
             .environmentObject(NowPlayingService())
             .environmentObject(PermissionCenter())
+            // A fresh reporter has no previous session on disk to read (it
+            // never calls `beginSession()`), so the crash card renders as
+            // absent — which is what a clean screenshot should show.
+            .environmentObject(CrashReporter())
             .environment(\.colorScheme, dark ? .dark : .light)
 
         // Settings' width is fixed; only the height needs to fit the tab's

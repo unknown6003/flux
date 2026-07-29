@@ -79,17 +79,6 @@ final class HotkeyManager {
         registrations[id] = nil
     }
 
-    /// Tears down every registration and the shared event handler — used on
-    /// deinit; not needed in normal operation since individual `unregister`
-    /// calls handle settings changes.
-    func unregisterAll() {
-        for id in registrations.keys { unregister(id) }
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
-        }
-    }
-
     deinit {
         for (_, registration) in registrations { UnregisterEventHotKey(registration.hotKeyRef) }
         if let eventHandler { RemoveEventHandler(eventHandler) }

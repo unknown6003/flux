@@ -318,3 +318,172 @@ notifications and prompts don't happen at all in a headless CI environment.
       — and confirm a connect/disconnect wing appears with no Bluetooth
       prompt, same as an Apple accessory. This is the second, generic
       `IOHIDDevice` matching source added for exactly this case.
+
+## M12 — Camera crash, hover reliability, notch right-click
+
+The three items the user reported after living with v0.12.0. All three are
+inherently hardware-only: none of them can be exercised on a CI runner (no
+notch, no camera, no cursor).
+
+### Camera / Mirror crash on collapse+expand
+
+Mirroring is no longer `AVCaptureConnection.isVideoMirrored` — it's a
+`CGAffineTransform` on a preview layer `CameraService` owns for its whole
+lifetime. Both changes exist to make the crash *impossible* rather than
+*unlikely*, so the test is deliberately abusive:
+
+- [ ] **Rapid collapse/expand with the camera live**: open the Mirror widget,
+      wait for the preview, then hover in and out (or click, per your trigger)
+      as fast as you can for ~30 seconds. Flux must not crash, and the preview
+      must come back every time — not go black or freeze on a stale frame
+      permanently. This is the exact gesture that reproduced the M6/M8 crash.
+- [ ] **Preview is actually mirrored**: raise your right hand; it must appear
+      on the right side of the preview (a real mirror), not the left.
+- [ ] **Preview fills and rounds correctly**: no stretched/lagging video while
+      the panel springs open or closed, and the preview's corners stay rounded
+      to the panel's inner radius.
+- [ ] **Camera indicator still dies on collapse**: collapse the notch and
+      confirm the green camera LED goes out within a second — the perf/privacy
+      contract on `CameraService` is unchanged by this refactor.
+- [ ] **Recovers from a busy camera**: start a FaceTime/Photo Booth call,
+      then open Mirror (it should show its starting/interrupted state rather
+      than crash), quit the other app, and confirm Mirror recovers on its own
+      — and, separately, that opening Mirror *again* later still works. The
+      `isConfigured` latch now only sets on a successful input add, so a
+      transient failure no longer poisons the service for the session.
+
+### Hover reliability
+
+- [ ] **Hover works with a live activity showing**: plug/unplug power (or
+      connect Bluetooth headphones) to get a wing up, then hover the notch
+      while that wing is showing. It must expand. This is the case that
+      previously did nothing — the tracking-area path AppKit doesn't deliver
+      to a non-key, non-activating panel — and is the likeliest source of the
+      reported "works about half the time".
+- [ ] **Hover is forgiving about aim**: approach the notch from below and stop
+      just under it, and separately just to the left/right of the housing.
+      Both should open it. The cursor is *hidden* over the physical notch, so
+      this slop is the difference between the target being findable and not.
+- [ ] **Slop isn't too greedy**: move the pointer along the menu bar well to
+      the side of the notch, and across a window ~1cm below the menu bar.
+      Neither should open the notch.
+- [ ] **Close is precise**: with the notch expanded, move the cursor just off
+      the panel's edge. It should close after the close delay — not stay open
+      until the cursor leaves a much larger invisible region.
+- [ ] **Pass-through still intact**: with the notch collapsed, click and drag
+      normally in an app whose window is under the top strip. Nothing should
+      be swallowed.
+
+### Right-click context menu
+
+- [ ] **Right-click while collapsed**: right-click the physical notch. The
+      menu appears with the expand verb, a Widgets submenu, both Settings
+      items, Turn Off Notch, and Quit.
+- [ ] **Right-click while expanded and while a wing is showing**: both must
+      pop the same menu, and the panel must NOT collapse out from under the
+      open menu even though the cursor has left the notch to reach the items.
+- [ ] **Every item is enabled, not greyed**: the menu is popped from a
+      non-activating panel, so items are enabled explicitly rather than via
+      the responder chain.
+- [ ] **Widget checkmarks round-trip**: toggle a widget off from the submenu,
+      confirm it disappears from the notch's cycle AND that its toggle in
+      Settings → Notch flipped too; toggle it back on the same way.
+- [ ] **Notch Settings… jumps to the right tab**, both when Settings is closed
+      and when it's already open on a different tab.
+- [ ] **No double context menu**: right-click the collapsed notch while a
+      normal app window is underneath the top strip. Flux's menu should
+      appear; the window beneath should not also pop one. Note the mechanism
+      is avoidance, not suppression — a global monitor cannot consume the
+      event it observes, so this relies on the right-click target being
+      confined to the menu-bar strip, where nothing else offers a context
+      menu. If you *do* see two menus, that means something under the strip
+      claims right-clicks there, and the target needs shrinking further.
+
+### M12 review follow-ups (Codex + adversarial pass)
+
+Behaviour changes from the two review rounds that can only be judged on real
+hardware:
+
+- [ ] **Right-click only hits the notch strip**: with the notch expanded on
+      the Shelf or Clipboard, right-click a tile/row. You should get ONLY the
+      widget's own menu (AirDrop / Show in Finder / Copy / Remove) — Flux's
+      shell menu must not also appear or pop up after you dismiss it. Then
+      right-click the notch cutout itself at the top of the panel: that should
+      give the shell menu.
+- [ ] **Nothing is clickable below the notch just after a collapse**: expand
+      the notch, collapse it, and immediately click where the panel *was*
+      (well below the menu bar, over another app's window). It must do nothing
+      to Flux — only the app underneath should react.
+- [ ] **The panel survives its own context menu**: with the notch expanded,
+      right-click the notch strip and move the pointer down the menu items.
+      The panel must stay open the whole time, not collapse behind the menu.
+- [ ] **Turning the notch off actually turns it off**: Settings → Notch →
+      "Enable the notch panel" off (and separately, the right-click menu's
+      Turn Off Notch). The panel must disappear immediately, the camera
+      indicator must not be lit, and clipboard collection must stop — all
+      without relaunching Flux.
+- [ ] **Mirror survives a fast collapse/expand without going black**: the
+      preview layer is now handed between views; confirm re-expanding always
+      shows live video rather than a black panel.
+- [ ] **Low battery at launch**: with the Mac unplugged and already under 20%,
+      launch Flux. It should now post one low-battery wing immediately (this
+      is new — it previously stayed silent until the percent crossed 20% from
+      above, which after a monitor restart could never happen again).
+- [ ] **VoiceOver on the clipboard/shelf rows**: with VoiceOver on, navigate to
+      a clipboard row and a shelf tile. Confirm you can reach and activate
+      Remove, and copy a clipboard entry, without using the mouse. The remove
+      buttons are present-but-transparent until hover; whether an accessibility
+      activation routes around that is the specific thing to check.
+- [ ] **Compact spacing round-trip**: if you have a custom `NSStatusItemSpacing`
+      (`defaults -currentHost read -g NSStatusItemSpacing`), note it, toggle
+      Flux's compact spacing on then off, and confirm the original value came
+      back rather than being cleared.
+
+## M12 — drawer size, corners, page-switch crash
+
+The three follow-up reports. The first two were verified against CI-rendered
+snapshots (`--snapshot-notch`, downloaded from the `notch-snapshots`
+artifact), so they are further along than "reasoned about" — but a PNG on a
+transparent background can't show how the shape sits against a real bezel.
+
+### Fixed drawer size
+
+- [ ] **The drawer never changes size**: swipe through every page — Now
+      Playing, Shelf, Calendar, Mirror, Timers, Clipboard — and confirm the
+      black panel's outline stays exactly put. Nothing should grow, shrink or
+      shift as the content cross-fades.
+- [ ] **Duo doesn't widen it either**: with Now Playing + Calendar both on and
+      Duo enabled, confirm entering and leaving Duo changes the *content*
+      inside the panel but not the panel.
+- [ ] **Nothing is clipped at the new size**: each page's content should fit
+      without its last row cut awkwardly, and Now Playing's transport row
+      should sit near the bottom rather than leaving a dead band under it.
+
+### Corners and proportions
+
+- [ ] **The top edge is flush**: the single most important one. With the
+      drawer open, look at where its top corners meet the notch/bezel — there
+      must be NO sliver of desktop visible in either corner. The top edge is
+      square by design for exactly this reason.
+- [ ] **Bottom corners read as Apple squircles**: soft and continuous, not the
+      hard circular arc of the old shape. Compare against a Control Centre
+      panel or an app icon at a glance.
+- [ ] **The morph still looks right**: collapsed → activity → expanded should
+      spring smoothly with corners interpolating, not popping between shapes.
+
+### Page-switch crash
+
+- [ ] **Swipe between pages as fast as you can** for ~30 seconds, in both
+      directions, including through Mirror with the camera live. This is the
+      reported crash; it must survive.
+- [ ] **A swipe no longer scrolls the page you're leaving**: swipe off
+      Clipboard or Timers (both scrolling lists) and confirm the list doesn't
+      visibly scroll as it fades out.
+- [ ] **Mouse-wheel scrolling still works**: with a mouse (not the trackpad),
+      scroll a Clipboard/Calendar/Timers list. Trackpad gestures are claimed
+      by the notch, wheel scrolls are not — if wheel scrolling is dead, the
+      phase gate is too aggressive.
+- [ ] **The drawer still takes clicks after an activity fires**: open the
+      drawer, then trigger a live activity (plug/unplug power). Clicking the
+      open drawer must still work — a re-entrancy bug used to leave it
+      ignoring mouse events entirely in this exact sequence.

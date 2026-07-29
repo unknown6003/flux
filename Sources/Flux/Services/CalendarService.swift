@@ -221,10 +221,17 @@ final class CalendarService: ObservableObject {
         // `events(matching:)` returns a plain (non-optional) array — an empty
         // result just means nothing matched, not "unknown."
         let events = store.events(matching: predicate)
+        // Capped at 20, not 10. The window spans today AND tomorrow, and the
+        // cap is applied to the flat, chronologically-sorted list *before*
+        // `groupByDay` splits it — so with 10+ events still to come today,
+        // the whole Tomorrow section silently vanished from the widget, with
+        // no way for the user to tell an empty tomorrow from a truncated one.
+        // 20 is comfortably past what the panel can show for one day while
+        // staying a bound on a pathological calendar.
         return events
             .filter { !isDeclinedByCurrentUser($0) }
             .sorted { $0.startDate < $1.startDate }
-            .prefix(10)
+            .prefix(20)
             .map(makeCalendarEvent)
     }
 

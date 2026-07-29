@@ -86,21 +86,47 @@ final class NotchPanel: NSPanel {
 
     private var accumulatedX: CGFloat = 0
     private var accumulatedY: CGFloat = 0
-    /// Set once a gesture has already fired a swipe, so continuing to scroll
-    /// past the threshold within the *same* two-finger gesture doesn't queue
-    /// up several more swipes — one physical gesture is one logical swipe.
+    /// Set once a gesture has fired a swipe, so continuing to scroll past the
+    /// threshold within the *same* physical gesture doesn't queue up several
+    /// more swipes — one physical gesture is one logical swipe.
     private var gestureConsumed = false
 
     /// Intercepts `scrollWheel` ahead of normal event dispatch so a two-finger
-    /// gesture over the notch cycles/opens/closes it instead of (having no
-    /// effect, since nothing beneath this transparent panel scrolls). Every
-    /// other event type passes straight through to the normal AppKit dispatch.
+    /// gesture over the notch cycles/opens/closes it. Every other event type
+    /// passes straight through to the normal AppKit dispatch.
+    ///
+    /// ## A trackpad gesture belongs to the notch, in its entirety
+    /// This used to call `super.sendEvent(event)` unconditionally, so every
+    /// swipe did two things at once: it switched the page, AND it scrolled
+    /// whatever was inside the widget. Four of the six widgets (Shelf,
+    /// Calendar, Clipboard, Timers) host a `ScrollView`, so swiping between
+    /// pages visibly scrolled the list you were swiping away from — and,
+    /// worse, delivered scroll events into a SwiftUI subtree that the very
+    /// same gesture had just torn down, since `viewModel.swiped(_:)` runs
+    /// synchronously on the line above. Swiping quickly stacks those
+    /// teardowns (the outgoing subtree stays alive for the ~0.42s spring),
+    /// so there is always a half-dead tree for a stale-target scroll to land
+    /// in — the "crashes when I switch pages fast" report.
+    ///
+    /// The gate is the gesture's PHASE, not whether a swipe was recognised.
+    /// Only trackpads and the Magic Mouse populate `phase`/`momentumPhase`,
+    /// and on this panel such a gesture is always a notch gesture: up
+    /// collapses, down expands, left/right cycles pages. None of it was ever
+    /// content scrolling. Gating on recognition instead — the obvious
+    /// narrower fix, and what a first pass at this did — leaks the frames
+    /// *before* the 40pt threshold into the widget you're leaving, and then
+    /// swallows that gesture's `ended`, so the inner scroll view is started
+    /// and never terminated.
+    ///
+    /// A plain mouse wheel reports neither phase and still passes through, so
+    /// wheel-scrolling a widget's list keeps working.
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .scrollWheel else {
             super.sendEvent(event)
             return
         }
         handleScrollWheel(event)
+        guard event.phase.isEmpty, event.momentumPhase.isEmpty else { return }
         super.sendEvent(event)
     }
 
@@ -109,6 +135,9 @@ final class NotchPanel: NSPanel {
     /// `.ended`/`.cancelled`. Plain (non-trackpad) scroll wheels report an
     /// empty phase and are deliberately ignored — swiping the notch is a
     /// trackpad/Magic Mouse gesture, matching Dynamic-Island-style UIs.
+    ///
+    /// Recognition only — whether the event also reaches the view hierarchy
+    /// is `sendEvent`'s decision, made from the phase alone.
     private func handleScrollWheel(_ event: NSEvent) {
         switch event.phase {
         case .began:
@@ -133,7 +162,7 @@ final class NotchPanel: NSPanel {
             accumulatedY = 0
             gestureConsumed = false
         default:
-            break // .stationary / .mayBegin / momentum-only events: ignored
+            break // .stationary / .mayBegin / momentum-only frames: ignored
         }
     }
 
@@ -263,9 +292,22 @@ final class NotchHostingView: NSHostingView<AnyView> {
     /// searching windows *beneath* this one instead of this (otherwise
     /// full-panel-sized) view claiming every click and hover in its frame.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        guard viewModel.interactiveRect.contains(local) else { return nil }
+        guard viewModel.interactiveRect.contains(notchSpacePoint(convert(point, from: superview))) else { return nil }
         return super.hitTest(point)
+    }
+
+    /// Maps a point in this view's own AppKit coordinate space into the space
+    /// `NotchViewModel.interactiveRect` is published in.
+    ///
+    /// `interactiveRect` is written by `NotchRootView` in SwiftUI's
+    /// top-left-origin space (y grows downward). An `NSView`'s space is
+    /// bottom-left-origin unless the view reports `isFlipped` — and whether
+    /// `NSHostingView` does is an undocumented implementation detail of
+    /// SwiftUI's AppKit bridge, not something to bet the notch's entire
+    /// click/hover surface on. Branching on `isFlipped` is correct either
+    /// way, and collapses to a no-op when it's already `true`.
+    private func notchSpacePoint(_ point: NSPoint) -> NSPoint {
+        isFlipped ? point : NSPoint(x: point.x, y: bounds.height - point.y)
     }
 
     /// A single `.activeAlways`/`.inVisibleRect` tracking area spanning the
@@ -293,8 +335,15 @@ final class NotchHostingView: NSHostingView<AnyView> {
     /// `interactiveRect` — not the tracking area's extent — is what actually
     /// decides hover, matching the same rect `hitTest` and `NotchRootView`'s
     /// published geometry use.
+    ///
+    /// Since M12 this is only a *second opinion*: `NotchWindowController`'s
+    /// global/local `.mouseMoved` monitors drive hover in every state,
+    /// because AppKit doesn't reliably deliver `mouseMoved:` to a
+    /// non-activating panel that never becomes key (see that controller's own
+    /// `globalMoveMonitor` doc comment). `NotchViewModel.hoverChanged` is
+    /// idempotent, so the two agreeing costs nothing.
     private func updateHover(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        let point = notchSpacePoint(convert(event.locationInWindow, from: nil))
         viewModel.hoverChanged(inside: viewModel.interactiveRect.contains(point))
     }
 }

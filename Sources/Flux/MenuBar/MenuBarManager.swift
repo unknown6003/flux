@@ -28,10 +28,16 @@ final class MenuBarManager {
     private var cancellables = Set<AnyCancellable>()
 
     /// How close the leftmost arrange marker may sit to the notch's right edge
-    /// before we treat the bar as full. Set to one whole inter-icon gap (macOS's
-    /// default `NSStatusItemSpacing` is 16 pt) so the warning fires while there's
-    /// still a full icon-slot of clearance — we'd rather warn a touch early than
-    /// let a zone slip behind the notch unannounced.
+    /// before we treat the bar as full. A couple of points — just enough to
+    /// absorb rounding in the reported window frames, not a whole icon slot.
+    ///
+    /// Deliberately the same number as `NSScreen.statusItemFitsBesideNotch`'s
+    /// own `slack` default, since the two answer the same question about the
+    /// same geometry; they're kept as separate constants only because that
+    /// one is a general-purpose defaulted parameter. (The doc comment here
+    /// used to describe "one whole inter-icon gap … 16 pt", which this value
+    /// has never been — an invitation to "correct" it upward and start
+    /// warning a full icon early.)
     private static let overflowSlack: CGFloat = 2
 
     init(settings: SettingsStore,
@@ -71,7 +77,7 @@ final class MenuBarManager {
         // every existing icon in Shown), so this collapses nothing — it only bites once
         // the user has actually moved an icon into a hidden zone, which is exactly when
         // they want it honoured.
-        applyState(animated: false)
+        applyState()
         Log.menuBar.info("MenuBarManager initialised (alwaysHidden=\(self.settings.showAlwaysHiddenSection))")
     }
 
@@ -110,7 +116,7 @@ final class MenuBarManager {
                     self.applyArrangeFocus()
                     self.refreshOverflow()
                 } else {
-                    self.applyState(animated: true)
+                    self.applyState()
                 }
             }
             .store(in: &cancellables)
@@ -133,6 +139,19 @@ final class MenuBarManager {
             .sink { [weak self] style in
                 self?.chevron.setStyle(style)
             }
+            .store(in: &cancellables)
+
+        // Whether icons are clipped behind the notch is a fact about a
+        // specific screen's geometry, and connecting/disconnecting a display
+        // (or changing its resolution) changes both which screen hosts the
+        // menu bar and how much room is beside the notch. Nothing here
+        // watched for that: `refreshOverflow()` only ran on reveal/collapse
+        // and the arrange-mode poll, so the "N icons behind the notch"
+        // warning kept reporting the previous display's answer — or stayed
+        // missing entirely — until the user next toggled the chevron.
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.scheduleOverflowRefresh() }
             .store(in: &cancellables)
     }
 
@@ -160,7 +179,7 @@ final class MenuBarManager {
             revealHidden = true
             revealAlwaysHidden = false
         }
-        applyState(animated: true)
+        applyState()
         scheduleAutoRehideIfNeeded()
     }
 
@@ -172,19 +191,19 @@ final class MenuBarManager {
             return
         }
         if isAnyRevealed {
-            collapse(animated: true)
+            collapse()
         } else {
             revealHidden = true
             revealAlwaysHidden = false
-            applyState(animated: true)
+            applyState()
             scheduleAutoRehideIfNeeded()
         }
     }
 
-    func collapse(animated: Bool) {
+    func collapse() {
         revealHidden = false
         revealAlwaysHidden = false
-        applyState(animated: animated)
+        applyState()
     }
 
     /// Reveal every section, including Always-Hidden. Entry point for the menu,
@@ -192,11 +211,14 @@ final class MenuBarManager {
     func revealAll() {
         revealHidden = true
         revealAlwaysHidden = settings.showAlwaysHiddenSection
-        applyState(animated: true)
+        applyState()
         scheduleAutoRehideIfNeeded()
     }
 
-    private func applyState(animated: Bool) {
+    /// (No `animated:` parameter: `NSStatusItem.length` isn't reliably
+    /// animatable — see `ControlItem.setCollapsed` — so nothing downstream
+    /// of here ever had an animation to opt into.)
+    private func applyState() {
         // Arrange Mode owns the bar geometry (labeled markers, everything shown);
         // don't let a stray settings change collapse a marker mid-arrange.
         guard !arranger.isArranging else { return }
@@ -204,8 +226,8 @@ final class MenuBarManager {
         let showHidden = revealHidden || revealAlwaysHidden
         let showAlwaysHidden = revealAlwaysHidden
 
-        hiddenDivider.setCollapsed(!showHidden, animated: animated)
-        alwaysHiddenDivider?.setCollapsed(!showAlwaysHidden, animated: animated)
+        hiddenDivider.setCollapsed(!showHidden)
+        alwaysHiddenDivider?.setCollapsed(!showAlwaysHidden)
         chevron.setChevron(revealed: showHidden)
 
         updateOutsideClickMonitor(active: showHidden)
@@ -266,7 +288,7 @@ final class MenuBarManager {
             // Apply the new arrangement: collapse back to the resting state.
             revealHidden = false
             revealAlwaysHidden = false
-            applyState(animated: true)
+            applyState()
             Log.menuBar.info("Exited Arrange Mode")
         }
     }
@@ -305,7 +327,7 @@ final class MenuBarManager {
             // Balloon the Always-Hidden divider so its icons are pushed off-screen,
             // freeing their width for the Shown ↔ Hidden edge.
             alwaysHiddenDivider?.setArrangingMarker(false)
-            alwaysHiddenDivider?.setCollapsed(true, animated: true)
+            alwaysHiddenDivider?.setCollapsed(true)
 
         case .hiddenAlwaysHidden:
             revealHidden = true
@@ -314,7 +336,7 @@ final class MenuBarManager {
             // marker's width is reclaimed for the Always-Hidden edge, which needs
             // every point (Shown + Hidden already sit to its right).
             hiddenDivider.setArrangingMarker(false)
-            hiddenDivider.setCollapsed(false, animated: true)
+            hiddenDivider.setCollapsed(false)
             alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
         }
 
@@ -443,11 +465,14 @@ final class MenuBarManager {
         rehideTimer?.invalidate()
         rehideTimer = nil
         guard !arranger.isArranging else { return }
-        guard settings.autoRehide, isAnyRevealed, settings.autoRehideDelay > 0 else { return }
+        // No `autoRehideDelay > 0` clause: the slider's range starts at 2 and
+        // `autoRehide` is the on/off control, so zero was unreachable and the
+        // branch was dead.
+        guard settings.autoRehide, isAnyRevealed else { return }
 
         rehideTimer = Timer.scheduledTimer(withTimeInterval: settings.autoRehideDelay,
                                            repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.collapse(animated: true) }
+            Task { @MainActor in self?.collapse() }
         }
     }
 
@@ -471,7 +496,7 @@ final class MenuBarManager {
                     if self.clickIsInMenuBar(location) {
                         self.scheduleAutoRehideIfNeeded()
                     } else {
-                        self.collapse(animated: true)
+                        self.collapse()
                     }
                 }
             }
@@ -496,8 +521,34 @@ final class MenuBarManager {
 
     // MARK: Menu
 
+    /// Set by the wiring agent to the version string of a newer release, when
+    /// `UpdateChecker` has found one — `nil` otherwise.
+    ///
+    /// The 6-hourly background check does its job and sets `.available`, but
+    /// nothing observed that outside the Settings window, so unless the user
+    /// happened to open Settings they never learned an update existed. This
+    /// is the cheapest honest surface for it: one extra item, at the top of
+    /// the menu they already use, only when there's actually something to say.
+    var pendingUpdateVersion: (() -> String?)?
+
+    /// Opens Settings on a specific tab. Separate from `onOpenSettings`
+    /// because that one deliberately preserves whichever tab the user last
+    /// had open — right for a generic "Flux Settings…", wrong for the update
+    /// signpost, which is only useful if it lands on General where the
+    /// download/install controls actually are.
+    var onOpenSettingsTab: ((SettingsTab) -> Void)?
+
     private func showMenu() {
         let menu = NSMenu()
+
+        if let version = pendingUpdateVersion?() {
+            let item = makeItem("Update to \(version)…", #selector(menuOpenUpdateSettings))
+            // The actual download/install lives in Settings › General; this
+            // is a signpost, not a second install path to keep in sync.
+            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
 
         if arranger.isArranging {
             // Mid-arrange the reveal/hide actions don't apply — offer only "Done".
@@ -571,6 +622,16 @@ final class MenuBarManager {
     }
 
     @objc private func menuOpenSettings() { onOpenSettings() }
+
+    /// Falls back to the generic path if nothing wired the tab-specific one —
+    /// a stale General tab still beats doing nothing.
+    @objc private func menuOpenUpdateSettings() {
+        if let onOpenSettingsTab {
+            onOpenSettingsTab(.general)
+        } else {
+            onOpenSettings()
+        }
+    }
 
     @objc private func menuQuit() { NSApp.terminate(nil) }
 

@@ -20,6 +20,7 @@ struct NotchTab: View {
             if settings.notchEnabled {
                 behaviorCard
                 widgetsCard
+                widgetOrderCard
                 liveActivitiesCard
                 hudCard
                 experimentalCard
@@ -138,6 +139,99 @@ struct NotchTab: View {
                       subtitle: "Keep a short history of what you copy, in memory only — never written to disk. Off by default; turn on to opt in.",
                       isOn: $settings.notchClipboardEnabled)
         }
+    }
+
+    // MARK: Cycle order
+
+    /// `settings.notchWidgetOrder` has been persisted and honoured since M1 —
+    /// `NotchWidgetRegistry.order` drives the whole swipe cycle from it — but
+    /// nothing in the app could ever change it, so it could only ever hold
+    /// the factory default. This card is that missing half.
+    ///
+    /// Up/down buttons rather than drag-to-reorder: these rows live inside a
+    /// plain `VStack` in a `ScrollView`, not a `List`, so `.onMove` isn't
+    /// available without restructuring the whole tab — and buttons are
+    /// keyboard- and VoiceOver-reachable for free, which a drag handle isn't.
+    private var widgetOrderCard: some View {
+        FluxCard(title: "Cycle order") {
+            RowText(title: "Swipe order",
+                    subtitle: "The order left/right swipes move through the widgets. Disabled widgets keep their place but are skipped.")
+                .padding(.vertical, 11)
+                .padding(.horizontal, 14)
+            ForEach(orderedWidgetIDs, id: \.self) { id in
+                RowDivider()
+                widgetOrderRow(id)
+            }
+        }
+    }
+
+    /// The persisted order, resolved and made total: unknown raw values (a
+    /// widget removed from a later build) are dropped, and any registered
+    /// widget the saved array never mentioned is appended — matching how
+    /// `NotchWidgetRegistry.enabledWidgets` treats the same list, so what's
+    /// shown here is what actually cycles.
+    private var orderedWidgetIDs: [WidgetID] {
+        var seen = Set<WidgetID>()
+        var result: [WidgetID] = []
+        for raw in settings.notchWidgetOrder {
+            guard let id = WidgetID(rawValue: raw), seen.insert(id).inserted else { continue }
+            result.append(id)
+        }
+        for id in WidgetID.allCases where !seen.contains(id) { result.append(id) }
+        return result
+    }
+
+    private func widgetOrderRow(_ id: WidgetID) -> some View {
+        let ids = orderedWidgetIDs
+        let index = ids.firstIndex(of: id) ?? 0
+        return HStack(spacing: 10) {
+            Image(systemName: id.symbol)
+                .frame(width: 18)
+                .foregroundStyle(Theme.textSecondaryColor)
+            Text(id.title)
+                .foregroundStyle(Theme.textPrimaryColor)
+            if !isEnabled(id) {
+                Text("Off")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondaryColor)
+            }
+            Spacer(minLength: 0)
+            orderButton("chevron.up", label: "Move \(id.title) earlier", enabled: index > 0) {
+                move(id, to: index - 1)
+            }
+            orderButton("chevron.down", label: "Move \(id.title) later", enabled: index < ids.count - 1) {
+                move(id, to: index + 1)
+            }
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 14)
+    }
+
+    private func orderButton(_ symbol: String, label: String, enabled: Bool,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 22, height: 18)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .foregroundStyle(enabled ? Theme.accentInkColor : Theme.textSecondaryColor.opacity(0.4))
+        .accessibilityLabel(label)
+    }
+
+    private func move(_ id: WidgetID, to destination: Int) {
+        var ids = orderedWidgetIDs
+        guard let from = ids.firstIndex(of: id), ids.indices.contains(destination) else { return }
+        ids.remove(at: from)
+        ids.insert(id, at: destination)
+        // Written as raw values because that's what `SettingsStore` persists
+        // — see `notchWidgetOrder`'s own doc comment on why it's `[String]`.
+        settings.notchWidgetOrder = ids.map(\.rawValue)
+    }
+
+    private func isEnabled(_ id: WidgetID) -> Bool {
+        settings[keyPath: id.enabledSettingKey]
     }
 
     /// Battery/Bluetooth wings (M3) — separate from `widgetsCard` since these

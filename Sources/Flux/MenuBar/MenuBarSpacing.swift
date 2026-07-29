@@ -25,16 +25,117 @@ enum MenuBarSpacing {
     private static let user = kCFPreferencesCurrentUser
     private static let host = kCFPreferencesCurrentHost
 
-    /// True when Flux's compact spacing is currently in effect (the key is set).
+    /// True when **Flux's** compact spacing is in effect.
+    ///
+    /// Ownership is tracked explicitly, in Flux's own defaults, rather than
+    /// inferred. Two earlier forms were both wrong:
+    /// - `!= nil` read ANY pre-existing spacing (set by the user with
+    ///   `defaults write`, or by Ice/Bartender) as Flux's own. The toggle
+    ///   showed ON at launch for a value Flux never wrote, and switching it
+    ///   off cleared the key outright, destroying that setting.
+    /// - `== compactValue` fixed the common case but not the one where the
+    ///   external value *already was* 6 (Codex PR13 finding). Flux would
+    ///   still claim it, `stashCurrentValuesIfNeeded()` would record nothing,
+    ///   and turning the toggle off would clear both keys — recreating the
+    ///   exact destruction this is meant to prevent.
+    ///
+    /// The value is still checked alongside the marker, so a spacing changed
+    /// out from under Flux (by another tool, or a `defaults write`) correctly
+    /// reads as no longer Flux's.
     static var isCompact: Bool {
-        (CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int) != nil
+        guard UserDefaults.standard.bool(forKey: ownershipKey) else { return false }
+        return (CFPreferencesCopyValue(spacingKey, appID, user, host) as? Int) == compactValue
     }
 
-    /// Write (compact) or clear (restore the system default) both spacing keys.
+    /// Write (compact) or restore both spacing keys.
+    ///
+    /// Turning compact ON stashes whatever was already there; turning it OFF
+    /// puts that back, falling through to clearing the key (the true system
+    /// default) only when there was nothing to restore. Blindly writing `nil`
+    /// on the way out is what used to eat a user's own `NSStatusItemSpacing`.
     static func apply(compact: Bool) {
-        let value: CFPropertyList? = compact ? NSNumber(value: compactValue) : nil
-        CFPreferencesSetValue(spacingKey, value, appID, user, host)
-        CFPreferencesSetValue(paddingKey, value, appID, user, host)
+        if compact {
+            stashCurrentValuesIfNeeded()
+            let value = NSNumber(value: compactValue) as CFPropertyList
+            CFPreferencesSetValue(spacingKey, value, appID, user, host)
+            CFPreferencesSetValue(paddingKey, value, appID, user, host)
+            UserDefaults.standard.set(true, forKey: ownershipKey)
+        } else {
+            restore(spacingKey, from: stashedSpacingKey)
+            restore(paddingKey, from: stashedPaddingKey)
+            UserDefaults.standard.set(false, forKey: ownershipKey)
+        }
         CFPreferencesSynchronize(appID, user, host)
+    }
+
+    // MARK: - Restore stash
+    //
+    // Kept in Flux's OWN defaults domain, not the global one being edited:
+    // this is Flux's bookkeeping about someone else's setting, and it must
+    // not itself become another stray key in the global domain.
+
+    /// Whether Flux is the one that wrote the current spacing. The load-
+    /// bearing bit: equality with `compactValue` cannot distinguish "Flux set
+    /// this" from "someone else happened to pick the same number".
+    private static let ownershipKey = "flux.menuBar.ownsStatusItemSpacing"
+    private static let stashedSpacingKey = "flux.menuBar.previousStatusItemSpacing"
+    private static let stashedPaddingKey = "flux.menuBar.previousStatusItemSelectionPadding"
+
+    /// Records the pre-Flux values exactly once per compact session. Guarded
+    /// on the ownership marker — NOT on `isCompact`, and not on a value
+    /// comparison — so re-applying (a settings sink re-delivering on launch,
+    /// say) can't overwrite the real originals with Flux's own
+    /// `compactValue`, while a genuine external 6 is still stashed properly.
+    private static func stashCurrentValuesIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: ownershipKey) else { return }
+        stash(CFPreferencesCopyValue(spacingKey, appID, user, host), forKey: stashedSpacingKey)
+        stash(CFPreferencesCopyValue(paddingKey, appID, user, host), forKey: stashedPaddingKey)
+    }
+
+    /// Records a pre-existing value so `restore(_:from:)` can put it back.
+    ///
+    /// Only an `Int` is stashed, because that's the only type these two keys
+    /// are documented to hold and the only one `CFPreferencesSetValue` can be
+    /// handed back unambiguously. Anything else is treated as "nothing to
+    /// restore", which means the key is CLEARED on the way out — restoring
+    /// macOS's true default.
+    ///
+    /// An earlier version tried to be cleverer, marking a foreign type as
+    /// "leave this key alone on restore". That was strictly worse: `apply
+    /// (compact: true)` overwrites the key regardless, so the foreign value
+    /// is already gone by then — declining to write on the way back out just
+    /// left *Flux's* `6` sitting in the global domain with the toggle
+    /// reading "off", and no way to undo it through the UI. Clearing is both
+    /// recoverable and closer to what the user asked for.
+    private static func stash(_ value: CFPropertyList?, forKey key: String) {
+        if let intValue = value as? Int {
+            UserDefaults.standard.set(intValue, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    /// The stashed original, as something `CFPreferencesSetValue` accepts —
+    /// `nil` (clear the key, restoring the true system default) when nothing
+    /// was stashed, which is the common case of a user who never had a custom
+    /// spacing to begin with.
+    private static func stashedValue(forKey key: String) -> CFPropertyList? {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
+        return NSNumber(value: UserDefaults.standard.integer(forKey: key)) as CFPropertyList
+    }
+
+    /// Puts `preferenceKey` back the way it was before Flux touched it, then
+    /// forgets the stash. A `nil` stash clears the key, which restores
+    /// macOS's own default — see `stash(_:forKey:)`.
+    private static func restore(_ preferenceKey: CFString, from stashKey: String) {
+        defer { UserDefaults.standard.removeObject(forKey: stashKey) }
+        // Only take the key back if it still holds what Flux put there. If
+        // another menu-bar utility (or a `defaults write`) has changed it
+        // since, that value is newer than the stash and restoring would
+        // silently undo someone else's deliberate change — the same
+        // destruction this stash exists to prevent, just with a different
+        // victim. Flux's own bookkeeping is still cleared either way.
+        guard (CFPreferencesCopyValue(preferenceKey, appID, user, host) as? Int) == compactValue else { return }
+        CFPreferencesSetValue(preferenceKey, stashedValue(forKey: stashKey), appID, user, host)
     }
 }

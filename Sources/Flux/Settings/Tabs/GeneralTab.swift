@@ -9,6 +9,10 @@ struct GeneralTab: View {
 
     var body: some View {
         VStack(spacing: 18) {
+            // Above everything else, and only when there's something to say:
+            // if the last run died, that's the most important thing on this
+            // screen and it comes with the one action that actually helps.
+            CrashNoticeCard()
             generalCard
             hotkeysCard
             SoftwareUpdateCard()
@@ -251,5 +255,76 @@ private struct SoftwareUpdateCard: View {
     private var footerText: String {
         guard let date = updater.lastChecked else { return "Flux \(AppInfo.version)" }
         return "Flux \(AppInfo.version) · Last checked \(date.formatted(date: .omitted, time: .shortened))"
+    }
+}
+
+// MARK: - Crash notice
+
+/// Shown only after Flux failed to shut down cleanly. See `CrashReporter` for
+/// why this exists at all: everything in the notch suite that can crash is
+/// reachable only on real notched hardware with a real camera, so a report
+/// from the user is the only available signal — and "it crashed again" isn't
+/// one anybody can act on. The Copy Report button turns it into one.
+private struct CrashNoticeCard: View {
+    @EnvironmentObject private var crashReporter: CrashReporter
+    @State private var didCopy = false
+
+    var body: some View {
+        if let session = crashReporter.lastUncleanSession {
+            FluxCard(title: "Diagnostics") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Theme.warningColor)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Flux quit unexpectedly")
+                                .font(.body)
+                                .foregroundStyle(Theme.textPrimaryColor)
+                            // Deliberately hedged: this detects an unclean
+                            // exit, which is a crash OR a force-quit OR a
+                            // logout that killed the app. The copied report
+                            // includes the OS crash log when there is one,
+                            // which is what actually tells them apart.
+                            Text(detail(session))
+                                .font(.caption)
+                                .foregroundStyle(Theme.textSecondaryColor)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(spacing: 8) {
+                        Button(didCopy ? "Copied" : "Copy Report") { copyReport() }
+                            .buttonStyle(.fluxProminent)
+                        Button("Dismiss") { crashReporter.dismissLastUncleanSession() }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.textSecondaryColor)
+                        Spacer(minLength: 0)
+                    }
+                }
+                .padding(14)
+            }
+        }
+    }
+
+    private func detail(_ session: CrashReporter.Session) -> String {
+        var parts = ["Last run ended without shutting down."]
+        parts.append("The notch was \(session.breadcrumb.notchState)")
+        if session.breadcrumb.cameraRunning {
+            parts.append("and the camera was running")
+        }
+        parts.append("— copy the report and send it along so this can be traced.")
+        return parts.joined(separator: " ")
+    }
+
+    private func copyReport() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(crashReporter.diagnosticsText(), forType: .string)
+        didCopy = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            didCopy = false
+        }
     }
 }

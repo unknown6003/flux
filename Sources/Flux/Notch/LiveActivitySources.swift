@@ -179,6 +179,11 @@ final class NotchActivityRouter {
             activities.post(batteryActivity(percent: percent, charging: false, warning: false))
         case .lowBattery(let percent):
             activities.post(batteryActivity(percent: percent, charging: false, warning: true))
+        case .lowBatteryChanged(let percent):
+            // `updateIfPresent`, NOT `post` — see its doc comment. A warning
+            // the user has already swiped away must not come back every time
+            // the battery drops another percent.
+            activities.updateIfPresent(batteryActivity(percent: percent, charging: false, warning: true))
         case .batteryRecovered:
             activities.dismiss(kind: .battery)
         }
@@ -867,8 +872,15 @@ final class NotchActivityRouter {
             .store(in: &cancellables)
     }
 
+    /// Gated on `notchEnabled` as well as the timer-activity toggle. A timer
+    /// keeps running after the user turns the whole notch panel off — there
+    /// is nowhere left to show the completion wing, but `NSSound` below would
+    /// still fire, so the user got an unexplained system chime with no
+    /// visible UI attached to it. Every other producer in this file already
+    /// gates on `notchEnabled` via `applyMonitorState`/`applyHUDState`; this
+    /// one is called directly and was missed.
     private func handleTimerCompletion(_ timer: NotchTimer) {
-        guard settings.notchActivityTimerEnabled else { return }
+        guard settings.notchEnabled, settings.notchActivityTimerEnabled else { return }
         let expiresAt = Date().addingTimeInterval(Self.timerCompletionDuration)
         // Recorded BEFORE posting — see `completionAlertUntil`'s own doc
         // comment: `recomputeTimerActivity` checks this on every call, so it

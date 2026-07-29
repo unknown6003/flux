@@ -25,6 +25,13 @@ enum PowerEvent: Equatable {
     case pluggedIn(percent: Int)
     case unplugged(percent: Int)
     case lowBattery(percent: Int)
+    /// The battery kept draining after a `.lowBattery` warning was already
+    /// posted. Carries the NEW percent so the sticky warning's number stays
+    /// truthful — without this the wing froze at whatever percent tripped the
+    /// threshold (20%) and sat there reading "20%" all the way down to empty,
+    /// because the hysteresis that (correctly) stops the warning re-firing
+    /// also stopped it updating.
+    case lowBatteryChanged(percent: Int)
     /// The percent climbed back above the re-arm threshold *without* a plug
     /// event in between — e.g. a noisy read recovering, or external charging
     /// hardware IOKit doesn't report as AC. Only fired when a `.lowBattery`
@@ -112,20 +119,36 @@ final class PowerMonitor {
 
     /// Tears the run-loop source down and forgets the last-seen state, so a
     /// later `start()` begins with a clean baseline (a stale `previousState`
-    /// diffed against a fresh first read could otherwise fire a bogus event
-    /// for a transition that happened entirely while stopped). Also resets
-    /// the low-battery hysteresis (`lowBatteryArmed`) back to its armed
-    /// default — without this, stopping while disarmed (i.e. right after a
-    /// `.lowBattery` fired, before it recovered) and later restarting would
-    /// keep the monitor silently disarmed against a `previousState` it no
-    /// longer has any memory of, missing the very first recovery crossing
-    /// (`.batteryRecovered`) it should have caught after coming back up.
+    /// diffed against a fresh first read could otherwise fire a bogus
+    /// plug/unplug event for a transition that happened entirely while
+    /// stopped).
+    ///
+    /// KNOWN LIMITATION, since the sticky warning's contract is claimed
+    /// elsewhere in this file: `NotchActivityRouter.applyMonitorState`
+    /// dismisses every `.battery` activity whenever notch presentation drops,
+    /// and once that happens while `lowBatteryArmed` is already `false`
+    /// nothing brings the warning back for the rest of that discharge — the
+    /// restart's first sample is silent by design (no percent change to
+    /// report), and `.lowBatteryChanged` routes through `updateIfPresent`,
+    /// which deliberately refuses to resurrect a dismissed activity. Plugging
+    /// in, or recovering above the re-arm line, restores normal behaviour.
+    /// Fixing it properly needs the router to re-assert the warning when
+    /// presentation returns, which it currently has no battery state to do.
+    ///
+    /// `lowBatteryArmed` is deliberately NOT reset here. It used to be, so
+    /// the monitor couldn't come back up silently disarmed with no memory of
+    /// what disarmed it — but `refresh()` now evaluates the low-battery rule
+    /// on its very first sample, which covers that properly: a restart that
+    /// finds the battery already recovered emits `.batteryRecovered` and
+    /// re-arms on its own. Re-arming here instead caused the opposite and
+    /// worse bug: `NotchActivityRouter` stops and starts this monitor on
+    /// every screen change, lid open/close and settings toggle, so each of
+    /// those would re-fire the low-battery wing for the same discharge.
     func stop() {
         guard let runLoopSource else { return }
         CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         self.runLoopSource = nil
         previousState = nil
-        lowBatteryArmed = true
     }
 
     deinit {
@@ -145,10 +168,29 @@ final class PowerMonitor {
         let previous = previousState
         previousState = snapshot
 
-        // First read after (re)starting: nothing to diff against yet, so no
-        // event — only a real transition between two observed snapshots
-        // counts.
-        guard let previous else { return }
+        // First read after (re)starting. Plug/unplug is a genuine TRANSITION
+        // — with nothing to diff against, there is no event to derive and
+        // claiming one would be a lie.
+        //
+        // Low battery is not a transition, it's a LEVEL, and skipping it here
+        // was a real bug: this monitor is stopped and restarted on every
+        // screen change, lid open/close and settings toggle, and after each
+        // restart the percent can only ever fall — so it could never again
+        // cross 20% *from above*, and the low-battery wing was suppressed for
+        // the rest of that entire discharge. Close the lid at 15% on an
+        // external display and you'd never be warned again.
+        //
+        // `lowBatteryEvent` doesn't consult `previous` at all (see its doc
+        // comment — `armed` carries all the history the rule needs), so
+        // passing the snapshot as its own predecessor is honest rather than a
+        // fudge, and `armed` surviving `stop()` is what keeps this from
+        // re-firing on every restart.
+        guard let previous else {
+            if let low = Self.lowBatteryEvent(previous: snapshot, current: snapshot, armed: &lowBatteryArmed) {
+                events.send(low)
+            }
+            return
+        }
 
         if let plug = Self.plugEvent(previous: previous, current: snapshot) {
             events.send(plug)
@@ -240,7 +282,21 @@ final class PowerMonitor {
             armed = true
             return recovering ? .batteryRecovered(percent: current.percent) : nil
         }
-        guard armed, current.percent <= lowBatteryThreshold else { return nil }
+        guard armed, current.percent <= lowBatteryThreshold else {
+            // Already warned, still under the line, and the number moved:
+            // report the new percent so the sticky wing can be updated in
+            // place. Gated on an actual change so an unchanged re-read is
+            // still silent, and on being under the warn threshold (not merely
+            // under the higher re-arm line) so the range between the two
+            // stays quiet.
+            //
+            // Note `previous` is finally load-bearing here — it was carried
+            // in this signature unused, purely to mirror `plugEvent`'s shape.
+            if !armed, current.percent != previous.percent, current.percent <= lowBatteryThreshold {
+                return .lowBatteryChanged(percent: current.percent)
+            }
+            return nil
+        }
         armed = false
         return .lowBattery(percent: current.percent)
     }

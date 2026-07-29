@@ -50,12 +50,12 @@ enum SelfTest {
         check(chevron.statusItem.button?.image != nil,
               "Chevron control item shows an icon")
 
-        divider.setCollapsed(true, animated: false)
+        divider.setCollapsed(true)
         let collapsed = divider.statusItem.length
         check(collapsed > 5_000,
               "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
 
-        divider.setCollapsed(false, animated: false)
+        divider.setCollapsed(false)
         let revealed = divider.statusItem.length
         check(revealed < 5,
               "Revealing shrinks the divider to \(revealed)pt → neighbours return")
@@ -156,7 +156,7 @@ enum SelfTest {
               "Both dividers shrink when everything is revealed")
 
         // Collapse back to the resting state.
-        manager.collapse(animated: false)
+        manager.collapse()
         let s3 = manager.diagnostics
         check(!s3.revealHidden && !s3.revealAlwaysHidden, "Collapse hides every zone again")
         check(isHidden(s3.hiddenDividerLength) && isHidden(s3.alwaysHiddenDividerLength),
@@ -536,12 +536,16 @@ enum SelfTest {
               "Notch: footprint ranks order collapsed < activity < expanded")
         check(notchVM.lastTransitionWasShrink == false,
               "Notch: opening from collapsed records a growth, not a shrink")
-        // Widget→widget tie-break: equal rank, decided by panel heights
-        // (calendar 190 → shelf 150 is a shrink; the reverse is a growth).
-        check(NotchViewModel.isShrink(from: .expanded(.calendar), to: .expanded(.shelf)),
-              "Notch: cycling to a shorter widget classifies as a shrink")
+        // M12: there is no widget→widget tie-break any more. Every widget
+        // shares one footprint (see `NotchMetrics`), so cycling changes no
+        // size in either direction — it's a content cross-fade, not a
+        // resize. This pair used to assert the opposite (calendar 190 →
+        // shelf 150 was a shrink) and is inverted deliberately; the fuller
+        // coverage lives with the other M12 sizing checks further down.
+        check(!NotchViewModel.isShrink(from: .expanded(.calendar), to: .expanded(.shelf)),
+              "Notch: cycling between widgets is neither a shrink nor a growth — they are all the same size now")
         check(!NotchViewModel.isShrink(from: .expanded(.shelf), to: .expanded(.calendar)),
-              "Notch: cycling to a taller widget classifies as a growth")
+              "Notch: nor is the reverse cycle")
         notchVM.collapse()
         check(notchVM.lastTransitionWasShrink == true,
               "Notch: collapsing records a shrink so the collapse spring is used")
@@ -797,10 +801,12 @@ enum SelfTest {
         let shelfSrc1 = makeShelfSourceFile(named: "hello.txt", in: shelfSourceDir, contents: "hello shelf")
         let shelfStore1 = ShelfStore(directory: shelfDirA)
         let shelfAdded1 = shelfStore1.add(urls: [shelfSrc1])
-        check(shelfAdded1.count == 1,
+        check(shelfAdded1.added.count == 1,
               "Shelf: add() copies a single dropped file and returns exactly the item added")
+        check(shelfAdded1.accepted == 1 && shelfAdded1.queued == 0,
+              "Shelf: a small file is accepted synchronously — nothing left queued in the background")
 
-        if let shelfItem1 = shelfAdded1.first {
+        if let shelfItem1 = shelfAdded1.added.first {
             check(shelfStore1.items.contains(where: { $0.id == shelfItem1.id }),
                   "Shelf: the added item appears in items")
             check(FileManager.default.fileExists(atPath: shelfItem1.storedURL(in: shelfDirA).path),
@@ -835,7 +841,7 @@ enum SelfTest {
         // loads what the first one persisted.
         let shelfSrc2 = makeShelfSourceFile(named: "world.txt", in: shelfSourceDir, contents: "world shelf")
         let shelfAdded2 = shelfStore1.add(urls: [shelfSrc2])
-        if let shelfItem2 = shelfAdded2.first {
+        if let shelfItem2 = shelfAdded2.added.first {
             let shelfStore2 = ShelfStore(directory: shelfDirA)
             check(shelfStore2.items.contains(where: { $0.id == shelfItem2.id && $0.fileName == "world.txt" }),
                   "Shelf: persistence — a fresh ShelfStore on the same directory loads the manifest")
@@ -996,6 +1002,81 @@ enum SelfTest {
         check(!NotchWindowController.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true),
               "Drag accept: a live activity showing declines")
 
+        // --- M12 hover-reliability fix: the collapsed notch's hover target
+        // is deliberately LARGER than the physical notch it's drawn over. The
+        // notch is camera housing with no pixels, and macOS hides the cursor
+        // while it's over it, so users can't see what they're aiming at and
+        // routinely land just beside or just below — which read as the notch
+        // ignoring them.
+        //
+        // These targets come from the PHYSICAL notch rect (screen
+        // coordinates, y growing UP), NOT from `viewModel.interactiveRect`:
+        // that rect is widened to the union of both shapes for ~0.35s during
+        // a collapse, so deriving from it briefly made the entire former
+        // expanded panel a click target over another app's window. ---
+        do {
+            // A stand-in for the physical notch on a screen 1000pt tall:
+            // flush with the top, so maxY is the screen's top edge.
+            let notch = CGRect(x: 200, y: 963, width: 200, height: 37)
+            let hover = NotchWindowController.collapsedHoverRect(notchRect: notch)
+            check(hover.contains(CGPoint(x: 300, y: 980)),
+                  "Notch hover: a point dead centre on the collapsed notch is inside")
+            check(hover.contains(CGPoint(x: 196, y: 980)),
+                  "Notch hover: a point just LEFT of the physical notch still counts (aim slop)")
+            check(hover.contains(CGPoint(x: 404, y: 980)),
+                  "Notch hover: a point just RIGHT of the physical notch still counts (aim slop)")
+            check(hover.contains(CGPoint(x: 300, y: 958)),
+                  "Notch hover: a point just BELOW the physical notch still counts — the direction users undershoot into")
+            check(hover.maxY == notch.maxY,
+                  "Notch hover: never extends ABOVE the notch — it's flush with the top of the screen, there is nothing up there")
+            check(!hover.contains(CGPoint(x: 300, y: 900)),
+                  "Notch hover: the slop is small — a point well below the menu bar is still outside")
+            check(!hover.contains(CGPoint(x: 150, y: 980)),
+                  "Notch hover: the slop is small — a point well into the menu bar beside the notch is still outside")
+
+            let click = NotchWindowController.collapsedClickRect(notchRect: notch)
+            check(click.contains(CGPoint(x: 196, y: 980)),
+                  "Notch click: gets the same horizontal aim slop as hover")
+            check(!click.contains(CGPoint(x: 300, y: 958)),
+                  "Notch click: does NOT extend below the notch — a click there belongs to the window underneath")
+            check(click.height == notch.height && click.minY == notch.minY,
+                  "Notch click: vertically it is exactly the notch, so a collapse-transition rect can never widen it")
+
+            // Codex PR13 finding: the right-click target is the physical
+            // notch in EVERY state, never the open shape. The expanded Shelf
+            // and Clipboard widgets attach their own SwiftUI `.contextMenu`
+            // to tiles/rows, and a monitor observes a right-click without
+            // consuming it — so a shell menu covering the panel body would
+            // fight the widget's own menu over one click.
+            check(NotchWindowController.collapsedClickRect(notchRect: notch)
+                    .contains(CGPoint(x: 300, y: 980)),
+                  "Notch context menu: the physical notch strip is the target")
+            check(!NotchWindowController.collapsedClickRect(notchRect: notch)
+                    .contains(CGPoint(x: 300, y: 800)),
+                  "Notch context menu: the expanded panel's body is NOT a target — widgets own their own context menus there")
+
+            // The open shape needs no aim assistance (it's large and visible);
+            // its slop only exists to stop a cursor tracing the panel's own
+            // edge from flickering the hover-out timer. This one IS derived
+            // from `interactiveRect`, in the panel's top-left-origin space.
+            let open = CGRect(x: 100, y: 0, width: 400, height: 190)
+            let openHover = NotchWindowController.openHoverRect(interactiveRect: open)
+            check(openHover.contains(CGPoint(x: 300, y: 100)),
+                  "Notch hover: a point inside the expanded panel is inside")
+            check(!openHover.contains(CGPoint(x: 300, y: 220)),
+                  "Notch hover: a point well outside the expanded panel is outside")
+
+            // A zero rect is what these hold with no notched screen attached,
+            // or before the root view has ever laid out — it must never
+            // swallow the whole screen.
+            check(NotchWindowController.collapsedHoverRect(notchRect: .zero).isNull,
+                  "Notch hover: no notched screen (zero rect) matches nothing rather than growing slop around the origin")
+            check(NotchWindowController.collapsedClickRect(notchRect: .null).isNull,
+                  "Notch click: a null notch rect matches nothing")
+            check(NotchWindowController.openHoverRect(interactiveRect: .zero).isNull,
+                  "Notch hover: an unlaid-out (zero) interactive rect matches nothing")
+        }
+
         // --- M3: PowerMonitor.lowBatteryEvent — the low-battery hysteresis,
         // testable as a pure function with no real IOKit power source ---
         do {
@@ -1018,9 +1099,20 @@ enum SelfTest {
             check(PowerMonitor.lowBatteryEvent(previous: unplugged60, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
                   "PowerMonitor: crossing below 20% unplugged fires .lowBattery once")
             check(!armed, "PowerMonitor: firing disarms so the same low level doesn't refire")
-            check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: unplugged19, armed: &armed) == nil,
-                  "PowerMonitor: staying low while disarmed doesn't refire")
-            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged26, armed: &armed) == .batteryRecovered(percent: 26),
+            // M12 fix: staying low must not RE-FIRE, but it must still
+            // REPORT the new percent. Without this the sticky wing froze at
+            // whatever tripped the threshold and read "20%" all the way down.
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: unplugged19, armed: &armed)
+                    == .lowBatteryChanged(percent: 19),
+                  "PowerMonitor: draining further while disarmed reports the NEW percent so the sticky warning stays truthful")
+            check(!armed, "PowerMonitor: reporting a changed percent doesn't re-arm (that would let it warn twice)")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged19, armed: &armed) == nil,
+                  "PowerMonitor: an unchanged re-read while low is still silent")
+            let unplugged22 = PowerState(percent: 22, isCharging: false, onACPower: false)
+            let unplugged21 = PowerState(percent: 21, isCharging: false, onACPower: false)
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged22, current: unplugged21, armed: &armed) == nil,
+                  "PowerMonitor: movement between the warn (20) and re-arm (25) lines stays silent — only under the warn line is worth updating")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged21, current: unplugged26, armed: &armed) == .batteryRecovered(percent: 26),
                   "PowerMonitor: crossing back above the 25% re-arm threshold after a fire posts .batteryRecovered (so the sticky warning comes down) instead of another .lowBattery")
             check(armed, "PowerMonitor: crossing above 25% re-arms")
             check(PowerMonitor.lowBatteryEvent(previous: unplugged26, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
@@ -1028,6 +1120,39 @@ enum SelfTest {
             check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: ac, armed: &armed) == nil,
                   "PowerMonitor: plugging in while low never fires .lowBattery or .batteryRecovered (`.pluggedIn` already carries its own replacement activity)")
             check(armed, "PowerMonitor: plugging in re-arms (a fresh unplug can refire immediately)")
+        }
+
+        // --- M12: LiveActivityCenter.updateIfPresent — refreshes a showing
+        // activity without ever resurrecting a dismissed one. `post` appends
+        // when nothing of that kind is queued, so using it to keep the
+        // low-battery percent current would have re-asserted a warning the
+        // user swiped away, once per percent, all the way to empty. ---
+        do {
+            let center = LiveActivityCenter()
+            let warning = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.25"),
+                                       trailing: .text("20%"), duration: nil, priority: 200, tint: .warning)
+
+            check(center.updateIfPresent(warning) == false,
+                  "LiveActivityCenter.updateIfPresent: does nothing when no activity of that kind is queued")
+            check(center.current == nil,
+                  "LiveActivityCenter.updateIfPresent: and specifically does NOT post one")
+
+            center.post(warning)
+            let showingID = center.current?.id
+            check(showingID != nil, "LiveActivityCenter: setup — the warning is showing")
+
+            let updated = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.25"),
+                                       trailing: .text("11%"), duration: nil, priority: 200, tint: .warning)
+            check(center.updateIfPresent(updated) == true,
+                  "LiveActivityCenter.updateIfPresent: updates an activity of that kind when one IS queued")
+            check(center.current?.trailing == .text("11%"),
+                  "LiveActivityCenter.updateIfPresent: the showing activity now carries the new percent")
+            check(center.current?.id == showingID,
+                  "LiveActivityCenter.updateIfPresent: in place — the id is preserved, so the wing updates rather than flickering out and back")
+
+            center.dismiss(kind: .battery)
+            check(center.updateIfPresent(updated) == false && center.current == nil,
+                  "LiveActivityCenter.updateIfPresent: once dismissed, further updates stay dismissed — the whole reason this isn't `post`")
         }
 
         // --- M3: PowerMonitor.plugEvent — plug/unplug transition detection ---
@@ -1937,6 +2062,16 @@ enum SelfTest {
         check(TimersWidget.formatCountdown(5) == "0:05", "TimersWidget: formatCountdown zero-pads seconds under 10")
         check(TimersWidget.formatCountdown(-3) == "0:00", "TimersWidget: formatCountdown never shows a negative value")
         check(TimersWidget.formatCountdown(.infinity) == "0:00", "TimersWidget: formatCountdown guards a non-finite input")
+        // `customMinutesRange` allows up to 120 minutes, and a plain m:ss
+        // rendered that as "120:00" — a malformed clock, not a long one.
+        check(TimersWidget.formatCountdown(3599) == "59:59",
+              "TimersWidget: formatCountdown stays m:ss right up to the hour boundary")
+        check(TimersWidget.formatCountdown(3600) == "1:00:00",
+              "TimersWidget: formatCountdown rolls over to h:mm:ss at exactly one hour")
+        check(TimersWidget.formatCountdown(120 * 60) == "2:00:00",
+              "TimersWidget: formatCountdown renders the longest allowed timer (120 min) as 2:00:00, not 120:00")
+        check(TimersWidget.formatCountdown(3661) == "1:01:01",
+              "TimersWidget: formatCountdown zero-pads both minutes and seconds past an hour")
 
         // --- M6 fix: TimersWidget.formatAmbientRemaining — the ambient wing's
         // own format, deliberately different from formatCountdown above:
@@ -2005,20 +2140,24 @@ enum SelfTest {
             cameraProbe.stop()
             check(!cameraProbe.isRunning, "CameraService: stop() after an unauthorized start() is still a safe no-op")
 
-            // --- M8 crash fix: the Mirror preview may only configure its
-            // capture connection's mirror once the session is actually running
-            // (never while startRunning() is still racing on the session
-            // queue) AND only when mirroring is supported — either violation
-            // throws an uncatchable NSInvalidArgumentException. The gate is a
-            // pure function so it's covered here without a camera. ---
-            check(CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: true),
-                  "CameraService.shouldConfigureMirroring: configures only when running AND supported")
-            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: true),
-                  "CameraService.shouldConfigureMirroring: never configures before the session is running (would race startRunning())")
-            check(!CameraService.shouldConfigureMirroring(sessionRunning: true, mirroringSupported: false),
-                  "CameraService.shouldConfigureMirroring: never sets isVideoMirrored when mirroring is unsupported")
-            check(!CameraService.shouldConfigureMirroring(sessionRunning: false, mirroringSupported: false),
-                  "CameraService.shouldConfigureMirroring: no-op when neither running nor supported")
+            // --- M12 crash fix: mirroring is a Core Animation layer
+            // transform, NOT `AVCaptureConnection.isVideoMirrored`. M6 shipped
+            // the connection form and M8 narrowed the race around it; it still
+            // crashed, because `isVideoMirrored`'s setter throws an
+            // uncatchable NSInvalidArgumentException whenever AVFoundation has
+            // re-armed `automaticallyAdjustsVideoMirroring` — which it does
+            // from inside startRunning(), on the session queue, concurrently
+            // with any main-thread gate check. A layer transform touches no
+            // capture state at all, so there is nothing left to race. Assert
+            // it's a pure horizontal flip: mirrored on x, untouched on y, no
+            // rotation or translation. ---
+            let mirror = CameraService.previewMirrorTransform
+            check(mirror.a == -1 && mirror.d == 1,
+                  "CameraService.previewMirrorTransform: flips horizontally (a == -1) and leaves the vertical axis alone (d == 1)")
+            check(mirror.b == 0 && mirror.c == 0,
+                  "CameraService.previewMirrorTransform: no rotation/skew component")
+            check(mirror.tx == 0 && mirror.ty == 0,
+                  "CameraService.previewMirrorTransform: no translation — the flip is about the layer's own centre anchor")
 
             // --- M8 fix: CameraService(forcingUnavailable:) — the seam
             // `NotchSnapshot`'s expanded-mirror render uses so its "No camera
@@ -2697,28 +2836,96 @@ enum SelfTest {
                   "ArtworkPalette: switching back to blueImage after redAgain re-derives its own correct colors too — no track's colors ever leak into another's")
         }
 
-        // --- M7 code-review fix: NotchMetrics.maxExpandedHeight is derived
-        // from expandedHeight(for:) across every WidgetID rather than a
-        // hand-maintained duplicate constant, so a future per-widget height
-        // bump can't silently drift past a stale hardcoded ceiling again. ---
+        // --- M12: ONE expanded size for every widget. The panel used to
+        // size itself to each widget's content (150-190pt, plus a 220pt
+        // widening for Duo), so the drawer grew and shrank as you swiped
+        // between pages. These assert the property that replaced it —
+        // the footprint is a function of the NOTCH, never of the page. ---
         do {
-            let expectedMax = WidgetID.allCases.map { NotchMetrics.expandedHeight(for: $0) }.max() ?? 0
-            check(NotchMetrics.maxExpandedHeight == expectedMax,
-                  "NotchMetrics: maxExpandedHeight equals the tallest expandedHeight(for:) across every WidgetID")
-            check(NotchMetrics.expandedHeight(for: .calendar) == NotchMetrics.maxExpandedHeight,
-                  "NotchMetrics: setup — Calendar (190) is currently the tallest widget, matching maxExpandedHeight")
+            let notchWidth: CGFloat = 200
+            let width = NotchMetrics.expandedWidth(for: notchWidth)
+            let height = NotchMetrics.expandedHeight(for: notchWidth)
 
-            // --- M7 code-review fix: panelBounds reserves a shadow-bleed
-            // margin beyond maxExpandedHeight/the widest visible footprint —
-            // it used to equal them exactly, leaving zero room for the
-            // expanded shape's own drop shadow (radius 16, y offset 4) and
-            // clipping it at the panel edge. ---
-            let notchWidth: CGFloat = 180
+            check(height == (width / NotchMetrics.expandedAspectRatio).rounded(),
+                  "NotchMetrics: expanded height is derived from the width and the aspect ratio, so the two can't drift")
+            check(abs(width / height - NotchMetrics.expandedAspectRatio) < 0.02,
+                  "NotchMetrics: the realised width:height lands on the intended aspect ratio (rounding aside)")
+            check(width > height,
+                  "NotchMetrics: the drawer is wider than it is tall — it hangs off the notch, it isn't a window")
+
+            // The regression this whole change exists to prevent — a page
+            // swipe resizing the drawer — is enforced by the SIGNATURE:
+            // `expandedHeight(for: CGFloat)` cannot be handed a `WidgetID`.
+            // That's a compile-time guarantee, so there is deliberately no
+            // runtime assertion for it here; comparing the function to itself
+            // (as a first pass did) proves nothing at all.
+
+            // Duo has to fit the shared box rather than widen it. Its pane
+            // split is a fraction, so check it leaves a workable remainder
+            // for Now Playing rather than swallowing the panel.
+            check(NotchMetrics.duoCalendarPaneFraction > 0.25 && NotchMetrics.duoCalendarPaneFraction < 0.5,
+                  "NotchMetrics: Duo's Calendar pane takes a minority share, leaving Now Playing the larger half")
+
+            // --- M7 code-review fix, still standing: panelBounds reserves a
+            // shadow-bleed margin beyond the visible footprint. It used to
+            // equal it exactly, clipping the expanded shape's drop shadow at
+            // the panel edge. ---
             let bounds = NotchMetrics.panelBounds(for: notchWidth)
-            check(bounds.height == NotchMetrics.maxExpandedHeight + NotchMetrics.shadowMarginHeight,
-                  "NotchMetrics: panelBounds' height is maxExpandedHeight PLUS a shadow-bleed margin, not maxExpandedHeight exactly")
-            check(bounds.width == NotchMetrics.expandedWidth(for: notchWidth) + NotchMetrics.duoExtraWidth + NotchMetrics.shadowMarginWidth,
-                  "NotchMetrics: panelBounds' width is expandedWidth + duoExtraWidth PLUS the same shadow-bleed margin")
+            check(bounds.height == height + NotchMetrics.shadowMarginHeight,
+                  "NotchMetrics: panelBounds' height is the expanded height PLUS a shadow-bleed margin, not the height exactly")
+            check(bounds.width == width + NotchMetrics.shadowMarginWidth,
+                  "NotchMetrics: panelBounds' width is the expanded width PLUS the same shadow-bleed margin")
+            check(bounds.width > width && bounds.height > height,
+                  "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
+        }
+
+        // --- M12: an activity change that lands DURING a transition must be
+        // applied afterwards, not dropped. The `isTransitioning` re-entrancy
+        // guard skips the sink, and `removeDuplicates()` means the emission
+        // never comes back — so without a deferred reconciliation `state`
+        // could point at a dismissed activity indefinitely. ---
+        do {
+            let reconcileRegistry = NotchWidgetRegistry()
+            let reconcileActivities = LiveActivityCenter()
+            let vm = NotchViewModel(registry: reconcileRegistry, activities: reconcileActivities)
+
+            let first = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.25"),
+                                     trailing: .text("20%"), duration: nil, priority: 200)
+            reconcileActivities.post(first)
+            check(vm.state == .activity(first.id),
+                  "Notch reconcile: setup — a posted activity surfaces from collapsed")
+
+            reconcileActivities.dismiss(kind: .battery)
+            check(vm.state == .collapsed,
+                  "Notch reconcile: dismissing the only activity returns to collapsed")
+
+            // The interesting case is covered structurally rather than by
+            // simulating re-entrancy (which needs the router): the guard sets
+            // a flag and `transition`'s `defer` drains it, so a change during
+            // a transition lands one step later instead of never.
+            let second = LiveActivity(kind: .timer, leading: .icon(systemName: "timer"),
+                                      trailing: .text("1:00"), duration: nil, priority: 110)
+            reconcileActivities.post(second)
+            check(vm.state == .activity(second.id),
+                  "Notch reconcile: a later activity still surfaces normally after the guard has been exercised")
+            reconcileActivities.dismiss(kind: .timer)
+            check(vm.state == .collapsed,
+                  "Notch reconcile: and dismissing it returns to collapsed, so the guard left no stuck state behind")
+        }
+
+        // --- M12: widget-to-widget swipes are no longer classified as a
+        // shrink, because with one shared footprint they change no size. ---
+        do {
+            check(!NotchViewModel.isShrink(from: .expanded(.calendar), to: .expanded(.shelf)),
+                  "NotchViewModel.isShrink: a page swipe is not a shrink — every widget now shares one footprint")
+            check(!NotchViewModel.isShrink(from: .expanded(.shelf), to: .expanded(.calendar)),
+                  "NotchViewModel.isShrink: nor is the reverse swipe a growth-then-shrink")
+            check(NotchViewModel.isShrink(from: .expanded(.calendar), to: .collapsed),
+                  "NotchViewModel.isShrink: closing the drawer is still a shrink")
+            check(!NotchViewModel.isShrink(from: .collapsed, to: .expanded(.calendar)),
+                  "NotchViewModel.isShrink: opening the drawer is still a growth")
+            check(NotchViewModel.isShrink(from: .expanded(.calendar), to: .activity(UUID())),
+                  "NotchViewModel.isShrink: expanded down to a activity wing is still a shrink")
         }
 
         // --- M7 code-review fix: option-click wires the previously-dead
@@ -2813,6 +3020,157 @@ enum SelfTest {
             check(!age60.hasPrefix("in ") && age60 != "now",
                   "Formatters.age: exactly at the 60s boundary the item is old enough for real relative text (got \(age60)), not 'now' or future tense")
         }
+
+        // --- M12: CrashReporter. The notch/camera crashes this exists to
+        // diagnose can only happen on real hardware, so the parts covered
+        // here are the pure ones: which DiagnosticReports files count as
+        // Flux's, and what gets pulled out of a report's text. The
+        // unclean-exit detection itself is exercised end-to-end below,
+        // against a temp file rather than the real container. ---
+        do {
+            check(CrashReporter.isFluxCrashReport("Flux-2026-07-27-134500.ips"),
+                  "CrashReporter: a modern .ips report for Flux is recognised")
+            check(CrashReporter.isFluxCrashReport("Flux-2026-07-27-134500.crash"),
+                  "CrashReporter: the older .crash extension is recognised too")
+            check(!CrashReporter.isFluxCrashReport("Safari-2026-07-27-134500.ips"),
+                  "CrashReporter: another app's crash report is NOT picked up")
+            check(!CrashReporter.isFluxCrashReport("Flux-2026-07-27-134500.diag"),
+                  "CrashReporter: a non-crash diagnostic (.diag, e.g. a CPU-usage report) is ignored")
+            check(!CrashReporter.isFluxCrashReport("FluxCapacitor-2026-07-27.ips"),
+                  "CrashReporter: the prefix match requires the separator, so a differently-named app isn't captured")
+
+            // Modern .ips: a JSON header line carrying the signature.
+            let ips = """
+                {"app_name":"Flux","timestamp":"2026-07-27 13:45:00.00 +0000","app_version":"0.13.0"}
+                {"exceptionType":"EXC_CRASH (SIGABRT)","faultingThread":0,"termination":{"code":0,"flags":518}}
+                """
+            let ipsSummary = CrashReporter.summarize(reportContents: ips, fileName: "Flux-x.ips")
+            check(ipsSummary.contains("Flux-x.ips"),
+                  "CrashReporter.summarize: names the report file it came from")
+            check(ipsSummary.contains("exceptionType"),
+                  "CrashReporter.summarize: keeps the .ips exception signature")
+
+            // Older plain-text .crash layout — a different macOS writes this
+            // one, and which it'll be isn't something Flux controls.
+            let plain = """
+                Process:               Flux [5123]
+                Exception Type:        EXC_BAD_ACCESS (SIGSEGV)
+                Termination Reason:    Namespace SIGNAL
+                Crashed Thread:        0  Dispatch queue: com.apple.main-thread
+                """
+            let plainSummary = CrashReporter.summarize(reportContents: plain, fileName: "Flux-y.crash")
+            check(plainSummary.contains("Exception Type"),
+                  "CrashReporter.summarize: keeps the plain-text .crash exception type")
+            check(plainSummary.contains("Crashed Thread"),
+                  "CrashReporter.summarize: keeps the plain-text crashed-thread line")
+            check(!plainSummary.contains("Process:"),
+                  "CrashReporter.summarize: drops non-signature lines rather than pasting the whole report")
+
+            let noise = String(repeating: "exceptionType filler ", count: 400)
+            check(CrashReporter.summarize(reportContents: noise, fileName: "Flux-z.ips").count < 3_000,
+                  "CrashReporter.summarize: a pathological single-line .ips payload is truncated, not dumped whole")
+
+            // A missing/unreadable DiagnosticReports directory must be a
+            // quiet nil, never a throw — the report is a bonus on top of the
+            // breadcrumb, and this runs on CI where the directory is empty.
+            let probeSession = CrashReporter.Session(
+                version: "0.13.0", build: "20",
+                startedAt: Date(timeIntervalSince1970: 1_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_000_500),
+                endedCleanly: false, breadcrumb: .init())
+            let nextStart = Date(timeIntervalSince1970: 1_020_000)
+            check(CrashReporter.latestCrashReportSummary(
+                    session: probeSession, nextSessionStart: nextStart,
+                    directory: URL(fileURLWithPath: "/nonexistent/DiagnosticReports")) == nil,
+                  "CrashReporter: an unreadable reports directory yields nil rather than throwing")
+            check(CrashReporter.latestCrashReportSummary(session: nil, nextSessionStart: nextStart) == nil,
+                  "CrashReporter: with no unclean session there is nothing to attribute a report to")
+
+            // Codex PR13 finding: a report is matched to the session's own
+            // window, not merely "newest in the last week". Crashing once on
+            // Monday and force-quitting on Friday must not staple Monday's
+            // exception signature to Friday's unclean exit.
+            check(CrashReporter.reportMatches(session: probeSession,
+                                              reportDate: Date(timeIntervalSince1970: 1_000_400),
+                                              nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a report written during the session matches it")
+            // The upper bound is the NEXT launch, not the session's last
+            // breadcrumb. `updatedAt` only advances when a breadcrumb
+            // changes, so an idle Flux has updatedAt == startedAt — bounding
+            // on it discarded the crash report for every long idle run,
+            // which for a menu-bar app is most of them.
+            check(CrashReporter.reportMatches(session: probeSession,
+                                              reportDate: Date(timeIntervalSince1970: 1_010_000),
+                                              nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a crash hours after the last breadcrumb still matches — idling is not evidence of anything")
+            check(CrashReporter.reportMatches(session: probeSession,
+                                              reportDate: nextStart.addingTimeInterval(60),
+                                              nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a report flushed just after the next launch began still matches (grace window)")
+            check(!CrashReporter.reportMatches(session: probeSession,
+                                               reportDate: Date(timeIntervalSince1970: 999_000),
+                                               nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a report predating the session cannot be its crash")
+            check(!CrashReporter.reportMatches(session: probeSession,
+                                               reportDate: Date(timeIntervalSince1970: 1_100_000),
+                                               nextSessionStart: nextStart),
+                  "CrashReporter.reportMatches: a report from well after the next launch belongs to some other run")
+
+            // End-to-end: a session that never ends cleanly is surfaced at
+            // the next launch; one that does isn't.
+            let crashDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("flux-selftest-crash-\(UUID().uuidString)", isDirectory: true)
+            let sessionFile = crashDir.appendingPathComponent("session.json")
+
+            let died = CrashReporter(fileURL: sessionFile)
+            died.beginSession()
+            check(died.lastUncleanSession == nil,
+                  "CrashReporter: a first-ever launch reports no previous crash")
+            died.update { breadcrumb in
+                breadcrumb.notchState = "expanded(mirror)"
+                breadcrumb.cameraRunning = true
+            }
+            // Deliberately NO endSession() — this stands in for the crash.
+
+            let afterCrash = CrashReporter(fileURL: sessionFile)
+            afterCrash.beginSession()
+            if let recovered = afterCrash.lastUncleanSession {
+                check(!recovered.endedCleanly,
+                      "CrashReporter: the session that never ended cleanly is the one surfaced")
+                check(recovered.breadcrumb.cameraRunning,
+                      "CrashReporter: the breadcrumb survives the crash — the camera was recorded as running")
+                check(recovered.breadcrumb.notchState == "expanded(mirror)",
+                      "CrashReporter: the breadcrumb records WHICH widget was open, not just that one was")
+                check(afterCrash.diagnosticsText().contains("expanded(mirror)"),
+                      "CrashReporter: the copyable report includes the breadcrumb")
+            } else {
+                check(false, "CrashReporter: an unclean previous session should be detected at the next launch")
+            }
+            afterCrash.endSession()
+
+            let afterCleanExit = CrashReporter(fileURL: sessionFile)
+            afterCleanExit.beginSession()
+            check(afterCleanExit.lastUncleanSession == nil,
+                  "CrashReporter: a session that DID end cleanly raises no notice at the next launch")
+            afterCleanExit.endSession()
+
+            afterCrash.dismissLastUncleanSession()
+            check(afterCrash.lastUncleanSession == nil,
+                  "CrashReporter: dismissing clears the notice")
+
+            try? FileManager.default.removeItem(at: crashDir)
+        }
+
+        // --- M12: the breadcrumb's NotchState rendering. Deliberately not
+        // `String(describing:)` — `.activity` carries a UUID that would churn
+        // the breadcrumb (and its file write) on every activity change while
+        // saying nothing useful. ---
+        check(AppDelegate.describe(.collapsed) == "collapsed",
+              "CrashReporter breadcrumb: collapsed renders as a stable string")
+        check(AppDelegate.describe(.expanded(.mirror)) == "expanded(mirror)",
+              "CrashReporter breadcrumb: an expanded state names the widget — the whole point for a camera crash")
+        check(AppDelegate.describe(.activity(UUID())) == AppDelegate.describe(.activity(UUID())),
+              "CrashReporter breadcrumb: two different activities render identically, so the UUID can't churn the file")
 
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)

@@ -82,19 +82,20 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Whether `old → new` shrinks the visible shape. Rank covers the
-    /// cross-tier cases; the expanded→expanded tie (widget→widget swipes)
-    /// compares the two widgets' actual panel heights, so cycling from a
-    /// taller widget (Calendar, 190) to a shorter one (Shelf, 150) settles
-    /// on the collapse spring instead of overshooting. Pure and
-    /// selftest-covered.
+    /// Whether `old → new` shrinks the visible shape.
+    ///
+    /// Rank is now the whole answer. It used to also compare the two widgets'
+    /// panel heights for the expanded→expanded tie, because cycling from a
+    /// taller widget to a shorter one really did shrink the shape — but M12
+    /// gave every widget one shared footprint (see `NotchMetrics`), so a
+    /// widget→widget swipe changes no size at all and is neither a growth nor
+    /// a shrink. Reporting `false` puts it on the expand spring, which is the
+    /// right call for a same-size content cross-fade: the collapse spring's
+    /// job is to make *closing* feel decisive, and nothing is closing here.
+    ///
+    /// Pure and selftest-covered.
     static func isShrink(from old: NotchState, to new: NotchState) -> Bool {
-        let oldRank = footprintRank(old), newRank = footprintRank(new)
-        if newRank != oldRank { return newRank < oldRank }
-        if case .expanded(let oldID) = old, case .expanded(let newID) = new {
-            return NotchMetrics.expandedHeight(for: newID) < NotchMetrics.expandedHeight(for: oldID)
-        }
-        return false
+        footprintRank(new) < footprintRank(old)
     }
 
     /// Which gesture opens the notch. Switching to `.click` cancels any
@@ -161,14 +162,43 @@ final class NotchViewModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] activity in
                 guard let self else { return }
-                switch self.state {
-                case .collapsed:
-                    if let activity { self.transition(to: .activity(activity.id)) }
-                case .activity:
-                    self.transition(to: activity.map { .activity($0.id) } ?? .collapsed)
-                case .expanded:
-                    break
+                // Never act on `state` while a transition is in flight — the
+                // value read here would be stale, and acting on it nests a
+                // second `transition()` inside the first.
+                //
+                // This is reachable, and not theoretically: `state` is
+                // `@Published`, so subscribers run during its `willSet`, when
+                // `self.state` still reads the OLD value.
+                // `NotchActivityRouter.observeNotchState` is one of those
+                // subscribers, and it calls `calendar.start()` → `refresh()`
+                // → publishes `upcoming` → recomputes the calendar activity →
+                // `activities.post`/`dismiss` → straight back into this sink.
+                // The nested transition then runs to completion, and the
+                // outer setter's own storage write lands afterwards and wins
+                // — leaving every subscriber's last-seen value wrong. The
+                // visible symptom was an OPEN drawer with
+                // `panel.ignoresMouseEvents` left `true` (so it stopped
+                // accepting clicks), because `updatePassThrough` had been
+                // told the state was `.collapsed`.
+                guard !self.isTransitioning else {
+                    // Deferred, NOT dropped. `removeDuplicates()` above means
+                    // a skipped emission is never replayed, so simply
+                    // ignoring it could leave `state` pointing at an activity
+                    // that has since been dismissed (or miss one that just
+                    // arrived) until some unrelated activity mutation
+                    // happened along. Reconciled against the live queue the
+                    // moment the transition finishes.
+                    self.needsActivityReconcile = true
+                    return
                 }
+                // The EMITTED value, not a re-read. `activities.$current` is
+                // `@Published`, so this sink runs during its `willSet` —
+                // `activities.current` still holds the PREVIOUS value here,
+                // and reconciling against it processes every change one step
+                // behind, which breaks activity handling outright. (Third
+                // time this exact footgun has bitten in this branch; it is
+                // the repo's most reliable way to be wrong.)
+                self.applyActivity(activity)
             }
             .store(in: &cancellables)
     }
@@ -204,13 +234,78 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - Inputs
 
-    /// Debounced hover containment. `inside` is `interactiveRect.contains(point)`,
-    /// recomputed by the hosting view on every enter/exit/moved event — so this
-    /// is called far more often than the hover state actually changes; the
-    /// `isHovering` guard below turns the redundant calls into no-ops instead
-    /// of continuously restarting the open/close delay while the cursor merely
-    /// wanders inside (or stays outside) the same region.
+    /// Suppresses every hover input while something modal is on top of the
+    /// notch — currently the right-click context menu.
+    ///
+    /// It lives here, on the view model, rather than on `NotchWindowController`
+    /// (which owns the menu) because hover reaches this type from TWO
+    /// independent places: the controller's own event monitors, and
+    /// `NotchHostingView`'s tracking area (`mouseExited` in particular). A
+    /// flag checked only in the controller left the tracking-area path wide
+    /// open — popping the menu over an expanded panel moves the cursor off
+    /// that panel, `mouseExited` fires `hoverChanged(inside: false)`, and the
+    /// close timer collapses the notch out from under the menu the user is
+    /// reading. Gating at the single point both paths funnel through is the
+    /// only placement that actually covers it.
+    var suppressHover = false {
+        didSet {
+            guard suppressHover, suppressHover != oldValue else { return }
+            // Anything already scheduled was scheduled on pre-menu
+            // information; the caller re-derives hover once the menu closes.
+            cancelHoverTasks()
+        }
+    }
+
+    /// Forgets everything about hover WITHOUT reporting a transition.
+    ///
+    /// For teardown (the notch's screen was lost, or the feature was turned
+    /// off). Distinct from `resyncHover` because "report a hover-out" is
+    /// actively wrong here: `hoverChanged(inside: false)` schedules a real
+    /// `hoverCloseTask`, and nothing on the teardown path cancels it —
+    /// `forceCollapse()` moves `state` but never touches the hover tasks. So
+    /// 0.4s after the panel was torn down, that task would fire `collapse()`,
+    /// which re-surfaces any current live activity — landing the state
+    /// machine on `.activity` with no panel and the feature disabled, the
+    /// exact invariant `forceCollapse()` exists to hold.
+    ///
+    /// It also deliberately does NOT clear `suppressHover`: teardown is
+    /// reachable from inside the context menu ("Turn Off Notch" is one of its
+    /// items), and un-suppressing there would re-open the tracking-area path
+    /// that suppression exists to close.
+    func resetHoverState() {
+        cancelHoverTasks()
+        isHovering = false
+        if hoverHint { hoverHint = false }
+    }
+
+    /// Re-derives hover from the pointer's ACTUAL position, bypassing both
+    /// debounces — `suppressHover` and the `isHovering` cache.
+    ///
+    /// Its one caller is `NotchWindowController.refreshHover()`, run just
+    /// after the context menu closes, and the cached value is wrong there by
+    /// construction: `suppressHover`'s `didSet` cancelled any in-flight
+    /// open/close task but left `isHovering` alone, so a cursor that was
+    /// already on the notch when the menu opened still reads as hovering,
+    /// `hoverChanged` returns early, and the cancelled open is never
+    /// rescheduled — the notch would sit collapsed under a hovering pointer
+    /// until it left and came back.
+    ///
+    /// Teardown wants `resetHoverState()` instead, NOT this — see there.
+    func resyncHover(inside: Bool) {
+        suppressHover = false
+        isHovering = !inside      // force the change-guard below to fire
+        hoverChanged(inside: inside)
+    }
+
+    /// Debounced hover containment. `inside` is the pointer's containment in
+    /// whichever rect is relevant for the current state, recomputed on every
+    /// enter/exit/moved event — so this is called far more often than the
+    /// hover state actually changes; the `isHovering` guard below turns the
+    /// redundant calls into no-ops instead of continuously restarting the
+    /// open/close delay while the cursor merely wanders inside (or stays
+    /// outside) the same region.
     func hoverChanged(inside: Bool) {
+        guard !suppressHover else { return }
         // `mouseMoved` redelivers on every pixel of movement inside/outside the
         // same region, so guard the published write itself — not just the
         // debounced `isHovering` transition below — or every one of those
@@ -473,8 +568,55 @@ final class NotchViewModel: ObservableObject {
     /// once per visibility change — including widget→widget swipes, which
     /// move directly from one `.expanded` case to another without an
     /// intermediate collapse.
+    /// Set for the duration of `transition(to:)`. See `observeActivities()`
+    /// for what reads it and why.
+    private var isTransitioning = false
+
+    /// An activity change arrived while a transition was in flight and still
+    /// needs applying — see the guard in `observeActivities()`.
+    private var needsActivityReconcile = false
+
+    /// Brings `state` in line with `activity`.
+    ///
+    /// A live activity preempts `.collapsed` and updates while already
+    /// showing as `.activity`; it never disturbs `.expanded` (the widget
+    /// panel wins while it's open) — ending or losing the activity there is
+    /// only noticed the next time something collapses.
+    private func applyActivity(_ activity: LiveActivity?) {
+        switch state {
+        case .collapsed:
+            if let activity { transition(to: .activity(activity.id)) }
+        case .activity:
+            transition(to: activity.map { .activity($0.id) } ?? .collapsed)
+        case .expanded:
+            break
+        }
+    }
+
+    /// The DEFERRED path: applies whatever the queue holds now.
+    ///
+    /// Re-reading `activities.current` is correct *here* and wrong in the
+    /// sink, which is the subtlety. This runs from `transition`'s `defer`,
+    /// by which point the `willSet` that triggered the deferral has returned
+    /// and the storage write has landed — so the queue is current, and may
+    /// even have moved on again since. In the sink, the same read would be
+    /// one value behind.
+    private func reconcileActivityState() {
+        applyActivity(activities.current)
+    }
+
     private func transition(to newState: NotchState) {
         guard newState != state else { return }
+        isTransitioning = true
+        defer {
+            // Cleared BEFORE reconciling, so the reconciliation's own
+            // `transition` isn't turned into another deferral.
+            isTransitioning = false
+            if needsActivityReconcile {
+                needsActivityReconcile = false
+                reconcileActivityState()
+            }
+        }
 
         if case .expanded(let oldID) = state {
             registry.widget(for: oldID)?.didDismiss()

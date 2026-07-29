@@ -6,6 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = SettingsStore.shared
     private let arranger = MenuBarArranger()
     private let updater = UpdateChecker()
+    /// Notices that the last run died without a clean shutdown, and remembers
+    /// what the notch/camera were doing at the time — see `CrashReporter`'s
+    /// own doc comment on why a hardware-only crash needs this.
+    private let crashReporter = CrashReporter()
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
     private var updateTimer: Timer?
@@ -88,7 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, updater: updater,
-        nowPlaying: nowPlayingService, permissions: permissionCenter)
+        nowPlaying: nowPlayingService, permissions: permissionCenter,
+        crashReporter: crashReporter)
     private lazy var arrangeHint = ArrangeHintWindowController(
         arranger: arranger,
         showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
@@ -100,13 +105,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var cancellables = Set<AnyCancellable>()
     private var settingsVisible = false
+    /// See the `$launchAtLogin` sink — guards its own write-back from
+    /// re-entering it.
+    private var isReconcilingLaunchAtLogin = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.menuBar.info("Flux launching")
 
+        // First thing: reading the previous session has to happen before
+        // anything this launch does can overwrite it.
+        crashReporter.beginSession()
+
         menuBar = MenuBarManager(settings: settings, arranger: arranger) { [weak self] in
             self?.openSettings()
         }
+        // Lets a background-found update surface somewhere the user actually
+        // looks — see `MenuBarManager.pendingUpdateVersion`.
+        menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
+        menuBar?.onOpenSettingsTab = { [weak self] tab in self?.settingsWindow.show(tab: tab) }
 
         // Reconcile the login-item registration with the saved preference. The OS
         // is the source of truth, so push the actual state back into settings.
@@ -123,7 +139,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // level (see `NotchPanel`/`NotchWindowController`), which has no
         // knowledge of `ShelfStore` itself — this is the one place that
         // knowledge gap is bridged.
-        notchWindow.onShelfDrop = { [weak self] urls in self?.shelfStore.add(urls: urls).count ?? 0 }
+        // Both counts are forwarded — see `NotchWindowController.ShelfDropResult`
+        // for why the drag's success and the confirmation wing's wording must
+        // come from different numbers.
+        notchWindow.onShelfDrop = { [weak self] urls in
+            guard let outcome = self?.shelfStore.add(urls: urls) else { return .declined }
+            return .init(accepted: outcome.accepted, ready: outcome.added.count)
+        }
         // A tap on the overflow indicator's wings should open Arrange Mode,
         // same as the legacy `NotchHighlightWindowController` glow's
         // `onActivate` — not toggle the notch panel itself, which is what a
@@ -133,6 +155,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arranger.setArranging(true)
             return true
         }
+        // Right-clicking the notch should feel like right-clicking the
+        // chevron does — same kind of menu, in the other place Flux draws
+        // itself. `NotchWindowController` decides *when* a right-click counts
+        // as on the notch; this closure is the only thing that knows what
+        // should be *in* the menu.
+        notchWindow.menuProvider = { [weak self] in self?.makeNotchMenu() ?? NSMenu() }
         // Screen changes (external display connect/disconnect, clamshell
         // open/close) flip `notchWindow.isPresenting` independently of every
         // settings toggle `notchActivityRouter` already reacts to.
@@ -144,10 +172,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // running with nowhere left to show a wing (or sitting idle once a
         // notched screen reappears).
 
+        NSApp.mainMenu = Self.makeMainMenu()
+
         configureHotkey()
         configureNotch()
         configureUpdateChecks()
         observeSettings()
+        observeCrashBreadcrumbs()
+    }
+
+    /// Flipping the session file to "clean" is the entire crash-detection
+    /// mechanism: a crash never reaches this method, so finding the flag
+    /// still false at the next launch is what identifies an abnormal exit.
+    func applicationWillTerminate(_ notification: Notification) {
+        crashReporter.endSession()
+    }
+
+    /// Keeps `CrashReporter`'s breadcrumb tracking the two things most likely
+    /// to matter in a crash report — what the notch was showing, and whether
+    /// the capture session was live — plus the current live activity. All of
+    /// it is Flux's own UI state; see `CrashReporter`'s privacy note on why
+    /// nothing user-derived may be added here.
+    private func observeCrashBreadcrumbs() {
+        notchWindow.viewModel.$state
+            .sink { [weak self] state in
+                self?.crashReporter.update { $0.notchState = Self.describe(state) }
+            }
+            .store(in: &cancellables)
+
+        cameraService.$isRunning
+            .sink { [weak self] running in
+                self?.crashReporter.update { $0.cameraRunning = running }
+            }
+            .store(in: &cancellables)
+
+        notchWindow.activities.$current
+            .sink { [weak self] activity in
+                self?.crashReporter.update { $0.activityKind = activity.map { "\($0.kind)" } }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// `NotchState` as a stable string. Deliberately not `String(describing:)`
+    /// on the whole value — `.activity` carries a `UUID` that would churn the
+    /// breadcrumb (and the file write behind it) on every activity change
+    /// while saying nothing useful.
+    static func describe(_ state: NotchState) -> String {
+        switch state {
+        case .collapsed: return "collapsed"
+        case .activity: return "activity"
+        case .expanded(let id): return "expanded(\(id.rawValue))"
+        }
     }
 
     // MARK: Settings reactions
@@ -155,8 +230,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeSettings() {
         settings.$launchAtLogin
             .dropFirst()
-            .sink { enabled in
-                _ = LoginItemManager.setEnabled(enabled)
+            .sink { [weak self] enabled in
+                // `setEnabled` swallows the throw and hands back the state
+                // that ACTUALLY resulted — registration legitimately fails
+                // when the user hasn't approved Flux under System Settings ›
+                // General › Login Items. Discarding that (as this used to)
+                // left the switch showing "on" for something macOS refused,
+                // so Flux quietly didn't launch at login and nothing said so.
+                // Launch already reconciles this way; a live toggle now does
+                // too. The inequality guard is load-bearing: writing the same
+                // value back would re-enter this sink through the property's
+                // own `didSet`.
+                guard let self, !self.isReconcilingLaunchAtLogin else { return }
+                let actual = LoginItemManager.setEnabled(enabled)
+                guard actual != enabled else { return }
+                // DEFERRED one runloop turn, and that is the whole fix.
+                // `@Published` emits from `willSet`, so this sink runs BEFORE
+                // the triggering assignment has written its own storage. A
+                // synchronous correction here completes first and is then
+                // overwritten by that original write — leaving the toggle
+                // showing precisely the state macOS refused, i.e. the bug
+                // this was meant to fix, still there. (The same `willSet`
+                // footgun `configureNotch` documents, pointing the other
+                // way.)
+                //
+                // The flag still earns its keep: the deferred write re-enters
+                // this sink, and without it that re-entry would call
+                // `LoginItemManager.setEnabled` a second time for the same
+                // failure.
+                self.isReconcilingLaunchAtLogin = true
+                DispatchQueue.main.async {
+                    self.settings.launchAtLogin = actual
+                    self.isReconcilingLaunchAtLogin = false
+                }
             }
             .store(in: &cancellables)
 
@@ -184,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onVisibilityChanged = { [weak self] visible in
             self?.settingsVisible = visible
             self?.refreshArrangeHint()
+            self?.crashReporter.update { $0.settingsOpen = visible }
         }
 
         // Float the "how to arrange" hint next to the menu bar whenever Arrange
@@ -227,13 +334,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Push every notch-related preference into the live controller. Called
     /// once at launch (to apply whatever was persisted) and again from each
     /// setting's own Combine sink.
-    private func configureNotch() {
+    /// `notchEnabled` follows the same emitted-value convention as
+    /// `recomputeDuoActive`/`configureLockScreenPresenter` below, and for the
+    /// same reason — but this one was missing it, which made the master notch
+    /// toggle itself unreliable.
+    ///
+    /// `@Published` delivers to subscribers from `willSet`, BEFORE its own
+    /// backing storage updates. `settings.$notchEnabled`'s sink calls this
+    /// function, which then re-read `settings.notchEnabled` synchronously and
+    /// saw the value from *before* the change. Turning the notch off left the
+    /// panel, its monitors, the clipboard monitor and the lock-screen
+    /// presenter all running until the next launch, even though the
+    /// preference itself displayed and persisted as off.
+    private func configureNotch(notchEnabled: Bool? = nil) {
+        let notchOn = notchEnabled ?? settings.notchEnabled
         // Applied before `setEnabled` so a fresh panel is built with the
         // right collection behavior from the start, rather than defaulting
         // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
         // tick and then immediately being corrected.
         notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
-        notchWindow.setEnabled(settings.notchEnabled)
+        notchWindow.setEnabled(notchOn)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
         notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
@@ -245,10 +365,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.setEnabled(.timers, settings.notchTimersEnabled)
         notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
-        configureNotchOverflowCoexistence()
-        configureNotchHotkey()
-        configureClipboardMonitor()
-        configureLockScreenPresenter()
+        configureNotchOverflowCoexistence(notchEnabled: notchOn)
+        configureNotchHotkey(notchEnabled: notchOn)
+        configureClipboardMonitor(notchEnabled: notchOn)
+        configureLockScreenPresenter(notchEnabled: notchOn)
         recomputeDuoActive()
         // Force the lazy router into existence — see its property doc
         // comment for why nothing else naturally touches it. Its own `init`
@@ -262,8 +382,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// including a background monitor with nothing to actually show its
     /// history in (see `ClipboardMonitor`'s own doc comment on why its
     /// lifecycle is settings-, not presentation-, driven).
-    private func configureClipboardMonitor() {
-        if settings.notchEnabled && settings.notchClipboardEnabled {
+    private func configureClipboardMonitor(notchEnabled: Bool? = nil) {
+        if (notchEnabled ?? settings.notchEnabled) && settings.notchClipboardEnabled {
             clipboardMonitor.start()
         } else {
             clipboardMonitor.stop()
@@ -284,9 +404,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// a live read when called with no argument (every other call site here —
     /// startup, and any other setting's sink recomputing this incidentally —
     /// has no fresher value to hand it).
-    private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil) {
+    private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil,
+                                              notchEnabled: Bool? = nil) {
         let experimentEnabled = lockScreenExperimentEnabled ?? settings.notchLockScreenExperimentEnabled
-        lockScreenPresenter.setEnabled(settings.notchEnabled && experimentEnabled)
+        lockScreenPresenter.setEnabled((notchEnabled ?? settings.notchEnabled) && experimentEnabled)
     }
 
     /// M7 (Alcove parity): pushes the pure `NotchViewModel.duoActive(...)`
@@ -321,7 +442,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeNotchSettings() {
         settings.$notchEnabled
             .dropFirst()
-            .sink { [weak self] _ in self?.configureNotch() }
+            // The emitted value, NOT a re-read — see `configureNotch`'s doc
+            // comment. This is the repo's recurring Combine footgun.
+            .sink { [weak self] enabled in self?.configureNotch(notchEnabled: enabled) }
             .store(in: &cancellables)
 
         settings.$notchExpansionTrigger
@@ -428,14 +551,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `configureHotkey()`'s pattern for the menu-bar chord. Only meaningful
     /// while the notch feature itself is on — there's nothing to toggle
     /// otherwise.
-    private func configureNotchHotkey() {
+    private func configureNotchHotkey(notchEnabled: Bool? = nil) {
         // Routed through `NotchWindowController.hotkeyToggled()` (not the
         // view model directly) so it's a no-op while the controller has
         // nothing presenting — the hotkey stays registered even on an
         // external-only clamshell setup with no built-in notched screen,
         // and must not drive a headless expand in that case.
         hotkey.onTrigger[.notchToggle] = { [weak self] in self?.notchWindow.hotkeyToggled() }
-        guard settings.notchEnabled, settings.notchHotkey.isValid else {
+        guard (notchEnabled ?? settings.notchEnabled), settings.notchHotkey.isValid else {
             hotkey.unregister(.notchToggle)
             settings.notchHotkeyConflict = false
             return
@@ -453,8 +576,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// off. This method now only owns that overlay's lifecycle — the
     /// live-activity side of this coexistence moved to `NotchActivityRouter`
     /// (see its doc comment for why).
-    private func configureNotchOverflowCoexistence() {
-        if settings.notchEnabled {
+    private func configureNotchOverflowCoexistence(notchEnabled: Bool? = nil) {
+        if notchEnabled ?? settings.notchEnabled {
             notchHighlight = nil
         } else if notchHighlight == nil {
             notchHighlight = NotchHighlightWindowController(
@@ -463,6 +586,161 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
     }
+
+    // MARK: Main menu
+
+    /// The app menu bar, used only while Flux is temporarily `.regular` —
+    /// i.e. while the Settings window is open (see
+    /// `SettingsWindowController.applyRegularActivationPolicy`).
+    ///
+    /// An `LSUIElement` app has no menu bar and needs none. But promoting to
+    /// `.regular` without setting `NSApp.mainMenu` gives you the *worst* of
+    /// both: a visible, empty menu bar, and no ⌘W to close the window, no ⌘Q
+    /// to quit, and no ⌘X/⌘C/⌘V inside the hotkey recorder or any text field
+    /// — because those standard shortcuts are menu items, not built-in
+    /// behaviour. This is the minimum that makes the promoted state feel like
+    /// a real app rather than a broken one.
+    ///
+    /// Every item uses a nil target, so AppKit routes it through the
+    /// responder chain to whatever is actually focused. That's what makes the
+    /// Edit items work in a text field without this class knowing anything
+    /// about them.
+    private static func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About \(AppInfo.name)",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide \(AppInfo.name)",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = NSMenuItem(title: "Hide Others",
+                                    action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit \(AppInfo.name)",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize",
+                           action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowItem.submenu = windowMenu
+        main.addItem(windowItem)
+        // Hands AppKit the Window menu it manages itself (window list,
+        // Bring All to Front) rather than leaving it a static three items.
+        NSApp.windowsMenu = windowMenu
+
+        return main
+    }
+
+    // MARK: Notch context menu
+
+    /// Built fresh on every right-click (not cached) so every dynamic part —
+    /// the expand/collapse verb, the widget checkmarks — reflects the state
+    /// at the moment the menu opens rather than whenever it was last built.
+    private func makeNotchMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        // Same signpost the chevron's menu carries — see
+        // `MenuBarManager.pendingUpdateVersion`.
+        if let version = updater.pendingRelease?.version {
+            // `.general`, not the generic open — the install controls are
+            // there, and `show()` alone would preserve whatever tab the user
+            // last had open (Codex PR13 finding).
+            let item = makeNotchItem("Update to \(version)…", #selector(notchMenuOpenUpdateSettings))
+            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
+
+        let isExpanded: Bool
+        if case .expanded = notchWindow.viewModel.state { isExpanded = true } else { isExpanded = false }
+        menu.addItem(makeNotchItem(isExpanded ? "Collapse Notch" : "Expand Notch",
+                                   #selector(notchMenuToggle)))
+
+        menu.addItem(.separator())
+
+        let widgets = NSMenuItem(title: "Widgets", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        // Walks `WidgetID.allCases` rather than `registry.enabledWidgets` on
+        // purpose: a *disabled* widget is exactly the one the user needs to
+        // find here to switch back on, and it's absent from `enabledWidgets`
+        // by definition.
+        for id in WidgetID.allCases {
+            let item = makeNotchItem(id.title, #selector(notchMenuToggleWidget))
+            item.state = settings[keyPath: id.enabledSettingKey] ? .on : .off
+            item.image = NSImage(systemSymbolName: id.symbol, accessibilityDescription: nil)
+            item.representedObject = id.rawValue
+            submenu.addItem(item)
+        }
+        widgets.submenu = submenu
+        menu.addItem(widgets)
+
+        menu.addItem(.separator())
+        menu.addItem(makeNotchItem("Notch Settings…", #selector(notchMenuOpenNotchSettings)))
+        menu.addItem(makeNotchItem("Flux Settings…", #selector(notchMenuOpenSettings), key: ","))
+        menu.addItem(.separator())
+        menu.addItem(makeNotchItem("Turn Off Notch", #selector(notchMenuDisable)))
+        menu.addItem(.separator())
+        menu.addItem(makeNotchItem("Quit Flux", #selector(notchMenuQuit), key: "q"))
+        return menu
+    }
+
+    /// `isEnabled` is set explicitly because `menu.autoenablesItems` is off —
+    /// with automatic enabling on, AppKit validates against the responder
+    /// chain, and a menu popped from a non-activating panel in an accessory
+    /// app has no useful responder chain to validate against, so every item
+    /// would come up greyed out.
+    private func makeNotchItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = self
+        item.isEnabled = true
+        return item
+    }
+
+    @objc private func notchMenuToggle() { notchWindow.hotkeyToggled() }
+
+    @objc private func notchMenuToggleWidget(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let id = WidgetID(rawValue: raw) else { return }
+        // Written through `settings` (not `registry.setEnabled` directly) so
+        // the change persists and the Settings window's own toggle updates
+        // with it — the registry is driven from the settings sink in
+        // `observeNotchSettings()`.
+        settings[keyPath: id.enabledSettingKey].toggle()
+    }
+
+    @objc private func notchMenuOpenNotchSettings() { settingsWindow.show(tab: .notch) }
+
+    @objc private func notchMenuOpenUpdateSettings() { settingsWindow.show(tab: .general) }
+
+    @objc private func notchMenuOpenSettings() { openSettings() }
+
+    @objc private func notchMenuDisable() { settings.notchEnabled = false }
+
+    @objc private func notchMenuQuit() { NSApp.terminate(nil) }
 
     // MARK: Software update
 

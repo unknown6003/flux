@@ -1,0 +1,87 @@
+name: CodeQL
+
+# Free static analysis for public repositories, and GitHub-native — no
+# third-party account, no app installation, no data leaving GitHub. Findings
+# land as annotations on the PR that introduced them and in the repo's
+# Security tab.
+#
+# Deliberately a SEPARATE workflow from ci.yml rather than another job in it:
+# CodeQL's Swift analysis roughly doubles a build's wall-clock, and a security
+# scan failing (or timing out) must never be what stops a release tag from
+# publishing Flux.dmg. `continue-on-error` on the analyze step below is the
+# same reasoning applied one level down — a CodeQL infrastructure hiccup
+# should be visible, not blocking.
+
+on:
+  # `push` is scoped to main only, deliberately. Adding feature branches here
+  # would double every branch push: the branch's own `push` event and the
+  # PR's `pull_request` event are different refs, so the concurrency group
+  # below doesn't collapse them, and each one spins up a macOS runner. The
+  # `pull_request` trigger already covers branch work — which is also where
+  # the findings are useful, since that's where they render as annotations.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so newly-published queries reach existing code without waiting
+    # for someone to touch the file they apply to. Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  # Required to upload results to the Security tab.
+  security-events: write
+  contents: read
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Swift
+    # Must be macOS: Swift analysis needs the real toolchain and AppKit/
+    # SwiftUI SDKs, which no Linux runner has.
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      # Pinned to an immutable commit SHA, not a mutable tag: a tag can be
+      # repointed by the action's owner at any time, which for a workflow
+      # holding `security-events: write` is a supply-chain hole. Bump these
+      # deliberately, with the version in the trailing comment as the
+      # human-readable record of what they are.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # This job never pushes; leaving the token in the local git config
+          # just widens what a compromised later step (or a dependency of
+          # `swift build`) could reach.
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
+        with:
+          languages: swift
+          build-mode: manual
+          # `security-and-quality` over the default `security-extended`: this
+          # is a menu-bar utility with no network-facing attack surface worth
+          # the name, so the quality queries (unused values, redundant
+          # conditions, questionable control flow) are where the useful
+          # findings actually are.
+          queries: security-and-quality
+
+      # Manual build mode, not autobuild. The autobuilder would try to guess
+      # how this project builds; it's a plain SwiftPM package, so saying so is
+      # both faster and immune to the guess changing under us. Debug, not
+      # release — CodeQL wants the fullest possible AST, and a release build's
+      # optimisation buys nothing here while costing minutes.
+      - name: Build
+        run: swift build -c debug
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
+        continue-on-error: true
+        with:
+          category: /language:swift

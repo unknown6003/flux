@@ -109,11 +109,18 @@ struct PermissionRow: View {
             Button("Grant Access") { permissions.request(kind) }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentColor)
-        case .denied, .restricted:
+        case .denied:
             Button("Open System Settings") { permissions.openSystemSettings(kind) }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentColor)
-        case .granted, .unavailable:
+        // `.restricted` deliberately offers no action. It means an MDM or
+        // parental-controls policy, so the toggle in System Settings is
+        // greyed out — deep-linking there sends the user to a dead end, and
+        // contradicts the badge right beside it already saying "Restricted by
+        // a device policy". The explanation is the whole affordance.
+        // `.unavailable` alongside `.restricted`: neither has a switch in
+        // System Settings to go and flip.
+        case .granted, .restricted, .unavailable:
             EmptyView()
         }
     }

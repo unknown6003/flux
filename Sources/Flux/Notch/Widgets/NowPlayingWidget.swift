@@ -173,9 +173,21 @@ private struct NowPlayingExpandedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// The `Spacer` is what makes this fill the panel instead of clinging to
+    /// its top edge.
+    ///
+    /// Every other widget is a list, so short content sitting at the top with
+    /// room below it looks entirely normal. This one is a fixed composition —
+    /// artwork, scrubber, transport — and with M12's single (taller) panel
+    /// size the same top-alignment left an obvious dead band under the
+    /// transport row, which reads as a layout bug rather than an empty list.
+    /// Anchoring the header to the top and the scrubber/transport pair to the
+    /// bottom puts the slack where a music player wants it, at any panel
+    /// height.
     private func content(for state: NowPlayingState) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             headerRow(state)
+            Spacer(minLength: 0)
             scrubberSection(state)
             transportRow(state)
         }
@@ -300,26 +312,32 @@ private struct NowPlayingExpandedView: View {
     private func transportRow(_ state: NowPlayingState) -> some View {
         HStack {
             Spacer()
-            transportButton("backward.fill", size: 17) { service.send(.previous) }
+            transportButton("backward.fill", size: 17, label: "Previous track") { service.send(.previous) }
             Spacer()
-            transportButton(state.isPlaying ? "pause.fill" : "play.fill", size: 22, prominent: true) {
+            transportButton(state.isPlaying ? "pause.fill" : "play.fill", size: 22, prominent: true,
+                            label: state.isPlaying ? "Pause" : "Play") {
                 service.send(.togglePlayPause)
             }
             Spacer()
-            transportButton("forward.fill", size: 17) { service.send(.next) }
+            transportButton("forward.fill", size: 17, label: "Next track") { service.send(.next) }
             Spacer()
             sourceButton(state)
             Spacer()
         }
     }
 
-    private func transportButton(_ systemName: String, size: CGFloat, prominent: Bool = false, action: @escaping () -> Void) -> some View {
+    /// `label` is required, not optional: these are glyph-only controls, so
+    /// without it VoiceOver announces every one of them as an unnamed
+    /// "button" and the transport row is unusable.
+    private func transportButton(_ systemName: String, size: CGFloat, prominent: Bool = false,
+                                 label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: prominent ? .semibold : .medium))
                 .foregroundStyle(Color.white)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     /// A generic "output" glyph rather than a per-app icon — mapping bundle
@@ -328,15 +346,24 @@ private struct NowPlayingExpandedView: View {
     /// it opens the source app (via `NSWorkspace`) when its bundle ID is
     /// known, and is otherwise inert rather than guessing.
     private func sourceButton(_ state: NowPlayingState) -> some View {
-        Button {
-            guard let bundleID = state.sourceBundleID,
-                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
-            NSWorkspace.shared.open(url)
+        // Resolved up front so the control can *look* like what it is. When
+        // the source app can't be resolved — no bundle id reported, or it
+        // isn't installed — the button used to render identically and then do
+        // nothing on click, the same dishonest affordance the clipboard's
+        // non-copyable rows had.
+        let appURL = state.sourceBundleID
+            .flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+        return Button {
+            guard let appURL else { return }
+            NSWorkspace.shared.open(appURL)
         } label: {
             Image(systemName: "laptopcomputer")
                 .font(.system(size: 15))
-                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                .foregroundStyle(Color.white.opacity(
+                    appURL == nil ? NotchDesign.quaternaryOpacity : NotchDesign.tertiaryOpacity))
         }
         .buttonStyle(.plain)
+        .disabled(appURL == nil)
+        .accessibilityLabel("Open the app that\u{2019}s playing")
     }
 }

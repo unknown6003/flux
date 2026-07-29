@@ -180,13 +180,14 @@ struct NotchRootView: View {
         case .activity:
             return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2,
                           height: max(notchSize.height, 32))
-        case .expanded(let widgetID):
-            guard isDuoLayout(for: widgetID) else {
-                return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
-                              height: NotchMetrics.expandedHeight(for: widgetID))
-            }
-            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width) + NotchMetrics.duoExtraWidth,
-                          height: max(NotchMetrics.expandedHeight(for: .nowPlaying), NotchMetrics.expandedHeight(for: .calendar)))
+        case .expanded:
+            // One footprint for every widget, Duo included — see
+            // `NotchMetrics`' own doc comment on why the panel no longer
+            // resizes per widget. Note this no longer inspects the widget id
+            // at all, which is the point: swiping between pages cannot change
+            // the drawer's size, because the size doesn't depend on the page.
+            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
+                          height: NotchMetrics.expandedHeight(for: notchSize.width))
         }
     }
 
@@ -393,14 +394,16 @@ struct NotchRootView: View {
             content
                 .padding(.horizontal, 16)
                 .padding(.top, topInset)
-                // The M7 Alcove redesign grew the expanded shape's bottom
-                // corner radius from 24pt to 32pt (see `NotchShape.expanded`)
-                // without growing this padding to match — content (notably
-                // the transport row, the bottom-most thing any widget draws)
-                // kept clearing the *old*, tighter corner but now visually
-                // crowds/overhangs the more generous curve underneath it.
-                // 18pt restores that clearance.
-                .padding(.bottom, 18)
+                // Kept in step with `NotchShape.expanded`'s bottom radius,
+                // which is the whole reason this isn't just symmetric with
+                // the horizontal padding: content (notably the transport row,
+                // the bottom-most thing any widget draws) has to clear the
+                // corner curve, not merely the frame. M7 grew the radius
+                // 24 → 32 without moving this and the transport row started
+                // overhanging the curve; M12's continuous corners at 34
+                // occupy slightly more of the edge again for the same
+                // nominal radius, since curvature is spread further along it.
+                .padding(.bottom, 22)
         }
     }
 
@@ -539,30 +542,37 @@ struct NotchRootView: View {
         .transition(Self.expandedContentMorph)
     }
 
-    /// Alcove's Duo view (M7 v1.7 parity): Now Playing's expanded content at
-    /// flexible width beside a fixed-width Calendar pane, split by a hairline
-    /// divider. Both panes share this container's single fade+scale content
-    /// morph (`expandedContentMorph`, applied via `.transition(...)` in
+    /// Alcove's Duo view (M7 v1.7 parity): Now Playing's expanded content
+    /// beside a Calendar pane, split by a hairline divider. Both panes share
+    /// this container's single fade+scale content morph
+    /// (`expandedContentMorph`, applied via `.transition(...)` in
     /// `expandedContent(for:)`, its only caller), so entering/leaving Duo
     /// fades exactly like any other expanded-content change rather than
     /// needing a second, separate morph.
-    private static let duoCalendarPaneWidth: CGFloat = 200
-
+    ///
+    /// M12: the Calendar pane is now a *proportion* of the available width
+    /// rather than a fixed 200pt, because Duo no longer gets a wider panel to
+    /// live in — it has to fit the one expanded footprint every other widget
+    /// gets (see `NotchMetrics.duoCalendarPaneFraction`). `GeometryReader`
+    /// rather than arithmetic on `notchSize`, so the split follows whatever
+    /// width the chrome actually leaves after its own padding.
     private func duoContent(nowPlaying: NotchWidget?, calendar: NotchWidget) -> some View {
-        HStack(spacing: 0) {
-            Group {
-                if let nowPlaying { nowPlaying.makeExpandedView() }
+        GeometryReader { proxy in
+            HStack(spacing: 0) {
+                Group {
+                    if let nowPlaying { nowPlaying.makeExpandedView() }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(width: 1)
+                    .padding(.vertical, 12)
+
+                calendar.makeExpandedView()
+                    .frame(width: (proxy.size.width * NotchMetrics.duoCalendarPaneFraction).rounded())
+                    .frame(maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 1)
-                .padding(.vertical, 12)
-
-            calendar.makeExpandedView()
-                .frame(width: Self.duoCalendarPaneWidth)
-                .frame(maxHeight: .infinity)
         }
     }
 

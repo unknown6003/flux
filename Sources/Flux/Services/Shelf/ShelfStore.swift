@@ -67,6 +67,10 @@ final class ShelfStore: ObservableObject {
     private let fileManager = FileManager.default
     private var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
 
+    /// Items with a QuickLook request currently in flight — see
+    /// `generateThumbnail(for:)`.
+    private var thumbnailRequests: Set<UUID> = []
+
     init(directory: URL? = nil) {
         self.directory = directory ?? Self.defaultDirectory()
 
@@ -137,10 +141,11 @@ final class ShelfStore: ObservableObject {
     /// else touching the store: the fresh `id`-named subdirectory is already
     /// collision-proof against every other add, in flight or not.
     @discardableResult
-    func add(urls: [URL]) -> [ShelfItem] {
+    func add(urls: [URL]) -> AddResult {
         sweepExpired()
 
         var added: [ShelfItem] = []
+        var queued: [ShelfItem] = []
         for source in urls {
             let displayName = source.lastPathComponent
             let item = ShelfItem(fileName: displayName, addedAt: Date())
@@ -168,11 +173,12 @@ final class ShelfStore: ObservableObject {
                 }
                 added.append(item)
             } else {
+                queued.append(item)
                 copyInBackground(source: source, item: item, destDir: destDir, dest: dest, displayName: displayName)
             }
         }
 
-        guard !added.isEmpty else { return [] }
+        guard !added.isEmpty else { return AddResult(added: [], queued: queued.count) }
 
         items.append(contentsOf: added)
         items.sort { $0.addedAt > $1.addedAt }
@@ -182,7 +188,35 @@ final class ShelfStore: ObservableObject {
             generateThumbnail(for: item)
         }
 
-        return added
+        return AddResult(added: added, queued: queued.count)
+    }
+
+    /// What one `add(urls:)` call took responsibility for.
+    ///
+    /// The split matters because the two halves answer different questions.
+    /// `added` is "items that exist RIGHT NOW" — the only ones a caller can
+    /// immediately look up, export, or thumbnail. `accepted` is "URLs this
+    /// store took ownership of", which is what a *drop* cares about: a drag
+    /// that landed successfully must report success even if the copy is still
+    /// running, or `NSDraggingDestination.performDragOperation` returns
+    /// `false` and macOS plays its drag-snaps-back-to-the-source rejection
+    /// animation over a file that is, in fact, being added perfectly well.
+    ///
+    /// That was a real bug and a common one: `backgroundCopyThreshold` sends
+    /// anything over 64 MB *or of unknown size* down the background path, and
+    /// `.fileSizeKey` is nil for every directory — so dropping a folder, or
+    /// any large video, always looked rejected, then silently appeared on the
+    /// shelf seconds later with no "Added N" confirmation.
+    struct AddResult {
+        /// Items already copied and published in `items`.
+        let added: [ShelfItem]
+        /// Items whose copy is still running on a background task; they'll
+        /// appear in `items` when it finishes.
+        let queued: Int
+
+        /// Everything the store took on, ready or not — the number to report
+        /// to the user and to gate drop-acceptance on.
+        var accepted: Int { added.count + queued }
     }
 
     /// The slow path `add(urls:)` hands large/unknown-size sources to — see
@@ -372,6 +406,14 @@ final class ShelfStore: ObservableObject {
     /// the generic Finder icon for the file's type on failure (unreadable
     /// file, unsupported type, generator error, etc.).
     private func generateThumbnail(for item: ShelfItem) {
+        // Dedupe in flight. `ensureThumbnails()` runs on every `willPresent()`,
+        // so cycling onto the Shelf page repeatedly — which is exactly what
+        // swiping through the drawer does — used to issue a fresh QuickLook
+        // request per item per visit, with none of the earlier batches having
+        // completed. Cleared in the completion handler below, both on success
+        // and on failure, so a request that fails can be retried by a later
+        // visit rather than being permanently suppressed.
+        guard thumbnailRequests.insert(item.id).inserted else { return }
         let url = item.storedURL(in: directory)
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         let request = QLThumbnailGenerator.Request(
@@ -382,9 +424,14 @@ final class ShelfStore: ObservableObject {
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, error in
             Task { @MainActor in
+                guard let self else { return }
+                // Cleared whatever the outcome, so a failed request can be
+                // retried by a later visit rather than being suppressed for
+                // the rest of the session.
+                self.thumbnailRequests.remove(item.id)
                 // The item may have been removed while the request was in
                 // flight — don't resurrect a thumbnail entry for it.
-                guard let self, self.items.contains(where: { $0.id == item.id }) else { return }
+                guard self.items.contains(where: { $0.id == item.id }) else { return }
                 if let representation {
                     self.thumbnails[item.id] = representation.nsImage
                 } else {

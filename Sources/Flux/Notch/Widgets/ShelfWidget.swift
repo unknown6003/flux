@@ -185,17 +185,22 @@ private struct ShelfTileView: View {
             .frame(width: 44, height: 44)
             .clipShape(RoundedRectangle(cornerRadius: NotchDesign.tileRadius, style: .continuous))
 
-            if isHovering {
-                Button {
-                    store.remove(item.id)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white, Color.black.opacity(0.6))
-                }
-                .buttonStyle(.plain)
-                .offset(x: 6, y: -6)
+            // Faded rather than conditionally built: a view that only exists
+            // while hovered also only exists in the accessibility tree while
+            // hovered. (Unlike the clipboard's row, this tile does have a
+            // `contextMenu` fallback — but there's no reason to rely on it.)
+            Button {
+                store.remove(item.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white, Color.black.opacity(0.6))
             }
+            .buttonStyle(.plain)
+            .offset(x: 6, y: -6)
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+            .accessibilityLabel("Remove \(item.fileName)")
         }
     }
 

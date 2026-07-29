@@ -86,6 +86,7 @@ final class MediaRemoteAdapterSource {
     }
 
     deinit {
+        restartTask?.cancel()
         stdout?.fileHandleForReading.readabilityHandler = nil
         process?.terminationHandler = nil
         if process?.isRunning == true { process?.terminate() }
@@ -129,12 +130,49 @@ final class MediaRemoteAdapterSource {
             process = proc
             stdout = outPipe
             isAvailable = true
+            launchedAt = Date()
         } catch {
             nowPlayingLog.error("Failed to launch mediaremote-adapter stream: \(error.localizedDescription)")
+            // Tear the handlers down BEFORE scheduling anything. They were
+            // installed above, in anticipation of a launch that then didn't
+            // happen, and `stdout`/`process` were never assigned — so neither
+            // `stop()` nor `handleTermination()` can ever reach them, and the
+            // pipe's read end goes to EOF the moment `outPipe` falls out of
+            // scope. A `readabilityHandler` left on an EOF descriptor wakes
+            // in a tight loop forever (`availableData` empty every time,
+            // which the closure's own emptiness guard silently absorbs). One
+            // leaked spinner was bad; the retry below would have made it four
+            // on exactly the permanently-broken-perl box the retry exists for.
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            proc.terminationHandler = nil
+
+            // A launch that never happened produces no process, so no
+            // `terminationHandler` will ever fire and nothing downstream
+            // would schedule a retry — one transient failure (a momentarily
+            // unavailable /usr/bin/perl, a sandbox hiccup) used to kill Now
+            // Playing for the rest of the session. Route it through the same
+            // bounded backoff as an unexpected exit.
+            scheduleRestartIfAllowed()
         }
     }
 
     func stop() {
+        // Cancelled unconditionally, before the `process == nil` bail below:
+        // a stop arriving *between* an unexpected exit and its scheduled
+        // restart has no process to tear down, but it absolutely must stop
+        // that restart from relaunching the helper after the owner asked for
+        // it to be off.
+        //
+        // The attempt count is cleared here too, but do NOT rely on that as
+        // the recovery route: nothing in the app currently calls this method
+        // at all (`NowPlayingService` deliberately leaves the stream running
+        // while inactive). Recovering an exhausted budget is
+        // `handleTermination()`'s credit-on-survival, not this.
+        restartTask?.cancel()
+        restartTask = nil
+        restartAttempts = 0
+        launchedAt = nil
+
         guard let process else { return }
         stdout?.fileHandleForReading.readabilityHandler = nil
         process.terminationHandler = nil
@@ -265,14 +303,102 @@ final class MediaRemoteAdapterSource {
         stateSubject.send(state)
     }
 
+    /// Consecutive UNEXPECTED exits since the last explicit `stop()`. Bounds
+    /// the restart loop below, so a permanently-broken adapter (an OS update
+    /// that locks MediaRemote down, a missing perl) retries a few times and
+    /// then stays quiet rather than relaunching a doomed subprocess forever.
+    private var restartAttempts = 0
+    private var restartTask: Task<Void, Never>?
+    private static let maxRestartAttempts = 3
+
+    /// When the current process was launched, or `nil` when none is running.
+    /// Read once, at termination, to decide whether that run counts as having
+    /// worked — see `handleTermination()`.
+    private var launchedAt: Date?
+
+    /// How long a restarted stream must stay up before its restart counts as
+    /// having worked. Comfortably longer than the 2/4/8s backoff, so a
+    /// crash-loop can never satisfy it.
+    private static let healthyUptime: TimeInterval = 30
+
+    /// The stream subprocess died on its own. `stop()` clears
+    /// `terminationHandler` before terminating, so reaching here always means
+    /// an *unexpected* exit — the owner still wants Now Playing running.
+    ///
+    /// Nothing used to retry, and nothing else would: `NowPlayingService.
+    /// setActive(true)` is `start()`'s only caller and it's guarded on the
+    /// active flag actually changing, so a widget that was already open never
+    /// re-armed it. One perl/MediaRemote hiccup therefore left the panel
+    /// stuck on "Nothing playing" until the user happened to swipe to another
+    /// widget and back. A bounded, backing-off restart fixes that without
+    /// turning a hard failure into a hot loop.
     private func handleTermination() {
         stdout?.fileHandleForReading.readabilityHandler = nil
         process = nil
         stdout = nil
+
+        // Credit the run that just ended, if it lasted. The budget counts
+        // CONSECUTIVE failed restarts, so it has to clear once a restart has
+        // demonstrably worked — `stop()` alone can't do that, since
+        // `NowPlayingService` deliberately leaves the stream running while
+        // inactive and may never call it, and three unrelated exits across
+        // days of uptime would otherwise exhaust it (Codex PR13 finding).
+        //
+        // Judged on SURVIVAL, not on output, and evaluated here rather than
+        // when bytes arrive. Two earlier placements were both wrong: crediting
+        // on the first byte removed the bound entirely (a helper that prints
+        // one line then dies would reset the budget on every relaunch,
+        // spawning a perl process every 2s forever), and crediting from
+        // `consume` on an uptime threshold never fired at all — the adapter
+        // only prints when now-playing info *changes*, so on an idle Mac it
+        // emits once in the first second and then stays silent for hours,
+        // never re-entering `consume` past the threshold. Uptime at death is
+        // data-independent and still bounds a crash loop, since a doomed run
+        // dies far inside `healthyUptime`.
+        if let launchedAt, Date().timeIntervalSince(launchedAt) > Self.healthyUptime {
+            restartAttempts = 0
+        }
+        // No run is in flight once this returns, and `launchedAt` is only
+        // meaningful between a successful `run()` and its matching
+        // termination. (This deliberately does NOT say anything about
+        // `consume` — crediting from there was removed as wrong, for the
+        // reason given just above, and a comment implying otherwise would
+        // invite someone to put it back.)
+        launchedAt = nil
         resetAccumulatedState()
         isAvailable = false
         stateSubject.send(nil)
-        nowPlayingLog.notice("mediaremote-adapter stream process exited — Now Playing adapter unavailable")
+
+        scheduleRestartIfAllowed()
+    }
+
+    /// Schedules the next bounded, backing-off restart, or gives up.
+    ///
+    /// Shared by the unexpected-exit path and the launch-failure path — both
+    /// mean "the helper isn't running and nobody asked for that".
+    private func scheduleRestartIfAllowed() {
+        guard restartAttempts < Self.maxRestartAttempts else {
+            // Deliberately not "until Now Playing is reopened": `stop()` is
+            // what would reset the budget, and nothing in the app calls it
+            // (`NowPlayingService` leaves the stream running while inactive).
+            // Recovery comes from the credit-at-death path above instead.
+            nowPlayingLog.error(
+                "mediaremote-adapter stream failed repeatedly — no further automatic restarts this session")
+            return
+        }
+        restartAttempts += 1
+        let attempt = restartAttempts
+        nowPlayingLog.notice(
+            "mediaremote-adapter stream unavailable — restarting (attempt \(attempt, privacy: .public))")
+        restartTask?.cancel()
+        restartTask = Task { @MainActor [weak self] in
+            // 2s, 4s, 8s: long enough that a system briefly refusing to launch
+            // the helper isn't hammered, short enough that a transient blip is
+            // invisible to anyone watching the panel.
+            try? await Task.sleep(for: .seconds(1 << attempt))
+            guard !Task.isCancelled, let self, self.process == nil else { return }
+            self.start()
+        }
     }
 
     private func resetAccumulatedState() {

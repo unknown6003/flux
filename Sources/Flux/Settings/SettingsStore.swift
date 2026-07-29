@@ -4,6 +4,25 @@ import Combine
 /// Single source of truth for user preferences. Backed by `UserDefaults` with a
 /// tiny `@Published` surface so SwiftUI and the menu-bar engine both react to
 /// changes. No timers, no polling — writes are event-driven and cheap.
+extension WidgetID {
+    /// The `SettingsStore` flag backing this widget's enabled state.
+    ///
+    /// One mapping, used by everything that needs it: the notch's right-click
+    /// menu (read + toggle), and the Settings "Cycle order" card's Off badge.
+    /// Those were two independent switches over the same six cases, which is
+    /// one edit away from disagreeing the next time a widget is added.
+    var enabledSettingKey: ReferenceWritableKeyPath<SettingsStore, Bool> {
+        switch self {
+        case .nowPlaying: return \.notchNowPlayingEnabled
+        case .shelf: return \.notchShelfEnabled
+        case .calendar: return \.notchCalendarEnabled
+        case .mirror: return \.notchMirrorEnabled
+        case .timers: return \.notchTimersEnabled
+        case .clipboard: return \.notchClipboardEnabled
+        }
+    }
+}
+
 @MainActor
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
@@ -77,7 +96,9 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(autoRehide, forKey: Keys.autoRehide) }
     }
 
-    /// Seconds before revealed items collapse again. 0 disables the timer.
+    /// Seconds before revealed items collapse again. Always positive — the
+    /// `autoRehide` toggle, not a zero value, is what turns the timer off
+    /// (the Settings slider's range starts at 2).
     @Published var autoRehideDelay: Double {
         didSet { defaults.set(autoRehideDelay, forKey: Keys.autoRehideDelay) }
     }

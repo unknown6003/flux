@@ -178,6 +178,26 @@ final class LiveActivityCenter: ObservableObject {
             && a.duration == b.duration && a.priority == b.priority && a.tint == b.tint
     }
 
+    /// Refreshes an activity of `kind` that is ALREADY queued, and does
+    /// nothing at all when none is.
+    ///
+    /// The difference from `post` is the absent case, and it matters: `post`
+    /// appends when there's no existing entry, so a producer using it to keep
+    /// a value current would resurrect an activity the user had already
+    /// dismissed — for the low-battery wing, on every single percent drop
+    /// from 20 to 0. This is for producers that want a *showing* activity to
+    /// stay truthful without ever re-asserting a dismissed one.
+    ///
+    /// Delegates to `post` for the update itself, so it inherits the
+    /// id-preserving supersession (the wing updates in place rather than
+    /// flickering out and back) and the no-op-on-identical-content check.
+    @discardableResult
+    func updateIfPresent(_ activity: LiveActivity) -> Bool {
+        guard queue.contains(where: { $0.kind == activity.kind }) else { return false }
+        post(activity)
+        return true
+    }
+
     /// Dismiss one activity by id — used when the thing driving it (a widget,
     /// a monitor) decides it's done early, before its deadline.
     func dismiss(id: UUID) {

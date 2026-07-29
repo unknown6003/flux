@@ -123,9 +123,16 @@ final class TimersWidget: NotchWidget {
     /// `TimerService`'s boundary task reaps a timer the same tick its
     /// countdown crosses zero — but this is display code on a path that must
     /// never show garbage) reads as `0:00` instead.
+    ///
+    /// Rolls over to `h:mm:ss` at an hour. `customMinutesRange` goes up to
+    /// 120, and a plain `m:ss` rendered a two-hour timer as "120:00" — which
+    /// reads as a malformed clock rather than a long one.
     static func formatCountdown(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds)
+        if total >= 3600 {
+            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+        }
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
@@ -245,11 +252,13 @@ private struct TimersExpandedView: View {
     private var customStepper: some View {
         HStack(spacing: NotchDesign.space2) {
             StepperRepeatButton(systemName: "minus") { adjust(by: -1) }
+                .accessibilityLabel("One minute less")
             Text("\(customMinutes) min")
                 .font(NotchDesign.monoDigitsBody)
                 .foregroundStyle(.white)
                 .frame(minWidth: 44)
             StepperRepeatButton(systemName: "plus") { adjust(by: 1) }
+                .accessibilityLabel("One minute more")
         }
     }
 
@@ -435,6 +444,7 @@ private struct TimerRow: View {
                     .foregroundStyle(Color.white.opacity(0.8))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(timer.isPaused ? "Resume \(timer.label)" : "Pause \(timer.label)")
 
             Button {
                 service.cancel(timer.id)
@@ -444,6 +454,7 @@ private struct TimerRow: View {
                     .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Cancel \(timer.label)")
         }
         .padding(.vertical, 3)
     }

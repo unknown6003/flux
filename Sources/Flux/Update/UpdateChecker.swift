@@ -47,8 +47,48 @@ final class UpdateChecker: ObservableObject {
     private let currentVersion: String
     private var isBusy = false
 
+    /// Set when a user-initiated check arrives while a background one is
+    /// already in flight. The in-flight check then reports its result at
+    /// user-initiated loudness — without this, adopting its spinner (see
+    /// `checkForUpdates`) would strand the UI on `.checking` forever, since
+    /// a quiet check's "nothing new" branch deliberately writes no state.
+    private var pendingUserInitiated = false
+
     init(currentVersion: String = AppInfo.version) {
         self.currentVersion = currentVersion
+    }
+
+    /// Whether `state` is currently advertising a newer release — the one
+    /// question the menu bar needs to answer, without every caller having to
+    /// pattern-match `State` themselves.
+    var pendingRelease: Release? {
+        if case .available(let release) = state { return release }
+        return nil
+    }
+
+    /// Clears outcomes that were true once and aren't necessarily true now.
+    /// Called when Settings opens, since that's the only place they render.
+    ///
+    /// `.failed` and `.readyToInstall` used to be sticky for the process's
+    /// whole life: Settings reopened days later still showed "No internet
+    /// connection." from a check made on a train, or offered to install a DMG
+    /// the user had long since deleted from ~/Downloads. `.upToDate` is
+    /// cleared for the same reason — it's an answer about a moment, not a
+    /// standing fact, and the "Check for Updates" button returning is the
+    /// honest state for a window opened later. (Note this does mean opening
+    /// Settings again right after a manual check drops the tick; that is the
+    /// intended trade, since the alternative is showing a days-old verdict.)
+    /// `.available` is deliberately NOT cleared — that one stays true until a
+    /// check says otherwise, and it's the whole point of the background poll.
+    func clearStaleOutcome() {
+        switch state {
+        case .failed, .upToDate:
+            state = .idle
+        case .readyToInstall(let url):
+            if !FileManager.default.fileExists(atPath: url.path) { state = .idle }
+        default:
+            break
+        }
     }
 
     // MARK: - Checking
@@ -57,7 +97,19 @@ final class UpdateChecker: ObservableObject {
     /// how loud the result is: a manual check shows "up to date" and surfaces
     /// errors; a background check stays silent unless it finds something newer.
     func checkForUpdates(userInitiated: Bool) {
-        guard !isBusy else { return }
+        guard !isBusy else {
+            // A background check is already running (the launch check fires
+            // 4s in), and it left `state` at `.idle` — so the Settings card
+            // still showed its "Check for Updates" button, and pressing it
+            // returned here with no visual change whatsoever. Adopting the
+            // in-flight check's spinner is honest: the answer the user asked
+            // for is genuinely on its way.
+            if userInitiated {
+                pendingUserInitiated = true
+                state = .checking
+            }
+            return
+        }
         // Never interrupt an in-flight download, an install-in-progress, or a
         // ready-to-install DMG.
         switch state {
@@ -70,10 +122,17 @@ final class UpdateChecker: ObservableObject {
         Task { await runCheck(userInitiated: userInitiated) }
     }
 
-    private func runCheck(userInitiated: Bool) async {
-        defer { isBusy = false }
+    /// `pendingUserInitiated` is read at RESULT time, not on entry: the user
+    /// can press "Check for Updates" at any point while this is awaiting the
+    /// network, and the loudness of the outcome has to account for that.
+    private func runCheck(userInitiated requested: Bool) async {
+        defer {
+            isBusy = false
+            pendingUserInitiated = false
+        }
         do {
             let release = try await fetchLatest()
+            let userInitiated = requested || pendingUserInitiated
             lastChecked = Date()
             if let release, isNewer(release.version, than: currentVersion) {
                 state = .available(release)
@@ -84,6 +143,7 @@ final class UpdateChecker: ObservableObject {
                 state = .idle   // a previously-seen release was pulled
             }
         } catch {
+            let userInitiated = requested || pendingUserInitiated
             lastChecked = Date()
             Log.menuBar.error("Update check failed: \(error.localizedDescription)")
             if userInitiated { state = .failed(Self.friendly(error)) }
@@ -281,7 +341,7 @@ final class UpdateChecker: ObservableObject {
         let fm = FileManager.default
         let downloads = try fm.url(for: .downloadsDirectory, in: .userDomainMask,
                                    appropriateFor: nil, create: true)
-        var dest = downloads.appendingPathComponent("Flux-\(version).dmg")
+        let dest = downloads.appendingPathComponent("Flux-\(version).dmg")
         if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
         do {
             try fm.moveItem(at: dmg, to: dest)
