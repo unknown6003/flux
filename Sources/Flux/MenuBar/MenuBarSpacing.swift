@@ -129,6 +129,13 @@ enum MenuBarSpacing {
     /// macOS's own default — see `stash(_:forKey:)`.
     private static func restore(_ preferenceKey: CFString, from stashKey: String) {
         defer { UserDefaults.standard.removeObject(forKey: stashKey) }
+        // Only take the key back if it still holds what Flux put there. If
+        // another menu-bar utility (or a `defaults write`) has changed it
+        // since, that value is newer than the stash and restoring would
+        // silently undo someone else's deliberate change — the same
+        // destruction this stash exists to prevent, just with a different
+        // victim. Flux's own bookkeeping is still cleared either way.
+        guard (CFPreferencesCopyValue(preferenceKey, appID, user, host) as? Int) == compactValue else { return }
         CFPreferencesSetValue(preferenceKey, stashedValue(forKey: stashKey), appID, user, host)
     }
 }

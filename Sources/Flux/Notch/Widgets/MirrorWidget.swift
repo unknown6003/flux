@@ -240,6 +240,22 @@ private struct CameraPreviewView: NSViewRepresentable {
             fatalError("init(coder:) has not been implemented")
         }
 
+        /// Last line of defence for the shared layer.
+        ///
+        /// `viewDidMoveToWindow` performs the handoff in every ordinary
+        /// teardown, but a view can in principle be released without that
+        /// firing (never inserted, or torn down in a way AppKit doesn't route
+        /// through it). If this view still held the layer, it would go down
+        /// with a dead layer tree still as its superlayer, and the next
+        /// `adopt` would be re-parenting out of a zombie. Only ever releases a
+        /// layer this view actually owns — the `superlayer === layer` test is
+        /// what stops it stealing from whoever legitimately has it now.
+        deinit {
+            if let hostedLayer, hostedLayer.superlayer === layer {
+                hostedLayer.removeFromSuperlayer()
+            }
+        }
+
         /// Re-parents `previewLayer` into this view. A no-op when it's already
         /// hosted here, so `updateNSView` can call it on every SwiftUI
         /// invalidation. `addSublayer` removes the layer from whatever

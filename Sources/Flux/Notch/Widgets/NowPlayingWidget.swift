@@ -346,16 +346,24 @@ private struct NowPlayingExpandedView: View {
     /// it opens the source app (via `NSWorkspace`) when its bundle ID is
     /// known, and is otherwise inert rather than guessing.
     private func sourceButton(_ state: NowPlayingState) -> some View {
-        Button {
-            guard let bundleID = state.sourceBundleID,
-                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
-            NSWorkspace.shared.open(url)
+        // Resolved up front so the control can *look* like what it is. When
+        // the source app can't be resolved — no bundle id reported, or it
+        // isn't installed — the button used to render identically and then do
+        // nothing on click, the same dishonest affordance the clipboard's
+        // non-copyable rows had.
+        let appURL = state.sourceBundleID
+            .flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+        return Button {
+            guard let appURL else { return }
+            NSWorkspace.shared.open(appURL)
         } label: {
             Image(systemName: "laptopcomputer")
                 .font(.system(size: 15))
-                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                .foregroundStyle(Color.white.opacity(
+                    appURL == nil ? NotchDesign.quaternaryOpacity : NotchDesign.tertiaryOpacity))
         }
         .buttonStyle(.plain)
+        .disabled(appURL == nil)
         .accessibilityLabel("Open the app that\u{2019}s playing")
     }
 }

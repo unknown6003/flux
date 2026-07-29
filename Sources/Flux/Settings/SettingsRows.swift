@@ -118,6 +118,8 @@ struct PermissionRow: View {
         // greyed out — deep-linking there sends the user to a dead end, and
         // contradicts the badge right beside it already saying "Restricted by
         // a device policy". The explanation is the whole affordance.
+        // `.unavailable` alongside `.restricted`: neither has a switch in
+        // System Settings to go and flip.
         case .granted, .restricted, .unavailable:
             EmptyView()
         }

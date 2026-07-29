@@ -40,14 +40,13 @@ struct PermissionGatedView<Content: View>: View {
             case .notDetermined:
                 explainer(message: notDeterminedMessage, actionTitle: "Grant Access",
                           action: { permissions.request(kind) })
-            case .denied, .unavailable:
+            case .denied:
                 explainer(message: deniedMessage, actionTitle: "Open System Settings",
                           action: { permissions.openSystemSettings(kind) })
-            // No action for `.restricted`: an MDM/parental-controls policy
-            // greys the System Settings toggle out, so the button would take
-            // the user somewhere they can't change anything. Same reasoning
-            // as `PermissionRow.actionButton`.
-            case .restricted:
+            // `.unavailable` joins `.restricted`: it means the capability
+            // doesn't exist on this machine at all, so System Settings has no
+            // switch to offer and the button is a dead end either way.
+            case .restricted, .unavailable:
                 explainer(message: deniedMessage, actionTitle: nil, action: {})
             case .granted:
                 content()

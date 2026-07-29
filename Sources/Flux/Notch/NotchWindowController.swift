@@ -160,6 +160,8 @@ final class NotchWindowController {
     /// See `installPointerMonitors()` — idempotence can't be keyed on a
     /// monitor token, since `addGlobalMonitorForEvents` may return nil.
     private var pointerMonitorsInstalled = false
+    /// See `installCollapsedClickMonitors()`.
+    private var collapsedClickMonitorsInstalled = false
     /// Set while the right-click context menu is tracking. `NSMenu.popUp`
     /// runs its own modal event loop, during which the cursor necessarily
     /// leaves the notch to reach the menu items — without this the hover-out
@@ -467,7 +469,12 @@ final class NotchWindowController {
     }
 
     private func installCollapsedClickMonitors() {
-        guard globalClickMonitor == nil else { return }
+        // Explicit flag, not `globalClickMonitor == nil` — same reasoning as
+        // `installPointerMonitors()`: `addGlobalMonitorForEvents` may return
+        // nil, and this runs on every state transition, so a nillable token
+        // would re-add the local monitor on each collapse.
+        guard !collapsedClickMonitorsInstalled else { return }
+        collapsedClickMonitorsInstalled = true
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             // Captured synchronously alongside the location, for the same
             // reason (see the comment above) — reading `event.modifierFlags`
@@ -501,6 +508,7 @@ final class NotchWindowController {
         let monitors = [globalClickMonitor, localClickMonitor].compactMap { $0 }
         globalClickMonitor = nil
         localClickMonitor = nil
+        collapsedClickMonitorsInstalled = false
         guard !monitors.isEmpty else { return }
         DispatchQueue.main.async { monitors.forEach { NSEvent.removeMonitor($0) } }
     }

@@ -23,7 +23,13 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to an immutable commit SHA — see the note in codeql.yml. It
+      # matters more here than there: this workflow holds `contents: write`
+      # and publishes the DMG the in-app updater installs, so a repointed
+      # tag could ship arbitrary code to every Flux user.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Swift version
         run: swift --version
@@ -38,14 +44,14 @@ jobs:
         run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots all
 
       - name: Upload notch snapshots artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: notch-snapshots
           path: snapshots/
           if-no-files-found: error
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Flux.dmg
           path: build/Flux.dmg

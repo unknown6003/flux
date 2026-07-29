@@ -48,10 +48,20 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to an immutable commit SHA, not a mutable tag: a tag can be
+      # repointed by the action's owner at any time, which for a workflow
+      # holding `security-events: write` is a supply-chain hole. Bump these
+      # deliberately, with the version in the trailing comment as the
+      # human-readable record of what they are.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # This job never pushes; leaving the token in the local git config
+          # just widens what a compromised later step (or a dependency of
+          # `swift build`) could reach.
+          persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
         with:
           languages: swift
           build-mode: manual
@@ -71,7 +81,7 @@ jobs:
         run: swift build -c debug
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
         continue-on-error: true
         with:
           category: /language:swift

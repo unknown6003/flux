@@ -269,10 +269,33 @@ final class CrashReporter: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// Locale/calendar/timezone pinned explicitly. A bare `DateFormatter`
+    /// with a fixed `dateFormat` still renders through the *user's* locale
+    /// and calendar, so the same report could come back in a non-Gregorian
+    /// calendar or with localised numerals — unreadable to whoever it's sent
+    /// to, and not comparable against anything. `en_US_POSIX` is the standard
+    /// answer for a machine-readable timestamp.
     private static func format(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss ZZZ"
         return formatter.string(from: date)
+    }
+
+    /// Replaces the user's home directory with `~` anywhere it appears.
+    ///
+    /// Crash-report lines are copied verbatim into something the user then
+    /// pastes into a bug report, and an `.ips` termination/exception line can
+    /// carry absolute paths — which embed the account's short name. That's
+    /// gratuitous for diagnosing a crash, and this file's whole premise (see
+    /// the type doc comment's privacy note) is that nothing user-identifying
+    /// leaves the machine by accident.
+    static func redactingHome(_ line: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        guard !home.isEmpty, home != "/" else { return line }
+        return line.replacingOccurrences(of: home, with: "~")
     }
 
     /// Slack on the upper bound, for the gap between the previous process
@@ -367,7 +390,7 @@ final class CrashReporter: ObservableObject {
             guard interesting.contains(where: { trimmed.contains($0) }) else { continue }
             // Long JSON lines from an `.ips` header would otherwise dump the
             // entire single-line payload into the report.
-            picked.append("  " + String(trimmed.prefix(300)))
+            picked.append("  " + redactingHome(String(trimmed.prefix(300))))
             // `>=`, checked after the append: the file-name line occupies
             // slot 0, so this keeps the filename plus 8 signature lines.
             if picked.count >= 9 { break }

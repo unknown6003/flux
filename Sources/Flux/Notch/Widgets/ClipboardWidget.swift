@@ -159,7 +159,10 @@ private struct ClipboardRow: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: NotchDesign.rowRadius, style: .continuous)
-                .fill(Color.white.opacity(isHovering ? 0.12 : 0.06))
+                // Only a copyable row lifts on hover. Dimming a non-copyable
+                // one while still highlighting it under the pointer sends two
+                // opposite signals about the same row.
+                .fill(Color.white.opacity(isHovering && isCopyable ? 0.12 : 0.06))
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: handleTap)

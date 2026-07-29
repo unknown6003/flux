@@ -391,9 +391,13 @@ lifetime. Both changes exist to make the crash *impossible* rather than
 - [ ] **Notch Settings… jumps to the right tab**, both when Settings is closed
       and when it's already open on a different tab.
 - [ ] **No double context menu**: right-click the collapsed notch while a
-      normal app window is underneath the top strip and confirm only Flux's
-      menu appears — the right-click target is confined to the menu-bar strip
-      precisely so the window beneath doesn't also pop its own.
+      normal app window is underneath the top strip. Flux's menu should
+      appear; the window beneath should not also pop one. Note the mechanism
+      is avoidance, not suppression — a global monitor cannot consume the
+      event it observes, so this relies on the right-click target being
+      confined to the menu-bar strip, where nothing else offers a context
+      menu. If you *do* see two menus, that means something under the strip
+      claims right-clicks there, and the target needs shrinking further.
 
 ### M12 review follow-ups (Codex + adversarial pass)
 

@@ -2853,12 +2853,12 @@ enum SelfTest {
             check(width > height,
                   "NotchMetrics: the drawer is wider than it is tall — it hangs off the notch, it isn't a window")
 
-            // The regression this whole change exists to prevent: nothing in
-            // the sizing API takes a WidgetID any more, so a page swipe
-            // cannot resize the drawer. This is enforced by the signature
-            // (`expandedHeight(for: CGFloat)`), and asserted here as intent.
-            check(NotchMetrics.expandedHeight(for: notchWidth) == NotchMetrics.expandedHeight(for: notchWidth),
-                  "NotchMetrics: expanded height depends only on the notch width — there is no per-widget height to differ")
+            // The regression this whole change exists to prevent — a page
+            // swipe resizing the drawer — is enforced by the SIGNATURE:
+            // `expandedHeight(for: CGFloat)` cannot be handed a `WidgetID`.
+            // That's a compile-time guarantee, so there is deliberately no
+            // runtime assertion for it here; comparing the function to itself
+            // (as a first pass did) proves nothing at all.
 
             // Duo has to fit the shared box rather than widen it. Its pane
             // split is a fraction, so check it leaves a workable remainder

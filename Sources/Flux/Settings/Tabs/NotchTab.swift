@@ -231,14 +231,7 @@ struct NotchTab: View {
     }
 
     private func isEnabled(_ id: WidgetID) -> Bool {
-        switch id {
-        case .nowPlaying: return settings.notchNowPlayingEnabled
-        case .shelf: return settings.notchShelfEnabled
-        case .calendar: return settings.notchCalendarEnabled
-        case .mirror: return settings.notchMirrorEnabled
-        case .timers: return settings.notchTimersEnabled
-        case .clipboard: return settings.notchClipboardEnabled
-        }
+        settings[keyPath: id.enabledSettingKey]
     }
 
     /// Battery/Bluetooth wings (M3) — separate from `widgetsCard` since these

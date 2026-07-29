@@ -244,14 +244,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self, !self.isReconcilingLaunchAtLogin else { return }
                 let actual = LoginItemManager.setEnabled(enabled)
                 guard actual != enabled else { return }
-                // Writing back re-enters this very sink (`@Published`
-                // publishes from `willSet`, and `dropFirst()` only drops the
-                // first element ever). The flag makes that a single clean
-                // correction instead of a second, pointless
-                // `LoginItemManager.setEnabled` call for the same failure.
+                // DEFERRED one runloop turn, and that is the whole fix.
+                // `@Published` emits from `willSet`, so this sink runs BEFORE
+                // the triggering assignment has written its own storage. A
+                // synchronous correction here completes first and is then
+                // overwritten by that original write — leaving the toggle
+                // showing precisely the state macOS refused, i.e. the bug
+                // this was meant to fix, still there. (The same `willSet`
+                // footgun `configureNotch` documents, pointing the other
+                // way.)
+                //
+                // The flag still earns its keep: the deferred write re-enters
+                // this sink, and without it that re-entry would call
+                // `LoginItemManager.setEnabled` a second time for the same
+                // failure.
                 self.isReconcilingLaunchAtLogin = true
-                self.settings.launchAtLogin = actual
-                self.isReconcilingLaunchAtLogin = false
+                DispatchQueue.main.async {
+                    self.settings.launchAtLogin = actual
+                    self.isReconcilingLaunchAtLogin = false
+                }
             }
             .store(in: &cancellables)
 
@@ -644,18 +655,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Notch context menu
 
-    /// Which `SettingsStore` flag backs each widget's enabled state — the one
-    /// mapping the menu's checkmark toggles need. Written as a table rather
-    /// than a `switch` in two places (read + write) so the two can't drift.
-    private static let widgetSettingKeys: [WidgetID: ReferenceWritableKeyPath<SettingsStore, Bool>] = [
-        .nowPlaying: \.notchNowPlayingEnabled,
-        .shelf: \.notchShelfEnabled,
-        .calendar: \.notchCalendarEnabled,
-        .mirror: \.notchMirrorEnabled,
-        .timers: \.notchTimersEnabled,
-        .clipboard: \.notchClipboardEnabled,
-    ]
-
     /// Built fresh on every right-click (not cached) so every dynamic part —
     /// the expand/collapse verb, the widget checkmarks — reflects the state
     /// at the moment the menu opens rather than whenever it was last built.
@@ -690,9 +689,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // find here to switch back on, and it's absent from `enabledWidgets`
         // by definition.
         for id in WidgetID.allCases {
-            guard let key = Self.widgetSettingKeys[id] else { continue }
             let item = makeNotchItem(id.title, #selector(notchMenuToggleWidget))
-            item.state = settings[keyPath: key] ? .on : .off
+            item.state = settings[keyPath: id.enabledSettingKey] ? .on : .off
             item.image = NSImage(systemSymbolName: id.symbol, accessibilityDescription: nil)
             item.representedObject = id.rawValue
             submenu.addItem(item)
@@ -726,13 +724,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func notchMenuToggleWidget(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
-              let id = WidgetID(rawValue: raw),
-              let key = Self.widgetSettingKeys[id] else { return }
+              let id = WidgetID(rawValue: raw) else { return }
         // Written through `settings` (not `registry.setEnabled` directly) so
         // the change persists and the Settings window's own toggle updates
         // with it — the registry is driven from the settings sink in
         // `observeNotchSettings()`.
-        settings[keyPath: key].toggle()
+        settings[keyPath: id.enabledSettingKey].toggle()
     }
 
     @objc private func notchMenuOpenNotchSettings() { settingsWindow.show(tab: .notch) }
