@@ -191,7 +191,14 @@ final class NotchViewModel: ObservableObject {
                     self.needsActivityReconcile = true
                     return
                 }
-                self.reconcileActivityState()
+                // The EMITTED value, not a re-read. `activities.$current` is
+                // `@Published`, so this sink runs during its `willSet` —
+                // `activities.current` still holds the PREVIOUS value here,
+                // and reconciling against it processes every change one step
+                // behind, which breaks activity handling outright. (Third
+                // time this exact footgun has bitten in this branch; it is
+                // the repo's most reliable way to be wrong.)
+                self.applyActivity(activity)
             }
             .store(in: &cancellables)
     }
@@ -569,13 +576,13 @@ final class NotchViewModel: ObservableObject {
     /// needs applying — see the guard in `observeActivities()`.
     private var needsActivityReconcile = false
 
-    /// Brings `state` back in line with whatever `activities` currently holds.
+    /// Brings `state` in line with `activity`.
     ///
-    /// Deliberately re-reads `activities.current` rather than taking the
-    /// emission's value: by the time a deferred reconciliation runs, the
-    /// queue may have moved on again, and the queue is the truth.
-    private func reconcileActivityState() {
-        let activity = activities.current
+    /// A live activity preempts `.collapsed` and updates while already
+    /// showing as `.activity`; it never disturbs `.expanded` (the widget
+    /// panel wins while it's open) — ending or losing the activity there is
+    /// only noticed the next time something collapses.
+    private func applyActivity(_ activity: LiveActivity?) {
         switch state {
         case .collapsed:
             if let activity { transition(to: .activity(activity.id)) }
@@ -584,6 +591,18 @@ final class NotchViewModel: ObservableObject {
         case .expanded:
             break
         }
+    }
+
+    /// The DEFERRED path: applies whatever the queue holds now.
+    ///
+    /// Re-reading `activities.current` is correct *here* and wrong in the
+    /// sink, which is the subtlety. This runs from `transition`'s `defer`,
+    /// by which point the `willSet` that triggered the deferral has returned
+    /// and the storage write has landed — so the queue is current, and may
+    /// even have moved on again since. In the sink, the same read would be
+    /// one value behind.
+    private func reconcileActivityState() {
+        applyActivity(activities.current)
     }
 
     private func transition(to newState: NotchState) {
