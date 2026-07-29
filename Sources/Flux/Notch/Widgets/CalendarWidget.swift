@@ -64,6 +64,10 @@ final class CalendarWidget: NotchWidget {
     /// same permission refresh on its own.
     func willPresent() {
         permissions.refresh(.calendar)
+        // Re-fetch on every presentation — see `CalendarService.refreshNow`.
+        // Without this the agenda showed whatever the single launch-time
+        // fetch produced, and reopening the widget could never repair it.
+        service.refreshNow()
     }
 
     /// Nothing to do — see the type's own doc comment on why stopping the

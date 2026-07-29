@@ -135,10 +135,8 @@ private struct ClipboardRow: View {
 
     var body: some View {
         HStack(spacing: NotchDesign.rowSpacing) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
-                .frame(width: 16)
+            leadingGlyph
+                .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.preview)
@@ -190,13 +188,16 @@ private struct ClipboardRow: View {
             if isCopyable {
                 Button("Copy") { handleTap() }
             }
+            if let url = entry.linkURL {
+                Button("Open in Browser") { NSWorkspace.shared.open(url) }
+            }
             Button("Remove", role: .destructive) { monitor.remove(entry.id) }
         }
     }
 
     /// Whether this entry can actually be copied back — see `handleTap`.
     private var isCopyable: Bool {
-        entry.fullString != nil || entry.filePaths != nil
+        entry.fullString != nil || entry.filePaths != nil || entry.imageData != nil
     }
 
     private var accessibilityLabel: String {
@@ -205,6 +206,7 @@ private struct ClipboardRow: View {
         case .text: kind = "Text"
         case .url: kind = "Link"
         case .image: kind = "Image"
+        case .color: kind = "Colour"
         case .file: kind = "File"
         case .other: kind = "Clipboard item"
         }
@@ -224,16 +226,32 @@ private struct ClipboardRow: View {
             // that only exists while hovered also only exists in the
             // accessibility tree while hovered, which puts the sole remove
             // control out of reach of anyone not using a pointer.
-            Button {
-                monitor.remove(entry.id)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
+            HStack(spacing: 4) {
+                if let url = entry.linkURL {
+                    // Copying a URL back so you can paste it into a browser
+                    // is a strictly worse version of just opening it, and
+                    // opening is the commonest thing to want from a copied
+                    // link. Also in the context menu, for pointer-free use.
+                    Button { NSWorkspace.shared.open(url) } label: {
+                        Image(systemName: "arrow.up.forward.app.fill")
+                            .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(isHovering ? 1 : 0)
+                    .allowsHitTesting(isHovering)
+                    .accessibilityLabel("Open \(url.host ?? "link") in browser")
+                }
+                Button {
+                    monitor.remove(entry.id)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
+                }
+                .buttonStyle(.plain)
+                .opacity(isHovering ? 1 : 0)
+                .allowsHitTesting(isHovering)
+                .accessibilityLabel("Remove clipboard item")
             }
-            .buttonStyle(.plain)
-            .opacity(isHovering ? 1 : 0)
-            .allowsHitTesting(isHovering)
-            .accessibilityLabel("Remove clipboard item")
         }
     }
 
@@ -251,11 +269,42 @@ private struct ClipboardRow: View {
         }
     }
 
+    /// A real thumbnail for an image, a real swatch for a colour, an SF
+    /// Symbol for everything else. The point of a clipboard history is
+    /// recognising an entry at a glance, and "Image (1470×956)" is not
+    /// recognisable — every screenshot looks identical.
+    @ViewBuilder
+    private var leadingGlyph: some View {
+        if entry.kind == .image, let data = entry.imageData, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 18, height: 18)
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        } else if let components = entry.colorComponents {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(Color(.sRGB, red: components.red, green: components.green,
+                            blue: components.blue, opacity: components.alpha))
+                .frame(width: 16, height: 16)
+                .overlay(
+                    // A hairline, so a white or fully transparent swatch is
+                    // still visible against the panel's black.
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.white.opacity(NotchDesign.hairlineOpacity))
+                )
+        } else {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+        }
+    }
+
     private var icon: String {
         switch entry.kind {
         case .text: return "doc.plaintext"
         case .url: return "link"
         case .image: return "photo"
+        case .color: return "paintpalette"
         case .file: return "doc"
         case .other: return "questionmark.square.dashed"
         }

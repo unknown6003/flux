@@ -191,7 +191,17 @@ final class NotchPanel: NSPanel {
             if vertical {
                 viewModel.swiped(accumulatedY > 0 ? .down : .up)
             } else {
-                viewModel.swiped(accumulatedX > 0 ? .left : .right)
+                // The two axes MUST use the same sign convention, and this
+                // one didn't. Under natural scrolling `scrollingDelta`
+                // follows the fingers on both axes: down is `deltaY > 0`,
+                // right is `deltaX > 0`. The vertical line honours that
+                // (fingers down expands, which is the shipped, QA-verified
+                // behaviour); the horizontal one used to read `deltaX > 0`
+                // as `.left`, i.e. fingers-right advancing the cycle. Since
+                // `.left` maps to `cycle(forward:)`, flicking a page away
+                // walked the configured order BACKWARDS — which is what
+                // "the cycle order doesn't match what I set" actually was.
+                viewModel.swiped(accumulatedX > 0 ? .right : .left)
             }
             return true
         case .ended, .cancelled:

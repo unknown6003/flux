@@ -65,7 +65,7 @@ final class NotchActivityRouter {
     /// `applyMonitorState`) — `false` only for
     /// `--selftest`, which feeds synthetic events straight through
     /// `power.events`/`bluetooth.events` (wired
-    /// unconditionally by `observePower`/`observeBluetooth`/`observeVolume`
+    /// unconditionally by `observePower`/`observeBluetooth`
     /// above) and must never let this router's normal settings-driven
     /// lifecycle touch real IOKit/CoreAudio on a headless CI runner.
     private let startsMonitors: Bool
@@ -118,7 +118,6 @@ final class NotchActivityRouter {
 
         observePower()
         observeBluetooth()
-        observeVolume()
         observeOverflow()
         observeOverflowGating()
         observeCalendar()
@@ -588,6 +587,142 @@ final class NotchActivityRouter {
             .dropFirst()
             .sink { [weak self] duoActive in self?.applyMonitorState(duoActive: duoActive) }
             .store(in: &cancellables)
+    }
+
+
+    /// Caches the injected `presentation` publisher's latest value into
+    /// `isPresenting` and re-applies both the monitor state and the
+    /// calendar-event activity gating whenever it changes — this is the
+    /// "screen-disappear stops the service" fix: `NotchWindowController`
+    /// wires its own `$isPresenting` in production, so losing the notch's
+    /// screen (external-only clamshell, lid closed) or disabling the notch
+    /// panel entirely flows straight through to `calendarServiceShouldRun`
+    /// seeing `notchPresenting == false`, without any bespoke closure. The
+    /// first delivery (every `@Published`/`CurrentValueSubject`-backed
+    /// publisher emits synchronously on subscribe) is what seeds
+    /// `isPresenting` correctly before `init`'s own final `applyMonitorState()`
+    /// call — deliberately not `dropFirst()`, unlike `observeMonitorGating`'s
+    /// settings sinks, which don't need a value seeded this way since
+    /// `settings` itself is read directly wherever it matters.
+    private func observePresentation(_ presentation: AnyPublisher<Bool, Never>) {
+        presentation
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.isPresenting = value
+                self.applyMonitorState()
+                self.recomputeCalendarActivity()
+                self.recomputeTimerActivity()
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The battery/Bluetooth monitors only run when their own settings
+    /// toggle is on *and* the notch panel itself is enabled *and* there's
+    /// somewhere to actually show a wing (`isPresenting`) — an external-only
+    /// clamshell setup, or a moment where the notch's screen has been lost,
+    /// leaves nowhere for either activity to render, so idling the monitors
+    /// there saves the IOKit run-loop source / CoreAudio listener for
+    /// nothing. `start()`/`stop()` on both monitors are no-ops when already
+    /// in the requested state, so this can be called freely on every
+    /// settings tick (or presentation/state change) without worrying about
+    /// double-registration.
+    ///
+    /// The four `Bool?` parameters default to `nil`, in which case the
+    /// current value is read straight from `settings` — used by every caller
+    /// that isn't reacting to one specific emitted settings change (`init`'s
+    /// initial call, and every non-settings sink: presentation, notch state,
+    /// permission). `observeMonitorGating`'s sink is the one caller that
+    /// always supplies all four explicitly.
+    ///
+    /// Also gated on `startsMonitors` — `false` only for `--selftest` (see
+    /// its doc comment) — so a headless test run never touches real
+    /// IOKit/CoreAudio/EventKit state no matter how many settings toggles
+    /// it flips.
+    ///
+    /// Calendar's `start()`/`stop()` here is now this router's ONLY vote —
+    /// see `calendarServiceShouldRun` and `CalendarService`'s own doc comment
+    /// on the ownership fix this replaced (the old
+    /// `isCalendarWidgetPresented()` closure this router used to defer to).
+    /// `calendarPermissionGranted`/`state`/`duoActive` are optionals, defaulting
+    /// to `nil` (read live) — the same "explicit value from a sink observing
+    /// THAT exact publisher, live read everywhere else" split every other
+    /// parameter here already follows. `observeNotchState`'s `viewModel.$state`
+    /// sink and the new `observeDuoActive`'s `viewModel.$duoActive` sink pass
+    /// their emitted values explicitly for the same reason
+    /// `observeMonitorGating`'s combineLatest sink already passes
+    /// `notchEnabled`/`batteryEnabled`/`bluetoothEnabled`/`calendarEnabled`:
+    /// `@Published` delivers from `willSet`, before backing storage updates,
+    /// so re-reading `viewModel.state`/`viewModel.duoActive`/
+    /// `permissions.statuses` from inside a sink subscribed to that exact
+    /// publisher would otherwise see the STALE pre-change value.
+    private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil,
+                                    bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil,
+                                    calendarPermissionGranted: Bool? = nil,
+                                    state: NotchState? = nil, duoActive: Bool? = nil) {
+        guard startsMonitors else { return }
+        let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
+
+        if notchOn && (batteryEnabled ?? settings.notchActivityBatteryEnabled) {
+            power.start()
+        } else {
+            power.stop()
+            activities.dismiss(kind: .battery)
+        }
+
+        if notchOn && (bluetoothEnabled ?? settings.notchActivityBluetoothEnabled) {
+            bluetooth.start()
+        } else {
+            bluetooth.stop()
+            activities.dismiss(kind: .bluetoothDevice)
+        }
+
+        let shouldRunCalendar = Self.calendarServiceShouldRun(
+            permissionGranted: calendarPermissionGranted ?? (permissions.statuses[.calendar] == .granted),
+            notchPresenting: isPresenting,
+            widgetEnabled: settings.notchCalendarEnabled,
+            state: state ?? viewModel.state,
+            activityToggleOn: calendarEnabled ?? settings.notchActivityCalendarEventEnabled,
+            duoActive: duoActive ?? viewModel.duoActive)
+        if shouldRunCalendar {
+            calendar.start()
+        } else {
+            calendar.stop()
+        }
+    }
+
+    /// Pure core of "should the shared `CalendarService` be running right
+    /// now" — the M4 code-review fix that replaced the old
+    /// `isCalendarWidgetPresented`/`isPresentationAvailable` closure pair
+    /// (see `CalendarService`'s own doc comment for the bug that shape let
+    /// through: a permission grant while the widget was open never started
+    /// the service, because neither owner's own start condition was
+    /// individually true at that instant).
+    ///
+    /// The service only ever needs to run for one of two reasons — the
+    /// Calendar widget itself is the one currently expanded (so its agenda
+    /// needs live data), or the event-soon activity toggle is on (so a wing
+    /// can appear even while the widget itself is closed) — and neither
+    /// reason matters without BOTH calendar permission and somewhere to
+    /// actually present: a denied permission has nothing to show, and a
+    /// service running with the notch's screen gone (or the panel disabled)
+    /// has nowhere to render either the widget or the wing.
+    /// M7: extended with `duoActive` — Duo (Now Playing + Calendar side by
+    /// side, see `NotchViewModel.duoActive`) shows the Calendar pane's own
+    /// agenda even when the event-soon toggle is off and the Calendar widget
+    /// itself isn't the one `.expanded`, so `CalendarService` must be running
+    /// in that state too, or the Duo pane renders an empty agenda. `duoActive`
+    /// alone isn't sufficient on its own (it stays true even while some OTHER
+    /// widget, or nothing, is expanded) — it only matters here alongside the
+    /// Duo pane actually being the thing on screen, i.e. `state ==
+    /// .expanded(.nowPlaying)` (Duo always renders as the Now Playing widget
+    /// slot widened to include Calendar — see `NotchRootView.duoContent`).
+    static func calendarServiceShouldRun(permissionGranted: Bool, notchPresenting: Bool,
+                                          widgetEnabled: Bool, state: NotchState,
+                                          activityToggleOn: Bool, duoActive: Bool) -> Bool {
+        guard permissionGranted, notchPresenting else { return false }
+        let widgetOpen = widgetEnabled && state == .expanded(.calendar)
+        let duoShowing = duoActive && state == .expanded(.nowPlaying)
+        return widgetOpen || activityToggleOn || duoShowing
     }
 
     // MARK: - Timers (M6)

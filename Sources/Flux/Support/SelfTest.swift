@@ -1970,6 +1970,44 @@ enum SelfTest {
         // --- M6: ClipboardMonitor.classify — the text-vs-URL seam extracted
         // out of `capture(from:)` so this is testable against a plain
         // `String`, with no real `NSPasteboard` content involved. ---
+        // --- M13: hex-colour detection. The leading `#` is required on
+        // purpose — plenty of ordinary words are valid hex, and silently
+        // turning a copied word into a colour swatch is worse than missing
+        // the odd bare hex string. ---
+        check(ClipboardMonitor.classify(string: "#FF8800") == .color,
+              "Clipboard: a 6-digit hex colour classifies as .color")
+        check(ClipboardMonitor.classify(string: "  #f80  ") == .color,
+              "Clipboard: shorthand hex, surrounding whitespace tolerated")
+        check(ClipboardMonitor.classify(string: "#FF8800CC") == .color,
+              "Clipboard: 8-digit hex (with alpha) classifies as .color")
+        check(ClipboardMonitor.classify(string: "decade") == .text,
+              "Clipboard: a bare word that happens to be valid hex is NOT a colour — the # is what disambiguates")
+        check(ClipboardMonitor.classify(string: "#nothex") == .text,
+              "Clipboard: a # prefix alone isn't enough; the body must be hex")
+        check(ClipboardMonitor.classify(string: "#FF88") == .text,
+              "Clipboard: an unsupported digit count is text, not a half-parsed colour")
+
+        if let white = ClipboardMonitor.parseHexColor("#FFFFFF") {
+            check(white.red == 1 && white.green == 1 && white.blue == 1 && white.alpha == 1,
+                  "Clipboard.parseHexColor: #FFFFFF is opaque white")
+        } else {
+            check(false, "Clipboard.parseHexColor: #FFFFFF should parse")
+        }
+        if let short = ClipboardMonitor.parseHexColor("#f00"), let long = ClipboardMonitor.parseHexColor("#ff0000") {
+            check(short == long,
+                  "Clipboard.parseHexColor: shorthand expands to the same colour as its long form")
+        } else {
+            check(false, "Clipboard.parseHexColor: both #f00 and #ff0000 should parse")
+        }
+        if let alpha = ClipboardMonitor.parseHexColor("#00000080") {
+            check(alpha.alpha > 0.4 && alpha.alpha < 0.6,
+                  "Clipboard.parseHexColor: the 4th byte is alpha, not a colour channel")
+        } else {
+            check(false, "Clipboard.parseHexColor: #00000080 should parse")
+        }
+        check(ClipboardMonitor.parseHexColor("FF8800") == nil,
+              "Clipboard.parseHexColor: refuses a bare hex string with no #")
+
         check(ClipboardMonitor.classify(string: "https://example.com/path") == .url,
               "ClipboardMonitor: classify recognizes a full URL (scheme + host) as .url")
         check(ClipboardMonitor.classify(string: "hello world") == .text,

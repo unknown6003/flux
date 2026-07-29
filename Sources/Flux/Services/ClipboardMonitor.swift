@@ -13,7 +13,7 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// What kind of content this entry holds — drives `ClipboardWidget`'s
     /// per-row SF Symbol.
     enum Kind: String, Equatable {
-        case text, url, image, file, other
+        case text, url, image, file, color, other
     }
 
     let id: UUID
@@ -28,14 +28,8 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// for `.file` entries — those round-trip through `filePaths` instead
     /// (a newline-joined string would corrupt any path that itself contains
     /// a newline, however rare) — and for `.image` entries, where it's `nil`
-    /// for a different reason: retaining decoded image bytes for
-    /// potentially 50 history entries at once (`historyLimit`) is a real
-    /// RAM cost for a feature whose whole point is glanceable history, not
-    /// an image library — so v1 deliberately shows an image entry for
-    /// context only (`preview` describes its dimensions) with no copy-back
-    /// and no retained pixel data at all. A future milestone that wants
-    /// image copy-back should budget the memory cost explicitly rather
-    /// than this type accumulating it as a side effect of history.
+    /// for a different reason: an image's payload lives in `imageData`
+    /// instead, since it isn't a string.
     /// Capped at `ClipboardMonitor.fullStringCap` characters (see that
     /// constant's own doc comment) — a truncation marker is appended when
     /// it is.
@@ -47,6 +41,50 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// split a joined string apart again, which would silently corrupt any
     /// path containing a newline.
     let filePaths: [String]?
+
+    /// PNG bytes for an image entry, so it can be shown as a thumbnail and
+    /// copied back.
+    ///
+    /// This replaces a deliberate v1 limitation: images were captured as a
+    /// bare "Image (W×H)" label with no payload at all, so they appeared in
+    /// the list and could not be pasted. The memory concern behind that
+    /// decision is real and is handled by `ClipboardMonitor.imageDataCap`
+    /// instead of by refusing to store anything.
+    ///
+    /// `Data` rather than `NSImage`: `Equatable` (which the history list
+    /// relies on), and a bounded, inspectable size.
+    var imageData: Data?
+
+    /// The parsed colour for a `.color` entry, so the row can show a real
+    /// swatch. Components rather than an `NSColor` for the same
+    /// `Equatable`/value-type reason.
+    var colorComponents: ColorComponents?
+
+    /// A `.url` entry's destination, when it parses as something openable.
+    var linkURL: URL? {
+        guard kind == .url, let fullString else { return nil }
+        return URL(string: fullString.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    struct ColorComponents: Equatable {
+        let red: Double
+        let green: Double
+        let blue: Double
+        let alpha: Double
+    }
+
+    init(id: UUID, capturedAt: Date, kind: Kind, preview: String,
+         fullString: String?, filePaths: [String]?,
+         imageData: Data? = nil, colorComponents: ColorComponents? = nil) {
+        self.id = id
+        self.capturedAt = capturedAt
+        self.kind = kind
+        self.preview = preview
+        self.fullString = fullString
+        self.filePaths = filePaths
+        self.imageData = imageData
+        self.colorComponents = colorComponents
+    }
 }
 
 /// Polls `NSPasteboard.general.changeCount` on a 1-second timer — the ONLY
@@ -167,7 +205,12 @@ final class ClipboardMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         lastChangeCount = pasteboard.changeCount
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // 0.35s, not 1s. `changeCount` only ever reports the LATEST change,
+        // so two copies inside one poll window collapse into one and the
+        // first is lost outright — a large part of "it doesn't detect
+        // everything I copy". The poll reads a single integer; running it
+        // three times as often is not measurable against that miss rate.
+        timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
     }
@@ -263,13 +306,35 @@ final class ClipboardMonitor: ObservableObject {
         if let image = NSImage(pasteboard: pasteboard) {
             return imageEntry(image: image)
         }
-        if let string = pasteboard.string(forType: .string), !string.isEmpty {
+        if let string = plainText(from: pasteboard), !string.isEmpty {
             switch classify(string: string) {
             case .url: return urlEntry(string: string)
+            case .color: return colorEntry(string: string)
             default: return textEntry(string: string)
             }
         }
         return otherEntry()
+    }
+
+    /// Plain text from whatever flavour the source app actually wrote.
+    ///
+    /// `string(forType: .string)` alone misses a real class of copies: apps
+    /// that write only rich text (RTF, or HTML from a browser) leave no
+    /// `public.utf8-plain-text` flavour, so capture fell through to a
+    /// contentless `.other` entry — one of the "it doesn't detect everything
+    /// I copy" cases. Falls back through the rich flavours and flattens them.
+    static func plainText(from pasteboard: NSPasteboard) -> String? {
+        if let plain = pasteboard.string(forType: .string), !plain.isEmpty { return plain }
+        for type in [NSPasteboard.PasteboardType.rtf, .rtfd, .html] {
+            guard let data = pasteboard.data(forType: type) else { continue }
+            let options: [NSAttributedString.DocumentReadingOptionKey: Any] =
+                type == .html ? [.documentType: NSAttributedString.DocumentType.html] : [:]
+            guard let attributed = try? NSAttributedString(
+                data: data, options: options, documentAttributes: nil) else { continue }
+            let text = attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        return nil
     }
 
     /// Pure text-vs-URL classification for a captured string — split out of
@@ -281,10 +346,51 @@ final class ClipboardMonitor: ObservableObject {
     /// by what's actually on the pasteboard, not by inspecting string
     /// content.
     static func classify(string: String) -> ClipboardEntry.Kind {
-        if let url = URL(string: string), url.scheme != nil, url.host != nil {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if parseHexColor(trimmed) != nil { return .color }
+        if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
             return .url
         }
         return .text
+    }
+
+    /// Parses `#RGB`, `#RGBA`, `#RRGGBB` or `#RRGGBBAA`.
+    ///
+    /// The leading `#` is REQUIRED, deliberately. Plenty of ordinary words
+    /// are valid hex — "decade", "acceded", "beefed" — and silently turning a
+    /// copied word into a colour swatch is worse than missing the odd bare
+    /// hex string. Pure and `static` so `--selftest` covers it without a
+    /// pasteboard.
+    static func parseHexColor(_ string: String) -> ClipboardEntry.ColorComponents? {
+        guard string.hasPrefix("#") else { return nil }
+        let body = String(string.dropFirst())
+        guard !body.isEmpty, body.allSatisfy({ $0.isHexDigit }) else { return nil }
+
+        let chars = Array(body)
+        let pairs: [String]
+        switch chars.count {
+        case 3, 4:
+            // Shorthand: each digit doubles (#abc -> #aabbcc).
+            pairs = chars.map { String(repeating: String($0), count: 2) }
+        case 6, 8:
+            pairs = stride(from: 0, to: chars.count, by: 2).map { String(chars[$0..<$0 + 2]) }
+        default:
+            return nil
+        }
+
+        let values = pairs.compactMap { UInt8($0, radix: 16).map { Double($0) / 255 } }
+        guard values.count == pairs.count else { return nil }
+        return ClipboardEntry.ColorComponents(
+            red: values[0], green: values[1], blue: values[2],
+            alpha: values.count == 4 ? values[3] : 1)
+    }
+
+    private static func colorEntry(string: String) -> ClipboardEntry {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .color,
+                              preview: trimmed.uppercased(),
+                              fullString: cappedFullString(string), filePaths: nil,
+                              colorComponents: parseHexColor(trimmed))
     }
 
     private static func fileEntry(urls: [URL]) -> ClipboardEntry {
@@ -293,10 +399,30 @@ final class ClipboardMonitor: ObservableObject {
         return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .file, preview: basenames, fullString: nil, filePaths: paths)
     }
 
+    /// Images larger than this are kept as a label without their bytes.
+    /// History holds up to `historyLimit` entries entirely in memory (never
+    /// on disk — see the type's own doc comment), so a run of full-resolution
+    /// retina screenshots is a real footprint. This is the budget the old
+    /// "no image payload at all" decision was avoiding; setting it
+    /// explicitly is better than refusing the feature.
+    static let imageDataCap = 8 * 1024 * 1024
+
     private static func imageEntry(image: NSImage) -> ClipboardEntry {
         let size = image.size
         let preview = "Image (\(Int(size.width))×\(Int(size.height)))"
-        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview, fullString: nil, filePaths: nil)
+        let data = pngData(from: image)
+        let withinCap = data.map { $0.count <= imageDataCap } ?? false
+        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview,
+                              fullString: nil, filePaths: nil,
+                              imageData: withinCap ? data : nil)
+    }
+
+    /// Re-encodes to PNG so the stored payload is one predictable format,
+    /// whatever flavour the source app happened to write.
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 
     private static func urlEntry(string: String) -> ClipboardEntry {
@@ -366,7 +492,13 @@ final class ClipboardMonitor: ObservableObject {
             // passing an array of a conforming class where an array of the
             // protocol is expected.
             pasteboard.writeObjects(urls.map { $0 as NSURL })
-        case .text, .url, .image, .other:
+        case .image:
+            // Copyable now — an image entry used to carry no payload, so
+            // clicking one did nothing at all.
+            guard let data = entry.imageData, let image = NSImage(data: data) else { return }
+            pasteboard.clearContents()
+            pasteboard.writeObjects([image])
+        case .text, .url, .color, .other:
             guard let fullString = entry.fullString else { return }
             pasteboard.clearContents()
             pasteboard.setString(fullString, forType: .string)
