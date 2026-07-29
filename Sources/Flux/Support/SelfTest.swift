@@ -1984,8 +1984,12 @@ enum SelfTest {
               "Clipboard: a bare word that happens to be valid hex is NOT a colour — the # is what disambiguates")
         check(ClipboardMonitor.classify(string: "#nothex") == .text,
               "Clipboard: a # prefix alone isn't enough; the body must be hex")
-        check(ClipboardMonitor.classify(string: "#FF88") == .text,
-              "Clipboard: an unsupported digit count is text, not a half-parsed colour")
+        check(ClipboardMonitor.classify(string: "#FF88") == .color,
+              "Clipboard: 4 digits is #RGBA shorthand, not an unsupported length")
+        check(ClipboardMonitor.classify(string: "#FF888") == .text,
+              "Clipboard: 5 digits matches no hex format — text, not a half-parsed colour")
+        check(ClipboardMonitor.classify(string: "#F") == .text,
+              "Clipboard: a single digit is text too")
 
         if let white = ClipboardMonitor.parseHexColor("#FFFFFF") {
             check(white.red == 1 && white.green == 1 && white.blue == 1 && white.alpha == 1,
