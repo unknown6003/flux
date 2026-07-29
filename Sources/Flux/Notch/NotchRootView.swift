@@ -403,7 +403,11 @@ struct NotchRootView: View {
                 // overhanging the curve; M12's continuous corners at 34
                 // occupy slightly more of the edge again for the same
                 // nominal radius, since curvature is spread further along it.
-                .padding(.bottom, 22)
+                // Back to 18 from M12's 22. That bump was for a larger
+                // corner radius, but paired with the corrected (shallower)
+                // panel it cost more usable height than the corner needed —
+                // the rendered snapshot showed the transport row clipped.
+                .padding(.bottom, 18)
         }
     }
 
