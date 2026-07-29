@@ -574,6 +574,10 @@ struct NotchRootView: View {
                     .padding(.vertical, 12)
 
                 calendar.makeExpandedView()
+                    // Tells the agenda it's in a narrow pane so it can drop
+                    // to start-times-only rather than wrapping onto three
+                    // lines — see `EnvironmentValues.isNarrowPane`.
+                    .environment(\.isNarrowPane, true)
                     .frame(width: (proxy.size.width * NotchMetrics.duoCalendarPaneFraction).rounded())
                     .frame(maxHeight: .infinity)
             }
