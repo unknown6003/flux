@@ -33,14 +33,22 @@ enum NotchMetrics {
     /// reads as a drawer rather than a window. The old effective ratio
     /// wandered between roughly 2.2:1 and 2.8:1 depending on which widget was
     /// showing, which is a large part of why the proportions looked arbitrary.
-    static let expandedAspectRatio: CGFloat = 2.35
+    static let expandedAspectRatio: CGFloat = 2.2
 
-    /// The single expanded width. The `2.4 ×` term keeps the panel
-    /// proportional to the physical notch on hardware with an unusual one;
-    /// the floor is what actually applies on every current MacBook, where a
-    /// ~200pt notch puts the multiplied term below it.
+    /// The single expanded width. The multiplier keeps the panel proportional
+    /// to the physical notch on hardware with an unusual one; the floor is
+    /// what actually applies on every current MacBook, where a ~200pt notch
+    /// puts the multiplied term at or below it.
+    ///
+    /// 2.0x/400 rather than M12's first pass at 2.4x/500. That was too wide
+    /// against the notch it hangs from — two and a half times its width reads
+    /// as a separate panel that happens to be near the notch, rather than a
+    /// drawer pulled out of it — and, paired with a 2.35 ratio, too deep as
+    /// well. The pre-M12 design sat at ~2.1x and never drew that complaint;
+    /// the complaint was that the size *changed*, which is fixed
+    /// independently by there being one size at all.
     static func expandedWidth(for notchWidth: CGFloat) -> CGFloat {
-        max(notchWidth * 2.4, 500)
+        max(notchWidth * 2.0, 400)
     }
 
     /// The single expanded height — derived from the width and
@@ -59,7 +67,7 @@ enum NotchMetrics {
     /// A fraction rather than the old fixed 200pt, because with one fixed
     /// panel size Duo has to fit the box instead of growing it — so its split
     /// has to scale with whatever that box is on the current hardware.
-    static let duoCalendarPaneFraction: CGFloat = 0.42
+    static let duoCalendarPaneFraction: CGFloat = 0.40
 
     /// Extra room reserved in the fixed panel/off-screen bounds — beyond the
     /// visible shape — purely so the expanded shape's drop shadow

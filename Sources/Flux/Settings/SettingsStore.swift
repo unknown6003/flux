@@ -64,7 +64,6 @@ final class SettingsStore: ObservableObject {
         self.notchActivityBluetoothEnabled = defaults.bool(forKey: Keys.notchActivityBluetoothEnabled)
         self.notchActivityCalendarEventEnabled = defaults.bool(forKey: Keys.notchActivityCalendarEventEnabled)
         self.notchDuoEnabled = defaults.bool(forKey: Keys.notchDuoEnabled)
-        self.notchHudEnabled = defaults.bool(forKey: Keys.notchHudEnabled)
         self.notchMirrorEnabled = defaults.bool(forKey: Keys.notchMirrorEnabled)
         self.notchClipboardEnabled = defaults.bool(forKey: Keys.notchClipboardEnabled)
         self.notchTimersEnabled = defaults.bool(forKey: Keys.notchTimersEnabled)
@@ -241,14 +240,6 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityCalendarEventEnabled, forKey: Keys.notchActivityCalendarEventEnabled) }
     }
 
-    /// Master on/off for the volume HUD — flashes a wing in the notch
-    /// alongside the system bezel whenever CoreAudio reports a volume/mute
-    /// change (`VolumeMonitor`'s listeners). Defaults to `true`: this needs
-    /// no permission and costs nothing at idle.
-    @Published var notchHudEnabled: Bool {
-        didSet { defaults.set(notchHudEnabled, forKey: Keys.notchHudEnabled) }
-    }
-
     /// Whether the Mirror widget (a live camera preview) is enabled in the
     /// notch's cycle. Defaults to `true` — like every other widget, showing
     /// the widget itself needs no permission; it's `MirrorWidget`'s own
@@ -388,7 +379,6 @@ final class SettingsStore: ObservableObject {
         Keys.notchActivityBluetoothEnabled: true,
         Keys.notchActivityCalendarEventEnabled: true,
         Keys.notchDuoEnabled: false,
-        Keys.notchHudEnabled: true,
         Keys.notchMirrorEnabled: true,
         Keys.notchClipboardEnabled: false,
         Keys.notchTimersEnabled: true,
@@ -426,7 +416,6 @@ final class SettingsStore: ObservableObject {
         static let notchActivityBluetoothEnabled = "flux.notch.activities.bluetooth"
         static let notchActivityCalendarEventEnabled = "flux.notch.activities.calendarEvent"
         static let notchDuoEnabled = "flux.notch.duo"
-        static let notchHudEnabled = "flux.notch.hud.enabled"
         static let notchMirrorEnabled = "flux.notch.mirror.enabled"
         static let notchClipboardEnabled = "flux.notch.clipboard.enabled"
         static let notchTimersEnabled = "flux.notch.timers.enabled"

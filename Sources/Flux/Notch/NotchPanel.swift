@@ -95,7 +95,23 @@ final class NotchPanel: NSPanel {
     /// gesture over the notch cycles/opens/closes it. Every other event type
     /// passes straight through to the normal AppKit dispatch.
     ///
-    /// ## A trackpad gesture belongs to the notch, in its entirety
+    /// ## Only the gestures the notch actually uses are claimed
+    ///
+    /// M12 claimed EVERY phase-bearing gesture, on the reasoning that a
+    /// trackpad gesture over this panel is always a notch gesture. That was
+    /// wrong and broke scrolling outright: four widgets host a `ScrollView`,
+    /// and a scroll up past the 40pt threshold both failed to reach the list
+    /// and collapsed the drawer.
+    ///
+    /// The axes don't actually collide. While `.expanded` the notch's own
+    /// gesture is HORIZONTAL (cycle pages) and the content scrolls
+    /// VERTICALLY — so vertical gestures are simply never claimed there, and
+    /// horizontal ones are harmless to a vertical `ScrollView` even before
+    /// the claim lands. While `.collapsed` the panel ignores mouse events
+    /// entirely, and `.activity` has no scrollable content, so both axes stay
+    /// available to the notch in those states.
+    ///
+    /// ## A claimed gesture is still swallowed whole
     /// This used to call `super.sendEvent(event)` unconditionally, so every
     /// swipe did two things at once: it switched the page, AND it scrolled
     /// whatever was inside the widget. Four of the six widgets (Shelf,
@@ -108,26 +124,37 @@ final class NotchPanel: NSPanel {
     /// so there is always a half-dead tree for a stale-target scroll to land
     /// in — the "crashes when I switch pages fast" report.
     ///
-    /// The gate is the gesture's PHASE, not whether a swipe was recognised.
-    /// Only trackpads and the Magic Mouse populate `phase`/`momentumPhase`,
-    /// and on this panel such a gesture is always a notch gesture: up
-    /// collapses, down expands, left/right cycles pages. None of it was ever
-    /// content scrolling. Gating on recognition instead — the obvious
-    /// narrower fix, and what a first pass at this did — leaks the frames
-    /// *before* the 40pt threshold into the widget you're leaving, and then
-    /// swallows that gesture's `ended`, so the inner scroll view is started
-    /// and never terminated.
+    /// Once a gesture is claimed, the REST of it is swallowed — its remaining
+    /// `changed` frames, its `ended`, and the momentum that trails it. That
+    /// part is load-bearing and unchanged: `viewModel.swiped(_:)` runs
+    /// synchronously during recognition and tears the outgoing widget's
+    /// subtree down, so continuing to deliver that gesture's events into it
+    /// is the fast-page-switch crash.
     ///
-    /// A plain mouse wheel reports neither phase and still passes through, so
-    /// wheel-scrolling a widget's list keeps working.
+    /// A plain mouse wheel reports neither phase and is never claimed, so
+    /// wheel-scrolling a widget's list always works.
     override func sendEvent(_ event: NSEvent) {
         guard event.type == .scrollWheel else {
             super.sendEvent(event)
             return
         }
-        handleScrollWheel(event)
-        guard event.phase.isEmpty, event.momentumPhase.isEmpty else { return }
+        guard !handleScrollWheel(event) else { return }
         super.sendEvent(event)
+    }
+
+    /// Whether a gesture along `axis` is one the notch itself acts on in the
+    /// current state — i.e. whether claiming it is correct.
+    private func notchOwnsGesture(vertical: Bool) -> Bool {
+        switch viewModel.state {
+        case .expanded:
+            // Horizontal cycles pages; vertical belongs to whatever the
+            // widget is showing, which is the only way its list can scroll.
+            return !vertical
+        case .collapsed, .activity:
+            // Nothing here scrolls, and both axes mean something: down
+            // expands, up dismisses an activity, left/right cycle activities.
+            return true
+        }
     }
 
     /// Debounces a trackpad swipe using `NSEvent.phase`, which brackets one
@@ -136,33 +163,53 @@ final class NotchPanel: NSPanel {
     /// empty phase and are deliberately ignored — swiping the notch is a
     /// trackpad/Magic Mouse gesture, matching Dynamic-Island-style UIs.
     ///
-    /// Recognition only — whether the event also reaches the view hierarchy
-    /// is `sendEvent`'s decision, made from the phase alone.
-    private func handleScrollWheel(_ event: NSEvent) {
+    /// Recognises the gesture and reports whether it belongs to the notch —
+    /// `true` meaning `sendEvent` must not also deliver it to the content.
+    @discardableResult
+    private func handleScrollWheel(_ event: NSEvent) -> Bool {
         switch event.phase {
         case .began:
             accumulatedX = 0
             accumulatedY = 0
             gestureConsumed = false
+            return false
         case .changed:
-            guard !gestureConsumed else { return }
+            // Everything after the claim is swallowed: recognition already
+            // tore the outgoing subtree down.
+            guard !gestureConsumed else { return true }
             accumulatedX += event.scrollingDeltaX
             accumulatedY += event.scrollingDeltaY
-            if abs(accumulatedX) >= abs(accumulatedY) {
-                guard abs(accumulatedX) >= Self.swipeThreshold else { return }
-                gestureConsumed = true
-                viewModel.swiped(accumulatedX > 0 ? .left : .right)
-            } else {
-                guard abs(accumulatedY) >= Self.swipeThreshold else { return }
-                gestureConsumed = true
+
+            let vertical = abs(accumulatedY) > abs(accumulatedX)
+            // Not ours on this axis in this state — hand every frame of it to
+            // the content, including the ones still to come.
+            guard notchOwnsGesture(vertical: vertical) else { return false }
+
+            let travelled = vertical ? abs(accumulatedY) : abs(accumulatedX)
+            guard travelled >= Self.swipeThreshold else { return false }
+            gestureConsumed = true
+            if vertical {
                 viewModel.swiped(accumulatedY > 0 ? .down : .up)
+            } else {
+                viewModel.swiped(accumulatedX > 0 ? .left : .right)
             }
+            return true
         case .ended, .cancelled:
+            let claimed = gestureConsumed
             accumulatedX = 0
             accumulatedY = 0
-            gestureConsumed = false
+            // Kept set so the momentum frames that follow this `ended` are
+            // swallowed too; cleared by the next `began`, or below.
+            return claimed
         default:
-            break // .stationary / .mayBegin / momentum-only frames: ignored
+            // Momentum frames report an empty `phase`, which is also what a
+            // plain mouse wheel reports — so the momentum test is what stops
+            // one trackpad swipe suppressing every later wheel scroll.
+            guard gestureConsumed, !event.momentumPhase.isEmpty else { return false }
+            if event.momentumPhase.contains(.ended) || event.momentumPhase.contains(.cancelled) {
+                gestureConsumed = false
+            }
+            return true
         }
     }
 

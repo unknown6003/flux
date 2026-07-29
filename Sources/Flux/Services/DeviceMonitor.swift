@@ -142,7 +142,7 @@ final class DeviceMonitor {
     // MARK: CoreAudio state
     /// Held once and reused for removal — CoreAudio compares block *identity*,
     /// not equality, so the exact reference passed to `Add` must be handed back
-    /// to `Remove` (the same wrinkle documented in `VolumeMonitor`).
+    /// to `Remove`.
     private var deviceListListenerBlock: AudioObjectPropertyListenerBlock?
     /// The BT audio devices last seen via CoreAudio, `AudioObjectID` → name.
     /// Names are cached because a *removed* device can no longer be queried for
@@ -307,7 +307,7 @@ final class DeviceMonitor {
     deinit {
         // Plain C/CoreAudio teardown calls with no dependency on this object's
         // own (about-to-be-torn-down) state — safe from a nonisolated `deinit`
-        // the same way `PowerMonitor.deinit`/`VolumeMonitor.deinit` call their
+        // the same way `PowerMonitor.deinit` calls its
         // raw teardown directly rather than routing through an instance method.
         if firstMatchIterator != 0 { IOObjectRelease(firstMatchIterator) }
         if terminatedIterator != 0 { IOObjectRelease(terminatedIterator) }
@@ -598,7 +598,7 @@ final class DeviceMonitor {
             guard let self else { return }
             // Runs on `DispatchQueue.main` (passed at registration below) — a
             // real guarantee, so `assumeIsolated` is a true assertion, exactly
-            // as in `VolumeMonitor`.
+
             MainActor.assumeIsolated { self.handleAudioDevicesChanged() }
         }
         deviceListListenerBlock = block
@@ -773,7 +773,7 @@ final class DeviceMonitor {
     // MARK: - Pure CoreAudio plumbing
     //
     // `nonisolated` where called from `deinit` (`deviceListAddress`) — the same
-    // isolation-boundary reason `VolumeMonitor` marks its address constants
+    // isolation-boundary reason this marks its address constants
     // `nonisolated static`: a class `deinit` can't itself be actor-isolated, so
     // anything it calls must be reachable from a nonisolated context.
 

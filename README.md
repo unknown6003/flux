@@ -106,8 +106,6 @@ arrangement across launches.
   audio/HID accessory connects or disconnects, with a best-effort battery
   reading when the OS reports one, and a wing when a calendar event is about
   to start. Each is independently toggled in Settings → Notch.
-- **Volume HUD** — flashes a wing in the notch when volume or mute changes,
-  alongside whatever bezel macOS still shows. Permission-free.
 - **Mirror** — a live camera preview right in the notch, for a quick
   "how do I look" check. The camera only ever runs while the widget is
   actually open; needs Camera access, with the same live grant/denied status
@@ -146,7 +144,7 @@ arrangement across launches.
 full stop. Both are opt-in and behind their own explicit **Grant Access**
 button in Settings → Notch; the permission-gated widget shows its own
 "access needed" state until you ask for it. Everything else in the app
-(menu-bar hiding, the notch panel, widget cycling, the volume HUD, Now
+(menu-bar hiding, the notch panel, widget cycling, Now
 Playing, battery/Bluetooth/timer/calendar-event wings) runs with **no TCC
 access of any kind** — nothing prompts on a fresh install, and nothing runs
 that could prompt later.
@@ -249,7 +247,6 @@ Sources/Flux/
   Services/CameraService.swift    # AVCaptureSession behind Mirror, started/stopped by the widget itself
   Services/ClipboardMonitor.swift # NSPasteboard.changeCount poll, settings-driven start/stop
   Services/TimerService.swift     # countdown timers, single boundary Task, completions publisher
-  Services/HUD/VolumeMonitor.swift        # CoreAudio volume/mute listener (observe-mode HUD source)
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)
   Hotkey/HotkeyShortcut.swift    # the chord model + ⌃⌥⌘F / ⌃⌥⌘N defaults

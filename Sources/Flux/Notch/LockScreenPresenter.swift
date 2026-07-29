@@ -161,7 +161,7 @@ final class LockScreenPresenter {
 
     /// The single on/off gate — mirrors every other notch-suite `setEnabled`
     /// (`NotchWindowController.setEnabled`, `NotchWidgetRegistry.setEnabled`,
-    /// `VolumeMonitor`'s start/stop shape): turning this off tears
+    /// the other monitors' start/stop shape): turning this off tears
     /// EVERYTHING down — the `DistributedNotificationCenter`/settings
     /// observers AND any panel currently showing (instantly, no fade — this
     /// is the master switch turning the whole experiment off, not an
