@@ -180,16 +180,18 @@ final class NotchViewModel: ObservableObject {
                 // `panel.ignoresMouseEvents` left `true` (so it stopped
                 // accepting clicks), because `updatePassThrough` had been
                 // told the state was `.collapsed`.
-                guard !self.isTransitioning else { return }
-
-                switch self.state {
-                case .collapsed:
-                    if let activity { self.transition(to: .activity(activity.id)) }
-                case .activity:
-                    self.transition(to: activity.map { .activity($0.id) } ?? .collapsed)
-                case .expanded:
-                    break
+                guard !self.isTransitioning else {
+                    // Deferred, NOT dropped. `removeDuplicates()` above means
+                    // a skipped emission is never replayed, so simply
+                    // ignoring it could leave `state` pointing at an activity
+                    // that has since been dismissed (or miss one that just
+                    // arrived) until some unrelated activity mutation
+                    // happened along. Reconciled against the live queue the
+                    // moment the transition finishes.
+                    self.needsActivityReconcile = true
+                    return
                 }
+                self.reconcileActivityState()
             }
             .store(in: &cancellables)
     }
@@ -563,10 +565,39 @@ final class NotchViewModel: ObservableObject {
     /// for what reads it and why.
     private var isTransitioning = false
 
+    /// An activity change arrived while a transition was in flight and still
+    /// needs applying — see the guard in `observeActivities()`.
+    private var needsActivityReconcile = false
+
+    /// Brings `state` back in line with whatever `activities` currently holds.
+    ///
+    /// Deliberately re-reads `activities.current` rather than taking the
+    /// emission's value: by the time a deferred reconciliation runs, the
+    /// queue may have moved on again, and the queue is the truth.
+    private func reconcileActivityState() {
+        let activity = activities.current
+        switch state {
+        case .collapsed:
+            if let activity { transition(to: .activity(activity.id)) }
+        case .activity:
+            transition(to: activity.map { .activity($0.id) } ?? .collapsed)
+        case .expanded:
+            break
+        }
+    }
+
     private func transition(to newState: NotchState) {
         guard newState != state else { return }
         isTransitioning = true
-        defer { isTransitioning = false }
+        defer {
+            // Cleared BEFORE reconciling, so the reconciliation's own
+            // `transition` isn't turned into another deferral.
+            isTransitioning = false
+            if needsActivityReconcile {
+                needsActivityReconcile = false
+                reconcileActivityState()
+            }
+        }
 
         if case .expanded(let oldID) = state {
             registry.widget(for: oldID)?.didDismiss()

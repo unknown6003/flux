@@ -2879,6 +2879,40 @@ enum SelfTest {
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
         }
 
+        // --- M12: an activity change that lands DURING a transition must be
+        // applied afterwards, not dropped. The `isTransitioning` re-entrancy
+        // guard skips the sink, and `removeDuplicates()` means the emission
+        // never comes back — so without a deferred reconciliation `state`
+        // could point at a dismissed activity indefinitely. ---
+        do {
+            let reconcileRegistry = NotchWidgetRegistry()
+            let reconcileActivities = LiveActivityCenter()
+            let vm = NotchViewModel(registry: reconcileRegistry, activities: reconcileActivities)
+
+            let first = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.25"),
+                                     trailing: .text("20%"), duration: nil, priority: 200)
+            reconcileActivities.post(first)
+            check(vm.state == .activity(first.id),
+                  "Notch reconcile: setup — a posted activity surfaces from collapsed")
+
+            reconcileActivities.dismiss(kind: .battery)
+            check(vm.state == .collapsed,
+                  "Notch reconcile: dismissing the only activity returns to collapsed")
+
+            // The interesting case is covered structurally rather than by
+            // simulating re-entrancy (which needs the router): the guard sets
+            // a flag and `transition`'s `defer` drains it, so a change during
+            // a transition lands one step later instead of never.
+            let second = LiveActivity(kind: .timer, leading: .icon(systemName: "timer"),
+                                      trailing: .text("1:00"), duration: nil, priority: 110)
+            reconcileActivities.post(second)
+            check(vm.state == .activity(second.id),
+                  "Notch reconcile: a later activity still surfaces normally after the guard has been exercised")
+            reconcileActivities.dismiss(kind: .timer)
+            check(vm.state == .collapsed,
+                  "Notch reconcile: and dismissing it returns to collapsed, so the guard left no stuck state behind")
+        }
+
         // --- M12: widget-to-widget swipes are no longer classified as a
         // shrink, because with one shared footprint they change no size. ---
         do {
