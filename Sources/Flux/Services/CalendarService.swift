@@ -88,13 +88,16 @@ extension CalendarEvent: Equatable {
 @MainActor
 final class CalendarService: ObservableObject {
     /// Newest-first is meaningless here (these are all in the future) — kept
-    /// sorted by `start` ascending, capped at 10, so every consumer (the
+    /// sorted by `start` ascending, capped at 20, so every consumer (the
     /// widget's agenda, the event-soon activity, `nextEventLine`) can just
     /// take the list as-is.
     @Published private(set) var upcoming: [CalendarEvent] = []
 
     private let eventStore: EKEventStore
     private var isStarted = false
+    /// Whether `eventStore` has been reset since access was granted — see
+    /// `resetStoreIfNewlyAuthorized()`.
+    private var hasResetSinceAuthorization = false
     private var cancellables = Set<AnyCancellable>()
     /// The single deadline task that re-fetches at the next local midnight —
     /// see `scheduleMidnightRollover`'s doc comment. Mirrors
@@ -143,6 +146,20 @@ final class CalendarService: ObservableObject {
     /// Tears down the change observation and the midnight-rollover task.
     /// No-op if already stopped.
     func stop() {
+        // Also clears the store-reset latch. `refresh()`'s denied branch is
+        // the other place that clears it, but a revoke doesn't go through
+        // `refresh()` at all: the permission observer stops the service
+        // outright. Without this, revoking and re-granting inside one session
+        // would take the `start()` → `refresh()` path with the latch still
+        // set, skip `eventStore.reset()`, and reproduce exactly the stale-
+        // store behaviour the latch exists to prevent.
+        hasResetSinceAuthorization = false
+        // Cached events go too. A revoke reaches this method rather than
+        // `refresh()`, so without this the agenda would keep rendering
+        // calendar data the user has just withdrawn access to — for as long
+        // as the app stays running.
+        if !upcoming.isEmpty { upcoming = [] }
+
         guard isStarted else { return }
         isStarted = false
         cancellables.removeAll()
@@ -197,11 +214,54 @@ final class CalendarService: ObservableObject {
         return calendar.date(byAdding: .day, value: 1, to: startOfToday)
     }
 
+    /// Resets `eventStore` once, the first time a fetch runs with access
+    /// actually granted.
+    ///
+    /// This service's store is constructed eagerly at launch
+    /// (`AppDelegate`), which on a first run means it exists well before the
+    /// user grants anything — and it is NOT the store that requested access.
+    /// `PermissionCenter` owns a second `EKEventStore` and calls
+    /// `requestFullAccessToEvents` on that one, on the stated grounds that
+    /// TCC authorization is process-wide. That's true of the status *query*,
+    /// but an `EKEventStore` instantiated while access was `.notDetermined`
+    /// is not guaranteed to serve data after a later grant without being
+    /// reset — a well-known EventKit trap, and one that would present exactly
+    /// as "permission granted, agenda permanently empty".
+    ///
+    /// Resetting once on the grant transition is cheap and covers it.
+    private func resetStoreIfNewlyAuthorized() {
+        guard !hasResetSinceAuthorization else { return }
+        hasResetSinceAuthorization = true
+        eventStore.reset()
+        calendarLog.notice("Calendar: event store reset after authorization")
+    }
+
+    /// Forces a re-fetch now, for callers outside this type.
+    ///
+    /// `refresh()` is private and has only three triggers — `start()`, the
+    /// `.EKEventStoreChanged` sink, and the midnight rollover — and `start()`
+    /// is a no-op once running. With the event-soon activity enabled (the
+    /// default) the service starts at launch and stays started, so the agenda
+    /// rendered whatever that ONE fetch produced, possibly from before
+    /// EventKit had finished syncing. Opening and closing the widget could
+    /// never repair it; only an external store change or midnight could.
+    ///
+    /// The M4 ownership refactor moved `start()` out of the widget for good
+    /// reasons (see this type's own doc comment) but nothing replaced the
+    /// re-fetch that call used to imply. This is that replacement, and it
+    /// leaves the router's `start()`/`stop()` monopoly intact.
+    func refreshNow() {
+        refresh()
+    }
+
     private func refresh() {
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             upcoming = []
+            // A revoke should let a later re-grant reset the store again.
+            hasResetSinceAuthorization = false
             return
         }
+        resetStoreIfNewlyAuthorized()
         let fetched = Self.fetchUpcoming(from: eventStore, now: Date())
         calendarLog.debug("Calendar refresh: \(fetched.count, privacy: .public) upcoming event(s)")
         upcoming = fetched
@@ -210,7 +270,7 @@ final class CalendarService: ObservableObject {
     // MARK: - Fetch (impure — talks to EventKit)
 
     /// Window is now → end of tomorrow (i.e. the start of the day after
-    /// tomorrow, exclusive), sorted ascending, capped at 10, with the current
+    /// tomorrow, exclusive), sorted ascending, capped at 20, with the current
     /// user's own declined events filtered out — cheap since EventKit already
     /// hands back each event's `attendees` in the same fetch, no extra query
     /// per event.

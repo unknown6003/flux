@@ -74,7 +74,7 @@ non-notched-external-display brightness check).
       indicator light turns off immediately.
 - [ ] **Camera session torn down on collapse**: with Mirror open and the
       preview running, collapse the notch several different ways (mouse-out,
-      click, swipe up, disabling the notch panel in Settings) and confirm the
+      click, disabling the notch panel in Settings) and confirm the
       camera indicator light goes off every single time — never left lit
       after the panel is no longer visible.
 - [ ] **Clipboard capture**: turn on the Clipboard toggle in Settings → Notch,
@@ -128,7 +128,7 @@ every widget — the items below need a real notched Mac.
       that should overshoot too, since it's a "growing" direction from the
       spring's perspective.
 - [ ] **Snappy, no-overshoot close**: collapse the notch (hover-out, click,
-      swipe up) from every state (activity and each widget) and confirm it
+      hotkey) from every state and confirm it
       settles quickly with no bounce — visibly a different, crisper feel than
       the open animation, not just a faster version of the same curve.
 - [ ] **Seams invisible while idle/collapsed**: with the notch collapsed and
@@ -487,3 +487,77 @@ transparent background can't show how the shape sits against a real bezel.
       drawer, then trigger a live activity (plug/unplug power). Clicking the
       open drawer must still work — a re-entrancy bug used to leave it
       ignoring mouse events entirely in this exact sequence.
+
+
+## M13 — HUD removal, scrolling, proportions, calendar, cycle order, clipboard
+
+### Behaviour change to know about first
+
+**Swipe-up no longer collapses an EXPANDED drawer.** Vertical gestures now
+belong to the widget's own scroll view — claiming them is what made the four
+scrolling widgets unscrollable. Swipe-up still dismisses an activity wing.
+Close an expanded drawer with hover-out, a click, or the hotkey.
+
+### Scrolling and gestures
+
+- [ ] **Vertical scrolling works**: open Clipboard or Timers and scroll the
+      list with two fingers. It must scroll, and must NOT collapse the drawer.
+- [ ] **Horizontal still cycles pages**: swipe left/right and confirm pages
+      change.
+- [ ] **A diagonal gesture does one thing, not both**: scroll a list with a
+      deliberate sideways drift. The page must not flip mid-scroll.
+- [ ] **A swipe doesn't scroll the page you're leaving**: swipe off Clipboard
+      and watch the outgoing list — it should not visibly scroll as it fades.
+- [ ] **Fast page switching still doesn't crash** (the M12 fix must survive
+      this rework).
+- [ ] **Mouse-wheel scrolling still works** in a list, with a real mouse.
+
+### Cycle order
+
+- [ ] **The order matches Settings**: set a distinctive order in Settings →
+      Notch → Cycle order, then swipe through and confirm you get exactly
+      that order, in that direction. This was inverted before — the fix is a
+      sign flip that could not be verified without hardware.
+
+### Proportions
+
+- [ ] **The drawer is ~2x the notch, not 2.5x**, and shallower than v0.13.0.
+- [ ] **Nothing is clipped**: Now Playing's transport row in particular.
+- [ ] **Duo (if enabled) fits**: agenda times on one line, no mid-word
+      truncation.
+
+### Calendar
+
+- [ ] **Events appear with permission granted.** If they didn't before, this
+      is the fix that matters most.
+- [ ] **Grant-during-session works**: revoke Calendar access in System
+      Settings, relaunch Flux, open the Calendar widget, grant from the
+      explainer, and confirm events appear without another relaunch.
+- [ ] **Re-opening refreshes**: add an event in Calendar.app, then close and
+      reopen the widget — it should appear without waiting for anything.
+
+### Clipboard
+
+- [ ] **Rapid copies are caught**: copy three different things in quick
+      succession and confirm all three land. Some loss is inherent (the
+      pasteboard has no change notification) but it should be much better.
+- [ ] **Rich-text copies land**: copy from a Word/Pages/Notes document and
+      confirm real text, not a blank "other" entry. NOTE: HTML-only copies
+      still fall through — the HTML importer fetches remote subresources and
+      was deliberately excluded.
+- [ ] **Images**: copy a screenshot and confirm a real thumbnail in the row,
+      and that clicking it pastes the image back.
+- [ ] **A very large screenshot** (full-screen retina): confirm no hang when
+      copying, and that the row still shows a thumbnail even if the image is
+      too large to paste back.
+- [ ] **Hex colours**: copy `#FF8800` and confirm a colour swatch.
+- [ ] **Links**: copy a URL and confirm the open-in-browser button on hover
+      works, and the context menu item too. A non-http scheme should NOT
+      offer it.
+- [ ] **Idle CPU**: leave Flux alone for a few minutes with clipboard history
+      on and confirm it still sits near 0% — the poll went from 1s to 0.35s.
+
+### Volume HUD
+
+- [ ] **It's gone**: no volume wing on volume change, and no Volume HUD card
+      in Settings → Notch.

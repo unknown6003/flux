@@ -379,8 +379,14 @@ final class NotchViewModel: ObservableObject {
     ///   *asks* `activities`/`registry` for a new state — `observeActivities()`
     ///   is what actually drives `state` in response, so there's no duplicate
     ///   transition logic here.
-    /// - **`.expanded`**: unchanged from pre-M7 — `left`/`right` cycle
-    ///   WIDGETS (`cycle(forward:)`), `up` collapses. `down` is deliberately
+    /// - **`.expanded`**: `left`/`right` cycle WIDGETS (`cycle(forward:)`).
+    ///   `up` still collapses when this is called directly (the hotkey path),
+    ///   but M13 stopped `NotchPanel` from ever routing a vertical scroll
+    ///   here while expanded — vertical belongs to the widget's own
+    ///   `ScrollView`, since claiming it made the four scrolling widgets
+    ///   impossible to scroll and collapsed the drawer instead. Closing an
+    ///   expanded drawer is hover-out, click, or the hotkey. `down` is
+    ///   deliberately
     ///   left a no-op here, matching the pre-M7 behavior — Alcove's own
     ///   "swipe down" gesture on an open panel is closer to what this app's
     ///   widget-cycling already covers via left/right than to a new gesture

@@ -9,7 +9,7 @@ import Combine
 /// menu-bar-overflow warning was wired as a bespoke Combine sink directly on
 /// `AppDelegate` (`observeNotchOverflowActivity` + its own cancellable). The
 /// M1 code review flagged that shape as something that would only get worse
-/// as more producers (battery, Bluetooth, and eventually HUD/timers) were
+/// as more producers (battery, Bluetooth, calendar, timers) were
 /// added — each one another sink, another cancellable, another few lines of
 /// `AppDelegate` that have nothing to do with being an `NSApplicationDelegate`.
 /// This type is the fix: it owns *every* activity producer (menu-bar
@@ -61,14 +61,11 @@ final class NotchActivityRouter {
     /// `viewModel.$state` for change notifications the same way
     /// `observeCalendar()` subscribes to `calendar.$upcoming`.
     private let viewModel: NotchViewModel
-    /// M5: the CoreAudio-backed observe-mode volume source. Owned outright,
-    /// like `power`/`bluetooth` — this router is its only consumer.
-    private let volume: VolumeMonitor
-    /// Gates every real `power.start()`/`bluetooth.start()`/`volume.start()`
-    /// call (see `applyMonitorState`/`applyHUDState`) — `false` only for
+    /// Gates every real `power.start()`/`bluetooth.start()` call (see
+    /// `applyMonitorState`) — `false` only for
     /// `--selftest`, which feeds synthetic events straight through
-    /// `power.events`/`bluetooth.events`/`volume.events` (wired
-    /// unconditionally by `observePower`/`observeBluetooth`/`observeVolume`
+    /// `power.events`/`bluetooth.events` (wired
+    /// unconditionally by `observePower`/`observeBluetooth`
     /// above) and must never let this router's normal settings-driven
     /// lifecycle touch real IOKit/CoreAudio on a headless CI runner.
     private let startsMonitors: Bool
@@ -81,7 +78,7 @@ final class NotchActivityRouter {
 
     private var cancellables = Set<AnyCancellable>()
 
-    // `power`/`bluetooth`/`volume` take optionals defaulting to `nil` —
+    // `power`/`bluetooth` take optionals defaulting to `nil` —
     // rather than defaulting directly to
     // `PowerMonitor()`/`DeviceMonitor()`/etc. — because default-argument
     // expressions are evaluated in a nonisolated context, and every one of
@@ -106,7 +103,6 @@ final class NotchActivityRouter {
          timers: TimerService,
          power: PowerMonitor? = nil,
          bluetooth: DeviceMonitor? = nil,
-         volume: VolumeMonitor? = nil,
          startsMonitors: Bool = true,
          presentation: AnyPublisher<Bool, Never> = Just(true).eraseToAnyPublisher()) {
         self.activities = activities
@@ -118,24 +114,20 @@ final class NotchActivityRouter {
         self.timers = timers
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? DeviceMonitor()
-        self.volume = volume ?? VolumeMonitor()
         self.startsMonitors = startsMonitors
 
         observePower()
         observeBluetooth()
-        observeVolume()
         observeOverflow()
         observeOverflowGating()
         observeCalendar()
         observeTimers()
         observeMonitorGating()
-        observeHUDGating()
         observeTimerGating()
         observeNotchState()
         observeDuoActive()
         observePresentation(presentation)
         applyMonitorState()
-        applyHUDState()
         recomputeTimerActivity()
     }
 
@@ -394,7 +386,7 @@ final class NotchActivityRouter {
     /// Priority 120 sits between menu-bar overflow (150, a layout problem)
     /// and Bluetooth (100, a routine connect/disconnect blip) — an upcoming
     /// event is more actionable than "a device connected" but isn't the
-    /// "something needs your attention right now" tier `.warning`/300 HUD
+    /// "something needs your attention right now" tier `.warning`/300
     /// activities occupy. The trailing text is built by
     /// `CalendarService.relativeStartPhrase` — the same shared helper
     /// `CalendarService.nextEventLine` uses — rather than a second, separate
@@ -542,7 +534,7 @@ final class NotchActivityRouter {
     }
 
     /// Re-applies `recomputeTimerActivity` whenever the notch master switch or
-    /// the timer-activity toggle changes — mirrors `observeHUDGating`'s exact
+    /// the timer-activity toggle changes — mirrors `observeMonitorGating`'s exact
     /// shape. `dropFirst` skips the redundant initial delivery; `init` already
     /// calls `recomputeTimerActivity()` once directly. Passes both emitted
     /// values straight through rather than letting `recomputeTimerActivity`
@@ -597,97 +589,6 @@ final class NotchActivityRouter {
             .store(in: &cancellables)
     }
 
-    // MARK: - HUD (volume, M5; brightness/intercept mode removed M11)
-    //
-    // A single data source: `VolumeMonitor`'s CoreAudio listeners fire for
-    // every volume/mute change regardless of who caused it (a hardware key,
-    // a Control Center slider drag, another app) — see `handleVolumeEvent`.
-    // This is permission-free and needs no dedupe: M11 removed the
-    // Accessibility-gated intercept mode (`MediaKeyInterceptor`) and the
-    // brightness HUD (`BrightnessMonitor` — brightness had no observe mode to
-    // fall back to, so once intercept went, brightness had nothing left to
-    // show) entirely, so observe mode is now the only producer of
-    // `.hudVolume` and there's no second write path to double-post against.
-
-    private func observeVolume() {
-        volume.events
-            .sink { [weak self] event in self?.handleVolumeEvent(event) }
-            .store(in: &cancellables)
-    }
-
-    private func handleVolumeEvent(_ event: VolumeEvent) {
-        guard settings.notchHudEnabled else { return }
-        switch event {
-        case .volumeChanged(let level, let muted):
-            activities.post(Self.volumeActivity(level: level, muted: muted))
-        }
-    }
-
-    static func volumeActivity(level: Float, muted: Bool) -> LiveActivity {
-        let symbol = volumeSymbol(level: level, muted: muted)
-        return LiveActivity(kind: .hudVolume,
-                             leading: .icon(systemName: symbol),
-                             trailing: .gauge(Double(level), systemName: symbol),
-                             duration: 1.5,
-                             priority: 300)
-    }
-
-    /// SF Symbol for the wing icon — muted (or a literal 0 level) always
-    /// reads as the slashed glyph regardless of the last non-zero level.
-    static func volumeSymbol(level: Float, muted: Bool) -> String {
-        guard !muted, level > 0 else { return "speaker.slash.fill" }
-        switch level {
-        case ..<(1.0 / 3.0): return "speaker.wave.1.fill"
-        case ..<(2.0 / 3.0): return "speaker.wave.2.fill"
-        default: return "speaker.wave.3.fill"
-        }
-    }
-
-    /// Whether the volume HUD should be observing right now — a pure
-    /// function of exactly the causes that decide it (the HUD master toggle,
-    /// whether there's anywhere to present), so `--selftest` can drive both
-    /// combinations directly. M11 collapsed this from a three-way
-    /// off/observe/intercept mode (gated on an Accessibility grant) down to
-    /// a plain on/off now that intercept mode is gone.
-    enum HUDMode: Equatable { case off, observe }
-
-    static func intendedHUDMode(hudEnabled: Bool, notchPresenting: Bool) -> HUDMode {
-        notchPresenting && hudEnabled ? .observe : .off
-    }
-
-    /// Starts/stops `volume` to match the current settings — called from
-    /// every trigger that could change the answer: `init`'s final call,
-    /// `observeHUDGating`'s settings sink, and the presentation/notch-state
-    /// sinks above (mirroring exactly which sinks call `applyMonitorState`,
-    /// for the same reasons). Also gated on `startsMonitors`, like
-    /// `applyMonitorState`.
-    private func applyHUDState(notchEnabled: Bool? = nil, hudEnabled: Bool? = nil) {
-        guard startsMonitors else { return }
-        let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
-        let mode = Self.intendedHUDMode(hudEnabled: hudEnabled ?? settings.notchHudEnabled, notchPresenting: notchOn)
-
-        switch mode {
-        case .off:
-            volume.stop()
-            activities.dismiss(kind: .hudVolume)
-        case .observe:
-            volume.start()
-        }
-    }
-
-    /// Re-applies `applyHUDState` whenever the notch master switch or the
-    /// HUD toggle changes. `dropFirst` skips the redundant initial delivery,
-    /// same as `observeMonitorGating` — `init` already calls `applyHUDState()`
-    /// once directly.
-    private func observeHUDGating() {
-        settings.$notchEnabled
-            .combineLatest(settings.$notchHudEnabled)
-            .dropFirst()
-            .sink { [weak self] notchEnabled, hudEnabled in
-                self?.applyHUDState(notchEnabled: notchEnabled, hudEnabled: hudEnabled)
-            }
-            .store(in: &cancellables)
-    }
 
     /// Caches the injected `presentation` publisher's latest value into
     /// `isPresenting` and re-applies both the monitor state and the
@@ -710,7 +611,6 @@ final class NotchActivityRouter {
                 self.isPresenting = value
                 self.applyMonitorState()
                 self.recomputeCalendarActivity()
-                self.applyHUDState()
                 self.recomputeTimerActivity()
             }
             .store(in: &cancellables)
@@ -877,7 +777,7 @@ final class NotchActivityRouter {
     /// is nowhere left to show the completion wing, but `NSSound` below would
     /// still fire, so the user got an unexplained system chime with no
     /// visible UI attached to it. Every other producer in this file already
-    /// gates on `notchEnabled` via `applyMonitorState`/`applyHUDState`; this
+    /// gates on `notchEnabled` via `applyMonitorState`; this
     /// one is called directly and was missed.
     private func handleTimerCompletion(_ timer: NotchTimer) {
         guard settings.notchEnabled, settings.notchActivityTimerEnabled else { return }
@@ -983,7 +883,7 @@ final class NotchActivityRouter {
     }
 
     /// What the ambient `.timer` wing should show right now — a pure function
-    /// of exactly the causes that decide it, matching `intendedHUDMode`'s/
+    /// of exactly the causes that decide it, matching
     /// `calendarServiceShouldRun`'s shape so `--selftest` can drive every
     /// combination directly (including the code-review fix this adds: a
     /// paused-but-not-empty timer list).

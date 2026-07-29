@@ -22,7 +22,6 @@ struct NotchTab: View {
                 widgetsCard
                 widgetOrderCard
                 liveActivitiesCard
-                hudCard
                 experimentalCard
             }
         }
@@ -257,35 +256,6 @@ struct NotchTab: View {
         }
     }
 
-    /// The volume HUD — CoreAudio-driven wings posted alongside whatever
-    /// system bezel macOS still shows, needing no permission. M11 removed
-    /// the opt-in "intercept mode" escalation (which swallowed the keys
-    /// outright via the now-deleted `MediaKeyInterceptor`, requiring
-    /// Accessibility) along with the brightness half of this HUD entirely
-    /// (brightness had no observe mode to fall back to) — this toggle is now
-    /// the whole feature.
-    private var hudCard: some View {
-        FluxCard(title: "Volume HUD") {
-            ToggleRow(title: "Show in the notch",
-                      subtitle: "Shows volume changes next to the system overlay. No permission needed.",
-                      isOn: $settings.notchHudEnabled)
-        }
-    }
-
-    /// A dumping ground for spikes that ride on undocumented macOS behavior —
-    /// kept visually and structurally separate (its own card, at the very
-    /// bottom) from every other notch feature above, which are all built on
-    /// documented, stable APIs. Right now that's just the lock-screen
-    /// silhouette (see `LockScreenPresenter`'s own doc comment on exactly
-    /// what it leans on and why it could break); a future spike would join
-    /// it here rather than being folded into `widgetsCard`/`liveActivitiesCard`
-    /// as if it carried the same stability guarantee.
-    ///
-    /// M9 (Alcove parity): the master toggle now reveals four sub-toggles —
-    /// each independently gates one lock-screen sub-feature, but every one of
-    /// them is meaningless (and never even observed — see
-    /// `LockScreenPresenter.startObserving`) unless the master toggle above
-    /// them is also on.
     private var experimentalCard: some View {
         FluxCard(title: "Experimental") {
             ToggleRow(title: "Show on the lock screen",

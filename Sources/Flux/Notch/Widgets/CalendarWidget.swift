@@ -64,6 +64,10 @@ final class CalendarWidget: NotchWidget {
     /// same permission refresh on its own.
     func willPresent() {
         permissions.refresh(.calendar)
+        // Re-fetch on every presentation — see `CalendarService.refreshNow`.
+        // Without this the agenda showed whatever the single launch-time
+        // fetch produced, and reopening the widget could never repair it.
+        service.refreshNow()
     }
 
     /// Nothing to do — see the type's own doc comment on why stopping the
@@ -80,6 +84,9 @@ final class CalendarWidget: NotchWidget {
 private struct CalendarExpandedView: View {
     @ObservedObject var service: CalendarService
     @ObservedObject var permissions: PermissionCenter
+    /// Duo's side pane is far narrower than the full panel — see
+    /// `EnvironmentValues.isNarrowPane`.
+    @Environment(\.isNarrowPane) private var compact
 
     var body: some View {
         PermissionGatedView(
@@ -164,7 +171,7 @@ private struct CalendarExpandedView: View {
                 .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
                 .tracking(0.7)
             ForEach(events) { event in
-                EventRow(event: event)
+                EventRow(event: event, compact: compact)
             }
         }
     }
@@ -174,6 +181,17 @@ private struct CalendarExpandedView: View {
 /// (or an "All-day" badge), and an optional location caption.
 private struct EventRow: View {
     let event: CalendarEvent
+    /// Set when the row is rendering into Duo view's narrow side pane.
+    ///
+    /// Duo has to fit inside the one shared panel footprint rather than
+    /// widen it (see `NotchMetrics`), so its Calendar pane is roughly a third
+    /// of the panel. At that width the full "2:00 PM – 3:00 PM" range wraps
+    /// onto three lines and the location truncates mid-word, which reads as
+    /// broken rather than dense. Compact mode drops to the start time alone
+    /// and hides the location — the two pieces of an agenda row you can
+    /// afford to lose, since the title and the time you need to be somewhere
+    /// are the point.
+    var compact = false
 
     var body: some View {
         HStack(alignment: .top, spacing: NotchDesign.rowSpacing) {
@@ -198,7 +216,8 @@ private struct EventRow: View {
                     Text(timeRange)
                         .font(NotchDesign.monoDigitsCaption)
                         .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
-                    if let location = event.location {
+                        .lineLimit(1)
+                    if !compact, let location = event.location {
                         Text("· \(location)")
                             .font(.caption2)
                             .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
@@ -211,7 +230,9 @@ private struct EventRow: View {
 
     private var timeRange: String {
         if event.isAllDay { return "All-day" }
-        return "\(Self.timeFormatter.string(from: event.start)) – \(Self.timeFormatter.string(from: event.end))"
+        let start = Self.timeFormatter.string(from: event.start)
+        guard !compact else { return start }
+        return "\(start) – \(Self.timeFormatter.string(from: event.end))"
     }
 
     /// Shared rather than one-per-row — mirrors `Formatters.relativeAge`'s

@@ -386,6 +386,7 @@ final class NotchWindowController {
             return
         }
         installPointerMonitors()
+        let wasIgnoring = panel.ignoresMouseEvents
         switch state {
         case .collapsed:
             panel.ignoresMouseEvents = true
@@ -394,6 +395,9 @@ final class NotchWindowController {
             panel.ignoresMouseEvents = false
             removeCollapsedClickMonitors()
         }
+        // A gesture in flight when this flips is cut off without its `ended`
+        // — see `NotchPanel.resetGestureState`.
+        if wasIgnoring != panel.ignoresMouseEvents { panel.resetGestureState() }
     }
 
     /// No-op if already installed — callers (the `viewModel.$state` sink,

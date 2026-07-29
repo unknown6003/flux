@@ -13,7 +13,7 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// What kind of content this entry holds — drives `ClipboardWidget`'s
     /// per-row SF Symbol.
     enum Kind: String, Equatable {
-        case text, url, image, file, other
+        case text, url, image, file, color, other
     }
 
     let id: UUID
@@ -28,14 +28,8 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// for `.file` entries — those round-trip through `filePaths` instead
     /// (a newline-joined string would corrupt any path that itself contains
     /// a newline, however rare) — and for `.image` entries, where it's `nil`
-    /// for a different reason: retaining decoded image bytes for
-    /// potentially 50 history entries at once (`historyLimit`) is a real
-    /// RAM cost for a feature whose whole point is glanceable history, not
-    /// an image library — so v1 deliberately shows an image entry for
-    /// context only (`preview` describes its dimensions) with no copy-back
-    /// and no retained pixel data at all. A future milestone that wants
-    /// image copy-back should budget the memory cost explicitly rather
-    /// than this type accumulating it as a side effect of history.
+    /// for a different reason: an image's payload lives in `imageData`
+    /// instead, since it isn't a string.
     /// Capped at `ClipboardMonitor.fullStringCap` characters (see that
     /// constant's own doc comment) — a truncation marker is appended when
     /// it is.
@@ -47,6 +41,78 @@ struct ClipboardEntry: Identifiable, Equatable {
     /// split a joined string apart again, which would silently corrupt any
     /// path containing a newline.
     let filePaths: [String]?
+
+    /// PNG bytes for an image entry, so it can be shown as a thumbnail and
+    /// copied back.
+    ///
+    /// This replaces a deliberate v1 limitation: images were captured as a
+    /// bare "Image (W×H)" label with no payload at all, so they appeared in
+    /// the list and could not be pasted. The memory concern behind that
+    /// decision is real and is handled by `ClipboardMonitor.imageDataCap`
+    /// instead of by refusing to store anything.
+    ///
+    /// `Data` rather than `NSImage`: `Equatable` (which the history list
+    /// relies on), and a bounded, inspectable size.
+    var imageData: Data?
+
+    /// A small (≤`ClipboardMonitor.thumbnailPixels`) PNG for the row's
+    /// thumbnail, kept separately from `imageData`.
+    ///
+    /// Two reasons it isn't just derived from `imageData` on demand. The row
+    /// re-renders on every hover, and decoding a multi-megabyte PNG to draw
+    /// it at 18×18 each time is absurd. And the full payload can be dropped
+    /// by `trimImagePayloads()` when history grows, which must not also cost
+    /// the entry its thumbnail — a recognisable, un-pasteable entry is far
+    /// better than an anonymous "Image (W×H)" label.
+    var thumbnailData: Data?
+
+    /// The pasteboard's own bytes, held only long enough for the off-main
+    /// thumbnail pass to consume them — see
+    /// `ClipboardMonitor.attachThumbnailIfNeeded`. Cleared as soon as the
+    /// thumbnail lands, so it never contributes to steady-state memory.
+    var rawImageBytes: Data?
+
+    /// The parsed colour for a `.color` entry, so the row can show a real
+    /// swatch. Components rather than an `NSColor` for the same
+    /// `Equatable`/value-type reason.
+    var colorComponents: ColorComponents?
+
+    /// A `.url` entry's destination, when it parses as something openable.
+    /// Restricted to `http`/`https`, because the affordance is labelled
+    /// "Open in Browser" and `NSWorkspace.open` will happily hand `ftp:`,
+    /// `smb:` or any third-party custom scheme to whatever registered for it.
+    /// A copied string should not be able to launch an arbitrary handler
+    /// from a one-click control that says "browser".
+    var linkURL: URL? {
+        guard kind == .url, let fullString else { return nil }
+        guard let url = URL(string: fullString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
+
+    struct ColorComponents: Equatable {
+        let red: Double
+        let green: Double
+        let blue: Double
+        let alpha: Double
+    }
+
+    init(id: UUID, capturedAt: Date, kind: Kind, preview: String,
+         fullString: String?, filePaths: [String]?,
+         imageData: Data? = nil, thumbnailData: Data? = nil,
+         rawImageBytes: Data? = nil, colorComponents: ColorComponents? = nil) {
+        self.thumbnailData = thumbnailData
+        self.rawImageBytes = rawImageBytes
+        self.id = id
+        self.capturedAt = capturedAt
+        self.kind = kind
+        self.preview = preview
+        self.fullString = fullString
+        self.filePaths = filePaths
+        self.imageData = imageData
+        self.colorComponents = colorComponents
+    }
 }
 
 /// Polls `NSPasteboard.general.changeCount` on a 1-second timer — the ONLY
@@ -167,9 +233,25 @@ final class ClipboardMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         lastChangeCount = pasteboard.changeCount
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // 0.35s, not 1s. `changeCount` only ever reports the LATEST change,
+        // so two copies inside one poll window collapse into one and the
+        // first is lost outright — a large part of "it doesn't detect
+        // everything I copy". This NARROWS that window rather than closing
+        // it; NSPasteboard offers no change notification, so some rate of
+        // miss is inherent.
+        //
+        // `tolerance` is set deliberately. `changeCount` is a Mach IPC
+        // round-trip to `pbs`, not the local integer read an earlier comment
+        // here claimed, and an untoleranced 2.9Hz timer defeats both timer
+        // coalescing and App Nap — which is a real cost for an app that
+        // advertises ~0% at idle. A 0.15s tolerance lets the system batch
+        // these wakeups against others without materially widening the miss
+        // window.
+        let poll = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
+        poll.tolerance = 0.15
+        timer = poll
     }
 
     func stop() {
@@ -241,6 +323,8 @@ final class ClipboardMonitor: ObservableObject {
         if entries.count > Self.historyLimit {
             entries.removeLast(entries.count - Self.historyLimit)
         }
+        trimImagePayloads()
+        attachThumbnailIfNeeded(for: entry)
         clipboardLog.debug("Clipboard: captured a \(entry.kind.rawValue, privacy: .public) entry")
     }
 
@@ -261,15 +345,65 @@ final class ClipboardMonitor: ObservableObject {
             return fileEntry(urls: urls)
         }
         if let image = NSImage(pasteboard: pasteboard) {
-            return imageEntry(image: image)
+            return imageEntry(from: pasteboard, image: image)
         }
-        if let string = pasteboard.string(forType: .string), !string.isEmpty {
+        if let string = plainText(from: pasteboard), !string.isEmpty {
             switch classify(string: string) {
             case .url: return urlEntry(string: string)
+            case .color: return colorEntry(string: string)
             default: return textEntry(string: string)
             }
         }
         return otherEntry()
+    }
+
+    /// Plain text from whatever flavour the source app actually wrote.
+    ///
+    /// `string(forType: .string)` alone misses a real class of copies: apps
+    /// that write only rich text (RTF, or HTML from a browser) leave no
+    /// `public.utf8-plain-text` flavour, so capture fell through to a
+    /// contentless `.other` entry — one of the "it doesn't detect everything
+    /// I copy" cases. Falls back through the rich flavours and flattens them.
+    /// RTF and RTFD only — **never HTML**, and that exclusion is a hard
+    /// security boundary, not a scope cut.
+    ///
+    /// `NSAttributedString(data:options:[.documentType: .html])` is the
+    /// WebKit-backed importer: it resolves and FETCHES subresources the HTML
+    /// references — remote images, stylesheets — synchronously, on the main
+    /// thread. Copying a page fragment containing a tracking pixel would make
+    /// Flux issue an outbound request to whoever wrote it, and hang the UI
+    /// until it returned. For an app whose headline invariant is that it
+    /// needs no permissions and phones nowhere (see the README's Privacy
+    /// section), that is disqualifying, and there is no public option to
+    /// disable remote loading on that importer.
+    ///
+    /// The RTF importers are plain parsers with no such behaviour. An
+    /// HTML-only copy therefore still falls through to `.other` — a narrower
+    /// miss than the one this method was added to fix, and the correct
+    /// trade.
+    static func plainText(from pasteboard: NSPasteboard) -> String? {
+        if let plain = pasteboard.string(forType: .string), !plain.isEmpty { return plain }
+        // `.documentType` is pinned per flavour, and that is the other half
+        // of the HTML exclusion. With the option omitted, the initializer
+        // best-effort SNIFFS the format — so data read from the RTF flavour
+        // could still be routed to the WebKit HTML importer, and the remote
+        // fetch this method exists to avoid would happen anyway. Naming the
+        // type removes the sniffing entirely.
+        let flavours: [(NSPasteboard.PasteboardType, NSAttributedString.DocumentType)] =
+            [(.rtf, .rtf), (.rtfd, .rtfd)]
+        for (pasteboardType, documentType) in flavours {
+            guard let data = pasteboard.data(forType: pasteboardType),
+                  let attributed = try? NSAttributedString(
+                    data: data, options: [.documentType: documentType],
+                    documentAttributes: nil) else { continue }
+            // Trim only to DECIDE emptiness — return the string verbatim.
+            // Leading indentation and trailing newlines are often the point
+            // of a copied snippet, and pasting back something subtly
+            // different from what was copied is its own bug.
+            let text = attributed.string
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+        }
+        return nil
     }
 
     /// Pure text-vs-URL classification for a captured string — split out of
@@ -281,10 +415,51 @@ final class ClipboardMonitor: ObservableObject {
     /// by what's actually on the pasteboard, not by inspecting string
     /// content.
     static func classify(string: String) -> ClipboardEntry.Kind {
-        if let url = URL(string: string), url.scheme != nil, url.host != nil {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if parseHexColor(trimmed) != nil { return .color }
+        if let url = URL(string: trimmed), url.scheme != nil, url.host != nil {
             return .url
         }
         return .text
+    }
+
+    /// Parses `#RGB`, `#RGBA`, `#RRGGBB` or `#RRGGBBAA`.
+    ///
+    /// The leading `#` is REQUIRED, deliberately. Plenty of ordinary words
+    /// are valid hex — "decade", "acceded", "beefed" — and silently turning a
+    /// copied word into a colour swatch is worse than missing the odd bare
+    /// hex string. Pure and `static` so `--selftest` covers it without a
+    /// pasteboard.
+    static func parseHexColor(_ string: String) -> ClipboardEntry.ColorComponents? {
+        guard string.hasPrefix("#") else { return nil }
+        let body = String(string.dropFirst())
+        guard !body.isEmpty, body.allSatisfy({ $0.isHexDigit }) else { return nil }
+
+        let chars = Array(body)
+        let pairs: [String]
+        switch chars.count {
+        case 3, 4:
+            // Shorthand: each digit doubles (#abc -> #aabbcc).
+            pairs = chars.map { String(repeating: String($0), count: 2) }
+        case 6, 8:
+            pairs = stride(from: 0, to: chars.count, by: 2).map { String(chars[$0..<$0 + 2]) }
+        default:
+            return nil
+        }
+
+        let values = pairs.compactMap { UInt8($0, radix: 16).map { Double($0) / 255 } }
+        guard values.count == pairs.count else { return nil }
+        return ClipboardEntry.ColorComponents(
+            red: values[0], green: values[1], blue: values[2],
+            alpha: values.count == 4 ? values[3] : 1)
+    }
+
+    private static func colorEntry(string: String) -> ClipboardEntry {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .color,
+                              preview: trimmed.uppercased(),
+                              fullString: cappedFullString(string), filePaths: nil,
+                              colorComponents: parseHexColor(trimmed))
     }
 
     private static func fileEntry(urls: [URL]) -> ClipboardEntry {
@@ -293,10 +468,88 @@ final class ClipboardMonitor: ObservableObject {
         return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .file, preview: basenames, fullString: nil, filePaths: paths)
     }
 
-    private static func imageEntry(image: NSImage) -> ClipboardEntry {
+    /// Longest edge of the stored thumbnail, in pixels. Generous enough for
+    /// a retina 18pt row glyph with room to spare.
+    static let thumbnailPixels: CGFloat = 64
+
+    /// Total image bytes `entries` may retain across the WHOLE history, not
+    /// per entry.
+    ///
+    /// A per-entry cap alone doesn't bound anything: 50 entries × an 8MB cap
+    /// is 400MB, which is precisely the concern the original
+    /// "no image payload at all" decision was avoiding. `trimImagePayloads()`
+    /// drops the oldest full payloads past this budget while keeping their
+    /// thumbnails, so old images stay recognisable and merely stop being
+    /// pasteable.
+    static let totalImageBudget = 48 * 1024 * 1024
+
+    /// Images larger than this are kept as a label without their bytes.
+    /// History holds up to `historyLimit` entries entirely in memory (never
+    /// on disk — see the type's own doc comment), so a run of full-resolution
+    /// retina screenshots is a real footprint. This is the budget the old
+    /// "no image payload at all" decision was avoiding; setting it
+    /// explicitly is better than refusing the feature.
+    static let imageDataCap = 8 * 1024 * 1024
+
+    /// Builds an image entry from the pasteboard's OWN bytes, deciding on
+    /// size before doing any decoding work.
+    ///
+    /// The obvious shape — decode to `NSImage`, re-encode to PNG, then check
+    /// the result against a cap — is what a first pass did, and it is
+    /// backwards in an expensive way. A 16" full-screen screenshot is ~31MB
+    /// of TIFF plus a same-sized bitmap rep plus a 7.7-megapixel PNG encode,
+    /// all synchronously on the main actor inside the poll timer, and then
+    /// discarded for exceeding the cap — hanging the app on every ⌃⇧⌘4 and
+    /// leaving the commonest image copy of all with no payload, which is the
+    /// exact "clicking it does nothing" bug the payload was added to fix.
+    ///
+    /// Checking the raw pasteboard bytes first means an oversized image costs
+    /// one `count`. The thumbnail is still produced either way, so even an
+    /// image too large to paste back is recognisable in the list.
+    private static func imageEntry(from pasteboard: NSPasteboard, image: NSImage) -> ClipboardEntry {
         let size = image.size
         let preview = "Image (\(Int(size.width))×\(Int(size.height)))"
-        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview, fullString: nil, filePaths: nil)
+        let raw = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff)
+        let withinCap = (raw?.count ?? .max) <= imageDataCap
+        // No thumbnail yet — see `attachThumbnail(to:from:)`. Building it
+        // here would mean decoding a full-resolution screenshot on the main
+        // actor, inside the poll timer.
+        return ClipboardEntry(id: UUID(), capturedAt: Date(), kind: .image, preview: preview,
+                              fullString: nil, filePaths: nil,
+                              imageData: withinCap ? raw : nil,
+                              rawImageBytes: raw)
+    }
+
+    /// A small PNG for the row glyph, from raw image bytes.
+    ///
+    /// `nonisolated` and pure so it can run off the main actor — decoding a
+    /// full-resolution screenshot is hundreds of milliseconds, and doing it
+    /// inline in `poll()` froze the whole app on every ⌃⇧⌘4.
+    nonisolated static func thumbnailData(fromRaw raw: Data) -> Data? {
+        guard let image = NSImage(data: raw) else { return nil }
+        return thumbnailData(from: image)
+    }
+
+    /// Drawn into a `thumbnailPixels`-bounded bitmap rather than scaling the
+    /// original on every render.
+    nonisolated private static func thumbnailData(from image: NSImage) -> Data? {
+        let source = image.size
+        guard source.width > 0, source.height > 0 else { return nil }
+        let scale = min(1, thumbnailPixels / max(source.width, source.height))
+        let target = NSSize(width: max(1, (source.width * scale).rounded()),
+                            height: max(1, (source.height * scale).rounded()))
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(target.width), pixelsHigh: Int(target.height),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(origin: .zero, size: target),
+                   from: .zero, operation: .copy, fraction: 1)
+        return rep.representation(using: .png, properties: [:])
     }
 
     private static func urlEntry(string: String) -> ClipboardEntry {
@@ -352,6 +605,62 @@ final class ClipboardMonitor: ObservableObject {
     /// that property's own doc comment for why comparing by that precise
     /// value (rather than unconditionally skipping whatever the next poll
     /// tick sees) is the fix.
+    /// Builds an image entry's thumbnail off the main actor, then folds it
+    /// back in.
+    ///
+    /// Decoding happens on a detached task because the source can be a
+    /// multi-megapixel screenshot, and `record` runs on the main actor inside
+    /// the poll timer. The entry is inserted immediately without a thumbnail
+    /// and gains one a moment later — the row simply shows its SF Symbol
+    /// until then, which is what it did for every image before this feature
+    /// existed.
+    ///
+    /// Deliberately built from the RAW bytes rather than `imageData`, so an
+    /// image too large to paste back still gets a thumbnail. An unrecognisable
+    /// entry is worse than an unpasteable one.
+    private func attachThumbnailIfNeeded(for entry: ClipboardEntry) {
+        guard entry.kind == .image, let raw = entry.rawImageBytes else { return }
+        let id = entry.id
+        Task.detached(priority: .utility) {
+            guard let thumbnail = Self.thumbnailData(fromRaw: raw) else { return }
+            await MainActor.run { [weak self] in
+                guard let self, let index = self.entries.firstIndex(where: { $0.id == id }) else { return }
+                self.entries[index].thumbnailData = thumbnail
+                // The raw copy has done its job; it would otherwise double
+                // this entry's footprint for the rest of its life.
+                self.entries[index].rawImageBytes = nil
+            }
+        }
+    }
+
+    /// Drops the oldest full image payloads once the history's total image
+    /// bytes exceed `totalImageBudget`, keeping their thumbnails.
+    ///
+    /// The per-entry `imageDataCap` bounds one entry; only this bounds the
+    /// set. Without it, 50 entries at the cap is 400MB retained in memory for
+    /// a glanceable history — the exact cost the original no-image-payload
+    /// decision was avoiding.
+    private func trimImagePayloads() {
+        var used = 0
+        var overBudget = false
+        for index in entries.indices where entries[index].imageData != nil {
+            let size = entries[index].imageData?.count ?? 0
+            // Once the budget is gone it stays gone for the rest of the pass.
+            // Merely skipping an oversized entry without latching this let a
+            // SMALLER, strictly OLDER entry slip into the untouched remainder
+            // — so a newer image could lose its payload while an older one
+            // kept it. The total stayed within budget either way, but
+            // "newest wins" is the property that makes the eviction
+            // predictable.
+            if overBudget || used + size > Self.totalImageBudget {
+                overBudget = true
+                entries[index].imageData = nil   // thumbnail deliberately kept
+            } else {
+                used += size
+            }
+        }
+    }
+
     func copyBack(_ id: UUID) {
         guard let entry = entries.first(where: { $0.id == id }) else { return }
 
@@ -366,7 +675,13 @@ final class ClipboardMonitor: ObservableObject {
             // passing an array of a conforming class where an array of the
             // protocol is expected.
             pasteboard.writeObjects(urls.map { $0 as NSURL })
-        case .text, .url, .image, .other:
+        case .image:
+            // Copyable now — an image entry used to carry no payload, so
+            // clicking one did nothing at all.
+            guard let data = entry.imageData, let image = NSImage(data: data) else { return }
+            pasteboard.clearContents()
+            pasteboard.writeObjects([image])
+        case .text, .url, .color, .other:
             guard let fullString = entry.fullString else { return }
             pasteboard.clearContents()
             pasteboard.setString(fullString, forType: .string)

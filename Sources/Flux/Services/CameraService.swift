@@ -6,7 +6,7 @@ import QuartzCore
 import OSLog
 
 /// Shared logging point for the camera subsystem (M6's Mirror widget) —
-/// mirrors `calendarLog`'s/`hudLog`'s file-scope-constant pattern rather than
+/// mirrors `calendarLog`'s file-scope-constant pattern rather than
 /// adding a new case to `Log.swift`, since this is a self-contained M6
 /// subsystem the notch suite owns.
 let cameraLog = Logger(subsystem: "com.flux.menubar", category: "camera")
@@ -159,7 +159,6 @@ final class CameraService: ObservableObject {
     deinit {
         // Plain teardown of what this instance itself registered, called
         // directly from a nonisolated `deinit` — mirrors
-        // `VolumeMonitor.deinit`'s reasoning for doing the same with its own
         // C/notification registrations rather than routing through an
         // instance method. In practice this service
         // is expected to live for the whole app lifetime (owned alongside

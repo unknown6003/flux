@@ -363,7 +363,7 @@ enum SelfTest {
         // --- Notch: LiveActivityCenter priority queue + expiry-free dismiss ---
         let center = LiveActivityCenter()
         let low = LiveActivity(kind: .bluetoothDevice, leading: .none, trailing: .none, duration: nil, priority: 100)
-        let high = LiveActivity(kind: .hudVolume, leading: .none, trailing: .none, duration: nil, priority: 300)
+        let high = LiveActivity(kind: .timer, leading: .none, trailing: .none, duration: nil, priority: 300)
         center.post(low)
         check(center.current?.id == low.id, "LiveActivity: the only queued activity becomes current")
         center.post(high)
@@ -429,12 +429,12 @@ enum SelfTest {
         let repostCenter = LiveActivityCenter()
         let repostDuration: TimeInterval = 0.6
         let repostGapBeforeRepost: TimeInterval = 0.3 // comfortably < repostDuration
-        let repostFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
+        let repostFirst = LiveActivity(kind: .timer, leading: .icon(systemName: "speaker.wave.2.fill"),
                                         trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
                                         duration: repostDuration, priority: 300)
         repostCenter.post(repostFirst) // deadline at t≈0.6
         RunLoop.current.run(until: Date().addingTimeInterval(repostGapBeforeRepost)) // t≈0.3, well before 0.6
-        let repostEqual = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.2.fill"),
+        let repostEqual = LiveActivity(kind: .timer, leading: .icon(systemName: "speaker.wave.2.fill"),
                                         trailing: .gauge(0.5, systemName: "speaker.wave.2.fill"),
                                         duration: repostDuration, priority: 300)
         repostCenter.post(repostEqual) // resets the deadline to t≈0.3+0.6=0.9
@@ -454,11 +454,11 @@ enum SelfTest {
         // Content-change repost of the same kind: same shape as the battery
         // case above, isolated here against a duration-bearing kind.
         let contentChangeCenter = LiveActivityCenter()
-        let contentFirst = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.1.fill"),
+        let contentFirst = LiveActivity(kind: .timer, leading: .icon(systemName: "speaker.wave.1.fill"),
                                          trailing: .gauge(0.2, systemName: "speaker.wave.1.fill"),
                                          duration: nil, priority: 300)
         contentChangeCenter.post(contentFirst)
-        let contentSecond = LiveActivity(kind: .hudVolume, leading: .icon(systemName: "speaker.wave.3.fill"),
+        let contentSecond = LiveActivity(kind: .timer, leading: .icon(systemName: "speaker.wave.3.fill"),
                                           trailing: .gauge(0.9, systemName: "speaker.wave.3.fill"),
                                           duration: nil, priority: 300)
         contentChangeCenter.post(contentSecond)
@@ -1754,145 +1754,6 @@ enum SelfTest {
                 state: .expanded(.nowPlaying), activityToggleOn: false, duoActive: true),
               "NotchActivityRouter: calendarServiceShouldRun is still false without calendar permission even with the Duo pane showing")
 
-        // --- M5: NotchActivityRouter — HUD symbol pickers, activity shape,
-        // and mode derivation, all pure. M11 removed intercept mode/
-        // brightness entirely, so the dedupe-window and brightness-related
-        // coverage that used to live here went with it. ---
-        check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: true) == "speaker.slash.fill",
-              "NotchActivityRouter: volumeSymbol shows the slashed glyph whenever muted, regardless of level")
-        check(NotchActivityRouter.volumeSymbol(level: 0, muted: false) == "speaker.slash.fill",
-              "NotchActivityRouter: volumeSymbol shows the slashed glyph at a literal 0 level too")
-        check(NotchActivityRouter.volumeSymbol(level: 0.1, muted: false) == "speaker.wave.1.fill",
-              "NotchActivityRouter: volumeSymbol picks the low-wave glyph in the bottom third")
-        check(NotchActivityRouter.volumeSymbol(level: 0.5, muted: false) == "speaker.wave.2.fill",
-              "NotchActivityRouter: volumeSymbol picks the mid-wave glyph in the middle third")
-        check(NotchActivityRouter.volumeSymbol(level: 0.9, muted: false) == "speaker.wave.3.fill",
-              "NotchActivityRouter: volumeSymbol picks the full-wave glyph in the top third")
-
-        let m5VolumeActivity = NotchActivityRouter.volumeActivity(level: 0.4, muted: false)
-        check(m5VolumeActivity.kind == .hudVolume && m5VolumeActivity.priority == 300 && m5VolumeActivity.duration == 1.5,
-              "NotchActivityRouter: volumeActivity posts at kind .hudVolume, priority 300, duration 1.5s")
-        // Not a plain `==` against `.gauge(0.4, ...)`: `volumeActivity` stores
-        // `Double(level)` where `level` is a `Float`, and widening a `Float`
-        // 0.4 to `Double` (~0.4000000059604645) doesn't bit-for-bit match the
-        // `Double` literal `0.4` — an epsilon compare on the unwrapped value
-        // is the correct check, not a red herring to "fix" by chasing exact
-        // equality.
-        if case let .gauge(value, systemName) = m5VolumeActivity.trailing {
-            check(abs(value - 0.4) < 0.0001 && systemName == "speaker.wave.2.fill",
-                  "NotchActivityRouter: volumeActivity's trailing content is a gauge carrying the exact level and matching icon")
-        } else {
-            check(false, "NotchActivityRouter: volumeActivity's trailing content is a gauge (got \(m5VolumeActivity.trailing))")
-        }
-
-        // `intendedHUDMode`: M11 collapsed this from a three-way
-        // off/observe/intercept decision (gated on an Accessibility grant)
-        // down to a plain on/off now that intercept mode is gone — this is
-        // the exact function `applyHUDState` calls for its own decision, not
-        // a second parallel implementation.
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: false, notchPresenting: true) == .off,
-              "NotchActivityRouter: intendedHUDMode is .off whenever the HUD master toggle is off, regardless of everything else")
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: false) == .off,
-              "NotchActivityRouter: intendedHUDMode is .off with nowhere to present (notchPresenting false)")
-        check(NotchActivityRouter.intendedHUDMode(hudEnabled: true, notchPresenting: true) == .observe,
-              "NotchActivityRouter: intendedHUDMode is .observe whenever the HUD is on and there's somewhere to present")
-
-        // --- M5: NotchActivityRouter — observe-mode volume events post/gate
-        // correctly, driven purely through VolumeMonitor's own `.events`
-        // subject. `hudVolume` below is a real instance (constructor seam,
-        // matching `testPower`/`testBluetooth` above), but `start()`/
-        // `adjustVolume()`/`toggleMute()` are never called on it here — only
-        // synthetic `VolumeEvent`s are fed in, so this never touches real
-        // CoreAudio on the CI runner. ---
-        do {
-            let hudSuiteName = "flux.selftest.hud"
-            let hudSuite = UserDefaults(suiteName: hudSuiteName)!
-            hudSuite.removePersistentDomain(forName: hudSuiteName)
-            let hudSettings = SettingsStore(defaults: hudSuite)
-            let hudActivities = LiveActivityCenter()
-            let hudArranger = MenuBarArranger()
-            let hudCalendar = CalendarService()
-            let hudPermissions = PermissionCenter()
-            let hudTimers = TimerService()
-            let hudViewModel = NotchViewModel(registry: NotchWidgetRegistry(), activities: LiveActivityCenter())
-            let hudVolume = VolumeMonitor()
-            // `startsMonitors: false` — see this file's identical note on the
-            // M3 router block above; must never let the router's real
-            // settings-driven lifecycle call `volume.start()` for real on a
-            // headless CI runner.
-            let hudRouter = NotchActivityRouter(activities: hudActivities, settings: hudSettings,
-                                                 arranger: hudArranger, calendar: hudCalendar,
-                                                 permissions: hudPermissions, viewModel: hudViewModel,
-                                                 timers: hudTimers,
-                                                 volume: hudVolume, startsMonitors: false)
-
-            withExtendedLifetime(hudRouter) {
-                hudVolume.events.send(.volumeChanged(level: 0.6, muted: false))
-                check(hudActivities.current?.kind == .hudVolume,
-                      "NotchActivityRouter: a VolumeEvent posts a .hudVolume live activity in observe mode")
-                check(hudActivities.current?.priority == 300,
-                      "NotchActivityRouter: HUD activities post at priority 300 — above battery (200)")
-                check(hudActivities.current?.duration == 1.5,
-                      "NotchActivityRouter: HUD activities expire after 1.5s")
-
-                hudSettings.notchHudEnabled = false
-                hudActivities.dismiss(kind: .hudVolume)
-                hudVolume.events.send(.volumeChanged(level: 0.8, muted: false))
-                check(hudActivities.current?.kind != .hudVolume,
-                      "NotchActivityRouter: the HUD master toggle off suppresses further volume posts")
-
-                hudSettings.notchHudEnabled = true
-                hudVolume.events.send(.volumeChanged(level: 0.2, muted: true))
-                check(hudActivities.current?.leading == .icon(systemName: "speaker.slash.fill"),
-                      "NotchActivityRouter: re-enabling the HUD toggle resumes posting, and a muted event shows the slashed glyph")
-            }
-            hudSuite.removePersistentDomain(forName: hudSuiteName)
-        }
-
-        // --- M5 code review: VolumeMonitor.hasVolumeControl — a smoke test
-        // safe on a headless CI runner with no guaranteed real audio
-        // hardware: it must not crash, and if there's no readable volume at
-        // all (`current == nil`), a device can't possibly be settable either. ---
-        do {
-            let volumeControlProbe = VolumeMonitor()
-            if volumeControlProbe.current == nil {
-                check(!volumeControlProbe.hasVolumeControl,
-                      "VolumeMonitor: hasVolumeControl is false when there's no readable volume at all")
-            } else {
-                check(true,
-                      "VolumeMonitor: hasVolumeControl computed without crashing (\(volumeControlProbe.hasVolumeControl)) alongside a readable current value")
-            }
-        }
-
-        // --- M5 bot-review fix: VolumeMonitor.perChannelTargets — the pure
-        // per-channel delta math backing `adjustVolume`'s no-virtual-main-
-        // volume fallback. The bug this replaced: the old fallback read the
-        // shared AVERAGE of the two channels, added `delta` once, and wrote
-        // that single result back to BOTH channels — flattening any existing
-        // left/right balance to identical values the very first time a
-        // volume key was pressed. Applying `delta` to each channel
-        // independently (verified here) preserves whatever gap already
-        // existed between them instead. ---
-        do {
-            let balanced = VolumeMonitor.perChannelTargets(left: 0.3, right: 0.5, delta: 0.1)
-            check(balanced.left.map { abs($0 - 0.4) < 0.0001 } == true,
-                  "VolumeMonitor: perChannelTargets applies delta to the left channel independently")
-            check(balanced.right.map { abs($0 - 0.6) < 0.0001 } == true,
-                  "VolumeMonitor: perChannelTargets applies delta to the right channel independently, preserving the existing left/right gap rather than collapsing both to a shared average")
-
-            let clampedHigh = VolumeMonitor.perChannelTargets(left: 0.95, right: 0.95, delta: 0.5)
-            check(clampedHigh.left == 1.0 && clampedHigh.right == 1.0,
-                  "VolumeMonitor: perChannelTargets clamps each channel at 1.0")
-
-            let clampedLow = VolumeMonitor.perChannelTargets(left: 0.05, right: 0.05, delta: -0.5)
-            check(clampedLow.left == 0.0 && clampedLow.right == 0.0,
-                  "VolumeMonitor: perChannelTargets clamps each channel at 0.0")
-
-            let missingChannel = VolumeMonitor.perChannelTargets(left: 0.4, right: nil, delta: 0.1)
-            check(missingChannel.left != nil && missingChannel.right == nil,
-                  "VolumeMonitor: perChannelTargets leaves an unreadable channel nil rather than fabricating a value for it")
-        }
-
         // --- M6: NotchTimer — pure countdown math, driven entirely by
         // injected `at`/`after` instants (never `Date()` internally), so
         // pause/resume/overdue can all be pinned deterministically. ---
@@ -2109,6 +1970,48 @@ enum SelfTest {
         // --- M6: ClipboardMonitor.classify — the text-vs-URL seam extracted
         // out of `capture(from:)` so this is testable against a plain
         // `String`, with no real `NSPasteboard` content involved. ---
+        // --- M13: hex-colour detection. The leading `#` is required on
+        // purpose — plenty of ordinary words are valid hex, and silently
+        // turning a copied word into a colour swatch is worse than missing
+        // the odd bare hex string. ---
+        check(ClipboardMonitor.classify(string: "#FF8800") == .color,
+              "Clipboard: a 6-digit hex colour classifies as .color")
+        check(ClipboardMonitor.classify(string: "  #f80  ") == .color,
+              "Clipboard: shorthand hex, surrounding whitespace tolerated")
+        check(ClipboardMonitor.classify(string: "#FF8800CC") == .color,
+              "Clipboard: 8-digit hex (with alpha) classifies as .color")
+        check(ClipboardMonitor.classify(string: "decade") == .text,
+              "Clipboard: a bare word that happens to be valid hex is NOT a colour — the # is what disambiguates")
+        check(ClipboardMonitor.classify(string: "#nothex") == .text,
+              "Clipboard: a # prefix alone isn't enough; the body must be hex")
+        check(ClipboardMonitor.classify(string: "#FF88") == .color,
+              "Clipboard: 4 digits is #RGBA shorthand, not an unsupported length")
+        check(ClipboardMonitor.classify(string: "#FF888") == .text,
+              "Clipboard: 5 digits matches no hex format — text, not a half-parsed colour")
+        check(ClipboardMonitor.classify(string: "#F") == .text,
+              "Clipboard: a single digit is text too")
+
+        if let white = ClipboardMonitor.parseHexColor("#FFFFFF") {
+            check(white.red == 1 && white.green == 1 && white.blue == 1 && white.alpha == 1,
+                  "Clipboard.parseHexColor: #FFFFFF is opaque white")
+        } else {
+            check(false, "Clipboard.parseHexColor: #FFFFFF should parse")
+        }
+        if let short = ClipboardMonitor.parseHexColor("#f00"), let long = ClipboardMonitor.parseHexColor("#ff0000") {
+            check(short == long,
+                  "Clipboard.parseHexColor: shorthand expands to the same colour as its long form")
+        } else {
+            check(false, "Clipboard.parseHexColor: both #f00 and #ff0000 should parse")
+        }
+        if let alpha = ClipboardMonitor.parseHexColor("#00000080") {
+            check(alpha.alpha > 0.4 && alpha.alpha < 0.6,
+                  "Clipboard.parseHexColor: the 4th byte is alpha, not a colour channel")
+        } else {
+            check(false, "Clipboard.parseHexColor: #00000080 should parse")
+        }
+        check(ClipboardMonitor.parseHexColor("FF8800") == nil,
+              "Clipboard.parseHexColor: refuses a bare hex string with no #")
+
         check(ClipboardMonitor.classify(string: "https://example.com/path") == .url,
               "ClipboardMonitor: classify recognizes a full URL (scheme + host) as .url")
         check(ClipboardMonitor.classify(string: "hello world") == .text,
@@ -2121,7 +2024,7 @@ enum SelfTest {
         // --- M6 smoke tests: CameraService/ClipboardMonitor/LockScreenPresenter
         // construct and tear down safely on a headless CI runner with no
         // guaranteed camera hardware, real pasteboard writes, or lock-screen
-        // session. Mirrors M5's VolumeMonitor smoke test. ---
+        // session. ---
         do {
             let cameraProbe = CameraService()
             check(!cameraProbe.isRunning, "CameraService: isRunning starts false")
@@ -2608,7 +2511,7 @@ enum SelfTest {
 
             cycleCenter.cycle() // A -> B
             check(cycleCenter.current?.id == cycleB.id, "LiveActivityCenter: setup — cursor parked on B")
-            let transientHUD = LiveActivity(kind: .hudVolume, leading: .none, trailing: .none, duration: 5, priority: 300)
+            let transientHUD = LiveActivity(kind: .timer, leading: .none, trailing: .none, duration: 5, priority: 300)
             cycleCenter.post(transientHUD)
             check(cycleCenter.current?.id == cycleB.id,
                   "LiveActivityCenter: a transient activity posted while an explicit cycle cursor is active does not preempt it, even at a higher priority — the documented cycleCursor tradeoff")

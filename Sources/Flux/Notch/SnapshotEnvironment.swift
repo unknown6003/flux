@@ -33,3 +33,29 @@ extension EnvironmentValues {
         set { self[IsSnapshotRenderKey.self] = newValue }
     }
 }
+
+/// Whether a widget is rendering into a narrow side pane rather than the
+/// whole expanded panel.
+///
+/// Duo view (Now Playing beside Calendar) has to fit inside the ONE shared
+/// expanded footprint rather than widening it — see `NotchMetrics` — so its
+/// Calendar pane is roughly a third of the panel. At that width the agenda's
+/// full "2:00 PM – 3:00 PM" range wraps onto three lines and locations
+/// truncate mid-word, which reads as broken rather than dense.
+///
+/// An environment value rather than a `makeExpandedView(compact:)` parameter:
+/// the `NotchWidget` protocol shouldn't grow a layout argument that only one
+/// widget in one mode cares about, and `NotchRootView.duoContent` can set it
+/// on exactly the pane that needs it.
+private struct IsNarrowPaneKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Set by `NotchRootView.duoContent` on Duo's side pane only; `false`
+    /// everywhere else, including a widget expanded on its own.
+    var isNarrowPane: Bool {
+        get { self[IsNarrowPaneKey.self] }
+        set { self[IsNarrowPaneKey.self] = newValue }
+    }
+}
