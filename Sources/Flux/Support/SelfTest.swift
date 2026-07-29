@@ -1099,9 +1099,20 @@ enum SelfTest {
             check(PowerMonitor.lowBatteryEvent(previous: unplugged60, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
                   "PowerMonitor: crossing below 20% unplugged fires .lowBattery once")
             check(!armed, "PowerMonitor: firing disarms so the same low level doesn't refire")
-            check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: unplugged19, armed: &armed) == nil,
-                  "PowerMonitor: staying low while disarmed doesn't refire")
-            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged26, armed: &armed) == .batteryRecovered(percent: 26),
+            // M12 fix: staying low must not RE-FIRE, but it must still
+            // REPORT the new percent. Without this the sticky wing froze at
+            // whatever tripped the threshold and read "20%" all the way down.
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: unplugged19, armed: &armed)
+                    == .lowBatteryChanged(percent: 19),
+                  "PowerMonitor: draining further while disarmed reports the NEW percent so the sticky warning stays truthful")
+            check(!armed, "PowerMonitor: reporting a changed percent doesn't re-arm (that would let it warn twice)")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged19, current: unplugged19, armed: &armed) == nil,
+                  "PowerMonitor: an unchanged re-read while low is still silent")
+            let unplugged22 = PowerState(percent: 22, isCharging: false, onACPower: false)
+            let unplugged21 = PowerState(percent: 21, isCharging: false, onACPower: false)
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged22, current: unplugged21, armed: &armed) == nil,
+                  "PowerMonitor: movement between the warn (20) and re-arm (25) lines stays silent — only under the warn line is worth updating")
+            check(PowerMonitor.lowBatteryEvent(previous: unplugged21, current: unplugged26, armed: &armed) == .batteryRecovered(percent: 26),
                   "PowerMonitor: crossing back above the 25% re-arm threshold after a fire posts .batteryRecovered (so the sticky warning comes down) instead of another .lowBattery")
             check(armed, "PowerMonitor: crossing above 25% re-arms")
             check(PowerMonitor.lowBatteryEvent(previous: unplugged26, current: unplugged20, armed: &armed) == .lowBattery(percent: 20),
@@ -1109,6 +1120,39 @@ enum SelfTest {
             check(PowerMonitor.lowBatteryEvent(previous: unplugged20, current: ac, armed: &armed) == nil,
                   "PowerMonitor: plugging in while low never fires .lowBattery or .batteryRecovered (`.pluggedIn` already carries its own replacement activity)")
             check(armed, "PowerMonitor: plugging in re-arms (a fresh unplug can refire immediately)")
+        }
+
+        // --- M12: LiveActivityCenter.updateIfPresent — refreshes a showing
+        // activity without ever resurrecting a dismissed one. `post` appends
+        // when nothing of that kind is queued, so using it to keep the
+        // low-battery percent current would have re-asserted a warning the
+        // user swiped away, once per percent, all the way to empty. ---
+        do {
+            let center = LiveActivityCenter()
+            let warning = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.25"),
+                                       trailing: .text("20%"), duration: nil, priority: 200, tint: .warning)
+
+            check(center.updateIfPresent(warning) == false,
+                  "LiveActivityCenter.updateIfPresent: does nothing when no activity of that kind is queued")
+            check(center.current == nil,
+                  "LiveActivityCenter.updateIfPresent: and specifically does NOT post one")
+
+            center.post(warning)
+            let showingID = center.current?.id
+            check(showingID != nil, "LiveActivityCenter: setup — the warning is showing")
+
+            let updated = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.25"),
+                                       trailing: .text("11%"), duration: nil, priority: 200, tint: .warning)
+            check(center.updateIfPresent(updated) == true,
+                  "LiveActivityCenter.updateIfPresent: updates an activity of that kind when one IS queued")
+            check(center.current?.trailing == .text("11%"),
+                  "LiveActivityCenter.updateIfPresent: the showing activity now carries the new percent")
+            check(center.current?.id == showingID,
+                  "LiveActivityCenter.updateIfPresent: in place — the id is preserved, so the wing updates rather than flickering out and back")
+
+            center.dismiss(kind: .battery)
+            check(center.updateIfPresent(updated) == false && center.current == nil,
+                  "LiveActivityCenter.updateIfPresent: once dismissed, further updates stay dismissed — the whole reason this isn't `post`")
         }
 
         // --- M3: PowerMonitor.plugEvent — plug/unplug transition detection ---

@@ -46,13 +46,41 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         updater.clearStaleOutcome()
         if window == nil {
             window = makeWindow()
-            sizeToNaturalHeight()          // first open: fit content, clamp to screen, center
+            sizeToFixedHeight()            // one height, measured once, held forever
         } else {
             clampHeightToScreen()          // re-fit in case the display changed since last time
         }
+        // Become a regular app for as long as Settings is open — see
+        // `applyRegularActivationPolicy`.
+        Self.applyRegularActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         onVisibilityChanged?(true)
+    }
+
+    /// Promotes Flux from `.accessory` to `.regular` while Settings is on
+    /// screen, and back again when it closes.
+    ///
+    /// Flux is `LSUIElement` (see `Info.plist`) because a menu-bar utility
+    /// has no business owning a permanent Dock icon. The cost is that its
+    /// Settings window was invisible to every normal way of managing a
+    /// window: no Dock tile, no ⌘-Tab entry, no Window menu, no Mission
+    /// Control grouping. Open it, click away, and the only route back was the
+    /// chevron — and there was no obvious way to close or reach it at all.
+    ///
+    /// Switching policy for the window's lifetime gets all of that for free
+    /// and gives it up again the moment it closes, so the idle app is still
+    /// Dock-less. `NSApp.activate` must come AFTER the switch, or the newly
+    /// regular app is left behind whatever was frontmost.
+    static func applyRegularActivationPolicy() {
+        guard NSApp.activationPolicy() != .regular else { return }
+        NSApp.setActivationPolicy(.regular)
+    }
+
+    /// Back to a Dock-less accessory once nothing needs a window presence.
+    static func applyAccessoryActivationPolicy() {
+        guard NSApp.activationPolicy() != .accessory else { return }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     /// Opens Settings on a specific tab — the notch's right-click menu jumps
@@ -69,16 +97,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             currentTab = tab
             if let window {
                 window.contentViewController = makeContentController()
-                refitForTabChange()
             }
         }
         show()
     }
 
     private func makeContentController() -> NSViewController {
+        // Only records which tab is showing — deliberately does NOT resize.
         let root = SettingsView(initialTab: currentTab, onTabChange: { [weak self] tab in
             self?.currentTab = tab
-            self?.refitForTabChange()
         })
         .environmentObject(settings)
         .environmentObject(arranger)
@@ -98,7 +125,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentViewController: makeContentController())
         window.title = "Flux Settings"
-        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
@@ -110,12 +137,26 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: Sizing
+    //
+    // ## The window height is FIXED, and never changes again
+    // It used to re-measure the active tab and grow/shrink to fit on every
+    // switch. That made the window jump around under the pointer — the
+    // Notch tab is far taller than About — moving the very controls you were
+    // reaching for, and resizing a window out from under an open popover or
+    // a mid-edit text field. Tabs are peers; a tab bar that resizes its own
+    // container is the bug, not a feature.
+    //
+    // One height is measured once, from the TALLEST tab, and then held for
+    // the window's whole life. Anything taller than that (a tab that grows
+    // because a toggle revealed more rows) scrolls, which is what the
+    // `ScrollView` in `SettingsView` was always there for.
 
-    /// The height `currentTab`'s content wants when nothing is scrolled. Measured
-    /// from a non-scrolling copy of just that tab so a tall update banner or extra
-    /// rows are accounted for.
-    private func naturalContentHeight() -> CGFloat {
-        let probe = NSHostingView(rootView: SettingsView(scrolls: false, initialTab: currentTab)
+    /// The measured fixed height, computed once on first open.
+    private var fixedContentHeight: CGFloat?
+
+    /// The natural height of one tab, measured from a non-scrolling copy.
+    private func naturalContentHeight(of tab: SettingsTab) -> CGFloat {
+        let probe = NSHostingView(rootView: SettingsView(scrolls: false, initialTab: tab)
             .environmentObject(settings)
             .environmentObject(arranger)
             .environmentObject(updater)
@@ -126,6 +167,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         return ceil(probe.fittingSize.height)
     }
 
+    /// The tallest tab's natural height, clamped to the screen — measured
+    /// once and cached, so no later content change can move the window.
+    private func resolvedFixedHeight() -> CGFloat {
+        if let fixedContentHeight { return fixedContentHeight }
+        let tallest = SettingsTab.allCases.map { naturalContentHeight(of: $0) }.max() ?? 560
+        let height = min(tallest, availableHeight(on: NSScreen.main))
+        fixedContentHeight = height
+        return height
+    }
+
     /// Usable height for a window on `screen` — its visible frame already excludes
     /// the menu bar and Dock; a little breathing room keeps the title bar clear.
     private func availableHeight(on screen: NSScreen?) -> CGFloat {
@@ -133,57 +184,39 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         return max(320, visible - 24)
     }
 
-    /// First-open sizing: open at the content's natural height, but never taller
-    /// than the screen (then the ScrollView takes over), and centre the window.
-    private func sizeToNaturalHeight() {
+    /// First-open sizing: the one fixed height, centred. `contentMinSize` and
+    /// `contentMaxSize` are pinned to the same value, so neither a tab switch
+    /// nor a user drag can change it — the window is genuinely fixed, not
+    /// merely "sized correctly for now".
+    private func sizeToFixedHeight() {
         guard let window else { return }
-        let natural = naturalContentHeight()
-        let available = availableHeight(on: NSScreen.main)
-        let width = Self.contentWidth
-        window.contentMinSize = NSSize(width: width, height: min(320, natural))
-        window.contentMaxSize = NSSize(width: width, height: natural)   // no point being taller than the content
-        window.setContentSize(NSSize(width: width, height: min(natural, available)))
+        let height = resolvedFixedHeight()
+        let size = NSSize(width: Self.contentWidth, height: height)
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        window.setContentSize(size)
         window.center()
     }
 
-    /// Re-open sizing: keep the user's size/position, but shrink to fit if the
-    /// window is now taller than the screen it's on (e.g. moved to a laptop display).
+    /// Re-open sizing: only ever shrinks to fit a smaller screen (the window
+    /// was moved to a laptop display since last time). Never grows, never
+    /// re-measures content.
     private func clampHeightToScreen() {
         guard let window else { return }
-        let natural = naturalContentHeight()
         let available = availableHeight(on: window.screen)
-        // Set alongside `contentMaxSize`, and always before `setContentSize`
-        // below: `min(320, natural)` can never exceed `natural` itself, so
-        // min ≤ max holds no matter how tall (or short) this tab's content
-        // is — leaving `contentMinSize` at a stale, taller value from a
-        // previous (taller) tab could otherwise pin the window above the max
-        // this tab just set, or reject `setContentSize` outright.
-        window.contentMinSize = NSSize(width: Self.contentWidth, height: min(320, natural))
-        window.contentMaxSize = NSSize(width: Self.contentWidth, height: natural)
-        if let contentHeight = window.contentView?.frame.height, contentHeight > available {
-            window.setContentSize(NSSize(width: Self.contentWidth, height: available))
-        }
-    }
-
-    /// Switching tabs changes the content's natural height (e.g. the Menu Bar
-    /// tab's live preview + Arrange Mode card is taller than About) — re-measure
-    /// and grow/shrink the window to fit the new tab, same clamp-to-screen rule
-    /// as the initial open.
-    private func refitForTabChange() {
-        guard let window else { return }
-        let natural = naturalContentHeight()
-        let available = availableHeight(on: window.screen)
-        // See `clampHeightToScreen`'s comment on this same pairing — a tab
-        // switch is exactly the case that comment worries about: min/max both
-        // need to reflect the *new* tab's natural height before
-        // `setContentSize` runs, or a leftover min from a taller previous tab
-        // can end up above this tab's own max.
-        window.contentMinSize = NSSize(width: Self.contentWidth, height: min(320, natural))
-        window.contentMaxSize = NSSize(width: Self.contentWidth, height: natural)
-        window.setContentSize(NSSize(width: Self.contentWidth, height: min(natural, available)))
+        guard let current = window.contentView?.frame.height, current > available else { return }
+        let size = NSSize(width: Self.contentWidth, height: available)
+        fixedContentHeight = available
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        window.setContentSize(size)
     }
 
     func windowWillClose(_ notification: Notification) {
         onVisibilityChanged?(false)
+        // Deferred a runloop turn: dropping to `.accessory` synchronously
+        // from inside `windowWillClose` pulls the Dock tile and menu bar out
+        // from under a window AppKit is still in the middle of closing.
+        DispatchQueue.main.async { Self.applyAccessoryActivationPolicy() }
     }
 }

@@ -179,6 +179,11 @@ final class NotchActivityRouter {
             activities.post(batteryActivity(percent: percent, charging: false, warning: false))
         case .lowBattery(let percent):
             activities.post(batteryActivity(percent: percent, charging: false, warning: true))
+        case .lowBatteryChanged(let percent):
+            // `updateIfPresent`, NOT `post` — see its doc comment. A warning
+            // the user has already swiped away must not come back every time
+            // the battery drops another percent.
+            activities.updateIfPresent(batteryActivity(percent: percent, charging: false, warning: true))
         case .batteryRecovered:
             activities.dismiss(kind: .battery)
         }

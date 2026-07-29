@@ -172,6 +172,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // running with nowhere left to show a wing (or sitting idle once a
         // notched screen reappears).
 
+        NSApp.mainMenu = Self.makeMainMenu()
+
         configureHotkey()
         configureNotch()
         configureUpdateChecks()
@@ -572,6 +574,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onActivate: { [arranger] in arranger.setArranging(true) }
             )
         }
+    }
+
+    // MARK: Main menu
+
+    /// The app menu bar, used only while Flux is temporarily `.regular` —
+    /// i.e. while the Settings window is open (see
+    /// `SettingsWindowController.applyRegularActivationPolicy`).
+    ///
+    /// An `LSUIElement` app has no menu bar and needs none. But promoting to
+    /// `.regular` without setting `NSApp.mainMenu` gives you the *worst* of
+    /// both: a visible, empty menu bar, and no ⌘W to close the window, no ⌘Q
+    /// to quit, and no ⌘X/⌘C/⌘V inside the hotkey recorder or any text field
+    /// — because those standard shortcuts are menu items, not built-in
+    /// behaviour. This is the minimum that makes the promoted state feel like
+    /// a real app rather than a broken one.
+    ///
+    /// Every item uses a nil target, so AppKit routes it through the
+    /// responder chain to whatever is actually focused. That's what makes the
+    /// Edit items work in a text field without this class knowing anything
+    /// about them.
+    private static func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About \(AppInfo.name)",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide \(AppInfo.name)",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = NSMenuItem(title: "Hide Others",
+                                    action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit \(AppInfo.name)",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize",
+                           action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowItem.submenu = windowMenu
+        main.addItem(windowItem)
+        // Hands AppKit the Window menu it manages itself (window list,
+        // Bring All to Front) rather than leaving it a static three items.
+        NSApp.windowsMenu = windowMenu
+
+        return main
     }
 
     // MARK: Notch context menu

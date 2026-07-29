@@ -25,6 +25,13 @@ enum PowerEvent: Equatable {
     case pluggedIn(percent: Int)
     case unplugged(percent: Int)
     case lowBattery(percent: Int)
+    /// The battery kept draining after a `.lowBattery` warning was already
+    /// posted. Carries the NEW percent so the sticky warning's number stays
+    /// truthful — without this the wing froze at whatever percent tripped the
+    /// threshold (20%) and sat there reading "20%" all the way down to empty,
+    /// because the hysteresis that (correctly) stops the warning re-firing
+    /// also stopped it updating.
+    case lowBatteryChanged(percent: Int)
     /// The percent climbed back above the re-arm threshold *without* a plug
     /// event in between — e.g. a noisy read recovering, or external charging
     /// hardware IOKit doesn't report as AC. Only fired when a `.lowBattery`
@@ -263,7 +270,21 @@ final class PowerMonitor {
             armed = true
             return recovering ? .batteryRecovered(percent: current.percent) : nil
         }
-        guard armed, current.percent <= lowBatteryThreshold else { return nil }
+        guard armed, current.percent <= lowBatteryThreshold else {
+            // Already warned, still under the line, and the number moved:
+            // report the new percent so the sticky wing can be updated in
+            // place. Gated on an actual change so an unchanged re-read is
+            // still silent, and on being under the warn threshold (not merely
+            // under the higher re-arm line) so the range between the two
+            // stays quiet.
+            //
+            // Note `previous` is finally load-bearing here — it was carried
+            // in this signature unused, purely to mirror `plugEvent`'s shape.
+            if !armed, current.percent != previous.percent, current.percent <= lowBatteryThreshold {
+                return .lowBatteryChanged(percent: current.percent)
+            }
+            return nil
+        }
         armed = false
         return .lowBattery(percent: current.percent)
     }

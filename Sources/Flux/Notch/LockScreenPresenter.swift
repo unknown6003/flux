@@ -2,6 +2,15 @@ import AppKit
 import SwiftUI
 import Combine
 import CoreGraphics
+import OSLog
+
+/// Shared logging point for the lock-screen experiment. This feature rides on
+/// undocumented behaviour (see `LockScreenPresenter`'s own doc comment) and
+/// can only ever fail *silently* by design, which makes "it doesn't work"
+/// impossible to act on without a breadcrumb at each gate. Read it back with
+/// `log stream --predicate 'subsystem == "com.flux.menubar" AND category ==
+/// "lockscreen"'`.
+let lockLog = Logger(subsystem: "com.flux.menubar", category: "lockscreen")
 
 /// EXPERIMENTAL — default OFF, gated by `flux.notch.lockScreenExperiment`
 /// (the wiring agent's `setEnabled(_:)` call, in `AppDelegate.
@@ -59,6 +68,22 @@ final class LockScreenPresenter {
 
     private var isEnabled = false
     private var isObserving = false
+
+    /// The last notch geometry resolved while the screen was UNLOCKED.
+    ///
+    /// This is why the whole feature appeared to do nothing. `handleLocked()`
+    /// guarded on `NSScreen.builtInNotchedScreen?.notchRect`, and
+    /// `notchRect` is derived from `auxiliaryTopLeftArea`/
+    /// `auxiliaryTopRightArea` — the usable menu-bar regions either side of
+    /// the notch (see `MenuBarGeometry`). On the lock screen there is no menu
+    /// bar, so AppKit reports no auxiliary areas, `notchRect` returns `nil`,
+    /// and the guard bailed before anything could ever be shown. The panel
+    /// was never built, on any Mac, every time.
+    ///
+    /// The physical notch obviously doesn't move when the screen locks, so
+    /// the fix is to remember it from when it *was* resolvable and fall back
+    /// to that. Refreshed on enable and on every screen-parameter change.
+    private var lastKnownNotchRect: NSRect?
     private var panel: NSPanel?
     private var hostingView: NSHostingView<LockScreenContentView>?
     private var currentNotchSize: CGSize = .zero
@@ -133,6 +158,7 @@ final class LockScreenPresenter {
         guard enabled != isEnabled else { return }
         isEnabled = enabled
         if enabled {
+            cacheNotchRectIfResolvable()
             startObserving()
         } else {
             stopObserving()
@@ -142,11 +168,25 @@ final class LockScreenPresenter {
 
     // MARK: - Lock/unlock observation
 
+    /// Records the notch geometry whenever it's actually resolvable — i.e.
+    /// while unlocked. See `lastKnownNotchRect` for why the lock path can't
+    /// read it for itself.
+    private func cacheNotchRectIfResolvable() {
+        guard let rect = NSScreen.builtInNotchedScreen?.notchRect else { return }
+        lastKnownNotchRect = rect
+    }
+
     /// No-op if already observing — safe to call freely.
     private func startObserving() {
         guard !isObserving else { return }
         isObserving = true
         let center = DistributedNotificationCenter.default()
+
+        // Keep the cached geometry current across display changes, which are
+        // the only thing that can move or remove the notch.
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in self?.cacheNotchRectIfResolvable() }
+            .store(in: &cancellables)
         center.publisher(for: Notification.Name("com.apple.screenIsLocked"))
             .sink { [weak self] _ in self?.handleLocked() }
             .store(in: &cancellables)
@@ -224,7 +264,17 @@ final class LockScreenPresenter {
         // pending-dismiss deadline itself.
         isDismissing = false
         guard isEnabled else { return }
-        guard let screen = NSScreen.builtInNotchedScreen, let notchRect = screen.notchRect else { return }
+        guard let screen = NSScreen.builtInNotchedScreen else {
+            lockLog.notice("Lock screen: no built-in notched screen — nothing to hug, skipping")
+            return
+        }
+        guard let notchRect = screen.notchRect ?? lastKnownNotchRect else {
+            // Only reachable if the screen was never seen unlocked, which in
+            // practice means the experiment was enabled while already locked.
+            lockLog.notice("Lock screen: notch geometry unavailable and none cached — skipping")
+            return
+        }
+        lockLog.notice("Lock screen: presenting over the shield at level \(Self.shieldedLevel.rawValue, privacy: .public)")
         if let panel {
             refreshPanel(panel, on: screen, notchRect: notchRect)
         } else {
