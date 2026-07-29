@@ -54,6 +54,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // `applyRegularActivationPolicy`.
         Self.applyRegularActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
+        // `makeKeyAndOrderFront` does NOT restore a minimized window — that
+        // lives in `NSWindowController.showWindow`, which this class doesn't
+        // use. Without this, minimizing Settings was a one-way trip: every
+        // route back (menu-bar item, notch right-click, Dock tile) would
+        // activate the app and show nothing, `windowWillClose` would never
+        // fire, and the app would sit permanently `.regular` with an unwanted
+        // Dock icon and an apparently-missing window. Minimize only became
+        // reachable at all when this commit's sibling added `.miniaturizable`
+        // and a ⌘M item, so this arrived with it.
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         window?.makeKeyAndOrderFront(nil)
         onVisibilityChanged?(true)
     }
@@ -167,12 +177,24 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         return ceil(probe.fittingSize.height)
     }
 
-    /// The tallest tab's natural height, clamped to the screen — measured
-    /// once and cached, so no later content change can move the window.
+    /// A comfortable design height for a settings window — NOT the tallest
+    /// tab's natural height.
+    ///
+    /// Sizing to the tallest tab is the obvious reading of "one size for
+    /// everything" and it's wrong: with the notch enabled, the Notch tab runs
+    /// seven cards and 1600-2000pt, so the max would clamp straight to the
+    /// screen and open EVERY tab as a near-fullscreen window — About needs
+    /// ~350pt and would sit in ~850pt of mostly empty space. That trades a
+    /// window that jumps for one that's permanently oversized.
+    private static let preferredContentHeight: CGFloat = 620
+
+    /// The one height: the shorter of what the tabs actually want, the design
+    /// ceiling, and what the screen can show. Measured once and cached, so no
+    /// later content change can move the window. Anything taller scrolls.
     private func resolvedFixedHeight() -> CGFloat {
         if let fixedContentHeight { return fixedContentHeight }
-        let tallest = SettingsTab.allCases.map { naturalContentHeight(of: $0) }.max() ?? 560
-        let height = min(tallest, availableHeight(on: NSScreen.main))
+        let tallest = SettingsTab.allCases.map { naturalContentHeight(of: $0) }.max() ?? Self.preferredContentHeight
+        let height = min(tallest, Self.preferredContentHeight, availableHeight(on: NSScreen.main))
         fixedContentHeight = height
         return height
     }
@@ -206,7 +228,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let available = availableHeight(on: window.screen)
         guard let current = window.contentView?.frame.height, current > available else { return }
         let size = NSSize(width: Self.contentWidth, height: available)
-        fixedContentHeight = available
         window.contentMinSize = size
         window.contentMaxSize = size
         window.setContentSize(size)
@@ -217,6 +238,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // Deferred a runloop turn: dropping to `.accessory` synchronously
         // from inside `windowWillClose` pulls the Dock tile and menu bar out
         // from under a window AppKit is still in the middle of closing.
-        DispatchQueue.main.async { Self.applyAccessoryActivationPolicy() }
+        DispatchQueue.main.async { [weak self] in
+            // Conditional: if anything re-opened Settings inside the same
+            // runloop turn, demoting would leave an open window with no Dock
+            // tile and no ⌘-Tab entry — the bug this whole change removes.
+            guard self?.window?.isVisible != true else { return }
+            Self.applyAccessoryActivationPolicy()
+        }
     }
 }

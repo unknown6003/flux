@@ -123,6 +123,18 @@ final class PowerMonitor {
     /// plug/unplug event for a transition that happened entirely while
     /// stopped).
     ///
+    /// KNOWN LIMITATION, since the sticky warning's contract is claimed
+    /// elsewhere in this file: `NotchActivityRouter.applyMonitorState`
+    /// dismisses every `.battery` activity whenever notch presentation drops,
+    /// and once that happens while `lowBatteryArmed` is already `false`
+    /// nothing brings the warning back for the rest of that discharge — the
+    /// restart's first sample is silent by design (no percent change to
+    /// report), and `.lowBatteryChanged` routes through `updateIfPresent`,
+    /// which deliberately refuses to resurrect a dismissed activity. Plugging
+    /// in, or recovering above the re-arm line, restores normal behaviour.
+    /// Fixing it properly needs the router to re-assert the warning when
+    /// presentation returns, which it currently has no battery state to do.
+    ///
     /// `lowBatteryArmed` is deliberately NOT reset here. It used to be, so
     /// the monitor couldn't come back up silently disarmed with no memory of
     /// what disarmed it — but `refresh()` now evaluates the low-battery rule

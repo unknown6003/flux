@@ -84,6 +84,19 @@ final class LockScreenPresenter {
     /// the fix is to remember it from when it *was* resolvable and fall back
     /// to that. Refreshed on enable and on every screen-parameter change.
     private var lastKnownNotchRect: NSRect?
+
+    /// The notched screen's own frame, cached alongside the rect above.
+    ///
+    /// Caching only `notchRect` was self-defeating, and a review caught it:
+    /// `notchRect` guards on `hasNotch` (`safeAreaInsets.top > 0`) and so does
+    /// `NSScreen.builtInNotchedScreen`. If the lock screen really did erase
+    /// the geometry, `builtInNotchedScreen` would return nil and
+    /// `handleLocked()` would bail one guard EARLIER than the one being
+    /// cached for. Both are cached now, so the fallback is actually reachable
+    /// under its own premise. `position(_:on:notchRect:)` only ever reads
+    /// `screen.frame.maxY`, so a frame is all it needs — deliberately not a
+    /// retained `NSScreen`, which can be invalidated across a display change.
+    private var lastKnownScreenFrame: NSRect?
     private var panel: NSPanel?
     private var hostingView: NSHostingView<LockScreenContentView>?
     private var currentNotchSize: CGSize = .zero
@@ -172,8 +185,9 @@ final class LockScreenPresenter {
     /// while unlocked. See `lastKnownNotchRect` for why the lock path can't
     /// read it for itself.
     private func cacheNotchRectIfResolvable() {
-        guard let rect = NSScreen.builtInNotchedScreen?.notchRect else { return }
+        guard let screen = NSScreen.builtInNotchedScreen, let rect = screen.notchRect else { return }
         lastKnownNotchRect = rect
+        lastKnownScreenFrame = screen.frame
     }
 
     /// No-op if already observing — safe to call freely.
@@ -263,22 +277,34 @@ final class LockScreenPresenter {
         // `fadeOutDeadline.cancel()` right above already applies to the
         // pending-dismiss deadline itself.
         isDismissing = false
+        // Logged BEFORE the enabled check, deliberately. This is the only
+        // line that distinguishes "the notification never arrived" from
+        // "it arrived and something downstream declined" — and with a feature
+        // that can only fail silently, that distinction is the whole
+        // diagnostic value.
+        lockLog.notice("Lock screen: screenIsLocked received (enabled: \(self.isEnabled, privacy: .public))")
         guard isEnabled else { return }
-        guard let screen = NSScreen.builtInNotchedScreen else {
-            lockLog.notice("Lock screen: no built-in notched screen — nothing to hug, skipping")
+
+        // Live geometry first, cache second. Both guards fall back, since
+        // `builtInNotchedScreen` and `notchRect` share the `hasNotch`
+        // precondition — caching only one of them left the other able to bail
+        // first. See `lastKnownScreenFrame`.
+        let liveScreen = NSScreen.builtInNotchedScreen
+        guard let notchRect = liveScreen?.notchRect ?? lastKnownNotchRect,
+              let screenFrame = liveScreen?.frame ?? lastKnownScreenFrame else {
+            // Reachable when the screen was never seen unlocked — in practice
+            // the experiment being switched on while already locked.
+            lockLog.error("Lock screen: no notch geometry, live or cached — nothing to present")
             return
         }
-        guard let notchRect = screen.notchRect ?? lastKnownNotchRect else {
-            // Only reachable if the screen was never seen unlocked, which in
-            // practice means the experiment was enabled while already locked.
-            lockLog.notice("Lock screen: notch geometry unavailable and none cached — skipping")
-            return
+        if liveScreen?.notchRect == nil {
+            lockLog.notice("Lock screen: live notch geometry unavailable, using the cached rect")
         }
-        lockLog.notice("Lock screen: presenting over the shield at level \(Self.shieldedLevel.rawValue, privacy: .public)")
+
         if let panel {
-            refreshPanel(panel, on: screen, notchRect: notchRect)
+            refreshPanel(panel, notchRect: notchRect, screenFrame: screenFrame)
         } else {
-            showPanel(on: screen, notchRect: notchRect)
+            showPanel(notchRect: notchRect, screenFrame: screenFrame)
         }
     }
 
@@ -299,16 +325,17 @@ final class LockScreenPresenter {
 
     // MARK: - Panel
 
-    private func showPanel(on screen: NSScreen, notchRect: NSRect) {
+    private func showPanel(notchRect: NSRect, screenFrame: NSRect) {
         currentNotchSize = notchRect.size
         activateNowPlayingForLockIfNeeded()
         let panel = makePanel(notchSize: notchRect.size)
         self.panel = panel
-        position(panel, on: screen, notchRect: notchRect)
+        position(panel, notchRect: notchRect, screenFrame: screenFrame)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
         animateAlpha(of: panel, to: 1, duration: Self.fadeInDuration)
+        reportVisibility(of: panel)
     }
 
     /// Updates an already-showing panel's content/position in place instead
@@ -322,12 +349,13 @@ final class LockScreenPresenter {
     /// arriving while a still-in-progress fade-out is winding down — the
     /// task itself was already cancelled by `handleLocked` before this runs)
     /// rather than snapping to fully visible.
-    private func refreshPanel(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
+    private func refreshPanel(_ panel: NSPanel, notchRect: NSRect, screenFrame: NSRect) {
         currentNotchSize = notchRect.size
         updateHostingContent()
-        position(panel, on: screen, notchRect: notchRect)
+        position(panel, notchRect: notchRect, screenFrame: screenFrame)
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
+        reportVisibility(of: panel)
         if panel.alphaValue < 1 {
             animateAlpha(of: panel, to: 1, duration: Self.fadeInDuration)
         }
@@ -518,10 +546,10 @@ final class LockScreenPresenter {
     /// on every current Mac. Mirrors `NotchWindowController.position`'s
     /// identical centering math, just against this feature's own (larger,
     /// pill-stack-sized) bounds rather than `NotchMetrics.panelBounds`.
-    private func position(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
+    private func position(_ panel: NSPanel, notchRect: NSRect, screenFrame: NSRect) {
         let width = max(notchRect.width, Self.minPanelWidth)
         let height = notchRect.height + Self.contentHeightBudget
-        let origin = NSPoint(x: notchRect.midX - width / 2, y: screen.frame.maxY - height)
+        let origin = NSPoint(x: notchRect.midX - width / 2, y: screenFrame.maxY - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
     }
 
@@ -542,6 +570,33 @@ final class LockScreenPresenter {
     /// actual cancellable deadline (`fadeOutDeadline`, see
     /// `fadeOutThenDismiss`); the visual animation itself is a one-line
     /// AppKit call either direction.
+    /// Reports whether the panel genuinely made it on screen, a beat after
+    /// ordering it in.
+    ///
+    /// "Ordered front" is not "visible" here. This feature draws above the
+    /// lock screen's shield via `CGShieldingWindowLevel()`, which modern macOS
+    /// may simply decline to composite — and `orderFrontRegardless()` reports
+    /// nothing either way, so a log line at the call site proves only that the
+    /// code ran. `isVisible`/`occlusionState` are what discriminate "macOS
+    /// refused" from "never got that far", which is the difference between a
+    /// bug worth chasing and a platform limitation to document.
+    ///
+    /// The same delay doubles as the fade-in safety net: if the animation
+    /// never landed (a throttled/App-Napped process while locked), alpha is
+    /// snapped to 1 so the panel isn't invisible-but-present.
+    private func reportVisibility(of panel: NSPanel) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.fadeInDuration + 0.1) { [weak self, weak panel] in
+            guard let self, let panel, self.isPresentingOnLockScreen else { return }
+            if panel.alphaValue < 1 {
+                lockLog.notice("Lock screen: fade-in didn't land — snapping alpha to 1")
+                panel.alphaValue = 1
+            }
+            lockLog.notice("""
+                Lock screen: panel visible=\(panel.isVisible, privacy: .public)                 occluded=\(panel.occlusionState.contains(.visible) == false, privacy: .public)                 level=\(panel.level.rawValue, privacy: .public)                 frame=\(NSStringFromRect(panel.frame), privacy: .public)
+                """)
+        }
+    }
+
     private func animateAlpha(of panel: NSPanel, to value: CGFloat, duration: TimeInterval) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
