@@ -259,12 +259,12 @@ struct NotchTab: View {
     private var experimentalCard: some View {
         FluxCard(title: "Experimental") {
             ToggleRow(title: "Show on the lock screen",
-                      subtitle: "⚠️ Live media, notifications, and an optional unlock pill while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
+                      subtitle: "⚠️ Live glass media controls, notifications, and an optional unlock pill while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
                       isOn: $settings.notchLockScreenExperimentEnabled)
             if settings.notchLockScreenExperimentEnabled {
                 RowDivider()
                 ToggleRow(title: "Now Playing",
-                          subtitle: "Show a media pill with artwork and title/artist while something's playing.",
+                          subtitle: "Show a glass media card with artwork, title/artist, and previous/play/next controls while something's playing.",
                           isOn: $settings.notchLockScreenNowPlayingEnabled)
                 RowDivider()
                 ToggleRow(title: "Notifications",
@@ -275,8 +275,8 @@ struct NotchTab: View {
                           subtitle: "Show a \"Press any key to unlock\" pill below the notch.",
                           isOn: $settings.notchLockScreenUnlockPillEnabled)
                 RowDivider()
-                ToggleRow(title: "Play a sound on unlock",
-                          subtitle: "Play a short sound the moment you unlock your Mac.",
+                ToggleRow(title: "Thunky unlock click",
+                          subtitle: "Play a short, tactile click the moment you unlock your Mac.",
                           isOn: $settings.notchLockScreenUnlockSoundEnabled)
             }
         }

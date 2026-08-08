@@ -199,7 +199,7 @@ every widget — the items below need a real notched Mac.
       Confirm a *plain* click (no option key) right after still does the
       ordinary open/close toggle, unaffected.
 
-## M9 — Alcove lock-screen parity: live media, notifications, unlock pill
+## M9/M15 — Alcove lock-screen parity: live media, controls, glass, unlock pill
 
 Turn on "Show on the lock screen" in Settings → Notch → Experimental before
 any of these — every item below assumes the master toggle is already on, and
@@ -207,11 +207,17 @@ the four sub-toggles beneath it are all on unless a specific item says
 otherwise.
 
 - [ ] **Lock with music playing**: start something playing, lock the screen,
-      and confirm the media pill appears below the notch silhouette with the
-      right artwork/title/artist, fading in over the notch silhouette rather
-      than snapping into place. Skip/pause from another device (or just let
-      the track change) and confirm the pill updates live, still locked, with
-      no need to unlock and re-lock for it to catch up.
+      and confirm the glass media card appears below the notch silhouette with
+      the right artwork/title/artist and previous/play/next controls, fading
+      in over the notch silhouette rather than snapping into place. Skip/
+      pause from another device (or just let the track change) and confirm
+      the card updates live, still locked, with no need to unlock and re-lock
+      for it to catch up.
+- [ ] **Lock-screen media controls**: click Previous, Play/Pause, and Next on
+      the card while locked and confirm the playing app responds. Click the
+      surrounding glass/background and confirm it does not steal keyboard
+      focus or interfere with typing the password. Click outside the card and
+      confirm the ordinary lock-screen UI still receives the click.
 - [ ] **Notification pill**: with something posting a live activity (plug in
       the charger for the battery wing, or start a timer), lock the screen
       and confirm its caption shows as a second pill beneath the media pill
@@ -220,9 +226,10 @@ otherwise.
       (content fades out, ~0.25s, BEFORE the panel actually disappears — it
       shouldn't just vanish instantly) transitions directly; both should read
       as a soft fade, not a hard cut.
-- [ ] **Unlock sound**: turn on "Play a sound on unlock," lock, then unlock,
-      and confirm a short sound plays right at the moment of unlocking (not
-      before, not noticeably after).
+- [ ] **Unlock sound**: turn on "Thunky unlock click," lock, then unlock,
+      and confirm a short, low click plays right at the moment of unlocking
+      (not before, not noticeably after). Turn the toggle off and confirm
+      unlock is silent.
 - [ ] **Unlock pill**: turn on "Unlock pill," lock the screen, and confirm a
       black pill reading "Press any key to unlock" with a padlock glyph shows
       below whatever other pills are present.
@@ -239,10 +246,16 @@ otherwise.
       progress. Confirm this never leaves a stuck, orphaned, or doubled panel
       behind, and never crashes; the content should always end up in the
       state matching whatever the CURRENT lock state actually is.
-- [ ] **No interaction possible**: with the lock-screen content showing
-      (any/all pills), try clicking directly on top of it and confirm nothing
-      happens — no highlight, no button press feedback, and typing your
-      password to unlock still works exactly as if none of this were showing.
+- [ ] **Safe pass-through outside media**: with the lock-screen content
+      showing, click the activity/unlock pills and the transparent space around
+      the media card. Confirm there is no highlight or button feedback and
+      typing your password to unlock still works exactly as if none of this
+      were showing.
+- [ ] **Glass treatment**: view the lock screen and expanded notch in both
+      light and dark wallpaper. Confirm the material subtly picks up the
+      backdrop, the dark tint keeps text legible, and the top-edge highlight/
+      hairline border read as one consistent surface rather than a flat black
+      rectangle. The collapsed notch should remain seamless and shadow-free.
 - [ ] **Master toggle off mid-lock**: while locked with content showing, have
       another device/session turn the master "Show on the lock screen" toggle
       off (or disable the notch panel entirely) — or simulate by unlocking,

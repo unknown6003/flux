@@ -2261,6 +2261,17 @@ enum SelfTest {
                                                 showUnlockPill: true) == [.unlock],
               "LockScreenPillLogic: Now Playing and the activity both disallowed → only the unlock pill survives")
 
+        // M15: the interactive card has its own pure gate. A missing track
+        // must never leave a transparent but mouse-sensitive panel behind,
+        // while a live track remains available whenever the lock-screen Now
+        // Playing toggle is on.
+        check(!LockScreenMediaControlLogic.shouldShow(hasNowPlaying: false, allowNowPlaying: true),
+              "LockScreenMediaControlLogic: no track means no interactive card")
+        check(!LockScreenMediaControlLogic.shouldShow(hasNowPlaying: true, allowNowPlaying: false),
+              "LockScreenMediaControlLogic: the Now Playing sub-toggle suppresses the interactive card")
+        check(LockScreenMediaControlLogic.shouldShow(hasNowPlaying: true, allowNowPlaying: true),
+              "LockScreenMediaControlLogic: a live track plus the Now Playing toggle shows the interactive card")
+
         // --- M6: NotchActivityRouter — timer completion/ambient translation,
         // driven purely through a real (but headless) TimerService's own
         // `completions`/`timers` — no NSSound actually needs to play
@@ -2426,22 +2437,23 @@ enum SelfTest {
                                                    WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
                   "SettingsStore: the default notchWidgetOrder appends mirror/timers/clipboard after calendar")
 
-            // M9 (Alcove lock-screen parity): the three sub-toggles that
+            // M9/M15 (Alcove lock-screen parity): the four sub-toggles that
             // only matter once the master experimental flag above is on
             // default to Now Playing/Notifications ON (they surface
             // information a passerby could otherwise miss, the same bar
-            // every other on-by-default notch feature clears) but the
-            // Unlock pill and unlock sound stay OFF (purely decorative/
-            // audible additions, not information — see each property's own
-            // doc comment on `SettingsStore`).
+            // every other on-by-default notch feature clears). The unlock
+            // pill remains OFF because it is decorative, while the
+            // thunky unlock sound defaults ON once the user opts into the
+            // experimental lock-screen surface — see each property's own doc
+            // comment on `SettingsStore`.
             check(m6Settings.notchLockScreenNowPlayingEnabled,
                   "SettingsStore: notchLockScreenNowPlayingEnabled defaults to true")
             check(m6Settings.notchLockScreenActivitiesEnabled,
                   "SettingsStore: notchLockScreenActivitiesEnabled defaults to true")
             check(!m6Settings.notchLockScreenUnlockPillEnabled,
                   "SettingsStore: notchLockScreenUnlockPillEnabled defaults to false")
-            check(!m6Settings.notchLockScreenUnlockSoundEnabled,
-                  "SettingsStore: notchLockScreenUnlockSoundEnabled defaults to false")
+            check(m6Settings.notchLockScreenUnlockSoundEnabled,
+                  "SettingsStore: notchLockScreenUnlockSoundEnabled defaults to true once lock-screen mode is opted into")
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
         }
 

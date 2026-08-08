@@ -335,8 +335,9 @@ private struct NowPlayingExpandedView: View {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: prominent ? .semibold : .medium))
                 .foregroundStyle(Color.white)
+                .frame(width: prominent ? 38 : 32, height: 30)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NotchGlassButtonStyle(prominent: prominent))
         .accessibilityLabel(label)
     }
 
@@ -362,7 +363,7 @@ private struct NowPlayingExpandedView: View {
                 .foregroundStyle(Color.white.opacity(
                     appURL == nil ? NotchDesign.quaternaryOpacity : NotchDesign.tertiaryOpacity))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NotchGlassButtonStyle())
         .disabled(appURL == nil)
         .accessibilityLabel("Open the app that\u{2019}s playing")
     }

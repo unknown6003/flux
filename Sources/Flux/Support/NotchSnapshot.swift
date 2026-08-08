@@ -22,10 +22,10 @@ enum NotchSnapshot {
         app.setActivationPolicy(.accessory)
         app.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
 
-        // M9: `lockscreen` renders `LockScreenContentView` directly — a
-        // different fixture/size recipe than every other state (which all
-        // render `NotchRootView`) — so it's dispatched separately rather than
-        // taught to `buildRoot(for:)` itself.
+        // Lock-screen rendering uses the dedicated base/card fixture rather
+        // than `NotchRootView` (every other state), so it is dispatched
+        // separately instead of teaching `buildRoot(for:)` about the lock
+        // overlay's two-panel composition.
         let (root, panelSize, tempShelfDirectory) = state == "lockscreen"
             ? buildLockScreenRoot()
             : buildRoot(for: state)
@@ -92,9 +92,9 @@ enum NotchSnapshot {
         // since nothing after `exit()` would ever run.
         var tempShelfDirectories: [URL] = []
         for (state, file) in states {
-            // M9: `lockscreen` renders `LockScreenContentView` directly —
-            // see `capture(to:dark:state:)`'s identical dispatch above for
-            // why this can't just be another `buildRoot(for:)` case.
+            // The lock-screen fixture is a dedicated base/card composition —
+            // see `capture(to:dark:state:)`'s identical dispatch above for why
+            // this can't just be another `buildRoot(for:)` case.
             let (root, panelSize, tempShelfDirectory) = state == "lockscreen"
                 ? buildLockScreenRoot()
                 : buildRoot(for: state)
@@ -271,12 +271,12 @@ enum NotchSnapshot {
         return (AnyView(snapshotRoot), panelSize, tempShelfDirectory)
     }
 
-    /// M9 (Alcove lock-screen parity): builds `LockScreenContentView` at a
-    /// representative fixed size on the transparent background, with a
+    /// Lock-screen parity snapshot: builds the mouse-transparent base
+    /// `LockScreenContentView` plus the card-sized interactive media overlay
+    /// at a representative fixed size on the transparent background, with a
     /// fixture Now Playing track, a fixture battery live activity, and the
-    /// unlock pill forced on — reviewing all three pill kinds stacked at
-    /// once in one CI artifact, the same reasoning `expanded-duo` already
-    /// applies to reviewing two widgets side by side. Deliberately separate
+    /// unlock pill forced on — reviewing the controller, activity, and unlock
+    /// surfaces together in one CI artifact. Deliberately separate
     /// from `buildRoot(for:)` (which every other state shares): that
     /// function's product is always `NotchRootView` wrapping a full
     /// `NotchWidgetRegistry`/`NotchViewModel`, neither of which
@@ -309,10 +309,17 @@ enum NotchSnapshot {
             activities: activities,
             allowNowPlaying: true,
             allowActivities: true,
-            showUnlockPill: true)
+            showUnlockPill: true,
+            showsMediaControls: true)
 
-        let panelSize = CGSize(width: 280, height: notchSize.height + 140)
-        return (AnyView(content), panelSize, makeTempShelfDirectory())
+        let panelSize = CGSize(width: 300, height: notchSize.height + 184)
+        let root = ZStack(alignment: .top) {
+            content
+            LockScreenMediaControlsView(nowPlaying: nowPlayingService) { _ in }
+                .padding(.top, notchSize.height + NotchDesign.space2)
+        }
+        .frame(width: panelSize.width, height: panelSize.height, alignment: .top)
+        return (AnyView(root), panelSize, makeTempShelfDirectory())
     }
 
     /// Decodes the checked-in `streamFullSnapshotJSON` fixture (see

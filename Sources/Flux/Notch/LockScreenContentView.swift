@@ -2,23 +2,16 @@ import SwiftUI
 import AppKit
 
 /// Alcove-parity lock-screen content: the black notch silhouette plus, below
-/// it, up to three stacked pills — a Now Playing media pill, a live-activity
-/// caption pill, and an optional "Press any key to unlock" pill. Genuinely
-/// LIVE (unlike the M6 static silhouette this replaces): `nowPlaying`/
-/// `activities` are `@ObservedObject`, so this view re-renders on its own the
-/// instant either service's `@Published` state changes — a track change, a
-/// battery percent tick, an activity expiring — with no timer, tracking area,
-/// or button anywhere in this file. `LockScreenPresenter` only ever rebuilds
-/// this view's plain `allow*`/`showUnlockPill` values (when the corresponding
-/// settings change while locked); it never needs to re-derive nowPlaying/
-/// activity CONTENT itself, since the `@ObservedObject` bindings already do
-/// that.
+/// it, a live media surface, activity caption, and optional unlock pill.
+/// `nowPlaying`/`activities` are `@ObservedObject`, so this view re-renders on
+/// its own as tracks, artwork, battery captions, and activity expiry change.
 ///
-/// Read-only, display-only, exactly like the view it replaces: no gesture,
-/// no `Button`, no `onTapGesture` anywhere in this file or its pill subviews
-/// — there is nothing on the lock screen for a click to do, and
-/// `LockScreenPresenter.makePanel` additionally sets `ignoresMouseEvents`
-/// unconditionally as defense in depth (see that function's own doc comment).
+/// The media surface is deliberately split from this safe base view. When
+/// `showsMediaControls` is true, this view reserves the media card's space but
+/// does not own its hit-testing; `LockScreenMediaControlsView` is hosted in a
+/// small second panel by `LockScreenPresenter`. The rest of the lock-screen
+/// surface remains mouse-transparent, so the password UI can never be blocked
+/// by a decorative overlay.
 struct LockScreenContentView: View {
     let notchSize: CGSize
     @ObservedObject var nowPlaying: NowPlayingService
@@ -26,12 +19,23 @@ struct LockScreenContentView: View {
     let allowNowPlaying: Bool
     let allowActivities: Bool
     let showUnlockPill: Bool
+    let showsMediaControls: Bool
 
     var body: some View {
         VStack(spacing: NotchDesign.space2) {
             NotchShape.collapsed
                 .fill(Color.black)
                 .frame(width: max(notchSize.width, 1), height: max(notchSize.height, 8))
+
+            // The interactive media card lives in a separate, tightly-sized
+            // window. This clear spacer keeps the live activity/unlock pills
+            // below it without making the safe base panel mouse-sensitive.
+            if showsMediaControls,
+               LockScreenMediaControlLogic.shouldShow(hasNowPlaying: nowPlaying.state != nil,
+                                                       allowNowPlaying: allowNowPlaying) {
+                Color.clear
+                    .frame(height: LockScreenPillMetrics.mediaControlsHeight)
+            }
 
             ForEach(Array(pills.enumerated()), id: \.offset) { _, pill in
                 pillView(for: pill)
@@ -55,7 +59,7 @@ struct LockScreenContentView: View {
     /// `--selftest`.
     private var pills: [LockScreenPillKind] {
         LockScreenPillLogic.visiblePills(
-            hasNowPlaying: nowPlaying.state != nil,
+            hasNowPlaying: nowPlaying.state != nil && !showsMediaControls,
             allowNowPlaying: allowNowPlaying,
             hasActivityCaption: activities.current?.captionText != nil,
             allowActivities: allowActivities,
@@ -133,17 +137,22 @@ enum LockScreenPillLogic {
     }
 }
 
+/// Pure gating for the companion interactive card — kept separate from the
+/// pill allow-list so `--selftest` can verify that a missing track never leaves
+/// an invisible mouse-sensitive panel behind.
+enum LockScreenMediaControlLogic {
+    static func shouldShow(hasNowPlaying: Bool, allowNowPlaying: Bool) -> Bool {
+        hasNowPlaying && allowNowPlaying
+    }
+}
+
 // MARK: - Pills
 //
-// Pure black capsules (not `NotchDesign.capsuleFill`'s translucent white
-// wash — that's the ordinary notch panel's own material, not what Alcove's
-// lock-screen pills use in the reference render this parity target is drawn
-// from) with a white-opacity-ramp text/icon treatment, reusing
-// `NotchDesign`'s spacing/typography/opacity tokens throughout so these read
-// as the same design language as the rest of the notch suite, just on a
-// solid rather than translucent fill.
+// Glass capsules with a dark tint and a small top highlight. The tint keeps
+// lock-screen wallpaper from reducing contrast while the material lets these
+// read as part of the wallpaper rather than as flat black stickers.
 
-private enum LockScreenPillMetrics {
+enum LockScreenPillMetrics {
     static let horizontalPadding: CGFloat = NotchDesign.space3
     static let verticalPadding: CGFloat = NotchDesign.space2
     static let maxWidth: CGFloat = 260
@@ -155,10 +164,10 @@ private enum LockScreenPillMetrics {
     /// own (different) fixed size.
     static let artworkSide: CGFloat = 18
     static let artworkRadius: CGFloat = 4
-}
-
-private func lockScreenCapsule() -> some View {
-    Capsule().fill(Color.black)
+    /// Fixed height reserved by the safe base panel for the interactive media
+    /// card hosted in the companion overlay window.
+    static let mediaControlsHeight: CGFloat = 94
+    static let mediaControlsWidth: CGFloat = 280
 }
 
 /// The Now Playing pill: artwork + title/artist, truncated (never marquee —
@@ -196,7 +205,7 @@ private struct LockScreenMediaPill: View {
         // Intrinsic sizing + the panel's own width proposal caps long titles
         // (Text truncates); `maxWidth` in the metrics is now only the text
         // column's cap below.
-        .background(lockScreenCapsule())
+        .notchGlass(Capsule(), tint: Color.black.opacity(0.46))
     }
 
     @ViewBuilder
@@ -218,6 +227,146 @@ private struct LockScreenMediaPill: View {
                         .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
                 )
         }
+    }
+}
+
+/// A compact, iOS-style transport card for the lock screen. It is hosted in a
+/// separate, tightly-sized panel by `LockScreenPresenter`, so its buttons are
+/// the only lock-screen pixels that accept mouse events. The service remains
+/// the single source of truth; this view only translates taps into the same
+/// `NowPlayingCommand` values used by the full notch player.
+struct LockScreenMediaControlsView: View {
+    @ObservedObject var nowPlaying: NowPlayingService
+    let onCommand: (NowPlayingCommand) -> Void
+
+    var body: some View {
+        Group {
+            if let state = nowPlaying.state {
+                VStack(spacing: 6) {
+                    header(for: state)
+                    progress(for: state)
+                    transportRow(for: state)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .frame(width: LockScreenPillMetrics.mediaControlsWidth,
+                       height: LockScreenPillMetrics.mediaControlsHeight)
+                .notchGlass(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous),
+                    tint: Color.black.opacity(0.44))
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Now Playing")
+            } else {
+                Color.clear
+                    .frame(width: LockScreenPillMetrics.mediaControlsWidth,
+                           height: LockScreenPillMetrics.mediaControlsHeight)
+            }
+        }
+    }
+
+    private func header(for state: NowPlayingState) -> some View {
+        HStack(spacing: 9) {
+            artwork
+            VStack(alignment: .leading, spacing: 1) {
+                Text(state.title)
+                    .font(NotchDesign.bodyFont)
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let artist = state.artist, !artist.isEmpty {
+                    Text(artist)
+                        .font(NotchDesign.captionFont)
+                        .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: state.isPlaying ? "waveform" : "pause")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                .accessibilityHidden(true)
+        }
+        .frame(height: 28)
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let artwork = nowPlaying.artwork {
+            Image(nsImage: artwork)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 28, height: 28)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.12))
+                .frame(width: 28, height: 28)
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func progress(for state: NowPlayingState) -> some View {
+        if let duration = state.duration, duration > 0 {
+            if state.isPlaying {
+                TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                    progressTrack(duration: duration, at: timeline.date)
+                }
+            } else {
+                progressTrack(duration: duration, at: Date())
+            }
+        } else {
+            Capsule()
+                .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
+                .frame(height: 2)
+        }
+    }
+
+    private func progressTrack(duration: TimeInterval,
+                               at date: Date) -> some View {
+        let elapsed = min(max(nowPlaying.currentElapsed(at: date) ?? 0, 0), duration)
+        return GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.18))
+                Capsule()
+                    .fill(Color.white.opacity(0.86))
+                    .frame(width: geometry.size.width * elapsed / duration)
+            }
+        }
+        .frame(height: 2)
+        .accessibilityHidden(true)
+    }
+
+    private func transportRow(for state: NowPlayingState) -> some View {
+        HStack(spacing: 17) {
+            transportButton("backward.fill", label: "Previous track", command: .previous)
+            transportButton(state.isPlaying ? "pause.fill" : "play.fill",
+                            label: state.isPlaying ? "Pause" : "Play",
+                            command: .togglePlayPause,
+                            prominent: true)
+            transportButton("forward.fill", label: "Next track", command: .next)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func transportButton(_ systemName: String,
+                                  label: String,
+                                  command: NowPlayingCommand,
+                                  prominent: Bool = false) -> some View {
+        Button { onCommand(command) } label: {
+            Image(systemName: systemName)
+                .font(.system(size: prominent ? 16 : 14,
+                              weight: prominent ? .semibold : .medium))
+                .frame(width: prominent ? 34 : 30, height: 26)
+        }
+        .buttonStyle(NotchGlassButtonStyle(prominent: prominent))
+        .accessibilityLabel(label)
     }
 }
 
@@ -244,7 +393,7 @@ private struct LockScreenActivityPill: View {
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .padding(.vertical, NotchDesign.space1)
         // Intrinsic width, same reasoning as the media pill above.
-        .background(lockScreenCapsule())
+        .notchGlass(Capsule(), tint: Color.black.opacity(0.46))
     }
 }
 
@@ -271,6 +420,6 @@ private struct LockScreenUnlockPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .padding(.vertical, NotchDesign.space1)
-        .background(lockScreenCapsule())
+        .notchGlass(Capsule(), tint: Color.black.opacity(0.46))
     }
 }

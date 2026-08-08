@@ -326,11 +326,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchLockScreenUnlockPillEnabled, forKey: Keys.notchLockScreenUnlockPillEnabled) }
     }
 
-    /// M9: plays a short system sound (`NSSound(named: "Glass")`) the moment
-    /// `LockScreenPresenter` observes `"com.apple.screenIsUnlocked"`. Defaults
-    /// to `false` — an unsolicited sound on unlock is a bigger surprise than
-    /// a purely visual addition, so this stays opt-in even though the rest of
-    /// this experimental card's sub-toggles default on.
+    /// Plays a short, low "Pop" system click (falling back to Glass/Tink) the
+    /// moment `LockScreenPresenter` observes `"com.apple.screenIsUnlocked"`.
+    /// Defaults to `true` once the user opts into the experimental lock-screen
+    /// surface; the master lock-screen switch itself remains off by default.
     @Published var notchLockScreenUnlockSoundEnabled: Bool {
         didSet { defaults.set(notchLockScreenUnlockSoundEnabled, forKey: Keys.notchLockScreenUnlockSoundEnabled) }
     }
@@ -387,7 +386,7 @@ final class SettingsStore: ObservableObject {
         Keys.notchLockScreenNowPlayingEnabled: true,
         Keys.notchLockScreenActivitiesEnabled: true,
         Keys.notchLockScreenUnlockPillEnabled: false,
-        Keys.notchLockScreenUnlockSoundEnabled: false,
+        Keys.notchLockScreenUnlockSoundEnabled: true,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
     ]

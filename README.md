@@ -69,14 +69,14 @@ arrangement across launches.
 - **Arrange Mode** — a guided editor that reveals labeled zone markers in the live
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
-- **Notch panel — Alcove-inspired compact redesign (M7)** — a pure-black,
-  seamless panel sized to each widget's own content (no more one-size-fits-all
-  box), with overshoot springs on open and a snappy, no-bounce close, plus a
-  blur/opacity content morph as it expands. Hover (or click) the camera
-  housing to expand a **Now Playing** widget: artwork, title/artist, a
-  scrubber, and transport controls for whatever's playing (any app, via a
-  vendored MediaRemote adapter). Open gesture, hover delays, and which
-  widgets are enabled are all configurable in Settings → Notch.
+- **Notch panel — Alcove-inspired compact redesign (M7)** — a seamless glass
+  panel sized to the notch suite's shared footprint, with overshoot springs on
+  open and a snappy, no-bounce close, plus a soft content morph as it expands.
+  Hover (or click) the camera housing to expand a **Now Playing** widget:
+  artwork, title/artist, a scrubber, and transport controls for whatever's
+  playing (any app, via a vendored MediaRemote adapter). Open gesture, hover
+  delays, and which widgets are enabled are all configurable in Settings →
+  Notch.
 - **Duo view (M7)** — an opt-in toggle in Settings → Notch shows Now Playing
   and Calendar side by side when Now Playing is expanded (needs Calendar
   enabled and its permission granted too); expanding Calendar on its own still
@@ -121,17 +121,17 @@ arrangement across launches.
   passwords and other sensitive one-time text; nothing is ever written to
   disk, and password-manager-marked copies (the `nspasteboard.org`
   concealed/transient convention) are never captured at all.
-- **Lock screen (experimental)** — optionally keeps a minimal, non-interactive
-  notch silhouette visible on the macOS lock screen, with up to three
-  stacked, fading pills beneath it: a live Now Playing media pill (artwork +
-  title/artist), the notch's current live activity as a caption pill
-  (battery, Bluetooth, calendar, timer, ...), and an optional black
-  "Press any key to unlock" pill with a padlock glyph — plus an optional
-  sound the moment you unlock. Each of the three sub-features has its own
-  toggle, all nested under the master switch. Off by default: it rides on
-  undocumented macOS lock-screen notifications and window-level behavior, so
-  it may stop working or misbehave after any macOS update — see Settings →
-  Notch → Experimental.
+- **Lock screen (experimental)** — optionally keeps the notch silhouette and
+  glass surfaces visible on the macOS lock screen. When something is playing,
+  the Now Playing card shows artwork/title/artist plus iOS-style
+  previous/play-next controls; the card is the only interactive overlay and
+  the rest of the lock-screen UI remains mouse-transparent. The current live
+  activity appears as a caption pill (battery, Bluetooth, calendar, timer,
+  ...), with an optional "Press any key to unlock" pill and a short thunky
+  system click on unlock. Each sub-feature has its own toggle, all nested
+  under the master switch. Off by default: it rides on undocumented macOS
+  lock-screen notifications and window-level behavior, so it may stop working
+  or misbehave after any macOS update — see Settings → Notch → Experimental.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.

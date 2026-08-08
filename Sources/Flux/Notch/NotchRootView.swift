@@ -274,11 +274,10 @@ struct NotchRootView: View {
         }
     }
 
-    /// Pure black in *every* state (collapsed, activity, expanded alike) —
-    /// the M7 Alcove redesign drops the old expanded-only opacity dip and
-    /// amber glow stroke entirely, so the panel always reads as one seamless
-    /// surface fused to the physical notch, never a visibly "lifted" or
-    /// tinted card.
+    /// The collapsed state stays pure black so it disappears into the physical
+    /// camera housing. Open states use a restrained glass surface: blurred
+    /// backdrop, a dark tint for contrast, and a hairline highlight that
+    /// catches the panel's rounded edge without turning it into a bright card.
     private var isCollapsed: Bool { viewModel.state == .collapsed }
 
     /// A soft drop shadow is what actually sells the "lifted" panel now that
@@ -307,8 +306,23 @@ struct NotchRootView: View {
     /// the Alcove reference now that it's rendered off one flattened layer
     /// instead of the shape's raw silhouette.
     private var shapeLayer: some View {
-        shape
-            .fill(Color.black)
+        ZStack {
+            if isCollapsed {
+                shape.fill(Color.black)
+            } else {
+                shape
+                    .fill(NotchDesign.glassMaterial)
+                    .overlay(shape.fill(NotchDesign.glassTint))
+                    .overlay(
+                        LinearGradient(
+                            colors: [NotchDesign.glassHighlight, .clear, Color.black.opacity(0.16)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing)
+                            .clipShape(shape)
+                    )
+                    .overlay(shape.stroke(NotchDesign.glassBorder, lineWidth: 0.8))
+            }
+        }
             .frame(width: containerSize.width, height: containerSize.height)
             .scaleEffect(breathingScale)
             .compositingGroup()
@@ -569,7 +583,7 @@ struct NotchRootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(NotchDesign.glassBorder)
                     .frame(width: 1)
                     .padding(.vertical, 12)
 

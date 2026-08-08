@@ -3,9 +3,9 @@ import SwiftUI
 /// The notch UI's shared design language (Alcove-derived): the spacing,
 /// typography, opacity, and radius tokens every widget under
 /// `Sources/Flux/Notch/Widgets` consumes instead of hand-rolling its own
-/// literals, plus the two view modifiers (`notchScrollFade`, `paneInsets`)
-/// that keep scrollable content and side-by-side (Duo) panes visually
-/// consistent across widgets.
+/// literals, plus shared glass surface/button styles and the two view
+/// modifiers (`notchScrollFade`, `paneInsets`) that keep scrollable content
+/// and side-by-side (Duo) panes visually consistent across widgets.
 ///
 /// Established during the M8 pass that fixed a batch of CI-snapshot-
 /// confirmed layout bugs:
@@ -131,6 +131,26 @@ enum NotchDesign {
     /// `PermissionGatedView` action button, the custom stepper's buttons).
     static let capsuleFill = Color.white.opacity(0.14)
 
+    // MARK: - Glass surface
+
+    /// The material used by floating controls and the expanded shell. Keeping
+    /// this as a token makes the app's glass treatment one deliberate choice,
+    /// rather than a collection of almost-the-same material calls.
+    static let glassMaterial: Material = .ultraThinMaterial
+    /// Dark tint layered over the material so white text stays legible over a
+    /// bright desktop or lock-screen wallpaper.
+    static let glassTint = Color.black.opacity(0.28)
+    /// A faint top-edge highlight gives the material a rounded, polished edge.
+    static let glassHighlight = Color.white.opacity(0.16)
+    /// The low-contrast outline that keeps a glass surface readable against
+    /// both dark and light backgrounds.
+    static let glassBorder = Color.white.opacity(0.14)
+    /// Shadow used by raised controls; the panel shell has its own tuned shadow.
+    static let glassShadow = Color.black.opacity(0.35)
+    /// Fill for the prominent round transport button.
+    static let glassButtonFill = Color.white.opacity(0.16)
+    static let glassButtonPressedFill = Color.white.opacity(0.28)
+
     // MARK: - Scroll fade (bottom-clipping fix)
 
     /// Which edge of a scrollable widget's content area fades to
@@ -239,5 +259,65 @@ extension View {
     /// than fading out from underneath it.
     func notchScrollFade(edge: NotchDesign.ScrollFadeEdge = .bottom) -> some View {
         modifier(NotchScrollFadeModifier(edge: edge))
+    }
+
+    /// Applies the shared Alcove-style glass treatment to a control or card.
+    /// The shape is supplied by the caller so capsules and rounded cards can
+    /// use exactly the same material, highlight, border, and shadow recipe.
+    func notchGlass<S: InsettableShape>(_ shape: S,
+                                        tint: Color = NotchDesign.glassTint,
+                                        shadow: Bool = true) -> some View {
+        modifier(NotchGlassModifier(shape: shape, tint: tint, shadow: shadow))
+    }
+}
+
+/// Shared material/highlight/border treatment for floating notch surfaces.
+private struct NotchGlassModifier<S: InsettableShape>: ViewModifier {
+    let shape: S
+    let tint: Color
+    let shadow: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                shape
+                    .fill(NotchDesign.glassMaterial)
+                    .overlay(shape.fill(tint))
+                    .overlay(
+                        LinearGradient(
+                            colors: [NotchDesign.glassHighlight, .clear],
+                            startPoint: .top,
+                            endPoint: .bottom)
+                            .clipShape(shape)
+                    )
+                    .overlay(shape.strokeBorder(NotchDesign.glassBorder, lineWidth: 0.8))
+            }
+            .clipShape(shape)
+            .shadow(color: shadow ? NotchDesign.glassShadow : .clear,
+                    radius: shadow ? 10 : 0,
+                    y: shadow ? 4 : 0)
+    }
+}
+
+/// A compact, press-aware glass button style for transport and utility
+/// controls. It deliberately avoids a scale animation: on a tiny panel,
+/// changing the hit target's footprint while pressed feels imprecise.
+struct NotchGlassButtonStyle: ButtonStyle {
+    var prominent = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.78 : 1))
+            .background {
+                Circle()
+                    .fill(configuration.isPressed
+                          ? NotchDesign.glassButtonPressedFill
+                          : (prominent ? NotchDesign.glassButtonFill : .clear))
+                    .overlay(
+                        Circle().strokeBorder(
+                            Color.white.opacity(prominent ? 0.12 : 0.0), lineWidth: 0.7))
+            }
+            .contentShape(Circle())
+            .opacity(configuration.isPressed ? 0.92 : 1)
     }
 }
