@@ -519,7 +519,7 @@ final class LockScreenPresenter {
             allowNowPlaying: allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled,
             allowActivities: allowActivities ?? settings.notchLockScreenActivitiesEnabled,
             showUnlockPill: showUnlockPill ?? settings.notchLockScreenUnlockPillEnabled,
-            hasNowPlaying: hasNowPlaying ?? nowPlaying.state != nil)
+            hasNowPlaying: hasNowPlaying ?? (nowPlaying.state != nil))
     }
 
     private func makeContentView() -> LockScreenContentView {
@@ -571,7 +571,7 @@ final class LockScreenPresenter {
         guard let panel else { return }
 
         let allowed = allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled
-        let hasState = hasNowPlaying ?? nowPlaying.state != nil
+        let hasState = hasNowPlaying ?? (nowPlaying.state != nil)
         updateHostingContent(allowNowPlaying: allowed,
                               hasNowPlaying: hasState)
 
