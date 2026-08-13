@@ -104,7 +104,7 @@ final class LockScreenPresenter {
     private var mediaHostingView: NSHostingView<LockScreenMediaControlsView>?
     private var currentNotchSize: CGSize = .zero
     private var cancellables = Set<AnyCancellable>()
-    private var distributedObserverTokens = [NSObjectProtocol]()
+    private var distributedObserverTokens = [DistributedLockObserver]()
     private var unlockSound: NSSound?
 
     /// The pending "finish fading out, THEN order the panel out" deadline —
@@ -223,16 +223,14 @@ final class LockScreenPresenter {
         // the user session is moving behind the lock-screen shield. Register
         // explicit immediate-delivery observers and hop back to the main
         // actor before touching AppKit or SwiftUI state.
-        let lockedToken = center.addObserver(
-            forName: Notification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            suspensionBehavior: .deliverImmediately) { [weak self] _ in
+        let lockedToken = DistributedLockObserver(
+            center: center,
+            name: Notification.Name("com.apple.screenIsLocked")) { [weak self] in
                 DispatchQueue.main.async { [weak self] in self?.handleLocked() }
             }
-        let unlockedToken = center.addObserver(
-            forName: Notification.Name("com.apple.screenIsUnlocked"),
-            object: nil,
-            suspensionBehavior: .deliverImmediately) { [weak self] _ in
+        let unlockedToken = DistributedLockObserver(
+            center: center,
+            name: Notification.Name("com.apple.screenIsUnlocked")) { [weak self] in
                 DispatchQueue.main.async { [weak self] in self?.handleUnlocked() }
             }
         distributedObserverTokens = [lockedToken, unlockedToken]
@@ -300,8 +298,6 @@ final class LockScreenPresenter {
     private func stopObserving() {
         guard isObserving else { return }
         isObserving = false
-        let center = DistributedNotificationCenter.default()
-        distributedObserverTokens.forEach { center.removeObserver($0) }
         distributedObserverTokens.removeAll()
         cancellables.removeAll()
     }
@@ -778,6 +774,36 @@ final class LockScreenPresenter {
         unlockSound = sound
         sound?.stop()
         sound?.play()
+    }
+}
+
+/// Selector-backed distributed observers are the API that exposes
+/// `suspensionBehavior`; the closure overload does not. Keeping this tiny
+/// token object alive gives lock/unlock notifications immediate delivery even
+/// while the process is moving behind the lock-screen shield.
+private final class DistributedLockObserver: NSObject {
+    private let center: DistributedNotificationCenter
+    private let callback: () -> Void
+
+    init(center: DistributedNotificationCenter,
+         name: Notification.Name,
+         callback: @escaping () -> Void) {
+        self.center = center
+        self.callback = callback
+        super.init()
+        center.addObserver(self,
+                           selector: #selector(receive(_:)),
+                           name: name,
+                           object: nil,
+                           suspensionBehavior: .deliverImmediately)
+    }
+
+    @objc private func receive(_ notification: Notification) {
+        callback()
+    }
+
+    deinit {
+        center.removeObserver(self)
     }
 }
 
