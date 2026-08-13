@@ -182,10 +182,10 @@ struct LockScreenMediaControlsView: View {
                 .padding(.top, 13)
 
             HStack {
-                Text(timeLabel(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed))
+                Text(timeLabel(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed ?? 0))
                 Spacer(minLength: 0)
                 if let duration = state.duration {
-                    let elapsed = min(max(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed, 0), duration)
+                    let elapsed = min(max(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed ?? 0, 0), duration)
                     Text("-\(timeLabel(max(duration - elapsed, 0)))")
                 }
             }
