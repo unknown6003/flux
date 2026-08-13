@@ -154,7 +154,7 @@ final class TimersWidget: NotchWidget {
 
 // MARK: - Expanded panel view
 
-/// Alcove refit (M7): this panel's total height budget is 185, minus fixed
+/// Alcove refit (M7): this panel's total height budget is 190, minus fixed
 /// padding leaves a usable content height of roughly 100–150. The fixed
 /// chrome above the running list — header (~14, 12pt line), presetRow
 /// (~24: 12pt text + 6pt top/bottom padding), customRow (~24, same math),
@@ -330,7 +330,7 @@ private struct TimersExpandedView: View {
             .padding(.bottom, 2 + NotchDesign.scrollFadeContentInset)
         }
         // Bug fix (M8): the running timer's countdown row was clipping hard
-        // into the panel's 32pt bottom corner radius; this fades it out.
+        // into the panel's 34pt bottom corner radius; this fades it out.
         .notchScrollFade()
     }
 }

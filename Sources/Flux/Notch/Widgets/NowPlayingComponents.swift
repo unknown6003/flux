@@ -400,7 +400,7 @@ enum EqualizerAnimation {
 /// the compact strip's own animated/static split.
 struct WaveformVisualizer: View {
     let isPlaying: Bool
-    let gradientColors: (top: Color, bottom: Color)
+    let color: Color
 
     /// M8 audit fix: production wants `TimelineView(.animation)` — a
     /// display-link-driven schedule that tracks the real screen refresh rate
@@ -460,8 +460,7 @@ struct WaveformVisualizer: View {
         HStack(alignment: .bottom, spacing: Self.barSpacing) {
             ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
                 Capsule()
-                    .fill(LinearGradient(colors: [gradientColors.top, gradientColors.bottom],
-                                         startPoint: .top, endPoint: .bottom))
+                    .fill(color)
                     .frame(width: Self.barWidth, height: height)
             }
         }

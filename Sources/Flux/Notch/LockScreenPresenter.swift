@@ -68,6 +68,9 @@ final class LockScreenPresenter {
 
     private var isEnabled = false
     private var isObserving = false
+    /// Both notification systems can report one session transition. Keep one
+    /// logical state so the fallback cannot duplicate panels or fade-outs.
+    private var isLocked = false
 
     /// The last notch geometry resolved while the screen was UNLOCKED.
     ///
@@ -176,6 +179,7 @@ final class LockScreenPresenter {
         } else {
             stopObserving()
             dismissImmediately()
+            isLocked = false
         }
     }
 
@@ -205,6 +209,17 @@ final class LockScreenPresenter {
             .sink { [weak self] _ in self?.handleLocked() }
             .store(in: &cancellables)
         center.publisher(for: Notification.Name("com.apple.screenIsUnlocked"))
+            .sink { [weak self] _ in self?.handleUnlocked() }
+            .store(in: &cancellables)
+
+        // The distributed notifications are undocumented and do not arrive
+        // for every lock/wake path on newer macOS builds. Workspace session
+        // notifications cover those paths as a fallback.
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)
+            .sink { [weak self] _ in self?.handleLocked() }
+            .store(in: &cancellables)
+        workspaceCenter.publisher(for: NSWorkspace.sessionDidBecomeActiveNotification)
             .sink { [weak self] _ in self?.handleUnlocked() }
             .store(in: &cancellables)
 
@@ -270,6 +285,8 @@ final class LockScreenPresenter {
     /// dismiss it on the next unlock (`dismissImmediately()`/
     /// `fadeOutThenDismiss()` only ever know about the CURRENT `panel`).
     private func handleLocked() {
+        guard !isLocked else { return }
+        isLocked = true
         fadeOutDeadline.cancel()
         // A fresh lock always supersedes any dismiss still winding down (or
         // one that already finished) — see `isDismissing`'s own doc comment
@@ -317,6 +334,8 @@ final class LockScreenPresenter {
     /// must not replay the sound or restart the fade on a panel that's
     /// already fading; see that flag's own doc comment).
     private func handleUnlocked() {
+        guard isLocked else { return }
+        isLocked = false
         guard let panel, !isDismissing else { return }
         isDismissing = true
         playUnlockSoundIfEnabled()

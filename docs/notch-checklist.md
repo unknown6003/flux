@@ -117,8 +117,8 @@ non-notched-external-display brightness check).
 
 The CI "Render notch snapshots" step gives the orchestrator/PR-bot a static
 look at collapsed/activity/expanded-nowPlaying, but a still PNG can't show
-motion, real-Mac shadow rendering, or per-widget height differences across
-every widget — the items below need a real notched Mac.
+motion or real-Mac shadow rendering across every widget — the items below need
+a real notched Mac.
 
 - [ ] **Overshoot feel on open**: hover (or click, per your trigger setting)
       to open the notch from collapsed and confirm the panel visibly bounces
@@ -140,11 +140,10 @@ every widget — the items below need a real notched Mac.
       confirm a soft, dark drop shadow appears under the panel; collapse it
       and confirm the shadow disappears immediately (not lingering, not
       fading oddly) as the shape shrinks back to the collapsed hug.
-- [ ] **Per-widget expanded height**: open each widget in turn (Now Playing,
-      Shelf, Calendar, Mirror, Timers, Clipboard) and confirm the panel's
-      height visibly differs to match each widget's content — Shelf and Now
-      Playing noticeably shorter than Calendar/Clipboard — rather than every
-      widget reserving the same tall, mostly-empty box.
+- [ ] **Fixed expanded frame**: open each widget in turn (Now Playing, Shelf,
+      Calendar, Mirror, Timers, Clipboard) and confirm the visible panel keeps
+      one stable footprint. Every widget must fit inside it; list widgets may
+      scroll/fade, but no control or final row may clip into the lower corner.
 - [ ] **Content blur-morph**: watch the widget content itself (not just the
       black shape) as you open/close — confirm it fades and sharpens in
       (blurred → crisp, transparent → opaque) rather than popping in/out

@@ -24,8 +24,9 @@ enum NotchMetrics {
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// The expanded panel's width-to-height ratio: 2.1:1 — 400x190 on a
-    /// current MacBook.
+    /// The expanded panel's width-to-height ratio: 2.1:1 — 360x171 on a
+    /// current MacBook. This is the compact Alcove-sized footprint; the
+    /// shadow margin below is not visible UI.
     ///
     /// Arrived at by rendering, not by taste. M12 shipped 2.35 at 500 wide,
     /// which was both too wide against the notch (2.5x its width reads as a
@@ -50,7 +51,7 @@ enum NotchMetrics {
     /// the complaint was that the size *changed*, which is fixed
     /// independently by there being one size at all.
     static func expandedWidth(for notchWidth: CGFloat) -> CGFloat {
-        max(notchWidth * 2.0, 400)
+        max(notchWidth * 1.8, 360)
     }
 
     /// The single expanded height — derived from the width and

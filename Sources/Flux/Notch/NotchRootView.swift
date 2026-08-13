@@ -392,22 +392,21 @@ struct NotchRootView: View {
 
         func body(content: Content) -> some View {
             content
-                .padding(.horizontal, 16)
+                .padding(.horizontal, NotchDesign.contentPadding)
                 .padding(.top, topInset)
                 // Kept in step with `NotchShape.expanded`'s bottom radius,
                 // which is the whole reason this isn't just symmetric with
                 // the horizontal padding: content (notably the transport row,
                 // the bottom-most thing any widget draws) has to clear the
                 // corner curve, not merely the frame. M7 grew the radius
-                // 24 → 32 without moving this and the transport row started
+                // 24 → 34 without moving this and the transport row started
                 // overhanging the curve; M12's continuous corners at 34
                 // occupy slightly more of the edge again for the same
                 // nominal radius, since curvature is spread further along it.
-                // Back to 18 from M12's 22. That bump was for a larger
-                // corner radius, but paired with the corrected (shallower)
-                // panel it cost more usable height than the corner needed —
-                // the rendered snapshot showed the transport row clipped.
-                .padding(.bottom, 18)
+                // Keep this as a shared chrome inset so every widget clears
+                // the same continuous corner. The player adds its own small
+                // transport-specific inset inside its fixed composition.
+                .padding(.bottom, NotchDesign.expandedBottomInset)
         }
     }
 
@@ -571,7 +570,7 @@ struct NotchRootView: View {
                 Rectangle()
                     .fill(Color.white.opacity(0.08))
                     .frame(width: 1)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, NotchDesign.space3)
 
                 calendar.makeExpandedView()
                     // Tells the agenda it's in a narrow pane so it can drop

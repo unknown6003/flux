@@ -2893,6 +2893,15 @@ enum SelfTest {
             check(NotchDesign.scrollFadeLength > 0 && NotchDesign.scrollFadeContentInset > 0,
                   "NotchDesign: the scroll-fade length and its matching content inset are both positive")
             check(NotchDesign.paneInsets > 0, "NotchDesign: paneInsets is a real, positive inset")
+            check(NotchDesign.expandedBottomInset >= NotchDesign.panelRadius / 2,
+                  "NotchDesign: expanded content has enough shared bottom clearance for the continuous corner")
+            check(NotchDesign.playerBottomInset > 0
+                    && NotchDesign.playerStackSpacing > 0
+                    && NotchDesign.playerStackSpacing <= NotchDesign.sectionSpacing,
+                  "NotchDesign: the player has positive bottom clearance and a compact stack that fits the fixed panel")
+            let settingsDetailWidth = SettingsLayout.contentWidth - SettingsLayout.sidebarWidth - 1
+            check(settingsDetailWidth > 0 && SettingsLayout.contentHeight > 0,
+                  "SettingsLayout: the fixed preferences canvas leaves a positive detail pane after the sidebar divider")
         }
 
         // --- M8: Formatters.age(from:to:) — the fix for Shelf/Clipboard row

@@ -10,7 +10,7 @@ import SwiftUI
 /// Established during the M8 pass that fixed a batch of CI-snapshot-
 /// confirmed layout bugs:
 /// - bottom-clipped scroll content (Calendar/Timers/Clipboard's last row
-///   clipping hard into the panel's 32pt bottom corner radius) — see
+///   clipping hard into the panel's 34pt bottom corner radius) — see
 ///   `notchScrollFade(edge:)` / `scrollFadeContentInset`.
 /// - Calendar's agenda floating centered with dead margins instead of
 ///   leading-aligned — not a token, but the *reason* `contentPadding` here
@@ -67,11 +67,23 @@ enum NotchDesign {
     /// content, content → divider, and so on).
     static let sectionSpacing: CGFloat = space3
     /// The panel's own edge padding. This is supplied by `NotchRootView`'s
-    /// chrome (`ExpandedChrome.padding(.horizontal, 16)`), NOT re-applied
+    /// chrome (`ExpandedChrome.padding(.horizontal, contentPadding)`), NOT re-applied
     /// inside a widget's own view — documented here only as the reference
     /// value `paneInsets` below is defined relative to, so the two can
     /// never silently drift apart.
     static let contentPadding: CGFloat = space4
+    /// Clearance below expanded content so controls and list rows sit inside
+    /// the panel's continuous lower corner instead of visually kissing it.
+    static let expandedBottomInset: CGFloat = 22
+    /// Additional breathing room for the player transport row. The player is
+    /// bottom-anchored; lists use the scroll fade instead, so this stays local
+    /// to the fixed media composition.
+    static let playerBottomInset: CGFloat = space2
+    /// The player has a fixed artwork header, scrubber, and transport row. A
+    /// compact stack spacing keeps that composition inside the shared panel
+    /// height so the bottom inset is real layout space rather than clipped
+    /// padding.
+    static let playerStackSpacing: CGFloat = space2
 
     // MARK: - Typography
 
@@ -115,7 +127,7 @@ enum NotchDesign {
     /// `notchScrollFade`/`scrollFadeContentInset` exist, NOT redeclared or
     /// used as an actual corner radius by any widget (`NotchShape` remains
     /// the one place that draws it).
-    static let panelRadius: CGFloat = 32
+    static let panelRadius: CGFloat = 34
     /// Now Playing's artwork tile. Not applied by any view in this file's
     /// own scope — `FlippingArtwork` (`NowPlayingComponents.swift`) owns
     /// that clip shape and belongs to a different agent's files this pass;
@@ -136,7 +148,7 @@ enum NotchDesign {
     /// Which edge of a scrollable widget's content area fades to
     /// transparent. Bottom is the default — every vertical list (Calendar,
     /// Timers, Clipboard) was clipping its last row hard against the
-    /// panel's 32pt bottom corner radius (`panelRadius`) instead of fading
+    /// panel's 34pt bottom corner radius (`panelRadius`) instead of fading
     /// it out Alcove-style. Shelf's horizontal tile strip fades on its
     /// TRAILING edge instead — its corner curve reads left→right, so a
     /// leading fade would dim the very first tile for no reason.

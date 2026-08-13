@@ -124,18 +124,17 @@ extension ButtonStyle where Self == FluxProminentButtonStyle {
     static var fluxProminent: FluxProminentButtonStyle { .init() }
 }
 
-/// A titled settings card: an uppercased label above an obsidian panel with a
+/// A titled settings group: a quiet label above an obsidian panel with a
 /// hairline border. The single container primitive for the Settings surface.
 struct FluxCard<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(Theme.textSecondaryColor)
-                .tracking(0.9)
                 .padding(.leading, 4)
             VStack(spacing: 0) { content }
                 .background(

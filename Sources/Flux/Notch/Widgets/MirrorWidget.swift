@@ -201,7 +201,9 @@ private struct CameraPreviewView: NSViewRepresentable {
     /// disabled: the notch panel resizes its content continuously through the
     /// expand/collapse spring, and a preview layer that implicitly animated
     /// each of those ~60-120 bounds changes visibly lagged and stretched
-    /// behind the shape it sits in.
+        /// behind the shape it sits in. The outer viewport is the thing that
+        /// morphs now; this host keeps the service-owned layer's geometry
+        /// changes explicit and immediate.
     final class PreviewContainerView: NSView {
         /// Matches the expanded panel's inner corner rounding.
         private static let cornerRadius: CGFloat = 16

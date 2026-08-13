@@ -7,6 +7,13 @@ import ServiceManagement
 /// handled gracefully so dev builds don't crash.
 @MainActor
 enum LoginItemManager {
+    /// Only a bundled app can be a real login item. Registering the SwiftPM
+    /// executable from Terminal makes macOS reopen the shell command through
+    /// Terminal at login.
+    static var isRunningFromApplicationBundle: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
     static var isEnabled: Bool {
         SMAppService.mainApp.status == .enabled
     }
@@ -16,6 +23,13 @@ enum LoginItemManager {
     /// disabled it in System Settings › General › Login Items).
     @discardableResult
     static func setEnabled(_ enabled: Bool) -> Bool {
+        guard isRunningFromApplicationBundle else {
+            if SMAppService.mainApp.status == .enabled {
+                try? SMAppService.mainApp.unregister()
+            }
+            Log.login.warning("Ignoring launch-at-login request from an unbundled executable")
+            return false
+        }
         do {
             if enabled {
                 if SMAppService.mainApp.status != .enabled {

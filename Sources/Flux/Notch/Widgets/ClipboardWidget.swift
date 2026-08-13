@@ -93,7 +93,7 @@ private struct ClipboardExpandedView: View {
     }
 
     /// Alcove refit (M7): this panel's total height budget is 190, leaving
-    /// ~100–150 of usable content height after fixed padding. Each row is
+    /// roughly 100–150pt of usable content height after fixed chrome. Each row is
     /// ~34pt (6pt vertical padding × 2 + a 12pt preview line + 2pt inner
     /// spacing + a 9pt age line, i.e. 12 + 6 + 12 + 2 + 9 ≈ 41 at the high
     /// end, ~34 typical) plus 6pt list spacing — so 3 rows already
@@ -119,7 +119,7 @@ private struct ClipboardExpandedView: View {
             .padding(.bottom, 2 + NotchDesign.scrollFadeContentInset)
         }
         // Bug fix (M8): the clipboard's third row was clipping hard into
-        // the panel's 32pt bottom corner radius; this fades it out instead.
+        // the panel's 34pt bottom corner radius; this fades it out instead.
         .notchScrollFade()
     }
 }

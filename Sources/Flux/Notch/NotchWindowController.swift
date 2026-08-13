@@ -351,13 +351,10 @@ final class NotchWindowController {
         hostingView.rootView = makeRootView(notchSize: notchSize)
     }
 
-    /// Sizes the panel to the fixed panel bounds (`NotchMetrics.panelBounds`
-    /// — wide/tall enough for the widest/tallest widget, plus room reserved
-    /// for Duo view's own widened state) and centers it, top-anchored, on the
-    /// physical notch. This frame never changes with `viewModel.state` — only
-    /// the SwiftUI content inside grows/shrinks, to its own smaller per-widget
-    /// size — so repositioning only has to happen when the screen itself
-    /// changes.
+    /// Sizes the panel to the one fixed expanded footprint plus its shadow
+    /// margin and centers it, top-anchored, on the physical notch. This frame
+    /// never changes with `viewModel.state`; SwiftUI morphs a viewport inside
+    /// it, so repositioning only has to happen when the screen itself changes.
     private func position(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
         let bounds = NotchMetrics.panelBounds(for: notchRect.width)
         let origin = NSPoint(x: notchRect.midX - bounds.width / 2, y: screen.frame.maxY - bounds.height)

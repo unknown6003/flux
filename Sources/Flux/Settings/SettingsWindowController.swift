@@ -19,8 +19,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     var onVisibilityChanged: ((Bool) -> Void)?
 
     /// The tab currently showing. Tracked here (not just inside SwiftUI)
-    /// because switching tabs changes the content's natural height, and the
-    /// window needs re-fitting the same way it does on first open.
+    /// so a programmatic route to a page can rebuild the detail content while
+    /// preserving the stable window frame.
     private var currentTab: SettingsTab = .general
 
     init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker,
@@ -35,9 +35,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    /// The settings content is a fixed 480pt wide; only its height varies, so the
-    /// window resizes vertically only.
-    private static let contentWidth: CGFloat = 480
+    /// The settings surface is one fixed sidebar/detail canvas. A tab switch
+    /// changes only the scrollable detail content, never the window frame.
+    private static let windowStyleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
+    private static let preferredContentSize = NSSize(width: SettingsLayout.contentWidth,
+                                                     height: SettingsLayout.contentHeight)
 
     func show() {
         // A failure or a since-deleted download from an earlier session isn't
@@ -46,9 +48,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         updater.clearStaleOutcome()
         if window == nil {
             window = makeWindow()
-            sizeToFixedHeight()            // one height, measured once, held forever
+            applyFixedContentSize(on: NSScreen.main, center: true)
         } else {
-            clampHeightToScreen()          // re-fit in case the display changed since last time
+            applyFixedContentSize(on: window?.screen ?? NSScreen.main, center: false)
         }
         // Become a regular app for as long as Settings is open — see
         // `applyRegularActivationPolicy`.
@@ -98,10 +100,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// themselves.
     ///
     /// `SettingsView` seeds its own `@State` selection from `initialTab`, so
-    /// an already-open window can't just be told to switch: its content
-    /// controller is rebuilt (cheap — the whole view is a few cards over
-    /// shared `EnvironmentObject`s) and re-fitted to the new tab's natural
-    /// height, exactly as a manual tab switch would.
+    /// an already-open window rebuilds its content controller to select the
+    /// requested page. The stable window frame is deliberately preserved.
     func show(tab: SettingsTab) {
         if currentTab != tab {
             currentTab = tab
@@ -124,7 +124,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         .environmentObject(permissions)
         .environmentObject(crashReporter)
         let hosting = NSHostingController(rootView: root)
-        // We own the window's size (measured + clamped to the screen below); the
+        // We own the window's size (fixed + clamped to the screen below); the
         // SwiftUI ScrollView absorbs any overflow. Letting the hosting controller
         // auto-size the window would re-expand it to the full content height and
         // re-introduce the off-screen overflow this fixes.
@@ -135,10 +135,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func makeWindow() -> NSWindow {
         let window = NSWindow(contentViewController: makeContentController())
         window.title = "Flux Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
+        window.styleMask = Self.windowStyleMask
+        window.titlebarAppearsTransparent = false
+        window.titleVisibility = .visible
+        window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
         window.backgroundColor = .windowBackgroundColor
         window.collectionBehavior = [.moveToActiveSpace]
@@ -147,90 +147,56 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: Sizing
-    //
-    // ## The window height is FIXED, and never changes again
-    // It used to re-measure the active tab and grow/shrink to fit on every
-    // switch. That made the window jump around under the pointer — the
-    // Notch tab is far taller than About — moving the very controls you were
-    // reaching for, and resizing a window out from under an open popover or
-    // a mid-edit text field. Tabs are peers; a tab bar that resizes its own
-    // container is the bug, not a feature.
-    //
-    // One height is measured once, from the TALLEST tab, and then held for
-    // the window's whole life. Anything taller than that (a tab that grows
-    // because a toggle revealed more rows) scrolls, which is what the
-    // `ScrollView` in `SettingsView` was always there for.
 
-    /// The measured fixed height, computed once on first open.
-    private var fixedContentHeight: CGFloat?
+    /// The detail pane scrolls when a section grows. The window itself stays
+    /// at a comfortable native-preferences size, with only a small clamp for
+    /// unusually short displays.
 
-    /// The natural height of one tab, measured from a non-scrolling copy.
-    private func naturalContentHeight(of tab: SettingsTab) -> CGFloat {
-        let probe = NSHostingView(rootView: SettingsView(scrolls: false, initialTab: tab)
-            .environmentObject(settings)
-            .environmentObject(arranger)
-            .environmentObject(updater)
-            .environmentObject(nowPlaying)
-            .environmentObject(permissions)
-            .environmentObject(crashReporter))
-        probe.layoutSubtreeIfNeeded()
-        return ceil(probe.fittingSize.height)
-    }
-
-    /// A comfortable design height for a settings window — NOT the tallest
-    /// tab's natural height.
-    ///
-    /// Sizing to the tallest tab is the obvious reading of "one size for
-    /// everything" and it's wrong: with the notch enabled, the Notch tab runs
-    /// seven cards and 1600-2000pt, so the max would clamp straight to the
-    /// screen and open EVERY tab as a near-fullscreen window — About needs
-    /// ~350pt and would sit in ~850pt of mostly empty space. That trades a
-    /// window that jumps for one that's permanently oversized.
-    private static let preferredContentHeight: CGFloat = 620
-
-    /// The one height: the shorter of what the tabs actually want, the design
-    /// ceiling, and what the screen can show. Measured once and cached, so no
-    /// later content change can move the window. Anything taller scrolls.
-    private func resolvedFixedHeight() -> CGFloat {
-        if let fixedContentHeight { return fixedContentHeight }
-        let tallest = SettingsTab.allCases.map { naturalContentHeight(of: $0) }.max() ?? Self.preferredContentHeight
-        let height = min(tallest, Self.preferredContentHeight, availableHeight(on: NSScreen.main))
-        fixedContentHeight = height
-        return height
-    }
-
-    /// Usable height for a window on `screen` — its visible frame already excludes
-    /// the menu bar and Dock; a little breathing room keeps the title bar clear.
+    /// Usable content height on `screen`. The visible frame excludes the menu
+    /// bar and Dock, but includes room occupied by the window's titlebar, so
+    /// account for that chrome before applying the edge margin.
     private func availableHeight(on screen: NSScreen?) -> CGFloat {
         let visible = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
-        return max(320, visible - 24)
+        let titlebarHeight = NSWindow.frameRect(
+            forContentRect: NSRect(x: 0, y: 0, width: 1, height: 0),
+            styleMask: Self.windowStyleMask
+        ).height
+        return max(1, visible - titlebarHeight - 24)
     }
 
-    /// First-open sizing: the one fixed height, centred. `contentMinSize` and
-    /// `contentMaxSize` are pinned to the same value, so neither a tab switch
-    /// nor a user drag can change it — the window is genuinely fixed, not
-    /// merely "sized correctly for now".
-    private func sizeToFixedHeight() {
+    private func fixedContentSize(on screen: NSScreen?) -> NSSize {
+        let available = availableHeight(on: screen)
+        let height: CGFloat
+        if available >= 320 {
+            height = max(320, min(Self.preferredContentSize.height, available))
+        } else {
+            // A very short display gets the largest content area it can
+            // actually show; forcing the nominal minimum would put the title
+            // bar or bottom rows off-screen again.
+            height = available
+        }
+        return NSSize(width: Self.preferredContentSize.width, height: height)
+    }
+
+    /// Applies the one fixed preferences size for the current display.
+    /// `contentMinSize` and `contentMaxSize` are pinned to the same value, so
+    /// neither a tab switch nor an accidental drag can change it. Reapplying
+    /// this on every show also restores the preferred height after the window
+    /// was previously clamped on a short display.
+    private func applyFixedContentSize(on screen: NSScreen?, center: Bool) {
         guard let window else { return }
-        let height = resolvedFixedHeight()
-        let size = NSSize(width: Self.contentWidth, height: height)
+        let size = fixedContentSize(on: screen)
         window.contentMinSize = size
         window.contentMaxSize = size
         window.setContentSize(size)
-        window.center()
-    }
-
-    /// Re-open sizing: only ever shrinks to fit a smaller screen (the window
-    /// was moved to a laptop display since last time). Never grows, never
-    /// re-measures content.
-    private func clampHeightToScreen() {
-        guard let window else { return }
-        let available = availableHeight(on: window.screen)
-        guard let current = window.contentView?.frame.height, current > available else { return }
-        let size = NSSize(width: Self.contentWidth, height: available)
-        window.contentMinSize = size
-        window.contentMaxSize = size
-        window.setContentSize(size)
+        if center {
+            window.center()
+        } else if let screen {
+            let constrained = window.constrainFrameRect(window.frame, to: screen)
+            if constrained != window.frame {
+                window.setFrame(constrained, display: false)
+            }
+        }
     }
 
     func windowWillClose(_ notification: Notification) {

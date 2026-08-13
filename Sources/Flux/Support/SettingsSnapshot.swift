@@ -34,13 +34,15 @@ enum SettingsSnapshot {
             .environmentObject(CrashReporter())
             .environment(\.colorScheme, dark ? .dark : .light)
 
-        // Settings' width is fixed; only the height needs to fit the tab's
-        // content, so measure it from a throwaway hosting view before handing
-        // the real capture off to the shared pipeline.
+        // The production window uses one stable sidebar/detail canvas. The
+        // probe still lets the off-screen renderer account for a tall tab when
+        // producing a documentation snapshot, while the live window itself
+        // remains fixed and scrollable.
         let probe = NSHostingView(rootView: AnyView(root))
         probe.appearance = appearance
         let fitting = probe.fittingSize
-        let size = NSSize(width: 480, height: max(fitting.height, 560))
+        let size = NSSize(width: SettingsLayout.contentWidth,
+                          height: max(fitting.height, SettingsLayout.contentHeight))
 
         OffscreenRender.capture(rootView: AnyView(root), size: size, dark: dark, label: "snapshot", to: path)
     }

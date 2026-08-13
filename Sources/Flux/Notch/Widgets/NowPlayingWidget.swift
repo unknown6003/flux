@@ -185,12 +185,13 @@ private struct NowPlayingExpandedView: View {
     /// bottom puts the slack where a music player wants it, at any panel
     /// height.
     private func content(for state: NowPlayingState) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: NotchDesign.playerStackSpacing) {
             headerRow(state)
             Spacer(minLength: 0)
             scrubberSection(state)
             transportRow(state)
         }
+        .padding(.bottom, NotchDesign.playerBottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -211,7 +212,7 @@ private struct NowPlayingExpandedView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             WaveformVisualizer(isPlaying: state.isPlaying,
-                                gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
+                                color: .white.opacity(0.85))
         }
     }
 

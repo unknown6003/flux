@@ -6,6 +6,9 @@
 
 </div>
 
+See the [Flux vs Alcove comparison and roadmap](docs/alcove-comparison.md) for
+the interaction principles, selected ideas, and prioritized follow-up work.
+
 | Light | Dark |
 | --- | --- |
 | ![Flux settings, light](docs/screenshots/settings-light.png) | ![Flux settings, dark](docs/screenshots/settings-dark.png) |
@@ -69,9 +72,10 @@ arrangement across launches.
 - **Arrange Mode** — a guided editor that reveals labeled zone markers in the live
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
-- **Notch panel — Alcove-inspired compact redesign (M7)** — a pure-black,
-  seamless panel sized to each widget's own content (no more one-size-fits-all
-  box), with overshoot springs on open and a snappy, no-bounce close, plus a
+- **Notch panel — Alcove-inspired compact redesign** — a pure-black, seamless
+  panel with one stable expanded footprint so switching widgets never makes
+  the drawer jump or resize underneath you. Widgets adapt inside that box,
+  with overshoot springs on open and a snappy, no-bounce close, plus a
   blur/opacity content morph as it expands. Hover (or click) the camera
   housing to expand a **Now Playing** widget: artwork, title/artist, a
   scrubber, and transport controls for whatever's playing (any app, via a

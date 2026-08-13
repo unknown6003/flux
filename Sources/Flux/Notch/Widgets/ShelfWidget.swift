@@ -126,11 +126,10 @@ private struct ShelfExpandedView: View {
 // MARK: - One tile
 
 /// Alcove refit (M7): 64pt-wide tiles (was 72) with a 44×44 thumbnail (was
-/// 56×56) — sized to fit this panel's 150 total height budget as a single
-/// horizontal row: 44 (thumb) + 4 + ~12 (10pt filename line) + 4 + ~11 (9pt
-/// age line) ≈ 75, comfortably inside the ~100–150 usable content height
-/// left after the panel's fixed padding, with headroom for the header row
-/// above it.
+/// 56×56) — sized to fit the shared 190pt panel as a single horizontal row:
+/// 44 (thumb) + 4 + ~12 (10pt filename line) + 4 + ~11 (9pt age line) ≈ 75,
+/// comfortably inside the usable content height left after fixed chrome, with
+/// headroom for the header row above it.
 private struct ShelfTileView: View {
     let item: ShelfItem
     @ObservedObject var store: ShelfStore
