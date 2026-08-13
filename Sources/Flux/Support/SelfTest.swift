@@ -2817,8 +2817,8 @@ enum SelfTest {
             check(bounds.width > alcoveWidth && bounds.height > alcoveHeight,
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
 
-            check(abs(alcoveWidth / alcoveHeight - NotchMetrics.expandedAspectRatio) < 0.02,
-                  "NotchMetrics: Alcove's realised width:height stays on the reference proportion")
+            check(alcoveWidth == max(notchWidth * NotchMetrics.expandedAspectRatio, 400),
+                  "NotchMetrics: Alcove width follows the 2.1x camera-housing guide")
         }
 
         // --- M12: an activity change that lands DURING a transition must be

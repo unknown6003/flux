@@ -15,8 +15,9 @@ enum NotchMetrics {
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// Alcove's width-to-height guide: 2.1:1 — 420x190 on the representative
-    /// 200pt camera housing used by the snapshot suite.
+    /// Alcove's width scale guide: 2.1x the camera housing — 420pt on the
+    /// representative 200pt notch used by the snapshot suite. The height is
+    /// held by `maxExpandedHeight` so page content never changes the shell.
     static let expandedAspectRatio: CGFloat = 2.1
 
     /// The shared Alcove drawer height. Every standard widget uses this same
