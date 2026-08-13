@@ -140,6 +140,7 @@ private struct StaticEqualizerBars: View {
 /// the full expanded width or a narrower side-by-side slice.
 private struct NowPlayingExpandedView: View {
     @ObservedObject var service: NowPlayingService
+    @Environment(\.isNarrowPane) private var isNarrowPane
 
     @State private var isDragging = false
     @State private var dragValue: TimeInterval = 0
@@ -201,8 +202,13 @@ private struct NowPlayingExpandedView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            WaveformVisualizer(isPlaying: state.isPlaying,
-                                gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
+            // Duo's Calendar pane is intentionally narrow. The waveform is a
+            // decorative affordance, so give that width back to the title and
+            // artist instead of allowing their marquee to start truncated.
+            if !isNarrowPane {
+                WaveformVisualizer(isPlaying: state.isPlaying,
+                                    gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
+            }
         }
     }
 

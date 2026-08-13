@@ -148,6 +148,11 @@ struct LockScreenMediaControlsView: View {
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Lock Screen Now Playing")
+        // The macOS lock screen presents these controls in its dark system
+        // appearance even when the desktop appearance is light. Applying the
+        // same environment keeps the material dark and the white glyphs
+        // legible in both the live lock screen and the snapshot harness.
+        .environment(\.colorScheme, .dark)
     }
 
     private func mediaCard(for state: NowPlayingState) -> some View {
@@ -195,7 +200,7 @@ struct LockScreenMediaControlsView: View {
         .background(
             RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                              style: .continuous)
-                .fill(.ultraThinMaterial)
+                .fill(.regularMaterial)
                 .overlay(
                     RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                                      style: .continuous)
@@ -369,7 +374,7 @@ private struct LockScreenActivityPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(.thinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
     }
 }
@@ -391,7 +396,7 @@ private struct LockScreenUnlockPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(.thinMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
     }
 }
