@@ -108,7 +108,7 @@ private struct CalendarExpandedView: View {
 
     // MARK: Agenda
 
-    /// Alcove refit (M7): this panel's total height budget is 190, minus
+    /// Alcove refit: this panel's total height budget is 164, minus
     /// fixed padding (top `notchHeight + 6`, bottom 18 — bumped from 14 when
     /// the 32pt corner radius clipped content) leaves a usable
     /// content height of roughly 100–150. A section header (9pt, ~11pt line

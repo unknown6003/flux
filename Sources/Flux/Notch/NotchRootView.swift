@@ -386,28 +386,20 @@ struct NotchRootView: View {
     /// value: state)` transaction instead of a second, independent curve —
     /// one mechanism, one timeline, no blur.
     private struct ExpandedChrome: ViewModifier {
-        /// `notchSize.height + 6` at both call sites — clears the physical
-        /// notch cutout at the top of the expanded shape.
+        /// `notchSize.height` at both call sites — clears the physical notch
+        /// cutout at the top of the expanded shape without adding a second
+        /// arbitrary gap above the content.
         let topInset: CGFloat
 
         func body(content: Content) -> some View {
             content
                 .padding(.horizontal, 16)
                 .padding(.top, topInset)
-                // Kept in step with `NotchShape.expanded`'s bottom radius,
-                // which is the whole reason this isn't just symmetric with
-                // the horizontal padding: content (notably the transport row,
-                // the bottom-most thing any widget draws) has to clear the
-                // corner curve, not merely the frame. M7 grew the radius
-                // 24 → 32 without moving this and the transport row started
-                // overhanging the curve; M12's continuous corners at 34
-                // occupy slightly more of the edge again for the same
-                // nominal radius, since curvature is spread further along it.
-                // Back to 18 from M12's 22. That bump was for a larger
-                // corner radius, but paired with the corrected (shallower)
-                // panel it cost more usable height than the corner needed —
-                // the rendered snapshot showed the transport row clipped.
-                .padding(.bottom, 18)
+                // The smaller Alcove shell has less unused depth than the
+                // previous 190pt drawer. Fourteen points clear the continuous
+                // bottom curve while leaving the media transport row room to
+                // settle without clipping.
+                .padding(.bottom, 14)
         }
     }
 
@@ -480,8 +472,8 @@ struct NotchRootView: View {
     /// The expanded panel: pure widget content, no chrome. Alcove's panel
     /// doesn't reserve a separate compact strip at the top the way the old
     /// design did — the physical notch cutout itself is the "top area", so
-    /// content only needs to clear it via top padding (`notchSize.height +
-    /// 6`), not a whole extra row. Resolved through `enabledWidgets` (not the
+    /// content only needs to clear it via top padding (`notchSize.height`), not
+    /// a whole extra row. Resolved through `enabledWidgets` (not the
     /// plain, unfiltered `registry.widget(for:)`) so a widget that was
     /// disabled out from under an in-flight state transition can never
     /// render here even for a single frame — belt-and-suspenders alongside
@@ -527,7 +519,7 @@ struct NotchRootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .modifier(ExpandedChrome(topInset: notchSize.height + 6))
+        .modifier(ExpandedChrome(topInset: notchSize.height))
         // Fixed, settled-size inner frame — laid out once per widget/Duo
         // target, never interpolated (see doc comment above). `.animation
         // (nil, value:)` is a belt-and-suspenders guard: `finalSize` only
@@ -564,6 +556,12 @@ struct NotchRootView: View {
                     if let nowPlaying { nowPlaying.makeExpandedView() }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The single-widget view gets the shell's outer chrome. Duo
+                // needs only a small divider-side gutter; adding the old
+                // symmetric pane padding inside the widget made the solo
+                // player look inset and left Duo with an unnecessarily narrow
+                // media column.
+                .padding(.trailing, NotchDesign.paneInsets)
 
                 Rectangle()
                     .fill(Color.white.opacity(NotchDesign.hairlineOpacity))

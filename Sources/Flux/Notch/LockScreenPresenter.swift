@@ -25,6 +25,26 @@ enum LockScreenTransitionLogic {
     }
 }
 
+/// Keeps the companion widget in the same lower login lane across display
+/// sizes. The lock screen's clock/profile stack occupies the upper half; the
+/// media surface belongs just above the credential controls, not immediately
+/// below the notch.
+enum LockScreenWidgetPositionLogic {
+    static let preferredCenterFraction: CGFloat = 0.38
+    static let minimumOriginFraction: CGFloat = 0.20
+
+    static func originY(screenFrame: CGRect,
+                        notchHeight: CGFloat,
+                        widgetHeight: CGFloat) -> CGFloat {
+        let preferredCenterY = screenFrame.minY + screenFrame.height * preferredCenterFraction
+        let preferredOriginY = preferredCenterY - widgetHeight / 2
+        let minimumOriginY = screenFrame.minY + screenFrame.height * minimumOriginFraction
+        let maximumOriginY = screenFrame.maxY - notchHeight - 24 - widgetHeight
+        return min(max(preferredOriginY, minimumOriginY),
+                   max(minimumOriginY, maximumOriginY))
+    }
+}
+
 /// EXPERIMENTAL — default OFF, gated by `flux.notch.lockScreenExperiment`
 /// (the wiring agent's `setEnabled(_:)` call, in `AppDelegate.
 /// configureLockScreenPresenter()` — this class has no opinion of its own
@@ -34,7 +54,7 @@ enum LockScreenTransitionLogic {
 /// while this is enabled).
 ///
 /// M15 (Alcove lock-screen parity): keeps a LIVE `LockScreenContentView` —
-/// the notch silhouette, a solid-black Now Playing card, the current live
+/// the notch silhouette, a material Now Playing card, the current live
 /// activity's caption, and an optional "Press any key to unlock" pill —
 /// visible on the macOS lock screen between `screenIsLocked`/
 /// `screenIsUnlocked` distributed notifications. The Now Playing card is
@@ -886,10 +906,9 @@ final class LockScreenPresenter {
         resizeHostingView(hostingView, in: panel)
     }
 
-    /// Places the widget in the lock-screen login lane, above the password
-    /// field instead of directly under the notch. The preferred center is
-    /// intentionally below the clock but above the credential controls; the
-    /// clamps keep it usable on short displays as well.
+    /// Places the widget in the lower lock-screen login lane, close to the
+    /// profile/password controls instead of directly under the notch. The
+    /// pure positioning helper keeps the anchor and clamps testable.
     private func positionMediaPanel(_ panel: NSPanel,
                                     notchRect: NSRect,
                                     screenFrame: NSRect,
@@ -897,12 +916,10 @@ final class LockScreenPresenter {
                                     hasAuxiliaryContent: Bool) {
         let size = LockScreenPillMetrics.widgetSize(hasMedia: hasMedia,
                                                     hasAuxiliaryContent: hasAuxiliaryContent)
-        let preferredCenterY = screenFrame.minY + screenFrame.height * 0.56
-        let preferredOriginY = preferredCenterY - size.height / 2
-        let minimumOriginY = screenFrame.minY + screenFrame.height * 0.30
-        let maximumOriginY = screenFrame.maxY - notchRect.height - 32 - size.height
-        let originY = min(max(preferredOriginY, minimumOriginY),
-                          max(minimumOriginY, maximumOriginY))
+        let originY = LockScreenWidgetPositionLogic.originY(
+            screenFrame: screenFrame,
+            notchHeight: notchRect.height,
+            widgetHeight: size.height)
         let origin = NSPoint(
             x: notchRect.midX - size.width / 2,
             y: originY)

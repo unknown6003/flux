@@ -1059,7 +1059,7 @@ enum SelfTest {
             // its slop only exists to stop a cursor tracing the panel's own
             // edge from flickering the hover-out timer. This one IS derived
             // from `interactiveRect`, in the panel's top-left-origin space.
-            let open = CGRect(x: 100, y: 0, width: 400, height: 190)
+            let open = CGRect(x: 100, y: 0, width: 360, height: 164)
             let openHover = NotchWindowController.openHoverRect(interactiveRect: open)
             check(openHover.contains(CGPoint(x: 300, y: 100)),
                   "Notch hover: a point inside the expanded panel is inside")
@@ -2295,6 +2295,15 @@ enum SelfTest {
         check(mediaWidgetSize.width == LockScreenPillMetrics.mediaControlsWidth
               && mediaWidgetWithPillsSize.height > mediaWidgetSize.height,
               "LockScreenPillMetrics: the media surface has one stable width and only grows for supporting pills")
+        let loginFrame = CGRect(x: 0, y: 0, width: 900, height: 900)
+        let lockWidgetOrigin = LockScreenWidgetPositionLogic.originY(
+            screenFrame: loginFrame,
+            notchHeight: 32,
+            widgetHeight: mediaWidgetWithPillsSize.height)
+        check(lockWidgetOrigin < loginFrame.height * 0.38,
+              "LockScreenWidgetPositionLogic: the widget sits below the old center lane, closer to credentials")
+        check(lockWidgetOrigin >= loginFrame.height * LockScreenWidgetPositionLogic.minimumOriginFraction,
+              "LockScreenWidgetPositionLogic: the lower lane remains above the bottom edge")
 
         // --- M6: NotchActivityRouter — timer completion/ambient translation,
         // driven purely through a real (but headless) TimerService's own
@@ -2787,14 +2796,14 @@ enum SelfTest {
                   "ArtworkPalette: switching back to blueImage after redAgain re-derives its own correct colors too — no track's colors ever leak into another's")
         }
 
-        // --- Notch geometry: every standard page shares the canonical Alcove
-        // footprint. Duo remains deliberately wider because it is a genuine
-        // two-pane layout, not a page-specific sizing accident. ---
+        // --- Notch geometry: every page shares the canonical Alcove
+        // footprint. Duo is a responsive composition inside that shell, not a
+        // second page-specific width. ---
         do {
-            let notchWidth: CGFloat = 200
+            let notchWidth: CGFloat = 180
             let alcoveWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .alcove)
             let alcoveHeight = NotchMetrics.expandedHeight(for: notchWidth, style: .alcove)
-            check(alcoveWidth == 420 && alcoveHeight == NotchMetrics.maxExpandedHeight,
+            check(alcoveWidth == 360 && alcoveHeight == 164,
                   "NotchMetrics: Alcove uses one stable width and height for standard widget pages")
             let alcoveHeights = WidgetID.allCases.map {
                 NotchMetrics.expandedHeight(for: $0, notchWidth: notchWidth, style: .alcove)
@@ -2808,17 +2817,25 @@ enum SelfTest {
             check(NotchMetrics.duoCalendarPaneFraction > 0.25 && NotchMetrics.duoCalendarPaneFraction < 0.5,
                   "NotchMetrics: Duo's Calendar pane takes a minority share, leaving Now Playing the larger half")
 
+            check(NotchMetrics.duoWidth(for: notchWidth, style: .alcove) == alcoveWidth
+                  && NotchMetrics.duoHeight(for: notchWidth, style: .alcove) == alcoveHeight,
+                  "NotchMetrics: Duo keeps the same shell size as every other page")
+
             let bounds = NotchMetrics.panelBounds(for: notchWidth, style: .alcove)
             check(bounds.height == NotchMetrics.maxExpandedHeight + NotchMetrics.shadowMarginHeight,
                   "NotchMetrics: Alcove panelBounds reserves the tallest content plus shadow bleed")
-            check(bounds.width == NotchMetrics.duoWidth(for: notchWidth, style: .alcove)
-                  + NotchMetrics.shadowMarginWidth,
-                  "NotchMetrics: Alcove panelBounds reserves Duo width plus shadow bleed")
+            check(bounds.width == alcoveWidth + NotchMetrics.shadowMarginWidth,
+                  "NotchMetrics: panelBounds reserves the one Alcove width plus shadow bleed")
             check(bounds.width > alcoveWidth && bounds.height > alcoveHeight,
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
 
-            check(alcoveWidth == max(notchWidth * NotchMetrics.expandedAspectRatio, 400),
-                  "NotchMetrics: Alcove width follows the 2.1x camera-housing guide")
+            check(alcoveWidth == max(notchWidth + NotchMetrics.wingWidth * 2,
+                                    NotchMetrics.minimumExpandedWidth),
+                  "NotchMetrics: Alcove width exactly matches the physical notch plus two wings")
+
+            let largerNotchWidth: CGFloat = 200
+            check(NotchMetrics.expandedWidth(for: largerNotchWidth, style: .alcove) == 380,
+                  "NotchMetrics: larger hardware scales fluidly without a second fixed shell")
         }
 
         // --- M12: an activity change that lands DURING a transition must be
