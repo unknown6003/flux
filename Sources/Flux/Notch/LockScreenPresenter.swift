@@ -604,8 +604,9 @@ final class LockScreenPresenter {
     /// and reclaim ownership until the NEXT lock — `NowPlayingService`
     /// tracks a single `isActive` bool, not a set of owners, so there is no
     /// richer signal to observe here. That's an acceptable trade for a
-    /// permission-free, privacy-neutral adapter call (the adapter is the
-    /// service's ONLY source since M11 removed the AppleScript fallback)
+    /// privacy-neutral adapter call that does not require Screen Recording
+    /// (the adapter is the service's ONLY source since M11 removed the
+    /// AppleScript fallback)
     /// rather than real reference counting for a best-effort lock-screen
     /// convenience feature.
     private func activateNowPlayingForLockIfNeeded() {

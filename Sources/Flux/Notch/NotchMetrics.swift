@@ -7,10 +7,11 @@ import CoreGraphics
 /// animates) and `NotchSnapshot` (which needs the same numbers to size its
 /// off-screen capture window) can't drift out of sync with the SwiftUI side.
 ///
-/// The default `.alcove` style restores the compact content-sized drawer from
-/// M7. The `.flux` style keeps the later fixed-size drawer available for users
-/// who prefer a stable, roomier surface. Both styles share one fixed window
-/// envelope so AppKit never has to animate or resize an `NSPanel`.
+/// The default `.alcove` style restores the compact drawer from M7, with one
+/// stable visible footprint for every standard widget. The `.flux` style keeps
+/// the later fixed-size drawer available for users who prefer a roomier
+/// surface. Both styles share one fixed window envelope so AppKit never has to
+/// animate or resize an `NSPanel`.
 enum NotchMetrics {
     /// Width of each side "wing" shown around the blank physical-notch area
     /// while a live activity is current.
@@ -92,8 +93,8 @@ enum NotchMetrics {
     /// to — the one expanded footprint plus the shadow's bleed margin.
     ///
     /// The envelope reserves the widest/tallest footprint of the selected
-    /// style. The visible shape can still be smaller for compact Alcove
-    /// widgets, while the window remains stable.
+    /// style. Standard Alcove widgets now use the same visible height; Duo is
+    /// intentionally wider because it contains two panes.
     ///
     /// Growing these bounds needs no compensating change to how the shape is
     /// positioned: `NotchWindowController.position` derives the panel origin

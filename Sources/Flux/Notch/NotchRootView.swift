@@ -27,9 +27,9 @@ struct NotchRootView: View {
     /// back to a generic note glyph.
     var artworkProvider: (() -> NSImage?)?
 
-    /// The selected drawer layout. Alcove is compact and content-sized;
-    /// Flux keeps the older fixed-height drawer available as an explicit
-    /// preference.
+    /// The selected drawer layout. Alcove is compact with one stable page
+    /// footprint; Flux keeps the older fixed-height drawer available as an
+    /// explicit preference.
     var style: NotchStyle = .alcove
 
     /// Lets the wiring agent intercept a tap while a live activity's wings are
