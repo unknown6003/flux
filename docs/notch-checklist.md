@@ -105,8 +105,8 @@ non-notched-external-display brightness check).
       start a timer, and confirm neither the ambient countdown wing nor the
       completion wing/sound appears — the Timers widget itself still works
       for starting/pausing/cancelling.
-- [ ] **Lock-screen show/hide**: turn on "Show on the lock screen" in
-      Settings → Notch → Experimental, lock the screen, and confirm a small
+- [ ] **Lock-screen show/hide**: turn on "Show Flux on the lock screen" in
+      Settings → Lock Screen, lock the screen, and confirm a small
       notch silhouette appears (captioned with a running timer's remaining
       time, if one is running) without interfering with actually typing your
       password to unlock. Unlock and confirm the silhouette disappears.
@@ -200,7 +200,7 @@ every widget — the items below need a real notched Mac.
 
 ## M9/M15 — Alcove lock-screen parity: live media, controls, solid-black surfaces, unlock pill
 
-Turn on "Show on the lock screen" in Settings → Notch → Experimental before
+Turn on "Show Flux on the lock screen" in Settings → Lock Screen before
 any of these — every item below assumes the master toggle is already on, and
 the four sub-toggles beneath it are all on unless a specific item says
 otherwise.
@@ -260,7 +260,7 @@ otherwise.
       turning it off, and re-locking — and confirm nothing shows at all on the
       next lock.
 
-## M9 — Privacy audit: zero permissions by default
+## M9 — Privacy audit: capability-specific permissions
 
 `--selftest` covers the factory-default values and the pure consent-gating
 decisions headlessly; the items below need a real fresh macOS user account
@@ -268,10 +268,11 @@ decisions headlessly; the items below need a real fresh macOS user account
 on a throwaway build) since TCC prompts don't happen at all in a headless
 CI environment.
 
-- [ ] **Fresh install, zero TCC prompts at launch**: reset Flux's TCC state
-      (or use a clean account), launch Flux, and confirm **no** permission
-      prompt of any kind appears — no Calendar, Camera, or Bluetooth dialog —
-      just the chevron appearing near the clock.
+- [ ] **Fresh install, no unsolicited TCC prompts at launch**: reset Flux's
+      TCC state (or use a clean account), launch Flux, and confirm no Calendar
+      or Camera prompt appears until its widget is enabled and access is
+      explicitly requested. The lock-screen overlay should not prompt for
+      Screen Recording.
 - [ ] **Bluetooth prompts only on enable**: with Bluetooth still off, connect
       a Bluetooth accessory and confirm nothing prompts and no wing appears.
       Turn "Bluetooth devices" on in Settings → Notch → Live Activities and
@@ -281,10 +282,7 @@ CI environment.
 - [ ] **Calendar/Camera unaffected**: confirm these two still prompt exactly
       where they always have — the first time you click each feature's own
       "Grant Access" button in Settings → Notch, not at launch and not from
-      any other action. (M11 removed Accessibility and the AppleScript
-      Automation prompt entirely — Calendar and Camera are now the only two
-      permissions Flux ever requests, so there's nothing else left to check
-      here.)
+      any other action.
 
 ## M10 — Permission-free Bluetooth monitor (DeviceMonitor)
 

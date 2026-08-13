@@ -101,8 +101,9 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
   newer — shows an amber banner with **Download & Install** (downloads the DMG to
   ~/Downloads and opens it) plus **View release on GitHub**.
 - **Automatically check for updates** (on by default) does a quiet check ~4s after
-  launch and every 6 h; it never installs anything without a click. Zero permissions —
-  a plain HTTPS GET, no Sparkle, no privileged helper, no auto-replace.
+  launch and every 6 h; it never installs anything without a click. The update
+  check uses a plain HTTPS GET, no Sparkle, no privileged helper, and no
+  auto-replace.
 - Running 0.1.2 against the 0.1.2 release correctly reports **up to date**.
 
 ### 4. Launch at login (needs your approval)
@@ -120,11 +121,15 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 | --- | --- | --- |
 | Hide/reveal (core MVP) | **none** | — |
 | Global hotkey (⌃⌥⌘F, rebindable) | none (Carbon) | — |
+| Lock-screen overlay | no TCC grant; native system-level window space | — |
+| Calendar widget | Calendar access | you, on first request |
+| Mirror widget | Camera access | you, on first request |
 | Launch at login | Login Items | you, on first toggle |
 | *(future)* per-app drawer / search | Accessibility + Screen Recording | you, post-MVP |
 
-The MVP deliberately needs **zero** privacy permissions for its core job — that's the
-whole point of the divider approach and the source of its stability and low cost.
+The core divider approach still needs no privacy grant. Permissions are now
+documented per capability instead of being presented as a blanket product claim;
+the optional lock-screen overlay does not use Screen Recording.
 
 ---
 

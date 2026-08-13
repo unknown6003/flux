@@ -23,7 +23,6 @@ struct NotchTab: View {
                 widgetsCard
                 widgetOrderCard
                 liveActivitiesCard
-                experimentalCard
             }
         }
         .padding(20)
@@ -273,32 +272,6 @@ struct NotchTab: View {
             ToggleRow(title: "Timer alerts",
                       subtitle: "Show a wing (and play a sound) when a timer finishes, plus an ambient countdown while one's running.",
                       isOn: $settings.notchActivityTimerEnabled)
-        }
-    }
-
-    private var experimentalCard: some View {
-        FluxCard(title: "Experimental") {
-            ToggleRow(title: "Show on the lock screen",
-                      subtitle: "⚠️ Solid-black media controls, notifications, and an optional unlock pill while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
-                      isOn: $settings.notchLockScreenExperimentEnabled)
-            if settings.notchLockScreenExperimentEnabled {
-                RowDivider()
-                ToggleRow(title: "Now Playing",
-                          subtitle: "Show a black media card with artwork, title/artist, and previous/play/next controls while something's playing.",
-                          isOn: $settings.notchLockScreenNowPlayingEnabled)
-                RowDivider()
-                ToggleRow(title: "Notifications",
-                          subtitle: "Show the notch's current live activity (battery, Bluetooth, calendar, timer, ...) as a pill.",
-                          isOn: $settings.notchLockScreenActivitiesEnabled)
-                RowDivider()
-                ToggleRow(title: "Unlock pill",
-                          subtitle: "Show a \"Press any key to unlock\" pill below the notch.",
-                          isOn: $settings.notchLockScreenUnlockPillEnabled)
-                RowDivider()
-                ToggleRow(title: "Thunky unlock click",
-                          subtitle: "Play a short, tactile click the moment you unlock your Mac.",
-                          isOn: $settings.notchLockScreenUnlockSoundEnabled)
-            }
         }
     }
 

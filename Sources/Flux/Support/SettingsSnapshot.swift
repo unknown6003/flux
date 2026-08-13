@@ -34,14 +34,10 @@ enum SettingsSnapshot {
             .environmentObject(CrashReporter())
             .environment(\.colorScheme, dark ? .dark : .light)
 
-        // Settings' width is fixed; only the height needs to fit the tab's
-        // content, so measure it from a throwaway hosting view before handing
-        // the real capture off to the shared pipeline.
-        let probe = NSHostingView(rootView: AnyView(root))
-        probe.appearance = appearance
-        let fitting = probe.fittingSize
-        let size = NSSize(width: 480, height: max(fitting.height, 560))
-
-        OffscreenRender.capture(rootView: AnyView(root), size: size, dark: dark, label: "snapshot", to: path)
+        OffscreenRender.capture(rootView: AnyView(root),
+                                size: SettingsView.designSize,
+                                dark: dark,
+                                label: "snapshot",
+                                to: path)
     }
 }

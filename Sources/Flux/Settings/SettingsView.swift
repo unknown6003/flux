@@ -1,11 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// Which top-level Settings section is showing. Not persisted — reopening
-/// Settings always starts on `initialTab` (General by default), matching the
-/// plan's "custom, not TabView chrome" tab bar.
+/// The sections shown in the Alcove-style sidebar. Selection is intentionally
+/// transient: opening Settings starts at the requested section, while the
+/// native grouped-window layout stays stable as the user moves around it.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, menuBar, notch, about
+    case general, menuBar, notch, lockScreen, about
 
     var id: String { rawValue }
 
@@ -14,6 +14,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "General"
         case .menuBar: return "Menu Bar"
         case .notch: return "Notch"
+        case .lockScreen: return "Lock Screen"
         case .about: return "About"
         }
     }
@@ -23,35 +24,33 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .menuBar: return "menubar.rectangle"
         case .notch: return "capsule.portrait"
+        case .lockScreen: return "lock"
         case .about: return "info.circle"
         }
     }
 }
 
-/// The Settings window's root view: a slim header, a custom segmented tab
-/// bar, and the selected tab's scrollable content.
+/// A native-material settings window with Alcove's sidebar/detail hierarchy:
+/// compact navigation on the left, a titled detail pane on the right, and
+/// translucent grouped cards instead of a branded header plus tab strip.
 struct SettingsView: View {
+    static let designSize = CGSize(width: 760, height: 620)
+
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var arranger: MenuBarArranger
     @EnvironmentObject private var nowPlaying: NowPlayingService
 
-    /// When false the tab's content renders in a plain, self-sizing column — used
-    /// off-screen to measure the window's natural height. On screen (`true`, the
-    /// default) it lives in a `ScrollView`, so a tall tab scrolls instead of
-    /// overflowing the bottom of a short display.
+    /// Kept for the off-screen renderer and older callers. The live window is
+    /// always scrollable because the Notch section is intentionally long.
     var scrolls: Bool
-    /// Which tab opens first. `SettingsWindowController` also uses this to
-    /// re-measure the *current* tab's natural height when the user switches
-    /// tabs; `--render-settings`/`--snapshot` pass it directly so CI/dev
-    /// tooling can capture any single tab headlessly.
     var initialTab: SettingsTab
-    /// Fired whenever the user switches tabs, so `SettingsWindowController`
-    /// can re-fit the window to the new tab's natural height.
     var onTabChange: ((SettingsTab) -> Void)?
 
     @State private var selectedTab: SettingsTab
 
-    init(scrolls: Bool = true, initialTab: SettingsTab = .general, onTabChange: ((SettingsTab) -> Void)? = nil) {
+    init(scrolls: Bool = true,
+         initialTab: SettingsTab = .general,
+         onTabChange: ((SettingsTab) -> Void)? = nil) {
         self.scrolls = scrolls
         self.initialTab = initialTab
         self.onTabChange = onTabChange
@@ -59,21 +58,50 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HeaderView()
-            TabBar(selection: $selectedTab)
-            Rectangle().fill(Theme.hairlineColor).frame(height: 1)
-            if scrolls {
-                ScrollView { tabContent }
-            } else {
-                tabContent
+        HStack(spacing: 0) {
+            SettingsSidebar(selection: $selectedTab)
+                .frame(width: 224)
+
+            Rectangle()
+                .fill(Theme.settingsDividerColor)
+                .frame(width: 1)
+
+            VStack(spacing: 0) {
+                SettingsDetailHeader(tab: selectedTab)
+
+                Rectangle()
+                    .fill(Theme.settingsDividerColor)
+                    .frame(height: 1)
+
+                detailContent
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 480)
-        .background(Theme.groundColor)
+        .frame(width: Self.designSize.width, height: Self.designSize.height)
+        .background(SettingsMaterialBackground())
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Theme.settingsDividerColor, lineWidth: 1)
+        )
         .tint(Theme.accentColor)
         .foregroundStyle(Theme.textPrimaryColor)
-        .onChange(of: selectedTab) { _, newValue in onTabChange?(newValue) }
+        .onChange(of: selectedTab) { _, newValue in
+            onTabChange?(newValue)
+        }
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        if scrolls {
+            ScrollView(.vertical) {
+                tabContent
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        } else {
+            tabContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
     }
 
     @ViewBuilder
@@ -82,88 +110,126 @@ struct SettingsView: View {
         case .general: GeneralTab()
         case .menuBar: MenuBarTab()
         case .notch: NotchTab()
+        case .lockScreen: LockScreenTab()
         case .about: AboutTab()
         }
     }
 }
 
-// MARK: - Tab bar
-
-/// A custom, Theme-styled segmented control — deliberately not `TabView`
-/// (whose chrome doesn't match Flux's card-and-hairline visual language).
-private struct TabBar: View {
+private struct SettingsSidebar: View {
     @Binding var selection: SettingsTab
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(SettingsTab.allCases) { tab in
-                tabButton(tab)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.accentColor)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Theme.accentWashColor))
+                Text("Flux")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
             }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 24)
+
+            sidebarSection("System", tabs: [.general])
+            sidebarSection("Flux", tabs: [.menuBar, .notch, .lockScreen])
+
+            Spacer(minLength: 16)
+
+            sidebarSection("About", tabs: [.about])
         }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Theme.surfaceRaisedColor)
-        )
-        .padding(.horizontal, 20)
-        .padding(.bottom, 14)
+        .padding(.horizontal, 12)
+        .padding(.top, 44)
+        .padding(.bottom, 18)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.settingsSidebarColor)
     }
 
-    private func tabButton(_ tab: SettingsTab) -> some View {
-        let isSelected = tab == selection
+    @ViewBuilder
+    private func sidebarSection(_ title: String, tabs: [SettingsTab]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(Theme.textSecondaryColor.opacity(0.8))
+                .padding(.leading, 10)
+                .padding(.bottom, 3)
+
+            ForEach(tabs) { tab in
+                sidebarButton(tab)
+            }
+        }
+        .padding(.bottom, 18)
+    }
+
+    private func sidebarButton(_ tab: SettingsTab) -> some View {
+        let selected = selection == tab
         return Button {
             selection = tab
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: tab.symbol).font(.system(size: 11, weight: .medium))
-                Text(tab.title).font(.system(size: 12, weight: .medium))
+            HStack(spacing: 10) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .frame(width: 18)
+                Text(tab.title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                Spacer(minLength: 0)
             }
-            .foregroundStyle(isSelected ? Color.black.opacity(0.85) : Theme.textSecondaryColor)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
+            .foregroundStyle(selected ? Theme.textPrimaryColor : Theme.textSecondaryColor)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Theme.accentColor : Color.clear)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(selected ? Theme.settingsSelectionColor : Color.clear)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
     }
 }
 
-// MARK: - Header
+private struct SettingsDetailHeader: View {
+    let tab: SettingsTab
 
-private struct HeaderView: View {
     var body: some View {
         HStack(spacing: 12) {
-            FluxMark()
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Flux")
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Theme.textPrimaryColor)
-                Text(AppInfo.tagline)
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondaryColor)
-            }
-            Spacer()
+            Image(systemName: tab.symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.textSecondaryColor)
+                .frame(width: 34, height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Theme.settingsSelectionColor)
+                )
+
+            Text(tab.title)
+                .font(.system(size: 20, weight: .semibold))
+
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 22)
-        .padding(.bottom, 16)
+        .padding(.horizontal, 24)
+        .padding(.top, 34)
+        .padding(.bottom, 18)
     }
 }
 
-/// The app mark: an Industrial Amber tile with a matte-black chevron — the
-/// minimal identity, accent-forward as a logo should be.
-private struct FluxMark: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Theme.markGradient)
-            .frame(width: 46, height: 46)
-            .overlay(
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(Color(red: 0.04, green: 0.04, blue: 0.04))
-            )
-            .shadow(color: Theme.accentColor.opacity(0.35), radius: 6, y: 2)
+/// AppKit's material is what gives Alcove its window-level glass and lets the
+/// grouped cards remain light enough to read in both appearances.
+private struct SettingsMaterialBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 14
+        view.layer?.masksToBounds = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.state = .active
     }
 }
