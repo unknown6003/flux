@@ -27,6 +27,11 @@ struct NotchRootView: View {
     /// back to a generic note glyph.
     var artworkProvider: (() -> NSImage?)?
 
+    /// The selected drawer layout. Alcove is compact and content-sized;
+    /// Flux keeps the older fixed-height drawer available as an explicit
+    /// preference.
+    var style: NotchStyle = .alcove
+
     /// Lets the wiring agent intercept a tap while a live activity's wings are
     /// showing — e.g. routing a `.menuBarOverflow` tap into Arrange Mode
     /// instead of the notch's own open/close toggle. Return `true` to mark
@@ -180,14 +185,15 @@ struct NotchRootView: View {
         case .activity:
             return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2,
                           height: max(notchSize.height, 32))
-        case .expanded:
-            // One footprint for every widget, Duo included — see
-            // `NotchMetrics`' own doc comment on why the panel no longer
-            // resizes per widget. Note this no longer inspects the widget id
-            // at all, which is the point: swiping between pages cannot change
-            // the drawer's size, because the size doesn't depend on the page.
-            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
-                          height: NotchMetrics.expandedHeight(for: notchSize.width))
+        case .expanded(let widgetID):
+            if isDuoLayout(for: widgetID) {
+                return CGSize(width: NotchMetrics.duoWidth(for: notchSize.width, style: style),
+                              height: NotchMetrics.duoHeight(for: notchSize.width, style: style))
+            }
+            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width, style: style),
+                          height: NotchMetrics.expandedHeight(for: widgetID,
+                                                              notchWidth: notchSize.width,
+                                                              style: style))
         }
     }
 
@@ -274,10 +280,8 @@ struct NotchRootView: View {
         }
     }
 
-    /// The collapsed state stays pure black so it disappears into the physical
-    /// camera housing. Open states use a restrained glass surface: blurred
-    /// backdrop, a dark tint for contrast, and a hairline highlight that
-    /// catches the panel's rounded edge without turning it into a bright card.
+    /// Every state stays pure black so the collapsed shape disappears into the
+    /// physical camera housing and the open drawer reads as one simple surface.
     private var isCollapsed: Bool { viewModel.state == .collapsed }
 
     /// A soft drop shadow is what actually sells the "lifted" panel now that
@@ -306,23 +310,7 @@ struct NotchRootView: View {
     /// the Alcove reference now that it's rendered off one flattened layer
     /// instead of the shape's raw silhouette.
     private var shapeLayer: some View {
-        ZStack {
-            if isCollapsed {
-                shape.fill(Color.black)
-            } else {
-                shape
-                    .fill(NotchDesign.glassMaterial)
-                    .overlay(shape.fill(NotchDesign.glassTint))
-                    .overlay(
-                        LinearGradient(
-                            colors: [NotchDesign.glassHighlight, .clear, Color.black.opacity(0.16)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing)
-                            .clipShape(shape)
-                    )
-                    .overlay(shape.stroke(NotchDesign.glassBorder, lineWidth: 0.8))
-            }
-        }
+        shape.fill(Color.black)
             .frame(width: containerSize.width, height: containerSize.height)
             .scaleEffect(breathingScale)
             .compositingGroup()
@@ -568,12 +556,9 @@ struct NotchRootView: View {
     /// fades exactly like any other expanded-content change rather than
     /// needing a second, separate morph.
     ///
-    /// M12: the Calendar pane is now a *proportion* of the available width
-    /// rather than a fixed 200pt, because Duo no longer gets a wider panel to
-    /// live in — it has to fit the one expanded footprint every other widget
-    /// gets (see `NotchMetrics.duoCalendarPaneFraction`). `GeometryReader`
-    /// rather than arithmetic on `notchSize`, so the split follows whatever
-    /// width the chrome actually leaves after its own padding.
+    /// The Calendar pane is a *proportion* of the available width rather than
+    /// a fixed 200pt. `GeometryReader` keeps the split correct for either
+    /// style and for the chrome's inner padding.
     private func duoContent(nowPlaying: NotchWidget?, calendar: NotchWidget) -> some View {
         GeometryReader { proxy in
             HStack(spacing: 0) {
@@ -583,7 +568,7 @@ struct NotchRootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Rectangle()
-                    .fill(NotchDesign.glassBorder)
+                    .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
                     .frame(width: 1)
                     .padding(.vertical, 12)
 

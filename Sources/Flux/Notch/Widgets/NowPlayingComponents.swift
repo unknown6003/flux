@@ -350,7 +350,8 @@ struct FlippingArtwork: View {
         .frame(width: Self.side, height: Self.side)
         .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
         // A slight dim over the artwork itself — not the whole tile — so it
-        // reads as "photograph under glass" rather than a dark border.
+        // reads as a photograph against the dark panel rather than a framed
+        // card.
         .overlay(
             RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
                 .fill(Color.black.opacity(0.06))

@@ -353,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
         // tick and then immediately being corrected.
         notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
+        notchWindow.setStyle(settings.notchStyle)
         notchWindow.setEnabled(notchOn)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
         notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
@@ -465,6 +466,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchShowInFullscreen
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.setShowInFullscreen(value) }
+            .store(in: &cancellables)
+
+        settings.$notchStyle
+            .dropFirst()
+            .sink { [weak self] value in self?.notchWindow.setStyle(value) }
             .store(in: &cancellables)
 
         settings.$notchWidgetOrder

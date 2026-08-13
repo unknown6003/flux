@@ -23,8 +23,11 @@ struct GeneralTab: View {
     private var generalCard: some View {
         FluxCard(title: "General") {
             ToggleRow(title: "Launch at login",
-                      subtitle: "Start Flux automatically when you sign in.",
+                      subtitle: LoginItemManager.isBundledApplication
+                          ? "Start Flux automatically when you sign in."
+                          : "Build and open Flux.app to manage autostart.",
                       isOn: $settings.launchAtLogin)
+            .disabled(!LoginItemManager.isBundledApplication)
         }
     }
 

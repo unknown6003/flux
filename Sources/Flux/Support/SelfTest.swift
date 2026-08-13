@@ -2425,6 +2425,8 @@ enum SelfTest {
             let m6SettingsSuiteName = "flux.selftest.m6settings"
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
             let m6Settings = SettingsStore(defaults: UserDefaults(suiteName: m6SettingsSuiteName)!)
+            check(m6Settings.notchStyle == .alcove,
+                  "SettingsStore: notchStyle defaults to the compact Alcove layout")
             check(m6Settings.notchMirrorEnabled, "SettingsStore: notchMirrorEnabled defaults to true")
             check(!m6Settings.notchClipboardEnabled,
                   "SettingsStore: notchClipboardEnabled defaults to false — clipboard history collection is opt-in")
@@ -2751,46 +2753,44 @@ enum SelfTest {
                   "ArtworkPalette: switching back to blueImage after redAgain re-derives its own correct colors too — no track's colors ever leak into another's")
         }
 
-        // --- M12: ONE expanded size for every widget. The panel used to
-        // size itself to each widget's content (150-190pt, plus a 220pt
-        // widening for Duo), so the drawer grew and shrank as you swiped
-        // between pages. These assert the property that replaced it —
-        // the footprint is a function of the NOTCH, never of the page. ---
+        // --- Notch styles: Alcove restores the compact content-sized drawer,
+        // while Flux keeps its fixed aspect-ratio layout as an explicit
+        // preference. Both use a stable panel envelope. ---
         do {
             let notchWidth: CGFloat = 200
-            let width = NotchMetrics.expandedWidth(for: notchWidth)
-            let height = NotchMetrics.expandedHeight(for: notchWidth)
+            let fluxWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .flux)
+            let fluxHeight = NotchMetrics.expandedHeight(for: notchWidth, style: .flux)
 
-            check(height == (width / NotchMetrics.expandedAspectRatio).rounded(),
-                  "NotchMetrics: expanded height is derived from the width and the aspect ratio, so the two can't drift")
-            check(abs(width / height - NotchMetrics.expandedAspectRatio) < 0.02,
-                  "NotchMetrics: the realised width:height lands on the intended aspect ratio (rounding aside)")
-            check(width > height,
+            check(fluxHeight == (fluxWidth / NotchMetrics.expandedAspectRatio).rounded(),
+                  "NotchMetrics: Flux height is derived from its width and aspect ratio")
+            check(abs(fluxWidth / fluxHeight - NotchMetrics.expandedAspectRatio) < 0.02,
+                  "NotchMetrics: Flux's realised width:height lands on the intended aspect ratio")
+            check(fluxWidth > fluxHeight,
                   "NotchMetrics: the drawer is wider than it is tall — it hangs off the notch, it isn't a window")
 
-            // The regression this whole change exists to prevent — a page
-            // swipe resizing the drawer — is enforced by the SIGNATURE:
-            // `expandedHeight(for: CGFloat)` cannot be handed a `WidgetID`.
-            // That's a compile-time guarantee, so there is deliberately no
-            // runtime assertion for it here; comparing the function to itself
-            // (as a first pass did) proves nothing at all.
+            let alcoveWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .alcove)
+            let alcoveHeight = NotchMetrics.expandedHeight(for: .nowPlaying,
+                                                           notchWidth: notchWidth,
+                                                           style: .alcove)
+            check(alcoveWidth == 420 && alcoveHeight == 165,
+                  "NotchMetrics: Alcove uses its compact width and Now Playing height")
+            check(NotchMetrics.expandedHeight(for: .calendar,
+                                              notchWidth: notchWidth,
+                                              style: .alcove) == NotchMetrics.maxExpandedHeight,
+                  "NotchMetrics: Alcove reserves the tallest content height only for the tallest widgets")
 
-            // Duo has to fit the shared box rather than widen it. Its pane
-            // split is a fraction, so check it leaves a workable remainder
-            // for Now Playing rather than swallowing the panel.
+            // Duo's pane split is a fraction, so check it leaves a workable
+            // remainder for Now Playing rather than swallowing the panel.
             check(NotchMetrics.duoCalendarPaneFraction > 0.25 && NotchMetrics.duoCalendarPaneFraction < 0.5,
                   "NotchMetrics: Duo's Calendar pane takes a minority share, leaving Now Playing the larger half")
 
-            // --- M7 code-review fix, still standing: panelBounds reserves a
-            // shadow-bleed margin beyond the visible footprint. It used to
-            // equal it exactly, clipping the expanded shape's drop shadow at
-            // the panel edge. ---
-            let bounds = NotchMetrics.panelBounds(for: notchWidth)
-            check(bounds.height == height + NotchMetrics.shadowMarginHeight,
-                  "NotchMetrics: panelBounds' height is the expanded height PLUS a shadow-bleed margin, not the height exactly")
-            check(bounds.width == width + NotchMetrics.shadowMarginWidth,
-                  "NotchMetrics: panelBounds' width is the expanded width PLUS the same shadow-bleed margin")
-            check(bounds.width > width && bounds.height > height,
+            let bounds = NotchMetrics.panelBounds(for: notchWidth, style: .alcove)
+            check(bounds.height == NotchMetrics.maxExpandedHeight + NotchMetrics.shadowMarginHeight,
+                  "NotchMetrics: Alcove panelBounds reserves the tallest content plus shadow bleed")
+            check(bounds.width == NotchMetrics.duoWidth(for: notchWidth, style: .alcove)
+                  + NotchMetrics.shadowMarginWidth,
+                  "NotchMetrics: Alcove panelBounds reserves Duo width plus shadow bleed")
+            check(bounds.width > alcoveWidth && bounds.height > alcoveHeight,
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
         }
 

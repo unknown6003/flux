@@ -17,6 +17,7 @@ struct NotchTab: View {
                 noNotchNotice
             }
             generalCard
+            appearanceCard
             if settings.notchEnabled {
                 behaviorCard
                 widgetsCard
@@ -48,6 +49,25 @@ struct NotchTab: View {
             ToggleRow(title: "Enable the notch panel",
                       subtitle: "Turns the camera housing into an expandable panel for live activities and widgets.",
                       isOn: $settings.notchEnabled)
+        }
+    }
+
+    private var appearanceCard: some View {
+        FluxCard(title: "Appearance") {
+            HStack(spacing: 12) {
+                RowText(title: "Notch style",
+                        subtitle: settings.notchStyle.subtitle)
+                Spacer(minLength: 12)
+                Picker("Notch style", selection: $settings.notchStyle) {
+                    ForEach(NotchStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 125, alignment: .trailing)
+            }
+            .padding(.vertical, 11)
+            .padding(.horizontal, 14)
         }
     }
 
@@ -259,12 +279,12 @@ struct NotchTab: View {
     private var experimentalCard: some View {
         FluxCard(title: "Experimental") {
             ToggleRow(title: "Show on the lock screen",
-                      subtitle: "⚠️ Live glass media controls, notifications, and an optional unlock pill while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
+                      subtitle: "⚠️ Solid-black media controls, notifications, and an optional unlock pill while the screen is locked. Relies on undocumented macOS behavior — may stop working, or misbehave, after any macOS update.",
                       isOn: $settings.notchLockScreenExperimentEnabled)
             if settings.notchLockScreenExperimentEnabled {
                 RowDivider()
                 ToggleRow(title: "Now Playing",
-                          subtitle: "Show a glass media card with artwork, title/artist, and previous/play/next controls while something's playing.",
+                          subtitle: "Show a black media card with artwork, title/artist, and previous/play/next controls while something's playing.",
                           isOn: $settings.notchLockScreenNowPlayingEnabled)
                 RowDivider()
                 ToggleRow(title: "Notifications",

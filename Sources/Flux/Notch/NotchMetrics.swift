@@ -7,73 +7,81 @@ import CoreGraphics
 /// animates) and `NotchSnapshot` (which needs the same numbers to size its
 /// off-screen capture window) can't drift out of sync with the SwiftUI side.
 ///
-/// ## M12: ONE expanded size, for every widget
-/// M7 made the panel size itself to each widget's content — a per-`WidgetID`
-/// height between 150 and 190pt, plus a 220pt widening whenever Duo view was
-/// active. The intent was Alcove-like compactness; the effect was a drawer
-/// that visibly grew and shrank every time you swiped between pages, and
-/// jumped wider whenever Now Playing happened to be showing beside Calendar.
-/// That reads as restless, and it isn't what Alcove actually does.
-///
-/// There is now a single expanded footprint. Widgets adapt to the box; the
-/// box never adapts to the widget. The per-widget height function is gone
-/// entirely rather than deprecated — `expandedHeight` now takes a notch
-/// width, so it is not *possible* to ask for "the Calendar panel's height".
+/// The default `.alcove` style restores the compact content-sized drawer from
+/// M7. The `.flux` style keeps the later fixed-size drawer available for users
+/// who prefer a stable, roomier surface. Both styles share one fixed window
+/// envelope so AppKit never has to animate or resize an `NSPanel`.
 enum NotchMetrics {
     /// Width of each side "wing" shown around the blank physical-notch area
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// The expanded panel's width-to-height ratio: 2.1:1 — 400x190 on a
+    /// The fixed Flux style's width-to-height ratio: 2.1:1 — 400x190 on a
     /// current MacBook.
-    ///
-    /// Arrived at by rendering, not by taste. M12 shipped 2.35 at 500 wide,
-    /// which was both too wide against the notch (2.5x its width reads as a
-    /// separate panel sitting near it) and too deep. Correcting the width to
-    /// 400 while keeping 2.2 gave 182, and the snapshot showed Now Playing's
-    /// transport row clipped against the bottom edge — 182 minus the notch
-    /// clearance and corner clearance leaves less usable height than the
-    /// pre-M12 design's tallest widget had. 190 restores that, and is still
-    /// 23pt shallower than what drew the complaint.
     static let expandedAspectRatio: CGFloat = 2.1
 
-    /// The single expanded width. The multiplier keeps the panel proportional
-    /// to the physical notch on hardware with an unusual one; the floor is
-    /// what actually applies on every current MacBook, where a ~200pt notch
-    /// puts the multiplied term at or below it.
-    ///
-    /// 2.0x/400 rather than M12's first pass at 2.4x/500. That was too wide
-    /// against the notch it hangs from — two and a half times its width reads
-    /// as a separate panel that happens to be near the notch, rather than a
-    /// drawer pulled out of it — and, paired with a 2.35 ratio, too deep as
-    /// well. The pre-M12 design sat at ~2.1x and never drew that complaint;
-    /// the complaint was that the size *changed*, which is fixed
-    /// independently by there being one size at all.
-    static func expandedWidth(for notchWidth: CGFloat) -> CGFloat {
-        max(notchWidth * 2.0, 400)
+    /// The Alcove drawer's maximum visible height. Shorter widgets use their
+    /// own content-sized height below, while the panel envelope reserves this
+    /// maximum for display changes and Duo view.
+    static let maxExpandedHeight: CGFloat = 190
+
+    /// The extra width used by Alcove's side-by-side Now Playing + Calendar
+    /// layout. The Flux style keeps Duo inside its normal fixed width.
+    static let duoExtraWidth: CGFloat = 220
+
+    /// The expanded width. Alcove uses its original 2.1x scale; Flux retains
+    /// the slightly narrower 2.0x fixed drawer.
+    static func expandedWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+        switch style {
+        case .alcove: return max(notchWidth * 2.1, 400)
+        case .flux: return max(notchWidth * 2.0, 400)
+        }
     }
 
-    /// The single expanded height — derived from the width and
-    /// `expandedAspectRatio` rather than stated independently, so the two can
-    /// never drift. Rounded so the shape lands on whole points.
-    ///
-    /// Takes the notch width, NOT a `WidgetID`: there is no per-widget height
-    /// any more, and this signature is what enforces that.
-    static func expandedHeight(for notchWidth: CGFloat) -> CGFloat {
-        (expandedWidth(for: notchWidth) / expandedAspectRatio).rounded()
+    /// The expanded height of the style's envelope. Alcove reserves its
+    /// tallest content height; Flux derives one fixed height from its ratio.
+    static func expandedHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+        switch style {
+        case .alcove: return maxExpandedHeight
+        case .flux: return (expandedWidth(for: notchWidth, style: style) / expandedAspectRatio).rounded()
+        }
+    }
+
+    /// The visible height for one Alcove widget. This is the compactness users
+    /// see: Now Playing and Shelf no longer carry the Calendar-sized blank
+    /// space below their content.
+    static func expandedHeight(for widget: WidgetID,
+                               notchWidth: CGFloat,
+                               style: NotchStyle = .alcove) -> CGFloat {
+        guard style == .alcove else {
+            return expandedHeight(for: notchWidth, style: style)
+        }
+        switch widget {
+        case .nowPlaying: return 165
+        case .shelf: return 150
+        case .mirror: return 170
+        case .timers: return 185
+        case .calendar: return 190
+        case .clipboard: return 190
+        }
+    }
+
+    static func duoWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+        expandedWidth(for: notchWidth, style: style)
+            + (style == .alcove ? duoExtraWidth : 0)
+    }
+
+    static func duoHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+        max(expandedHeight(for: .nowPlaying, notchWidth: notchWidth, style: style),
+            expandedHeight(for: .calendar, notchWidth: notchWidth, style: style))
     }
 
     /// The share of the expanded panel's *content* width that Duo view gives
     /// its Calendar pane; Now Playing takes the rest.
     ///
-    /// A fraction rather than the old fixed 200pt, because with one fixed
-    /// panel size Duo has to fit the box instead of growing it.
-    ///
-    /// 0.36, down from 0.42 when the panel was 100pt wider. Duo has to fit
-    /// the one shared footprint rather than widen it, so the narrower panel
-    /// has to come out of somewhere — and the Calendar pane degrades more
-    /// gracefully (its rows wrap) than Now Playing's fixed artwork-plus-
-    /// transport composition does.
+    /// A fraction rather than the old fixed 200pt, so Flux's fixed drawer can
+    /// fit Duo without another width jump. Alcove still gets its dedicated
+    /// compact Duo width above, while this fraction keeps both panes balanced.
     static let duoCalendarPaneFraction: CGFloat = 0.36
 
     /// Extra room reserved in the fixed panel/off-screen bounds — beyond the
@@ -92,10 +100,9 @@ enum NotchMetrics {
     /// `NSPanel` to, and `NotchSnapshot` sizes its off-screen capture window
     /// to — the one expanded footprint plus the shadow's bleed margin.
     ///
-    /// This got materially simpler in M12: it used to reserve the tallest
-    /// widget's height *and* Duo's extra width, because either could apply
-    /// depending on state. With a single expanded size there is exactly one
-    /// footprint to reserve for.
+    /// The envelope reserves the widest/tallest footprint of the selected
+    /// style. The visible shape can still be smaller for compact Alcove
+    /// widgets, while the window remains stable.
     ///
     /// Growing these bounds needs no compensating change to how the shape is
     /// positioned: `NotchWindowController.position` derives the panel origin
@@ -107,8 +114,10 @@ enum NotchMetrics {
     /// `NotchRootView`'s outer `.frame(alignment: .top)` does the same with
     /// plain SwiftUI alignment. So the margin surfaces entirely below, and
     /// symmetrically to either side of, the visible shape.
-    static func panelBounds(for notchWidth: CGFloat) -> CGSize {
-        CGSize(width: expandedWidth(for: notchWidth) + shadowMarginWidth,
-               height: expandedHeight(for: notchWidth) + shadowMarginHeight)
+    static func panelBounds(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGSize {
+        CGSize(width: max(expandedWidth(for: notchWidth, style: style),
+                          duoWidth(for: notchWidth, style: style)) + shadowMarginWidth,
+               height: max(expandedHeight(for: notchWidth, style: style),
+                           duoHeight(for: notchWidth, style: style)) + shadowMarginHeight)
     }
 }

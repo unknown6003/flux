@@ -148,9 +148,8 @@ enum LockScreenMediaControlLogic {
 
 // MARK: - Pills
 //
-// Glass capsules with a dark tint and a small top highlight. The tint keeps
-// lock-screen wallpaper from reducing contrast while the material lets these
-// read as part of the wallpaper rather than as flat black stickers.
+// Solid-black capsules keep the lock-screen surface aligned with the physical
+// notch and avoid competing with the lock-screen wallpaper.
 
 enum LockScreenPillMetrics {
     static let horizontalPadding: CGFloat = NotchDesign.space3
@@ -205,7 +204,7 @@ private struct LockScreenMediaPill: View {
         // Intrinsic sizing + the panel's own width proposal caps long titles
         // (Text truncates); `maxWidth` in the metrics is now only the text
         // column's cap below.
-        .notchGlass(Capsule(), tint: Color.black.opacity(0.46))
+        .background(Capsule().fill(Color.black))
     }
 
     @ViewBuilder
@@ -251,9 +250,10 @@ struct LockScreenMediaControlsView: View {
                 .padding(.vertical, 9)
                 .frame(width: LockScreenPillMetrics.mediaControlsWidth,
                        height: LockScreenPillMetrics.mediaControlsHeight)
-                .notchGlass(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous),
-                    tint: Color.black.opacity(0.44))
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.black))
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Now Playing")
             } else {
@@ -363,9 +363,10 @@ struct LockScreenMediaControlsView: View {
             Image(systemName: systemName)
                 .font(.system(size: prominent ? 16 : 14,
                               weight: prominent ? .semibold : .medium))
+                .foregroundStyle(Color.white)
                 .frame(width: prominent ? 34 : 30, height: 26)
         }
-        .buttonStyle(NotchGlassButtonStyle(prominent: prominent))
+        .buttonStyle(.plain)
         .accessibilityLabel(label)
     }
 }
@@ -393,7 +394,7 @@ private struct LockScreenActivityPill: View {
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .padding(.vertical, NotchDesign.space1)
         // Intrinsic width, same reasoning as the media pill above.
-        .notchGlass(Capsule(), tint: Color.black.opacity(0.46))
+        .background(Capsule().fill(Color.black))
     }
 }
 
@@ -420,6 +421,6 @@ private struct LockScreenUnlockPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .padding(.vertical, NotchDesign.space1)
-        .notchGlass(Capsule(), tint: Color.black.opacity(0.46))
+        .background(Capsule().fill(Color.black))
     }
 }

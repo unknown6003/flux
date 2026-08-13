@@ -109,7 +109,8 @@ menu bar, move the mouse to the top edge to reveal it, or leave fullscreen.)
 - Turn on **Launch at login** in Settings.
 - macOS may show it in **System Settings › General › Login Items** — confirm it there.
 - `SMAppService` registration only sticks for the signed bundle (`build/Flux.app`),
-  not the bare `swift run` binary.
+  not the bare `swift run` binary. Debug launches now refuse to register, so a
+  SwiftPM executable cannot create Terminal windows at the next login.
 
 ---
 

@@ -50,6 +50,8 @@ final class SettingsStore: ObservableObject {
         )
 
         self.notchEnabled = defaults.bool(forKey: Keys.notchEnabled)
+        let notchStyleRaw = defaults.string(forKey: Keys.notchStyle) ?? NotchStyle.alcove.rawValue
+        self.notchStyle = NotchStyle(rawValue: notchStyleRaw) ?? .alcove
         let triggerRaw = defaults.string(forKey: Keys.notchExpansionTrigger) ?? NotchExpansionTrigger.hover.rawValue
         self.notchExpansionTrigger = NotchExpansionTrigger(rawValue: triggerRaw) ?? .hover
         self.notchHoverOpenDelay = defaults.double(forKey: Keys.notchHoverOpenDelay)
@@ -140,6 +142,13 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: Notch
+
+    /// Controls the expanded drawer's proportions. Alcove is the compact
+    /// default; Flux remains available for users who prefer the older roomy
+    /// fixed-height layout.
+    @Published var notchStyle: NotchStyle {
+        didSet { defaults.set(notchStyle.rawValue, forKey: Keys.notchStyle) }
+    }
 
     /// Master on/off for the notch panel feature.
     @Published var notchEnabled: Bool {
@@ -361,6 +370,7 @@ final class SettingsStore: ObservableObject {
         Keys.hotkeyKeyCode: Int(HotkeyShortcut.default.keyCode),
         Keys.hotkeyModifiers: Int(HotkeyShortcut.default.carbonModifiers),
         Keys.notchEnabled: true,
+        Keys.notchStyle: NotchStyle.alcove.rawValue,
         Keys.notchExpansionTrigger: NotchExpansionTrigger.hover.rawValue,
         Keys.notchHoverOpenDelay: 0.15,
         Keys.notchHoverCloseDelay: 0.40,
@@ -402,6 +412,7 @@ final class SettingsStore: ObservableObject {
         static let hotkeyKeyCode = "flux.hotkey.keyCode"
         static let hotkeyModifiers = "flux.hotkey.modifiers"
         static let notchEnabled = "flux.notch.enabled"
+        static let notchStyle = "flux.notch.style"
         static let notchExpansionTrigger = "flux.notch.expansionTrigger"
         static let notchHoverOpenDelay = "flux.notch.hoverOpenDelay"
         static let notchHoverCloseDelay = "flux.notch.hoverCloseDelay"

@@ -21,7 +21,7 @@ let lockLog = Logger(subsystem: "com.flux.menubar", category: "lockscreen")
 /// while this is enabled).
 ///
 /// M15 (Alcove lock-screen parity): keeps a LIVE `LockScreenContentView` —
-/// the notch silhouette, a glass Now Playing card, the current live
+/// the notch silhouette, a solid-black Now Playing card, the current live
 /// activity's caption, and an optional "Press any key to unlock" pill —
 /// visible on the macOS lock screen between `screenIsLocked`/
 /// `screenIsUnlocked` distributed notifications. The Now Playing card is
@@ -104,6 +104,7 @@ final class LockScreenPresenter {
     private var mediaHostingView: NSHostingView<LockScreenMediaControlsView>?
     private var currentNotchSize: CGSize = .zero
     private var cancellables = Set<AnyCancellable>()
+    private var distributedObserverTokens = [NSObjectProtocol]()
     private var unlockSound: NSSound?
 
     /// The pending "finish fading out, THEN order the panel out" deadline —
@@ -177,6 +178,16 @@ final class LockScreenPresenter {
         if enabled {
             cacheNotchRectIfResolvable()
             startObserving()
+            // If Flux was enabled while the session was already locked, there
+            // is no new distributed notification to trigger presentation.
+            // Check once after installing observers so the feature is not
+            // dependent on being toggled before the lock transition.
+            if Self.screenIsLocked {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isEnabled else { return }
+                    self.handleLocked()
+                }
+            }
         } else {
             stopObserving()
             dismissImmediately()
@@ -203,13 +214,45 @@ final class LockScreenPresenter {
         // Keep the cached geometry current across display changes, which are
         // the only thing that can move or remove the notch.
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.cacheNotchRectIfResolvable() }
             .store(in: &cancellables)
-        center.publisher(for: Notification.Name("com.apple.screenIsLocked"))
-            .sink { [weak self] _ in self?.handleLocked() }
+
+        // DistributedNotificationCenter publishers inherit the center's
+        // suspension behaviour, which can be exactly the wrong thing while
+        // the user session is moving behind the lock-screen shield. Register
+        // explicit immediate-delivery observers and hop back to the main
+        // actor before touching AppKit or SwiftUI state.
+        let lockedToken = center.addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            suspensionBehavior: .deliverImmediately) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in self?.handleLocked() }
+            }
+        let unlockedToken = center.addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            suspensionBehavior: .deliverImmediately) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in self?.handleUnlocked() }
+            }
+        distributedObserverTokens = [lockedToken, unlockedToken]
+
+        // The distributed names are undocumented. These session notifications
+        // are a second signal for the same transitions when macOS withholds or
+        // delays the distributed delivery while changing the active session.
+        NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard Self.screenIsLocked else { return }
+                self?.handleLocked()
+            }
             .store(in: &cancellables)
-        center.publisher(for: Notification.Name("com.apple.screenIsUnlocked"))
-            .sink { [weak self] _ in self?.handleUnlocked() }
+        NotificationCenter.default.publisher(for: NSWorkspace.sessionDidBecomeActiveNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard !Self.screenIsLocked else { return }
+                self?.handleUnlocked()
+            }
             .store(in: &cancellables)
 
         // Live-update the already-showing panel's pill visibility the moment
@@ -252,13 +295,24 @@ final class LockScreenPresenter {
             .store(in: &cancellables)
     }
 
-    /// No-op if not observing. Cancels every subscription above by dropping
-    /// them — `AnyCancellable.cancel()` runs on deinit, which `removeAll()`
-    /// triggers immediately since nothing else retains them.
+    /// No-op if not observing. Removes the explicit distributed observers and
+    /// cancels every Combine subscription above.
     private func stopObserving() {
         guard isObserving else { return }
         isObserving = false
+        let center = DistributedNotificationCenter.default()
+        distributedObserverTokens.forEach { center.removeObserver($0) }
+        distributedObserverTokens.removeAll()
         cancellables.removeAll()
+    }
+
+    /// Best-effort state query used only as a fallback around notification
+    /// delivery. The notification remains the primary transition signal; this
+    /// query prevents a session notification from being mistaken for a lock
+    /// when the user merely switched away from Flux.
+    private static var screenIsLocked: Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true
     }
 
     /// A lock notification arrived. Guarded on `isEnabled` again here
@@ -716,7 +770,7 @@ final class LockScreenPresenter {
     /// missing/renamed system sound rather than throwing, and `.play()`
     /// returns `Bool` rather than throwing either. `Pop` is the short, low
     /// thunky system click that makes unlock feel acknowledged; older systems
-    /// that do not expose it fall back to the familiar glass chime. Reads the
+    /// that do not expose it fall back to the familiar system chime. Reads the
     /// setting live since this only runs once per unlock.
     private func playUnlockSoundIfEnabled() {
         guard settings.notchLockScreenUnlockSoundEnabled else { return }

@@ -69,8 +69,9 @@ arrangement across launches.
 - **Arrange Mode** — a guided editor that reveals labeled zone markers in the live
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
-- **Notch panel — Alcove-inspired compact redesign (M7)** — a seamless glass
-  panel sized to the notch suite's shared footprint, with overshoot springs on
+- **Notch panel — Alcove-inspired compact redesign (M7)** — a seamless
+  solid-black panel sized to the notch suite's shared footprint, with an
+  Alcove/Flux style setting and overshoot springs on
   open and a snappy, no-bounce close, plus a soft content morph as it expands.
   Hover (or click) the camera housing to expand a **Now Playing** widget:
   artwork, title/artist, a scrubber, and transport controls for whatever's
@@ -122,7 +123,7 @@ arrangement across launches.
   disk, and password-manager-marked copies (the `nspasteboard.org`
   concealed/transient convention) are never captured at all.
 - **Lock screen (experimental)** — optionally keeps the notch silhouette and
-  glass surfaces visible on the macOS lock screen. When something is playing,
+  solid-black surfaces visible on the macOS lock screen. When something is playing,
   the Now Playing card shows artwork/title/artist plus iOS-style
   previous/play-next controls; the card is the only interactive overlay and
   the rest of the lock-screen UI remains mouse-transparent. The current live
@@ -196,6 +197,9 @@ Or for quick iteration:
 ```bash
 swift build && swift run
 ```
+
+The debug executable cannot register Launch at login; use the bundled app for
+that setting so macOS does not launch a bare process through Terminal.
 
 ### Developer / CI helpers
 

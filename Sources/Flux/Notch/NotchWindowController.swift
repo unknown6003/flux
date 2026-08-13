@@ -99,6 +99,9 @@ final class NotchWindowController {
     /// (a screen change tears down and rebuilds the panel, which would
     /// otherwise silently reset to the `NotchPanel.init` default).
     private var showInFullscreen = true
+    /// Mirrors `SettingsStore.notchStyle` into the hosted root view and panel
+    /// envelope. Alcove is the compact default.
+    private var notchStyle: NotchStyle = .alcove
     private var cancellables = Set<AnyCancellable>()
 
     /// True once a panel exists AND is actually shown over a real physical
@@ -269,6 +272,16 @@ final class NotchWindowController {
         panel?.setShowInFullscreen(show)
     }
 
+    /// Applies the selected drawer layout before the panel is enabled or
+    /// rebuilt. The root view is refreshed even while the panel is hidden so
+    /// a later screen reattachment cannot briefly use the wrong geometry.
+    func setStyle(_ style: NotchStyle) {
+        guard style != notchStyle else { return }
+        notchStyle = style
+        refreshRootView()
+        if isEnabled { resolveScreen() }
+    }
+
     // MARK: - Hotkey
 
     /// Entry point for the global notch-toggle hotkey. The hotkey stays
@@ -343,7 +356,8 @@ final class NotchWindowController {
 
     private func makeRootView(notchSize: CGSize) -> AnyView {
         AnyView(NotchRootView(viewModel: viewModel, notchSize: notchSize,
-                              artworkProvider: artworkProvider, onActivityTap: onActivityTap))
+                              artworkProvider: artworkProvider, style: notchStyle,
+                              onActivityTap: onActivityTap))
     }
 
     private func refreshRootView() {
@@ -352,14 +366,14 @@ final class NotchWindowController {
     }
 
     /// Sizes the panel to the fixed panel bounds (`NotchMetrics.panelBounds`
-    /// — wide/tall enough for the widest/tallest widget, plus room reserved
-    /// for Duo view's own widened state) and centers it, top-anchored, on the
+    /// — wide/tall enough for the selected style's widest/tallest widget,
+    /// plus room reserved for Duo view's widened state) and centers it, top-anchored, on the
     /// physical notch. This frame never changes with `viewModel.state` — only
     /// the SwiftUI content inside grows/shrinks, to its own smaller per-widget
-    /// size — so repositioning only has to happen when the screen itself
+    /// size — so repositioning only has to happen when the screen or style
     /// changes.
     private func position(_ panel: NSPanel, on screen: NSScreen, notchRect: NSRect) {
-        let bounds = NotchMetrics.panelBounds(for: notchRect.width)
+        let bounds = NotchMetrics.panelBounds(for: notchRect.width, style: notchStyle)
         let origin = NSPoint(x: notchRect.midX - bounds.width / 2, y: screen.frame.maxY - bounds.height)
         panel.setFrame(NSRect(origin: origin, size: bounds), display: true)
     }

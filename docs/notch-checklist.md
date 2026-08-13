@@ -145,11 +145,10 @@ every widget — the items below need a real notched Mac.
       height visibly differs to match each widget's content — Shelf and Now
       Playing noticeably shorter than Calendar/Clipboard — rather than every
       widget reserving the same tall, mostly-empty box.
-- [ ] **Content blur-morph**: watch the widget content itself (not just the
-      black shape) as you open/close — confirm it fades and sharpens in
-      (blurred → crisp, transparent → opaque) rather than popping in/out
-      instantly, and that rapidly swiping through several widgets in a row
-      never leaves content stuck half-blurred.
+- [ ] **Content cross-fade**: watch the widget content itself (not just the
+      black shape) as you open/close — confirm it fades in and out cleanly
+      rather than popping, and that rapidly swiping through several widgets
+      never leaves content stuck half-visible.
 - [ ] **Monochrome wings**: trigger a non-warning live activity (e.g. a file
       shelf drop or Now Playing) and confirm the wing icons/text/gauge render
       in white/white-opacity tones with no amber anywhere; trigger a warning
@@ -199,7 +198,7 @@ every widget — the items below need a real notched Mac.
       Confirm a *plain* click (no option key) right after still does the
       ordinary open/close toggle, unaffected.
 
-## M9/M15 — Alcove lock-screen parity: live media, controls, glass, unlock pill
+## M9/M15 — Alcove lock-screen parity: live media, controls, solid-black surfaces, unlock pill
 
 Turn on "Show on the lock screen" in Settings → Notch → Experimental before
 any of these — every item below assumes the master toggle is already on, and
@@ -207,7 +206,7 @@ the four sub-toggles beneath it are all on unless a specific item says
 otherwise.
 
 - [ ] **Lock with music playing**: start something playing, lock the screen,
-      and confirm the glass media card appears below the notch silhouette with
+      and confirm the solid-black media card appears below the notch silhouette with
       the right artwork/title/artist and previous/play/next controls, fading
       in over the notch silhouette rather than snapping into place. Skip/
       pause from another device (or just let the track change) and confirm
@@ -215,7 +214,7 @@ otherwise.
       for it to catch up.
 - [ ] **Lock-screen media controls**: click Previous, Play/Pause, and Next on
       the card while locked and confirm the playing app responds. Click the
-      surrounding glass/background and confirm it does not steal keyboard
+      surrounding background and confirm it does not steal keyboard
       focus or interfere with typing the password. Click outside the card and
       confirm the ordinary lock-screen UI still receives the click.
 - [ ] **Notification pill**: with something posting a live activity (plug in
@@ -251,11 +250,10 @@ otherwise.
       the media card. Confirm there is no highlight or button feedback and
       typing your password to unlock still works exactly as if none of this
       were showing.
-- [ ] **Glass treatment**: view the lock screen and expanded notch in both
-      light and dark wallpaper. Confirm the material subtly picks up the
-      backdrop, the dark tint keeps text legible, and the top-edge highlight/
-      hairline border read as one consistent surface rather than a flat black
-      rectangle. The collapsed notch should remain seamless and shadow-free.
+- [ ] **Solid-black treatment**: view the lock screen and expanded notch in
+      both light and dark wallpaper. Confirm the surfaces remain a consistent
+      black that blends into the physical notch, with no material, gradient, or
+      bright border. The collapsed notch should remain seamless and shadow-free.
 - [ ] **Master toggle off mid-lock**: while locked with content showing, have
       another device/session turn the master "Show on the lock screen" toggle
       off (or disable the notch panel entirely) — or simulate by unlocking,
