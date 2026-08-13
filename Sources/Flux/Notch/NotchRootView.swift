@@ -191,9 +191,7 @@ struct NotchRootView: View {
                               height: NotchMetrics.duoHeight(for: notchSize.width, style: style))
             }
             return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width, style: style),
-                          height: NotchMetrics.expandedHeight(for: widgetID,
-                                                              notchWidth: notchSize.width,
-                                                              style: style))
+                          height: NotchMetrics.expandedHeight(for: notchSize.width, style: style))
         }
     }
 

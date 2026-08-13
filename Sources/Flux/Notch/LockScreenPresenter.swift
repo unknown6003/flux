@@ -30,7 +30,7 @@ let lockLog = Logger(subsystem: "com.flux.menubar", category: "lockscreen")
 /// directly (`@ObservedObject`) so track/artwork/activity changes arrive
 /// without waiting for another lock notification.
 ///
-/// ## Why this is fragile by construction, and why that's the acceptable cost
+/// ## Why this is fragile by construction, and how the presenter contains it
 /// This mechanism rides on things Apple has never documented and could change
 /// or refuse outright in any macOS release:
 ///   1. `"com.apple.screenIsLocked"`/`"com.apple.screenIsUnlocked"` on
@@ -39,21 +39,21 @@ let lockLog = Logger(subsystem: "com.flux.menubar", category: "lockscreen")
 ///      these exact names for years (treat as a nudge to re-check, never
 ///      trust the payload — the same posture every undocumented
 ///      `DistributedNotificationCenter` name in this codebase takes).
-///   2. `CGShieldingWindowLevel()` — the window level the lock screen's own
-///      shield sits at. Drawing one level above it is what makes anything
-///      visible over the shield at all, but that level is a private,
-///      unstable implementation detail of the lock screen, not a public API
-///      contract — see `shieldedLevel`'s own doc comment for the defensive
-///      fallback this leans on if it ever stops making sense.
-///   3. Drawing ANYTHING above the lock screen shield is exactly the kind of
-///      trick a future macOS (or SIP) could simply refuse outright.
+///   2. SkyLight's special-space functions are private and are loaded
+///      dynamically. They are the reliable path on current macOS, but can be
+///      removed or renamed without notice.
+///   3. `CGShieldingWindowLevel()` remains a fallback. Drawing ANYTHING above
+///      the lock screen shield is exactly the kind of trick a future macOS (or
+///      SIP) could simply refuse outright.
 ///
 /// None of that is something application code can fix — it can only fail
 /// safely. That's the whole design brief for this type:
 ///   - defaults OFF, entirely the wiring agent's call via `setEnabled(_:)`;
 ///   - never force-unwraps anything anywhere on the lock path;
-///   - never crashes if the notification never fires, if the computed window
-///     level is nonsensical, or if the panel simply fails to show — the
+///   - persists the last known display geometry and reconciles state by polling
+///     as well as notifications, so one missed transition is recoverable;
+///   - never crashes if the notification never fires, a private symbol is
+///     unavailable, or the panel simply fails to show — the
 ///     worst acceptable outcome is always "nothing extra appears," never a
 ///     hang or anything that could interfere with the user actually
 ///     unlocking their own Mac (the base panel is mouse-transparent and the
@@ -66,6 +66,7 @@ final class LockScreenPresenter {
 
     private var isEnabled = false
     private var isObserving = false
+    private var lockStatePollTask: Task<Void, Never>?
 
     /// The last notch geometry resolved while the screen was UNLOCKED.
     ///
@@ -95,6 +96,7 @@ final class LockScreenPresenter {
     /// `screen.frame.maxY`, so a frame is all it needs — deliberately not a
     /// retained `NSScreen`, which can be invalidated across a display change.
     private var lastKnownScreenFrame: NSRect?
+    private var lastKnownDisplayID: CGDirectDisplayID?
     private var panel: NSPanel?
     private var hostingView: NSHostingView<LockScreenContentView>?
     /// The media card is separate from the safe, mouse-transparent base panel.
@@ -148,20 +150,19 @@ final class LockScreenPresenter {
     /// stay/fade back up instead.
     private var isDismissing = false
 
+    private static let geometryDefaultsKey = "flux.lockScreen.notchGeometry.v2"
+    private static let lockStatePollNanoseconds: UInt64 = 350_000_000
+    private static let skyLightBridge = SkyLightLockScreenBridge()
+
     init(nowPlaying: NowPlayingService, activities: LiveActivityCenter, settings: SettingsStore) {
         self.nowPlaying = nowPlaying
         self.activities = activities
         self.settings = settings
+        loadCachedGeometry()
     }
 
     deinit {
-        // Observer-free teardown: `AnyCancellable`'s own deinit cancels each
-        // Combine subscription when this set is released, `fadeOutDeadline`
-        // is its own object (its own `deinit` cancels whatever's pending —
-        // see `DeadlineTask`'s doc comment) rather than something this type
-        // needs to cancel itself, and `NSPanel.orderOut`/dropping `panel`
-        // needs no explicit call here either — none of it depends on `self`
-        // surviving past this point.
+        lockStatePollTask?.cancel()
     }
 
     /// The single on/off gate — mirrors every other notch-suite `setEnabled`
@@ -203,6 +204,48 @@ final class LockScreenPresenter {
         guard let screen = NSScreen.builtInNotchedScreen, let rect = screen.notchRect else { return }
         lastKnownNotchRect = rect
         lastKnownScreenFrame = screen.frame
+        lastKnownDisplayID = screen.displayID
+        persistCachedGeometry()
+    }
+
+    /// Lock-screen presentation can begin after the process has been relaunched
+    /// while the session is already locked. Keep the last unlocked geometry in
+    /// UserDefaults so that case does not depend on Flux having observed the
+    /// display before the previous process exited.
+    private func loadCachedGeometry() {
+        guard let values = UserDefaults.standard.dictionary(forKey: Self.geometryDefaultsKey) else { return }
+        lastKnownNotchRect = Self.rect(in: values, prefix: "notch")
+        lastKnownScreenFrame = Self.rect(in: values, prefix: "screen")
+        lastKnownDisplayID = (values["displayID"] as? NSNumber)?.uint32Value
+    }
+
+    private func persistCachedGeometry() {
+        guard let notchRect = lastKnownNotchRect, let screenFrame = lastKnownScreenFrame else { return }
+        var values: [String: Any] = [:]
+        Self.write(notchRect, to: &values, prefix: "notch")
+        Self.write(screenFrame, to: &values, prefix: "screen")
+        if let lastKnownDisplayID {
+            values["displayID"] = NSNumber(value: lastKnownDisplayID)
+        }
+        UserDefaults.standard.set(values, forKey: Self.geometryDefaultsKey)
+    }
+
+    private static func rect(in values: [String: Any], prefix: String) -> NSRect? {
+        func number(_ suffix: String) -> CGFloat? {
+            guard let value = values["\(prefix).\(suffix)"] as? NSNumber else { return nil }
+            return CGFloat(value.doubleValue)
+        }
+        guard let x = number("x"), let y = number("y"),
+              let width = number("width"), let height = number("height"),
+              width > 0, height > 0 else { return nil }
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private static func write(_ rect: NSRect, to values: inout [String: Any], prefix: String) {
+        values["\(prefix).x"] = NSNumber(value: Double(rect.origin.x))
+        values["\(prefix).y"] = NSNumber(value: Double(rect.origin.y))
+        values["\(prefix).width"] = NSNumber(value: Double(rect.size.width))
+        values["\(prefix).height"] = NSNumber(value: Double(rect.size.height))
     }
 
     /// No-op if already observing — safe to call freely.
@@ -238,17 +281,17 @@ final class LockScreenPresenter {
         // The distributed names are undocumented. These session notifications
         // are a second signal for the same transitions when macOS withholds or
         // delays the distributed delivery while changing the active session.
-        NotificationCenter.default.publisher(for: NSWorkspace.sessionDidResignActiveNotification)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                guard Self.screenIsLocked else { return }
+                guard Self.currentLockState() == true else { return }
                 self?.handleLocked()
             }
             .store(in: &cancellables)
-        NotificationCenter.default.publisher(for: NSWorkspace.sessionDidBecomeActiveNotification)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidBecomeActiveNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                guard !Self.screenIsLocked else { return }
+                guard Self.currentLockState() == false else { return }
                 self?.handleUnlocked()
             }
             .store(in: &cancellables)
@@ -291,6 +334,8 @@ final class LockScreenPresenter {
                 self?.syncMediaControlPanel(hasNowPlaying: state != nil)
             }
             .store(in: &cancellables)
+
+        startLockStatePolling()
     }
 
     /// No-op if not observing. Removes the explicit distributed observers and
@@ -298,6 +343,8 @@ final class LockScreenPresenter {
     private func stopObserving() {
         guard isObserving else { return }
         isObserving = false
+        lockStatePollTask?.cancel()
+        lockStatePollTask = nil
         distributedObserverTokens.removeAll()
         cancellables.removeAll()
     }
@@ -307,8 +354,54 @@ final class LockScreenPresenter {
     /// query prevents a session notification from being mistaken for a lock
     /// when the user merely switched away from Flux.
     private static var screenIsLocked: Bool {
-        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
-        return (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true
+        currentLockState() == true
+    }
+
+    /// `CGSessionCopyCurrentDictionary` has returned this value as an NSNumber,
+    /// Bool, and a string on different macOS generations. Treat an unknown
+    /// representation as unavailable rather than incorrectly treating an
+    /// active session as unlocked.
+    private static func currentLockState() -> Bool? {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              let raw = session["CGSSessionScreenIsLocked"] else { return nil }
+        if let number = raw as? NSNumber { return number.boolValue }
+        if let value = raw as? Bool { return value }
+        if let value = raw as? String {
+            switch value.lowercased() {
+            case "1", "true", "yes": return true
+            case "0", "false", "no": return false
+            default: return nil
+            }
+        }
+        return nil
+    }
+
+    private func startLockStatePolling() {
+        lockStatePollTask?.cancel()
+        lockStatePollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.isEnabled else { return }
+                self.reconcileLockState()
+                do {
+                    try await Task.sleep(nanoseconds: Self.lockStatePollNanoseconds)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    /// Notifications are still the fast path. This low-frequency reconciliation
+    /// catches the two cases they cannot guarantee: the app launching while the
+    /// session is already locked, and a notification being suspended during a
+    /// display/session hand-off.
+    private func reconcileLockState() {
+        guard let locked = Self.currentLockState() else { return }
+        if locked {
+            if panel == nil || !isPresentingOnLockScreen { handleLocked() }
+        } else if panel != nil {
+            handleUnlocked()
+        }
     }
 
     /// A lock notification arrived. Guarded on `isEnabled` again here
@@ -403,6 +496,7 @@ final class LockScreenPresenter {
         let panel = makePanel(notchSize: notchRect.size)
         self.panel = panel
         position(panel, notchRect: notchRect, screenFrame: screenFrame)
+        delegateWithLockScreenSpace(panel)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
@@ -429,6 +523,7 @@ final class LockScreenPresenter {
         currentNotchSize = notchRect.size
         updateHostingContent()
         position(panel, notchRect: notchRect, screenFrame: screenFrame)
+        delegateWithLockScreenSpace(panel)
         panel.orderFrontRegardless()
         isPresentingOnLockScreen = true
         syncMediaControlPanel()
@@ -645,6 +740,7 @@ final class LockScreenPresenter {
         guard let screenFrame = lastKnownScreenFrame,
               let notchRect = lastKnownNotchRect else { return }
         positionMediaPanel(card, notchRect: notchRect, screenFrame: screenFrame)
+        delegateWithLockScreenSpace(card)
         card.orderFrontRegardless()
         if card.alphaValue < 1, panel.alphaValue >= 1 {
             animateAlpha(of: card, to: 1, duration: Self.fadeInDuration)
@@ -671,9 +767,25 @@ final class LockScreenPresenter {
         return panel
     }
 
+    /// SkyLight's dedicated space is the primary lock-screen path. The
+    /// shielding level remains applied to the panel itself, so an OS version
+    /// that removes the private symbols still gets the safest possible
+    /// fallback instead of losing all lock-screen behaviour at launch.
+    private func delegateWithLockScreenSpace(_ panel: NSWindow) {
+        guard Self.skyLightBridge.isAvailable else {
+            lockLog.notice("Lock screen: SkyLight bridge unavailable; using shielding-level fallback")
+            return
+        }
+        guard Self.skyLightBridge.delegateWindow(panel) else {
+            lockLog.error("Lock screen: SkyLight rejected window \(panel.windowNumber, privacy: .public)")
+            return
+        }
+        lockLog.debug("Lock screen: delegated window \(panel.windowNumber, privacy: .public) to the special space")
+    }
+
     /// One level above the lock screen's own shield. `CGShieldingWindowLevel()`
     /// is a private, undocumented implementation detail (see the type doc
-    /// comment's point 2) — this defensively falls back to `.statusBar`
+    /// comment's point 3) — this defensively falls back to `.statusBar`
     /// (still above ordinary app windows, just not guaranteed above the
     /// shield) if it ever returns a non-positive value, rather than
     /// constructing a nonsensical or wildly-off window level from it.
@@ -697,6 +809,7 @@ final class LockScreenPresenter {
         let height = notchRect.height + Self.contentHeightBudget
         let origin = NSPoint(x: notchRect.midX - width / 2, y: screenFrame.maxY - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
+        resizeHostingView(hostingView, in: panel)
     }
 
     /// Places the card immediately below the physical notch, matching the
@@ -709,6 +822,17 @@ final class LockScreenPresenter {
             x: notchRect.midX - size.width / 2,
             y: screenFrame.maxY - notchRect.height - NotchDesign.space2 - size.height)
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        resizeHostingView(mediaHostingView, in: panel)
+    }
+
+    /// A zero-sized `NSHostingView` has no useful intrinsic size when it is
+    /// assigned to a borderless panel with a zero content rect. Explicitly
+    /// pinning it to the panel's content bounds makes the SwiftUI surface and
+    /// every button hit target deterministic after each geometry update.
+    private func resizeHostingView(_ hosting: NSView?, in panel: NSWindow) {
+        guard let hosting, let contentView = panel.contentView else { return }
+        hosting.frame = contentView.bounds
+        hosting.autoresizingMask = [.width, .height]
     }
 
     private static let minPanelWidth: CGFloat = 300
@@ -730,9 +854,7 @@ final class LockScreenPresenter {
     /// Reports whether the panel genuinely made it on screen, a beat after
     /// ordering it in.
     ///
-    /// "Ordered front" is not "visible" here. This feature draws above the
-    /// lock screen's shield via `CGShieldingWindowLevel()`, which modern macOS
-    /// may simply decline to composite — and `orderFrontRegardless()` reports
+    /// "Ordered front" is not "visible" here. `orderFrontRegardless()` reports
     /// nothing either way, so a log line at the call site proves only that the
     /// code ran. `isVisible`/`occlusionState` are what discriminate "macOS
     /// refused" from "never got that far", which is the difference between a
@@ -822,9 +944,9 @@ private final class LockScreenPanel: NSPanel {
 
 /// The companion media panel is intentionally just as non-activating as the
 /// safe base panel, but unlike it, it must receive clicks for transport
-/// buttons. It still can never become key or main, so using a control cannot
-/// steal the lock screen's keyboard focus.
+/// buttons. It may become key locally so AppKit delivers button events, but it
+/// can never become the main window or activate the user's unlocked session.
 private final class LockScreenControlPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }

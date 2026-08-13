@@ -23,7 +23,10 @@ items as **section dividers** and collapses them to push other apps' icons off t
 visible bar. The result:
 
 - **~0% CPU at idle** — it only reacts to clicks, nothing polls or redraws.
-- **No special permissions** — no Screen Recording, no Accessibility for the core MVP.
+- **Minimal permissions** — the core menu-bar manager needs no Screen Recording or
+  Accessibility grant. Calendar and Camera ask only when their widgets are enabled;
+  the optional lock-screen overlay uses macOS's lock-screen window space instead of
+  screen capture.
 - **Stable across releases** — relies on documented `NSStatusItem` behaviour, not
   private or capture APIs. Targets **Sonoma (14), Sequoia (15), Tahoe (26)** and is
   forward-compatible with the upcoming **Golden Gate (27)**.
@@ -122,7 +125,7 @@ arrangement across launches.
   passwords and other sensitive one-time text; nothing is ever written to
   disk, and password-manager-marked copies (the `nspasteboard.org`
   concealed/transient convention) are never captured at all.
-- **Lock screen (experimental)** — optionally keeps the notch silhouette and
+- **Lock screen** — optionally keeps the notch silhouette and
   solid-black surfaces visible on the macOS lock screen. When something is playing,
   the Now Playing card shows artwork/title/artist plus iOS-style
   previous/play-next controls; the card is the only interactive overlay and
@@ -130,25 +133,26 @@ arrangement across launches.
   activity appears as a caption pill (battery, Bluetooth, calendar, timer,
   ...), with an optional "Press any key to unlock" pill and a short thunky
   system click on unlock. Each sub-feature has its own toggle, all nested
-  under the master switch. Off by default: it rides on undocumented macOS
-  lock-screen notifications and window-level behavior, so it may stop working
-  or misbehave after any macOS update — see Settings → Notch → Experimental.
+  under the master switch. Off by default: it uses macOS lock-screen notifications
+  and a dynamically loaded system-level window-space bridge, so the integration is
+  isolated and can be disabled cleanly if a future macOS release changes it — see
+  Settings → Lock Screen.
 - **Auto re-hide** after an adjustable delay.
 - **Launch at login** (via `SMAppService` — the modern, sanctioned API).
 - Three menu-bar icon styles: Chevron / Dot / Line.
 - Light & dark, adapts to your system accent color.
 - Runs as a true agent: no Dock icon, no app switcher entry.
 
-## Privacy — zero permissions by default
+## Privacy and permissions
 
-**Calendar and Camera are the only two permissions Flux ever requests** —
-full stop. Both are opt-in and behind their own explicit **Grant Access**
+**Calendar and Camera are the only TCC permissions Flux currently requests.**
+Both are opt-in and behind their own explicit **Grant Access**
 button in Settings → Notch; the permission-gated widget shows its own
 "access needed" state until you ask for it. Everything else in the app
-(menu-bar hiding, the notch panel, widget cycling, Now
-Playing, battery/Bluetooth/timer/calendar-event wings) runs with **no TCC
-access of any kind** — nothing prompts on a fresh install, and nothing runs
-that could prompt later.
+(menu-bar hiding, the notch panel, widget cycling, Now Playing,
+battery/Bluetooth/timer/calendar-event wings, and the lock-screen overlay) does
+not use Screen Recording. Permissions are requested only when a capability needs
+them, and denied features continue to show a useful fallback state.
 
 - **Bluetooth device wings need no permission at all.** Flux detects
   accessory connect/disconnect through the system's own device registry (the
@@ -159,9 +163,9 @@ that could prompt later.
 - **Clipboard history is opt-in and in-memory only** — nothing is captured
   until you turn it on, and nothing it captures is ever written to disk.
 
-Every grant above is revocable at any time in System Settings, and every
-gated feature degrades gracefully (its own empty/permission state) rather
-than breaking the rest of the app when access isn't there.
+Every grant above is revocable at any time in System Settings, and every gated
+feature degrades gracefully (its own empty/permission state) rather than
+breaking the rest of the app when access isn't there.
 
 ## Install
 

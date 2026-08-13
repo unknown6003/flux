@@ -1,7 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Hosts the SwiftUI settings UI in a single, compact, non-resizable window.
+/// Hosts the SwiftUI settings UI in the same material/sidebar window shape as
+/// Alcove. The detail pane scrolls internally, so changing sections never
+/// changes the window's footprint or leaves a tall blank canvas behind.
 /// Lazily created and reused so reopening is instant and cheap.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
@@ -18,9 +20,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// already spells out the same guidance — is on screen.
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    /// The tab currently showing. Tracked here (not just inside SwiftUI)
-    /// because switching tabs changes the content's natural height, and the
-    /// window needs re-fitting the same way it does on first open.
+    /// The tab currently showing. Tracked here so menu-bar and notch menu
+    /// entry points can open the requested sidebar section.
     private var currentTab: SettingsTab = .general
 
     init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker,
@@ -35,9 +36,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    /// The settings content is a fixed 480pt wide; only its height varies, so the
-    /// window resizes vertically only.
-    private static let contentWidth: CGFloat = 480
+    private static let contentSize = SettingsView.designSize
 
     func show() {
         // A failure or a since-deleted download from an earlier session isn't
@@ -46,9 +45,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         updater.clearStaleOutcome()
         if window == nil {
             window = makeWindow()
-            sizeToFixedHeight()            // one height, measured once, held forever
+            sizeToDesignSize()
         } else {
-            clampHeightToScreen()          // re-fit in case the display changed since last time
+            clampSizeToScreen()
         }
         // Become a regular app for as long as Settings is open — see
         // `applyRegularActivationPolicy`.
@@ -140,94 +139,38 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        window.backgroundColor = .windowBackgroundColor
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
         window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
         return window
     }
 
     // MARK: Sizing
-    //
-    // ## The window height is FIXED, and never changes again
-    // It used to re-measure the active tab and grow/shrink to fit on every
-    // switch. That made the window jump around under the pointer — the
-    // Notch tab is far taller than About — moving the very controls you were
-    // reaching for, and resizing a window out from under an open popover or
-    // a mid-edit text field. Tabs are peers; a tab bar that resizes its own
-    // container is the bug, not a feature.
-    //
-    // One height is measured once, from the TALLEST tab, and then held for
-    // the window's whole life. Anything taller than that (a tab that grows
-    // because a toggle revealed more rows) scrolls, which is what the
-    // `ScrollView` in `SettingsView` was always there for.
 
-    /// The measured fixed height, computed once on first open.
-    private var fixedContentHeight: CGFloat?
-
-    /// The natural height of one tab, measured from a non-scrolling copy.
-    private func naturalContentHeight(of tab: SettingsTab) -> CGFloat {
-        let probe = NSHostingView(rootView: SettingsView(scrolls: false, initialTab: tab)
-            .environmentObject(settings)
-            .environmentObject(arranger)
-            .environmentObject(updater)
-            .environmentObject(nowPlaying)
-            .environmentObject(permissions)
-            .environmentObject(crashReporter))
-        probe.layoutSubtreeIfNeeded()
-        return ceil(probe.fittingSize.height)
-    }
-
-    /// A comfortable design height for a settings window — NOT the tallest
-    /// tab's natural height.
-    ///
-    /// Sizing to the tallest tab is the obvious reading of "one size for
-    /// everything" and it's wrong: with the notch enabled, the Notch tab runs
-    /// seven cards and 1600-2000pt, so the max would clamp straight to the
-    /// screen and open EVERY tab as a near-fullscreen window — About needs
-    /// ~350pt and would sit in ~850pt of mostly empty space. That trades a
-    /// window that jumps for one that's permanently oversized.
-    private static let preferredContentHeight: CGFloat = 620
-
-    /// The one height: the shorter of what the tabs actually want, the design
-    /// ceiling, and what the screen can show. Measured once and cached, so no
-    /// later content change can move the window. Anything taller scrolls.
-    private func resolvedFixedHeight() -> CGFloat {
-        if let fixedContentHeight { return fixedContentHeight }
-        let tallest = SettingsTab.allCases.map { naturalContentHeight(of: $0) }.max() ?? Self.preferredContentHeight
-        let height = min(tallest, Self.preferredContentHeight, availableHeight(on: NSScreen.main))
-        fixedContentHeight = height
-        return height
-    }
-
-    /// Usable height for a window on `screen` — its visible frame already excludes
-    /// the menu bar and Dock; a little breathing room keeps the title bar clear.
-    private func availableHeight(on screen: NSScreen?) -> CGFloat {
-        let visible = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
-        return max(320, visible - 24)
-    }
-
-    /// First-open sizing: the one fixed height, centred. `contentMinSize` and
-    /// `contentMaxSize` are pinned to the same value, so neither a tab switch
-    /// nor a user drag can change it — the window is genuinely fixed, not
-    /// merely "sized correctly for now".
-    private func sizeToFixedHeight() {
+    /// The content view owns the full design footprint. All variation between
+    /// sections is handled by the detail ScrollView, which keeps traffic
+    /// lights, sidebar rows, and controls in stable positions.
+    private func sizeToDesignSize() {
         guard let window else { return }
-        let height = resolvedFixedHeight()
-        let size = NSSize(width: Self.contentWidth, height: height)
+        let size = sizeThatFitsScreen(on: NSScreen.main)
         window.contentMinSize = size
         window.contentMaxSize = size
         window.setContentSize(size)
         window.center()
     }
 
-    /// Re-open sizing: only ever shrinks to fit a smaller screen (the window
-    /// was moved to a laptop display since last time). Never grows, never
-    /// re-measures content.
-    private func clampHeightToScreen() {
+    private func sizeThatFitsScreen(on screen: NSScreen?) -> NSSize {
+        let visibleHeight = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        let height = min(Self.contentSize.height, max(420, visibleHeight - 24))
+        return NSSize(width: Self.contentSize.width, height: height)
+    }
+
+    private func clampSizeToScreen() {
         guard let window else { return }
-        let available = availableHeight(on: window.screen)
-        guard let current = window.contentView?.frame.height, current > available else { return }
-        let size = NSSize(width: Self.contentWidth, height: available)
+        let size = sizeThatFitsScreen(on: window.screen)
+        guard window.contentView?.frame.size != size else { return }
         window.contentMinSize = size
         window.contentMaxSize = size
         window.setContentSize(size)

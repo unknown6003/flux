@@ -20,9 +20,9 @@ enum NotchMetrics {
     /// current MacBook.
     static let expandedAspectRatio: CGFloat = 2.1
 
-    /// The Alcove drawer's maximum visible height. Shorter widgets use their
-    /// own content-sized height below, while the panel envelope reserves this
-    /// maximum for display changes and Duo view.
+    /// The shared Alcove drawer height. Every standard widget uses this same
+    /// visible footprint so switching pages never causes a subtle vertical
+    /// jump or leaves page-specific whitespace behind.
     static let maxExpandedHeight: CGFloat = 190
 
     /// The extra width used by Alcove's side-by-side Now Playing + Calendar
@@ -47,23 +47,15 @@ enum NotchMetrics {
         }
     }
 
-    /// The visible height for one Alcove widget. This is the compactness users
-    /// see: Now Playing and Shelf no longer carry the Calendar-sized blank
-    /// space below their content.
-    static func expandedHeight(for widget: WidgetID,
+    /// The visible height for one widget. The old implementation returned a
+    /// different value for each widget, which made the notch visibly resize as
+    /// pages changed. Content is now allowed to be compact inside one stable
+    /// Alcove envelope; Duo remains intentionally wider because it is a
+    /// two-pane layout.
+    static func expandedHeight(for _: WidgetID,
                                notchWidth: CGFloat,
                                style: NotchStyle = .alcove) -> CGFloat {
-        guard style == .alcove else {
-            return expandedHeight(for: notchWidth, style: style)
-        }
-        switch widget {
-        case .nowPlaying: return 165
-        case .shelf: return 150
-        case .mirror: return 170
-        case .timers: return 185
-        case .calendar: return 190
-        case .clipboard: return 190
-        }
+        expandedHeight(for: notchWidth, style: style)
     }
 
     static func duoWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
@@ -72,8 +64,7 @@ enum NotchMetrics {
     }
 
     static func duoHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
-        max(expandedHeight(for: .nowPlaying, notchWidth: notchWidth, style: style),
-            expandedHeight(for: .calendar, notchWidth: notchWidth, style: style))
+        expandedHeight(for: notchWidth, style: style)
     }
 
     /// The share of the expanded panel's *content* width that Duo view gives

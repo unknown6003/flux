@@ -46,6 +46,18 @@ enum Theme {
     static let hairline = dynamic(light: NSColor.black.withAlphaComponent(0.09),
                                   dark: NSColor.white.withAlphaComponent(0.10))
 
+    /// Material-window tokens used by the Alcove-style Settings surface. They
+    /// stay translucent so the native window material can breathe through the
+    /// sidebar and grouped cards instead of producing a second opaque canvas.
+    static let settingsCard = dynamic(light: NSColor.white.withAlphaComponent(0.46),
+                                      dark: NSColor.white.withAlphaComponent(0.09))
+    static let settingsSidebar = dynamic(light: NSColor.white.withAlphaComponent(0.24),
+                                         dark: NSColor.black.withAlphaComponent(0.16))
+    static let settingsSelection = dynamic(light: NSColor.white.withAlphaComponent(0.56),
+                                           dark: NSColor.white.withAlphaComponent(0.13))
+    static let settingsDivider = dynamic(light: NSColor.black.withAlphaComponent(0.10),
+                                         dark: NSColor.white.withAlphaComponent(0.11))
+
     /// 10% — Industrial Amber, the single accent. Used for fills, tints, the
     /// live chevron. Nudged marginally deeper in light mode so it stays vivid on
     /// white without glowing out.
@@ -85,6 +97,10 @@ enum Theme {
     static var textPrimaryColor: Color { Color(nsColor: textPrimary) }
     static var textSecondaryColor: Color { Color(nsColor: textSecondary) }
     static var hairlineColor: Color { Color(nsColor: hairline) }
+    static var settingsCardColor: Color { Color(nsColor: settingsCard) }
+    static var settingsSidebarColor: Color { Color(nsColor: settingsSidebar) }
+    static var settingsSelectionColor: Color { Color(nsColor: settingsSelection) }
+    static var settingsDividerColor: Color { Color(nsColor: settingsDivider) }
     static var accentColor: Color { Color(nsColor: accent) }
     static var accentInkColor: Color { Color(nsColor: accentInk) }
     static var accentWashColor: Color { Color(nsColor: accentWash) }
@@ -124,8 +140,9 @@ extension ButtonStyle where Self == FluxProminentButtonStyle {
     static var fluxProminent: FluxProminentButtonStyle { .init() }
 }
 
-/// A titled settings card: an uppercased label above an obsidian panel with a
-/// hairline border. The single container primitive for the Settings surface.
+/// A titled settings card: a small section label above a translucent grouped
+/// panel. The primitive deliberately mirrors the native grouped cards used by
+/// Alcove's settings window rather than stacking opaque Flux surfaces.
 struct FluxCard<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -140,7 +157,7 @@ struct FluxCard<Content: View>: View {
             VStack(spacing: 0) { content }
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Theme.surfaceColor)
+                        .fill(Theme.settingsCardColor)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)

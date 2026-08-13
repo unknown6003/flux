@@ -2769,15 +2769,15 @@ enum SelfTest {
                   "NotchMetrics: the drawer is wider than it is tall — it hangs off the notch, it isn't a window")
 
             let alcoveWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .alcove)
-            let alcoveHeight = NotchMetrics.expandedHeight(for: .nowPlaying,
-                                                           notchWidth: notchWidth,
-                                                           style: .alcove)
-            check(alcoveWidth == 420 && alcoveHeight == 165,
-                  "NotchMetrics: Alcove uses its compact width and Now Playing height")
-            check(NotchMetrics.expandedHeight(for: .calendar,
-                                              notchWidth: notchWidth,
-                                              style: .alcove) == NotchMetrics.maxExpandedHeight,
-                  "NotchMetrics: Alcove reserves the tallest content height only for the tallest widgets")
+            let alcoveHeight = NotchMetrics.expandedHeight(for: notchWidth, style: .alcove)
+            check(alcoveWidth == 420 && alcoveHeight == NotchMetrics.maxExpandedHeight,
+                  "NotchMetrics: Alcove uses one stable width and height for standard widget pages")
+            let alcoveHeights = WidgetID.allCases.map {
+                NotchMetrics.expandedHeight(for: $0, notchWidth: notchWidth, style: .alcove)
+            }
+            check(Set(alcoveHeights).count == 1
+                  && alcoveHeights.allSatisfy { $0 == NotchMetrics.maxExpandedHeight },
+                  "NotchMetrics: every Alcove widget keeps the same visible footprint")
 
             // Duo's pane split is a fraction, so check it leaves a workable
             // remainder for Now Playing rather than swallowing the panel.
