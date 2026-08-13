@@ -1,17 +1,10 @@
 import SwiftUI
 import AppKit
 
-/// Alcove-parity lock-screen content: the black notch silhouette plus, below
-/// it, a live media surface, activity caption, and optional unlock pill.
-/// `nowPlaying`/`activities` are `@ObservedObject`, so this view re-renders on
-/// its own as tracks, artwork, battery captions, and activity expiry change.
-///
-/// The media surface is deliberately split from this safe base view. When
-/// `showsMediaControls` is true, this view reserves the media card's space but
-/// does not own its hit-testing; `LockScreenMediaControlsView` is hosted in a
-/// small second panel by `LockScreenPresenter`. The rest of the lock-screen
-/// surface remains mouse-transparent, so the password UI can never be blocked
-/// by a decorative overlay.
+/// The safe, mouse-transparent part of the lock-screen presentation: the
+/// physical camera-housing silhouette only. The interactive media surface is
+/// hosted in a separate, centered panel by `LockScreenPresenter`, so the
+/// password field and the rest of macOS's lock UI remain untouched.
 struct LockScreenContentView: View {
     let notchSize: CGSize
     @ObservedObject var nowPlaying: NowPlayingService
@@ -22,103 +15,23 @@ struct LockScreenContentView: View {
     let showsMediaControls: Bool
 
     var body: some View {
-        VStack(spacing: NotchDesign.space2) {
-            NotchShape.collapsed
-                .fill(Color.black)
-                .frame(width: max(notchSize.width, 1), height: max(notchSize.height, 8))
-
-            // The interactive media card lives in a separate, tightly-sized
-            // window. This clear spacer keeps the live activity/unlock pills
-            // below it without making the safe base panel mouse-sensitive.
-            if showsMediaControls,
-               LockScreenMediaControlLogic.shouldShow(hasNowPlaying: nowPlaying.state != nil,
-                                                       allowNowPlaying: allowNowPlaying) {
-                Color.clear
-                    .frame(height: LockScreenPillMetrics.mediaControlsHeight)
-            }
-
-            ForEach(Array(pills.enumerated()), id: \.offset) { _, pill in
-                pillView(for: pill)
-            }
-        }
-        // `maxHeight: .infinity` alongside `maxWidth` — `LockScreenPresenter`
-        // gives this a fixed-height panel (`contentHeightBudget`, sized for
-        // the silhouette plus all three pills), not a height that hugs this
-        // stack's own intrinsic content. Without it, this frame only ever
-        // expanded horizontally, so the stack centered vertically in
-        // whatever extra height the panel had (fewer pills showing = more
-        // slack) instead of staying pinned under the notch the way the
-        // Alcove reference does; `alignment: .top` is what actually pins it
-        // once the frame has real slack to place it within.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    /// What actually renders right now, computed fresh every body evaluation
-    /// from the live `@ObservedObject` state — the pure derivation itself
-    /// lives in `LockScreenPillLogic.visiblePills`, covered directly by
-    /// `--selftest`.
-    private var pills: [LockScreenPillKind] {
-        LockScreenPillLogic.visiblePills(
-            hasNowPlaying: nowPlaying.state != nil && !showsMediaControls,
-            allowNowPlaying: allowNowPlaying,
-            hasActivityCaption: activities.current?.captionText != nil,
-            allowActivities: allowActivities,
-            showUnlockPill: showUnlockPill)
-    }
-
-    @ViewBuilder
-    private func pillView(for pill: LockScreenPillKind) -> some View {
-        switch pill {
-        case .nowPlaying:
-            // `pills` already required `nowPlaying.state != nil` to include
-            // this case — re-guarding here (rather than force-unwrapping)
-            // costs nothing and keeps this function safe to call on its own.
-            if let state = nowPlaying.state {
-                LockScreenMediaPill(artwork: nowPlaying.artwork, title: state.title, artist: state.artist)
-            }
-        case .activity:
-            if let current = activities.current, let caption = current.captionText {
-                LockScreenActivityPill(systemName: Self.iconName(from: current.leading), caption: caption)
-            }
-        case .unlock:
-            LockScreenUnlockPill()
-        }
-    }
-
-    /// The wing icon to caption the activity pill with — mirrors
-    /// `LiveActivity.captionText`'s own "prefer trailing, fall back to
-    /// leading" text search, but for the icon half: every existing producer
-    /// (battery, Bluetooth, calendar, timer, HUD) puts its glyph on
-    /// `leading`, so that's read first; `trailing` is checked too only in
-    /// case some future producer flips the convention. `nil` (no icon, just
-    /// the caption text) for anything that carries no icon on either side.
-    private static func iconName(from content: LiveActivity.Content) -> String? {
-        switch content {
-        case .icon(let name), .iconText(let name, _), .gauge(_, let name):
-            return name
-        case .none, .text, .artwork:
-            return nil
-        }
+        NotchShape.collapsed
+            .fill(Color.black)
+            .frame(width: max(notchSize.width, 1), height: max(notchSize.height, 8))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .accessibilityHidden(true)
     }
 }
 
-/// The three kinds of pill this view can show, in the fixed stacking order
-/// `LockScreenPillLogic.visiblePills` always returns them in (Now Playing,
-/// then the activity caption, then the unlock pill) — matching the Alcove
-/// reference's own ordering (media first, notifications below it, the
-/// unlock affordance last, closest to where the user's eye lands after
-/// glancing at the clock).
+/// The three kinds of lock-screen affordance, in stable media/activity/unlock
+/// order. The pure derivation is retained separately from the views so the
+/// whole preference matrix can be checked by the headless self-test.
 enum LockScreenPillKind: Equatable {
     case nowPlaying
     case activity
     case unlock
 }
 
-/// Pure derivation of which pills should be visible — extracted so
-/// `--selftest` can exercise the full on/off matrix without a real
-/// `NowPlayingService`/`LiveActivityCenter`/lock session. Order is fixed
-/// (see `LockScreenPillKind`'s own doc comment); this only ever decides
-/// inclusion, never re-orders.
 enum LockScreenPillLogic {
     static func visiblePills(hasNowPlaying: Bool, allowNowPlaying: Bool,
                               hasActivityCaption: Bool, allowActivities: Bool,
@@ -137,158 +50,189 @@ enum LockScreenPillLogic {
     }
 }
 
-/// Pure gating for the companion interactive card — kept separate from the
-/// pill allow-list so `--selftest` can verify that a missing track never leaves
-/// an invisible mouse-sensitive panel behind.
+/// Pure gating for the lock-screen widget. Keeping it independent of AppKit
+/// makes it possible to prove that the companion panel disappears whenever
+/// all of its content is disabled, instead of leaving an invisible
+/// mouse-sensitive window over the password UI.
 enum LockScreenMediaControlLogic {
     static func shouldShow(hasNowPlaying: Bool, allowNowPlaying: Bool) -> Bool {
         hasNowPlaying && allowNowPlaying
     }
+
+    static func shouldShowWidget(hasNowPlaying: Bool,
+                                 allowNowPlaying: Bool,
+                                 hasActivityCaption: Bool,
+                                 allowActivities: Bool,
+                                 showUnlockPill: Bool) -> Bool {
+        !LockScreenPillLogic.visiblePills(
+            hasNowPlaying: hasNowPlaying,
+            allowNowPlaying: allowNowPlaying,
+            hasActivityCaption: hasActivityCaption,
+            allowActivities: allowActivities,
+            showUnlockPill: showUnlockPill).isEmpty
+    }
 }
 
-// MARK: - Pills
-//
-// Solid-black capsules keep the lock-screen surface aligned with the physical
-// notch and avoid competing with the lock-screen wallpaper.
+// MARK: - Widget metrics
 
 enum LockScreenPillMetrics {
     static let horizontalPadding: CGFloat = NotchDesign.space3
     static let verticalPadding: CGFloat = NotchDesign.space2
     static let maxWidth: CGFloat = 260
-    /// The media pill's artwork tile — sized and radiused independently of
-    /// `NotchDesign.artRadius` (13pt, the much larger 56pt expanded-panel
-    /// tile): a proportionally smaller radius reads correctly at this much
-    /// smaller size, the same "own constant, not a borrowed one" reasoning
-    /// `FlippingArtwork`'s `side`/`cornerRadius` already documents for its
-    /// own (different) fixed size.
-    static let artworkSide: CGFloat = 18
-    static let artworkRadius: CGFloat = 4
-    /// Fixed height reserved by the safe base panel for the interactive media
-    /// card hosted in the companion overlay window.
-    static let mediaControlsHeight: CGFloat = 94
-    static let mediaControlsWidth: CGFloat = 280
-}
 
-/// The Now Playing pill: artwork + title/artist, truncated (never marquee —
-/// there's no interaction on the lock screen to make a scrolling reveal
-/// meaningful, and per the build spec this is deliberately simpler than
-/// `NowPlayingExpandedView`'s `MarqueeText`).
-private struct LockScreenMediaPill: View {
-    let artwork: NSImage?
-    let title: String
-    let artist: String?
+    /// The media widget is intentionally wider than the physical notch,
+    /// matching Apple's lock-screen media surface rather than the tiny
+    /// in-notch pill.
+    static let mediaControlsWidth: CGFloat = 360
+    static let mediaCardHeight: CGFloat = 172
+    static let mediaControlsHeight: CGFloat = 208
+    static let mediaCardCornerRadius: CGFloat = 22
+    static let artworkSide: CGFloat = 58
+    static let artworkRadius: CGFloat = 12
+    static let auxiliaryPillHeight: CGFloat = 28
 
-    var body: some View {
-        HStack(spacing: NotchDesign.space2) {
-            artworkView
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(NotchDesign.bodyFont)
-                    .foregroundStyle(Color.white)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let artist, !artist.isEmpty {
-                    Text(artist)
-                        .font(NotchDesign.captionFont)
-                        .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
+    static func widgetSize(hasMedia: Bool, hasAuxiliaryContent: Bool) -> CGSize {
+        if hasMedia {
+            let auxiliaryHeight = hasAuxiliaryContent
+                ? NotchDesign.space2 + auxiliaryPillHeight
+                : 0
+            return CGSize(width: mediaControlsWidth,
+                          height: mediaCardHeight + auxiliaryHeight)
         }
-        .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
-        .padding(.vertical, LockScreenPillMetrics.verticalPadding)
-        // No `.frame(maxWidth:)` here: a maxWidth frame EXPANDS to
-        // min(proposal, max) regardless of content size, which stretched
-        // every pill to a near-panel-width black bar (snapshot-verified).
-        // Intrinsic sizing + the panel's own width proposal caps long titles
-        // (Text truncates); `maxWidth` in the metrics is now only the text
-        // column's cap below.
-        .background(Capsule().fill(Color.black))
-    }
-
-    @ViewBuilder
-    private var artworkView: some View {
-        let side = LockScreenPillMetrics.artworkSide
-        if let artwork {
-            Image(nsImage: artwork)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: side, height: side)
-                .clipShape(RoundedRectangle(cornerRadius: LockScreenPillMetrics.artworkRadius, style: .continuous))
-        } else {
-            RoundedRectangle(cornerRadius: LockScreenPillMetrics.artworkRadius, style: .continuous)
-                .fill(Color.white.opacity(0.12))
-                .frame(width: side, height: side)
-                .overlay(
-                    Image(systemName: "music.note")
-                        .font(.system(size: 9))
-                        .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
-                )
-        }
+        return CGSize(width: mediaControlsWidth,
+                      height: hasAuxiliaryContent ? auxiliaryPillHeight : 1)
     }
 }
 
-/// A compact, iOS-style transport card for the lock screen. It is hosted in a
-/// separate, tightly-sized panel by `LockScreenPresenter`, so its buttons are
-/// the only lock-screen pixels that accept mouse events. The service remains
-/// the single source of truth; this view only translates taps into the same
-/// `NowPlayingCommand` values used by the full notch player.
+/// An Apple-style lock-screen media widget. It is deliberately a single
+/// surface — artwork, title, progress, transport, and any secondary lock
+/// affordances — rather than a media card followed by unrelated floating
+/// pills. The panel is hosted separately so only the transport buttons accept
+/// mouse events.
 struct LockScreenMediaControlsView: View {
     @ObservedObject var nowPlaying: NowPlayingService
+    @ObservedObject var activities: LiveActivityCenter
+    let allowNowPlaying: Bool
+    let allowActivities: Bool
+    let showUnlockPill: Bool
     let onCommand: (NowPlayingCommand) -> Void
 
     var body: some View {
+        let hasMedia = LockScreenMediaControlLogic.shouldShow(
+            hasNowPlaying: nowPlaying.state != nil,
+            allowNowPlaying: allowNowPlaying)
+        let pills = LockScreenPillLogic.visiblePills(
+            hasNowPlaying: nowPlaying.state != nil,
+            allowNowPlaying: allowNowPlaying,
+            hasActivityCaption: activities.current?.captionText != nil,
+            allowActivities: allowActivities,
+            showUnlockPill: showUnlockPill)
+        let hasAuxiliaryContent = pills.contains { $0 != .nowPlaying }
+        let size = LockScreenPillMetrics.widgetSize(hasMedia: hasMedia,
+                                                    hasAuxiliaryContent: hasAuxiliaryContent)
+
         Group {
-            if let state = nowPlaying.state {
-                VStack(spacing: 6) {
-                    header(for: state)
-                    progress(for: state)
-                    transportRow(for: state)
+            if hasMedia, let state = nowPlaying.state {
+                VStack(spacing: 0) {
+                    mediaCard(for: state)
+                    if hasAuxiliaryContent {
+                        auxiliaryPills(pills)
+                            .padding(.top, NotchDesign.space2)
+                    }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .frame(width: LockScreenPillMetrics.mediaControlsWidth,
-                       height: LockScreenPillMetrics.mediaControlsHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(Color.black))
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Now Playing")
+            } else if hasAuxiliaryContent {
+                auxiliaryPills(pills)
             } else {
                 Color.clear
-                    .frame(width: LockScreenPillMetrics.mediaControlsWidth,
-                           height: LockScreenPillMetrics.mediaControlsHeight)
             }
         }
+        .frame(width: size.width, height: size.height)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Lock Screen Now Playing")
     }
 
-    private func header(for state: NowPlayingState) -> some View {
-        HStack(spacing: 9) {
-            artwork
-            VStack(alignment: .leading, spacing: 1) {
-                Text(state.title)
-                    .font(NotchDesign.bodyFont)
-                    .foregroundStyle(Color.white)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let artist = state.artist, !artist.isEmpty {
-                    Text(artist)
-                        .font(NotchDesign.captionFont)
-                        .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+    private func mediaCard(for state: NowPlayingState) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                artwork
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(state.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.white)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if let artist = state.artist, !artist.isEmpty {
+                        Text(artist)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundStyle(Color.white.opacity(0.68))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: state.isPlaying ? "waveform" : "pause")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.62))
+                    .accessibilityHidden(true)
+            }
+            .frame(height: LockScreenPillMetrics.artworkSide)
+
+            progress(for: state)
+                .padding(.top, 13)
+
+            HStack {
+                Text(timeLabel(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed ?? 0))
+                Spacer(minLength: 0)
+                if let duration = state.duration {
+                    let elapsed = min(max(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed ?? 0, 0), duration)
+                    Text("-\(timeLabel(max(duration - elapsed, 0)))")
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(Color.white.opacity(0.52))
+            .padding(.top, 5)
 
-            Image(systemName: state.isPlaying ? "waveform" : "pause")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
-                .accessibilityHidden(true)
+            transportRow(for: state)
+                .padding(.top, 9)
         }
-        .frame(height: 28)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(width: LockScreenPillMetrics.mediaControlsWidth,
+               height: LockScreenPillMetrics.mediaCardHeight)
+        // A restrained black surface keeps the widget legible over any
+        // wallpaper without repeating the rejected gradient/glass treatment.
+        .background(
+            RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
+                             style: .continuous)
+                .fill(Color.black.opacity(0.78))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
+                                     style: .continuous)
+                        .stroke(Color.white.opacity(0.13), lineWidth: 0.75))
+                .shadow(color: Color.black.opacity(0.32), radius: 18, y: 8))
+        .clipShape(RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
+                                    style: .continuous))
+    }
+
+    @ViewBuilder
+    private func auxiliaryPills(_ pills: [LockScreenPillKind]) -> some View {
+        HStack(spacing: NotchDesign.space2) {
+            ForEach(Array(pills.enumerated()), id: \.offset) { _, pill in
+                switch pill {
+                case .nowPlaying:
+                    EmptyView()
+                case .activity:
+                    if let current = activities.current, let caption = current.captionText {
+                        LockScreenActivityPill(systemName: Self.iconName(from: current.leading),
+                                                caption: caption)
+                    }
+                case .unlock:
+                    LockScreenUnlockPill()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: LockScreenPillMetrics.auxiliaryPillHeight)
     }
 
     @ViewBuilder
@@ -297,17 +241,20 @@ struct LockScreenMediaControlsView: View {
             Image(nsImage: artwork)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 28, height: 28)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: LockScreenPillMetrics.artworkSide,
+                       height: LockScreenPillMetrics.artworkSide)
+                .clipShape(RoundedRectangle(cornerRadius: LockScreenPillMetrics.artworkRadius,
+                                            style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: LockScreenPillMetrics.artworkRadius,
+                             style: .continuous)
                 .fill(Color.white.opacity(0.12))
-                .frame(width: 28, height: 28)
+                .frame(width: LockScreenPillMetrics.artworkSide,
+                       height: LockScreenPillMetrics.artworkSide)
                 .overlay(
                     Image(systemName: "music.note")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
-                )
+                        .font(.system(size: 18))
+                        .foregroundStyle(Color.white.opacity(0.58)))
         }
     }
 
@@ -323,34 +270,33 @@ struct LockScreenMediaControlsView: View {
             }
         } else {
             Capsule()
-                .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
-                .frame(height: 2)
+                .fill(Color.white.opacity(0.22))
+                .frame(height: 3)
         }
     }
 
-    private func progressTrack(duration: TimeInterval,
-                               at date: Date) -> some View {
+    private func progressTrack(duration: TimeInterval, at date: Date) -> some View {
         let elapsed = min(max(nowPlaying.currentElapsed(at: date) ?? 0, 0), duration)
         return GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.18))
+                Capsule().fill(Color.white.opacity(0.2))
                 Capsule()
-                    .fill(Color.white.opacity(0.86))
+                    .fill(Color.white.opacity(0.9))
                     .frame(width: geometry.size.width * elapsed / duration)
             }
         }
-        .frame(height: 2)
+        .frame(height: 3)
         .accessibilityHidden(true)
     }
 
     private func transportRow(for state: NowPlayingState) -> some View {
-        HStack(spacing: 17) {
-            transportButton("backward.fill", label: "Previous track", command: .previous)
+        HStack(spacing: 34) {
+            transportButton("backward.end.fill", label: "Previous track", command: .previous)
             transportButton(state.isPlaying ? "pause.fill" : "play.fill",
                             label: state.isPlaying ? "Pause" : "Play",
                             command: .togglePlayPause,
                             prominent: true)
-            transportButton("forward.fill", label: "Next track", command: .next)
+            transportButton("forward.end.fill", label: "Next track", command: .next)
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -360,20 +306,41 @@ struct LockScreenMediaControlsView: View {
                                   command: NowPlayingCommand,
                                   prominent: Bool = false) -> some View {
         Button { onCommand(command) } label: {
-            Image(systemName: systemName)
-                .font(.system(size: prominent ? 16 : 14,
-                              weight: prominent ? .semibold : .medium))
-                .foregroundStyle(Color.white)
-                .frame(width: prominent ? 34 : 30, height: 26)
+            if prominent {
+                Image(systemName: systemName)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.black)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(Color.white))
+            } else {
+                Image(systemName: systemName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .frame(width: 36, height: 36)
+            }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
     }
+
+    private func timeLabel(_ seconds: TimeInterval) -> String {
+        let total = max(Int(seconds.rounded(.down)), 0)
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private static func iconName(from content: LiveActivity.Content) -> String? {
+        switch content {
+        case .icon(let name), .iconText(let name, _), .gauge(_, let name):
+            return name
+        case .none, .text, .artwork:
+            return nil
+        }
+    }
 }
 
 /// The live-activity caption pill: an icon (when the activity carries one)
-/// plus its plain-text caption — monochrome, matching every other lock-
-/// screen pill.
+/// plus its plain-text caption. It stays visually subordinate to the media
+/// surface and is kept in the same centered widget lane.
 private struct LockScreenActivityPill: View {
     let systemName: String?
     let caption: String
@@ -392,22 +359,16 @@ private struct LockScreenActivityPill: View {
                 .truncationMode(.tail)
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
-        .padding(.vertical, NotchDesign.space1)
-        // Intrinsic width, same reasoning as the media pill above.
-        .background(Capsule().fill(Color.black))
+        .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
+        .background(Capsule().fill(Color.black.opacity(0.78)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
     }
 }
 
-/// The Alcove hero-shot pill: a padlock glyph plus a localizable "Press any
-/// key to unlock" line. Static text, no live state to observe — unlike the
-/// two pills above, this one never changes shape once shown.
+/// The optional localizable unlock affordance. It sits below the media
+/// controls, above the password field, just like the supporting prompt on
+/// Apple's lock screen.
 private struct LockScreenUnlockPill: View {
-    /// `String(localized:)` rather than a bare literal — this codebase has no
-    /// `.strings` catalog yet (every other UI string here is a plain
-    /// literal), but this specific line is the one the build spec calls out
-    /// as needing to be localizable, and `String(localized:)` costs nothing
-    /// today (it falls back to the key itself with no catalog present) while
-    /// being the correct seam if/when localization is ever added.
     private static let label = String(localized: "Press any key to unlock")
 
     var body: some View {
@@ -420,7 +381,8 @@ private struct LockScreenUnlockPill: View {
                 .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
-        .padding(.vertical, NotchDesign.space1)
-        .background(Capsule().fill(Color.black))
+        .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
+        .background(Capsule().fill(Color.black.opacity(0.78)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
     }
 }

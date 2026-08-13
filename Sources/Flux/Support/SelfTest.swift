@@ -2271,6 +2271,30 @@ enum SelfTest {
               "LockScreenMediaControlLogic: the Now Playing sub-toggle suppresses the interactive card")
         check(LockScreenMediaControlLogic.shouldShow(hasNowPlaying: true, allowNowPlaying: true),
               "LockScreenMediaControlLogic: a live track plus the Now Playing toggle shows the interactive card")
+        check(LockScreenTransitionLogic.acceptsLock(isSessionActive: false)
+              && !LockScreenTransitionLogic.acceptsLock(isSessionActive: true),
+              "LockScreenTransitionLogic: duplicate lock notifications cannot start another lock session")
+        check(LockScreenTransitionLogic.acceptsUnlock(isSessionActive: true, isDismissing: false)
+              && !LockScreenTransitionLogic.acceptsUnlock(isSessionActive: false, isDismissing: false)
+              && !LockScreenTransitionLogic.acceptsUnlock(isSessionActive: true, isDismissing: true),
+              "LockScreenTransitionLogic: the unlock sound/fade gate opens exactly once per session")
+        check(!LockScreenMediaControlLogic.shouldShowWidget(
+            hasNowPlaying: false, allowNowPlaying: false,
+            hasActivityCaption: false, allowActivities: false,
+            showUnlockPill: false),
+              "LockScreenMediaControlLogic: an empty lock screen has no companion panel")
+        check(LockScreenMediaControlLogic.shouldShowWidget(
+            hasNowPlaying: false, allowNowPlaying: false,
+            hasActivityCaption: true, allowActivities: true,
+            showUnlockPill: false),
+              "LockScreenMediaControlLogic: an allowed activity can keep the centered widget visible without media")
+        let mediaWidgetSize = LockScreenPillMetrics.widgetSize(hasMedia: true,
+                                                               hasAuxiliaryContent: false)
+        let mediaWidgetWithPillsSize = LockScreenPillMetrics.widgetSize(hasMedia: true,
+                                                                         hasAuxiliaryContent: true)
+        check(mediaWidgetSize.width == LockScreenPillMetrics.mediaControlsWidth
+              && mediaWidgetWithPillsSize.height > mediaWidgetSize.height,
+              "LockScreenPillMetrics: the media surface has one stable width and only grows for supporting pills")
 
         // --- M6: NotchActivityRouter — timer completion/ambient translation,
         // driven purely through a real (but headless) TimerService's own
@@ -2457,6 +2481,16 @@ enum SelfTest {
             check(m6Settings.notchLockScreenUnlockSoundEnabled,
                   "SettingsStore: notchLockScreenUnlockSoundEnabled defaults to true once lock-screen mode is opted into")
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
+
+            let legacySuiteName = "flux.selftest.legacy-notch-style"
+            let legacyDefaults = UserDefaults(suiteName: legacySuiteName)!
+            legacyDefaults.removePersistentDomain(forName: legacySuiteName)
+            legacyDefaults.set("flux", forKey: "flux.notch.style")
+            let migratedSettings = SettingsStore(defaults: legacyDefaults)
+            check(migratedSettings.notchStyle == .alcove
+                  && legacyDefaults.string(forKey: "flux.notch.style") == NotchStyle.alcove.rawValue,
+                  "SettingsStore: legacy Flux geometry is migrated to the canonical Alcove footprint")
+            legacyDefaults.removePersistentDomain(forName: legacySuiteName)
         }
 
         // --- M6: NotchWidgetRegistry — every one of the app's 6 WidgetIDs
@@ -2753,21 +2787,11 @@ enum SelfTest {
                   "ArtworkPalette: switching back to blueImage after redAgain re-derives its own correct colors too — no track's colors ever leak into another's")
         }
 
-        // --- Notch styles: Alcove restores the compact content-sized drawer,
-        // while Flux keeps its fixed aspect-ratio layout as an explicit
-        // preference. Both use a stable panel envelope. ---
+        // --- Notch geometry: every standard page shares the canonical Alcove
+        // footprint. Duo remains deliberately wider because it is a genuine
+        // two-pane layout, not a page-specific sizing accident. ---
         do {
             let notchWidth: CGFloat = 200
-            let fluxWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .flux)
-            let fluxHeight = NotchMetrics.expandedHeight(for: notchWidth, style: .flux)
-
-            check(fluxHeight == (fluxWidth / NotchMetrics.expandedAspectRatio).rounded(),
-                  "NotchMetrics: Flux height is derived from its width and aspect ratio")
-            check(abs(fluxWidth / fluxHeight - NotchMetrics.expandedAspectRatio) < 0.02,
-                  "NotchMetrics: Flux's realised width:height lands on the intended aspect ratio")
-            check(fluxWidth > fluxHeight,
-                  "NotchMetrics: the drawer is wider than it is tall — it hangs off the notch, it isn't a window")
-
             let alcoveWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .alcove)
             let alcoveHeight = NotchMetrics.expandedHeight(for: notchWidth, style: .alcove)
             check(alcoveWidth == 420 && alcoveHeight == NotchMetrics.maxExpandedHeight,
@@ -2792,6 +2816,9 @@ enum SelfTest {
                   "NotchMetrics: Alcove panelBounds reserves Duo width plus shadow bleed")
             check(bounds.width > alcoveWidth && bounds.height > alcoveHeight,
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
+
+            check(alcoveWidth == max(notchWidth * NotchMetrics.expandedAspectRatio, 400),
+                  "NotchMetrics: Alcove width follows the 2.1x camera-housing guide")
         }
 
         // --- M12: an activity change that lands DURING a transition must be

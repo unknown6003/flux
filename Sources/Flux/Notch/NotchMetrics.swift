@@ -7,18 +7,17 @@ import CoreGraphics
 /// animates) and `NotchSnapshot` (which needs the same numbers to size its
 /// off-screen capture window) can't drift out of sync with the SwiftUI side.
 ///
-/// The default `.alcove` style restores the compact drawer from M7, with one
-/// stable visible footprint for every standard widget. The `.flux` style keeps
-/// the later fixed-size drawer available for users who prefer a roomier
-/// surface. Both styles share one fixed window envelope so AppKit never has to
-/// animate or resize an `NSPanel`.
+/// The canonical Alcove drawer uses one stable visible footprint for every
+/// standard widget. The fixed window envelope means AppKit never has to
+/// animate or resize an `NSPanel` as pages change.
 enum NotchMetrics {
     /// Width of each side "wing" shown around the blank physical-notch area
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// The fixed Flux style's width-to-height ratio: 2.1:1 — 400x190 on a
-    /// current MacBook.
+    /// Alcove's width scale guide: 2.1x the camera housing — 420pt on the
+    /// representative 200pt notch used by the snapshot suite. The height is
+    /// held by `maxExpandedHeight` so page content never changes the shell.
     static let expandedAspectRatio: CGFloat = 2.1
 
     /// The shared Alcove drawer height. Every standard widget uses this same
@@ -27,25 +26,19 @@ enum NotchMetrics {
     static let maxExpandedHeight: CGFloat = 190
 
     /// The extra width used by Alcove's side-by-side Now Playing + Calendar
-    /// layout. The Flux style keeps Duo inside its normal fixed width.
+    /// layout. Duo is the one intentional two-pane exception to the standard
+    /// single-widget footprint.
     static let duoExtraWidth: CGFloat = 220
 
-    /// The expanded width. Alcove uses its original 2.1x scale; Flux retains
-    /// the slightly narrower 2.0x fixed drawer.
+    /// The expanded width from the Alcove guide. The minimum keeps the drawer
+    /// usable on machines whose reported notch is narrower than the reference.
     static func expandedWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
-        switch style {
-        case .alcove: return max(notchWidth * 2.1, 400)
-        case .flux: return max(notchWidth * 2.0, 400)
-        }
+        max(notchWidth * expandedAspectRatio, 400)
     }
 
-    /// The expanded height of the style's envelope. Alcove reserves its
-    /// tallest content height; Flux derives one fixed height from its ratio.
+    /// Alcove reserves the tallest content height for every standard page.
     static func expandedHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
-        switch style {
-        case .alcove: return maxExpandedHeight
-        case .flux: return (expandedWidth(for: notchWidth, style: style) / expandedAspectRatio).rounded()
-        }
+        maxExpandedHeight
     }
 
     /// The visible height for one widget. The old implementation returned a
@@ -71,9 +64,8 @@ enum NotchMetrics {
     /// The share of the expanded panel's *content* width that Duo view gives
     /// its Calendar pane; Now Playing takes the rest.
     ///
-    /// A fraction rather than the old fixed 200pt, so Flux's fixed drawer can
-    /// fit Duo without another width jump. Alcove still gets its dedicated
-    /// compact Duo width above, while this fraction keeps both panes balanced.
+    /// A fraction keeps both Duo panes balanced inside the dedicated wider
+    /// two-pane layout.
     static let duoCalendarPaneFraction: CGFloat = 0.36
 
     /// Extra room reserved in the fixed panel/off-screen bounds — beyond the

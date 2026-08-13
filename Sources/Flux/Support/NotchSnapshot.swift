@@ -271,9 +271,9 @@ enum NotchSnapshot {
         return (AnyView(snapshotRoot), panelSize, tempShelfDirectory)
     }
 
-    /// Lock-screen parity snapshot: builds the mouse-transparent base
-    /// `LockScreenContentView` plus the card-sized interactive media overlay
-    /// at a representative fixed size on the transparent background, with a
+    /// Lock-screen parity snapshot: builds the mouse-transparent notch
+    /// silhouette plus the centered Apple-style interactive media widget at a
+    /// representative fixed size on the transparent background, with a
     /// fixture Now Playing track, a fixture battery live activity, and the
     /// unlock pill forced on — reviewing the controller, activity, and unlock
     /// surfaces together in one CI artifact. Deliberately separate
@@ -312,13 +312,18 @@ enum NotchSnapshot {
             showUnlockPill: true,
             showsMediaControls: true)
 
-        let panelSize = CGSize(width: 300, height: notchSize.height + 184)
-        let root = ZStack(alignment: .top) {
+        let panelSize = CGSize(width: LockScreenPillMetrics.mediaControlsWidth,
+                               height: LockScreenPillMetrics.mediaControlsHeight)
+        let root = ZStack {
             content
-            LockScreenMediaControlsView(nowPlaying: nowPlayingService) { _ in }
-                .padding(.top, notchSize.height + NotchDesign.space2)
+            LockScreenMediaControlsView(
+                nowPlaying: nowPlayingService,
+                activities: activities,
+                allowNowPlaying: true,
+                allowActivities: true,
+                showUnlockPill: true) { _ in }
         }
-        .frame(width: panelSize.width, height: panelSize.height, alignment: .top)
+        .frame(width: panelSize.width, height: panelSize.height, alignment: .center)
         return (AnyView(root), panelSize, makeTempShelfDirectory())
     }
 
