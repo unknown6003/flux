@@ -555,6 +555,11 @@ struct NotchRootView: View {
                 Group {
                     if let nowPlaying { nowPlaying.makeExpandedView() }
                 }
+                // Duo's Now Playing pane is narrow too. The shared player
+                // uses this environment to drop decorative waveform chrome
+                // and give its metadata the width back; without it, long
+                // titles were clipped even after Calendar became compact.
+                .environment(\.isNarrowPane, true)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // The single-widget view gets the shell's outer chrome. Duo
                 // needs only a small divider-side gutter; adding the old
