@@ -12,6 +12,19 @@ import OSLog
 /// "lockscreen"'`.
 let lockLog = Logger(subsystem: "com.flux.menubar", category: "lockscreen")
 
+/// Pure transition gates shared by the notification, workspace, and polling
+/// paths. They make the duplicate-delivery rule explicit and testable: one
+/// lock opens one session, and one unlock is allowed to start one teardown.
+enum LockScreenTransitionLogic {
+    static func acceptsLock(isSessionActive: Bool) -> Bool {
+        !isSessionActive
+    }
+
+    static func acceptsUnlock(isSessionActive: Bool, isDismissing: Bool) -> Bool {
+        isSessionActive && !isDismissing
+    }
+}
+
 /// EXPERIMENTAL — default OFF, gated by `flux.notch.lockScreenExperiment`
 /// (the wiring agent's `setEnabled(_:)` call, in `AppDelegate.
 /// configureLockScreenPresenter()` — this class has no opinion of its own
@@ -138,16 +151,16 @@ final class LockScreenPresenter {
     /// presenter never touched it, so it has nothing to undo on unlock).
     private var didActivateForLock = false
 
-    /// M9: guards against a second `"com.apple.screenIsUnlocked"` delivery
-    /// (that notification isn't documented as strictly one-shot per unlock,
-    /// the same "not documented, treat as a nudge, never trust it blindly"
-    /// posture this whole type already takes toward both notification names
-    /// — see the type doc comment's point 1) re-playing the unlock sound and
-    /// re-starting the fade-out on a panel that's already mid-fade. Set the
-    /// instant the first `handleUnlocked()` actually starts tearing things
-    /// down; cleared once the panel is actually gone (`dismissImmediately`)
-    /// or a fresh lock arrives (`handleLocked`) and decides the panel should
-    /// stay/fade back up instead.
+    /// A lock session latch absorbs duplicate distributed/session/polling
+    /// notifications. macOS can deliver the same transition through more than
+    /// one channel, and treating each delivery as a new transition used to
+    /// replay the unlock sound and restart the fade several times.
+    private var isLockSessionActive = false
+
+    /// Guards against a second unlock delivery while the first fade-out is
+    /// still running. The session latch above is cleared immediately when the
+    /// first unlock is accepted; this flag documents the visual teardown state
+    /// separately.
     private var isDismissing = false
 
     private static let geometryDefaultsKey = "flux.lockScreen.notchGeometry.v2"
@@ -320,6 +333,8 @@ final class LockScreenPresenter {
                                             showUnlockPill: unlockPillEnabled,
                                             hasNowPlaying: self?.nowPlaying.state != nil)
                 self?.syncMediaControlPanel(allowNowPlaying: nowPlayingEnabled,
+                                             allowActivities: activitiesEnabled,
+                                             showUnlockPill: unlockPillEnabled,
                                              hasNowPlaying: self?.nowPlaying.state != nil)
             }
             .store(in: &cancellables)
@@ -332,6 +347,16 @@ final class LockScreenPresenter {
             .sink { [weak self] state in
                 self?.updateHostingContent(hasNowPlaying: state != nil)
                 self?.syncMediaControlPanel(hasNowPlaying: state != nil)
+            }
+            .store(in: &cancellables)
+
+        // Activities are live on the lock screen too. Reconcile the centered
+        // widget when a battery/timer/calendar caption appears or expires;
+        // otherwise the old pill could remain in a separate panel until the
+        // next lock transition.
+        activities.$current
+            .sink { [weak self] _ in
+                self?.syncMediaControlPanel()
             }
             .store(in: &cancellables)
 
@@ -398,8 +423,8 @@ final class LockScreenPresenter {
     private func reconcileLockState() {
         guard let locked = Self.currentLockState() else { return }
         if locked {
-            if panel == nil || !isPresentingOnLockScreen { handleLocked() }
-        } else if panel != nil {
+            if !isLockSessionActive || panel == nil || !isPresentingOnLockScreen { handleLocked() }
+        } else if isLockSessionActive || panel != nil {
             handleUnlocked()
         }
     }
@@ -431,20 +456,26 @@ final class LockScreenPresenter {
     /// dismiss it on the next unlock (`dismissImmediately()`/
     /// `fadeOutThenDismiss()` only ever know about the CURRENT `panel`).
     private func handleLocked() {
-        fadeOutDeadline.cancel()
-        // A fresh lock always supersedes any dismiss still winding down (or
-        // one that already finished) — see `isDismissing`'s own doc comment
-        // for why this must be unconditional here, the same reasoning
-        // `fadeOutDeadline.cancel()` right above already applies to the
-        // pending-dismiss deadline itself.
-        isDismissing = false
+        let isFreshLock = LockScreenTransitionLogic.acceptsLock(isSessionActive: isLockSessionActive)
+        if isFreshLock {
+            // A genuinely new lock supersedes any dismiss still winding down.
+            // Duplicate lock/session notifications must not reset this state:
+            // doing so was the path that let a later duplicate unlock replay
+            // the sound.
+            fadeOutDeadline.cancel()
+            isDismissing = false
+            isLockSessionActive = true
+        }
         // Logged BEFORE the enabled check, deliberately. This is the only
         // line that distinguishes "the notification never arrived" from
         // "it arrived and something downstream declined" — and with a feature
         // that can only fail silently, that distinction is the whole
         // diagnostic value.
         lockLog.notice("Lock screen: screenIsLocked received (enabled: \(self.isEnabled, privacy: .public))")
-        guard isEnabled else { return }
+        guard isEnabled else {
+            isLockSessionActive = false
+            return
+        }
 
         // Live geometry first, cache second. Both guards fall back, since
         // `builtInNotchedScreen` and `notchRect` share the `hasNotch`
@@ -456,6 +487,7 @@ final class LockScreenPresenter {
             // Reachable when the screen was never seen unlocked — in practice
             // the experiment being switched on while already locked.
             lockLog.error("Lock screen: no notch geometry, live or cached — nothing to present")
+            isLockSessionActive = false
             return
         }
         if liveScreen?.notchRect == nil {
@@ -482,7 +514,16 @@ final class LockScreenPresenter {
     /// must not replay the sound or restart the fade on a panel that's
     /// already fading; see that flag's own doc comment).
     private func handleUnlocked() {
-        guard let panel, !isDismissing else { return }
+        // Consume the session before doing any visual/audio work. Both the
+        // distributed notification and the workspace/polling fallback can
+        // arrive for one unlock; only the first delivery is allowed through.
+        guard LockScreenTransitionLogic.acceptsUnlock(isSessionActive: isLockSessionActive,
+                                                      isDismissing: isDismissing) else { return }
+        isLockSessionActive = false
+        guard let panel, !isDismissing else {
+            if self.panel == nil { deactivateNowPlayingForLockIfNeeded() }
+            return
+        }
         isDismissing = true
         playUnlockSoundIfEnabled()
         fadeOutThenDismiss(panel)
@@ -571,6 +612,7 @@ final class LockScreenPresenter {
         mediaPanel = nil
         mediaHostingView = nil
         isPresentingOnLockScreen = false
+        isLockSessionActive = false
         // The panel is actually gone now — the point `isDismissing`'s own
         // doc comment calls out as the other place (besides a fresh lock)
         // that clears it.
@@ -637,11 +679,10 @@ final class LockScreenPresenter {
         masterEnabled && nowPlayingAllowed && !serviceActive
     }
 
-    /// Rebuilds the hosted view's plain (non-`@ObservedObject`) inputs —
-    /// `notchSize`, the three settings flags, and whether the companion media
-    /// card needs a reserved slot — in place. `nowPlaying`/`activities` are
-    /// the exact same instances either way, so their live updates remain
-    /// uninterrupted.
+    /// Rebuilds the hosted silhouette's plain inputs in place. The centered
+    /// interactive widget observes the same service objects in its companion
+    /// panel; keeping the two surfaces separate ensures the base panel remains
+    /// mouse-transparent.
     private func updateHostingContent() {
         updateHostingContent(allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
                               allowActivities: settings.notchLockScreenActivitiesEnabled,
@@ -709,21 +750,32 @@ final class LockScreenPresenter {
         return panel
     }
 
-    /// Keeps the interactive media card in sync with live Now Playing state
-    /// and settings. The base panel is rebuilt at the same time so the
-    /// activity/unlock pills move below the card only while it exists.
+    /// Keeps the centered lock-screen widget in sync with live media,
+    /// activity, and preference state. The base silhouette is never resized or
+    /// made interactive as these values change.
     private func syncMediaControlPanel(allowNowPlaying: Bool? = nil,
+                                       allowActivities: Bool? = nil,
+                                       showUnlockPill: Bool? = nil,
                                        hasNowPlaying: Bool? = nil) {
         guard let panel else { return }
 
-        let allowed = allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled
+        let nowPlayingAllowed = allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled
+        let activitiesAllowed = allowActivities ?? settings.notchLockScreenActivitiesEnabled
+        let unlockPillShown = showUnlockPill ?? settings.notchLockScreenUnlockPillEnabled
         let hasState = hasNowPlaying ?? (nowPlaying.state != nil)
-        updateHostingContent(allowNowPlaying: allowed,
+        let hasActivityCaption = activities.current?.captionText != nil
+        updateHostingContent(allowNowPlaying: nowPlayingAllowed,
+                              allowActivities: activitiesAllowed,
+                              showUnlockPill: unlockPillShown,
                               hasNowPlaying: hasState)
 
         guard isPresentingOnLockScreen,
-              LockScreenMediaControlLogic.shouldShow(hasNowPlaying: hasState,
-                                                      allowNowPlaying: allowed) else {
+              LockScreenMediaControlLogic.shouldShowWidget(
+                  hasNowPlaying: hasState,
+                  allowNowPlaying: nowPlayingAllowed,
+                  hasActivityCaption: hasActivityCaption,
+                  allowActivities: activitiesAllowed,
+                  showUnlockPill: unlockPillShown) else {
             mediaPanel?.orderOut(nil)
             mediaPanel = nil
             mediaHostingView = nil
@@ -733,14 +785,26 @@ final class LockScreenPresenter {
         let card: NSPanel
         if let mediaPanel {
             card = mediaPanel
+            mediaHostingView?.rootView = makeMediaControlsView(
+                allowNowPlaying: nowPlayingAllowed,
+                allowActivities: activitiesAllowed,
+                showUnlockPill: unlockPillShown)
         } else {
-            card = makeMediaPanel()
+            card = makeMediaPanel(allowNowPlaying: nowPlayingAllowed,
+                                  allowActivities: activitiesAllowed,
+                                  showUnlockPill: unlockPillShown)
             mediaPanel = card
             card.alphaValue = panel.alphaValue
         }
         guard let screenFrame = lastKnownScreenFrame,
               let notchRect = lastKnownNotchRect else { return }
-        positionMediaPanel(card, notchRect: notchRect, screenFrame: screenFrame)
+        positionMediaPanel(card,
+                           notchRect: notchRect,
+                           screenFrame: screenFrame,
+                           hasMedia: LockScreenMediaControlLogic.shouldShow(
+                               hasNowPlaying: hasState,
+                               allowNowPlaying: nowPlayingAllowed),
+                           hasAuxiliaryContent: hasActivityCaption && activitiesAllowed || unlockPillShown)
         delegateWithLockScreenSpace(card)
         card.orderFrontRegardless()
         if card.alphaValue < 1, panel.alphaValue >= 1 {
@@ -751,11 +815,26 @@ final class LockScreenPresenter {
     /// The card gets its own panel and only this panel accepts mouse events.
     /// A weak presenter capture prevents the SwiftUI root from keeping the
     /// presenter alive through the panel it owns.
-    private func makeMediaPanel() -> NSPanel {
-        let hosting = NSHostingView(
-            rootView: LockScreenMediaControlsView(nowPlaying: nowPlaying) { [weak self] command in
+    private func makeMediaControlsView(allowNowPlaying: Bool,
+                                       allowActivities: Bool,
+                                       showUnlockPill: Bool) -> LockScreenMediaControlsView {
+        LockScreenMediaControlsView(
+            nowPlaying: nowPlaying,
+            activities: activities,
+            allowNowPlaying: allowNowPlaying,
+            allowActivities: allowActivities,
+            showUnlockPill: showUnlockPill) { [weak self] command in
                 self?.nowPlaying.send(command)
-            })
+            }
+    }
+
+    private func makeMediaPanel(allowNowPlaying: Bool,
+                                allowActivities: Bool,
+                                showUnlockPill: Bool) -> NSPanel {
+        let hosting = NSHostingView(
+            rootView: makeMediaControlsView(allowNowPlaying: allowNowPlaying,
+                                            allowActivities: allowActivities,
+                                            showUnlockPill: showUnlockPill))
         mediaHostingView = hosting
 
         let panel = LockScreenControlPanel(contentRect: .zero,
@@ -796,32 +875,37 @@ final class LockScreenPresenter {
         return NSWindow.Level(rawValue: Int(raw) + 1)
     }
 
-    /// Centers the panel on the notch, top-anchored, with a fixed height
-    /// budget generous enough for the silhouette plus all three stacked
-    /// pills at once (the common case shows fewer — the extra vertical space
-    /// is simply empty and transparent, since `LockScreenContentView`'s own
-    /// `VStack` is top-aligned within it) and a width wide enough for the
-    /// ~260pt-wide media pill, which is itself wider than the physical notch
-    /// on every current Mac. Mirrors `NotchWindowController.position`'s
-    /// identical centering math, just against this feature's own (larger,
-    /// pill-stack-sized) bounds rather than `NotchMetrics.panelBounds`.
+    /// Centers the safe base panel exactly on the physical notch. It owns no
+    /// lock-screen content below the camera housing, so its frame never grows
+    /// or changes when a track/activity appears.
     private func position(_ panel: NSPanel, notchRect: NSRect, screenFrame: NSRect) {
-        let width = max(notchRect.width, Self.minPanelWidth)
-        let height = notchRect.height + Self.contentHeightBudget
+        let width = max(notchRect.width, 1)
+        let height = max(notchRect.height, 8)
         let origin = NSPoint(x: notchRect.midX - width / 2, y: screenFrame.maxY - height)
         panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)), display: true)
         resizeHostingView(hostingView, in: panel)
     }
 
-    /// Places the card immediately below the physical notch, matching the
-    /// clear reservation in `LockScreenContentView`. Its small frame is the
-    /// entire interactive region on the lock screen.
-    private func positionMediaPanel(_ panel: NSPanel, notchRect: NSRect, screenFrame: NSRect) {
-        let size = NSSize(width: LockScreenPillMetrics.mediaControlsWidth,
-                          height: LockScreenPillMetrics.mediaControlsHeight)
+    /// Places the widget in the lock-screen login lane, above the password
+    /// field instead of directly under the notch. The preferred center is
+    /// intentionally below the clock but above the credential controls; the
+    /// clamps keep it usable on short displays as well.
+    private func positionMediaPanel(_ panel: NSPanel,
+                                    notchRect: NSRect,
+                                    screenFrame: NSRect,
+                                    hasMedia: Bool,
+                                    hasAuxiliaryContent: Bool) {
+        let size = LockScreenPillMetrics.widgetSize(hasMedia: hasMedia,
+                                                    hasAuxiliaryContent: hasAuxiliaryContent)
+        let preferredCenterY = screenFrame.minY + screenFrame.height * 0.56
+        let preferredOriginY = preferredCenterY - size.height / 2
+        let minimumOriginY = screenFrame.minY + screenFrame.height * 0.30
+        let maximumOriginY = screenFrame.maxY - notchRect.height - 32 - size.height
+        let originY = min(max(preferredOriginY, minimumOriginY),
+                          max(minimumOriginY, maximumOriginY))
         let origin = NSPoint(
             x: notchRect.midX - size.width / 2,
-            y: screenFrame.maxY - notchRect.height - NotchDesign.space2 - size.height)
+            y: originY)
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         resizeHostingView(mediaHostingView, in: panel)
     }
@@ -835,11 +919,6 @@ final class LockScreenPresenter {
         hosting.frame = contentView.bounds
         hosting.autoresizingMask = [.width, .height]
     }
-
-    private static let minPanelWidth: CGFloat = 300
-    /// Enough room for the silhouette, the 94pt media card, the optional
-    /// activity/unlock pills, and their 8pt stack gaps, with a little slack.
-    private static let contentHeightBudget: CGFloat = 184
 
     private static let fadeInDuration: TimeInterval = 0.4
     private static let fadeOutDuration: TimeInterval = 0.25
@@ -887,13 +966,17 @@ final class LockScreenPresenter {
 
     /// Best-effort, quietly defensive: `NSSound(named:)` returns `nil` for a
     /// missing/renamed system sound rather than throwing, and `.play()`
-    /// returns `Bool` rather than throwing either. `Pop` is the short, low
-    /// thunky system click that makes unlock feel acknowledged; older systems
-    /// that do not expose it fall back to the familiar system chime. Reads the
-    /// setting live since this only runs once per unlock.
+    /// returns `Bool` rather than throwing either. `Purr` is the softer,
+    /// rounded system cue that makes the transition feel acknowledged; older
+    /// systems fall back through the familiar short sounds. The session latch
+    /// in `handleUnlocked()` guarantees this method is reached once per real
+    /// lock/unlock cycle, even when macOS emits duplicate notifications.
     private func playUnlockSoundIfEnabled() {
         guard settings.notchLockScreenUnlockSoundEnabled else { return }
-        let sound = NSSound(named: "Pop") ?? NSSound(named: "Glass") ?? NSSound(named: "Tink")
+        let sound = NSSound(named: "Purr")
+            ?? NSSound(named: "Pop")
+            ?? NSSound(named: "Glass")
+            ?? NSSound(named: "Tink")
         unlockSound = sound
         sound?.stop()
         sound?.play()

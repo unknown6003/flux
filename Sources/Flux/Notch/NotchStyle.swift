@@ -1,25 +1,19 @@
 import Foundation
 
-/// The two supported notch layouts. Both styles use a solid-black surface so
-/// the collapsed shape disappears into the camera housing; the choice only
-/// changes the expanded drawer's proportions and content footprint.
+/// The canonical notch layout. The earlier release exposed a second Flux
+/// envelope, which meant an existing install could silently keep a different
+/// drawer size from the Alcove reference. The release now has one geometry
+/// contract so switching pages cannot produce a subtle size jump.
 enum NotchStyle: String, CaseIterable, Identifiable, Equatable {
     case alcove
-    case flux
 
     var id: String { rawValue }
 
     var title: String {
-        switch self {
-        case .alcove: return "Alcove"
-        case .flux: return "Flux"
-        }
+        "Alcove"
     }
 
     var subtitle: String {
-        switch self {
-        case .alcove: return "Compact, content-sized drawer"
-        case .flux: return "Roomier fixed drawer"
-        }
+        "Stable Alcove footprint"
     }
 }

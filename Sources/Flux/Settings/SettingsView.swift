@@ -89,6 +89,11 @@ struct SettingsView: View {
         .onChange(of: selectedTab) { _, newValue in
             onTabChange?(newValue)
         }
+        // The AppKit window uses a transparent full-size titlebar. Without
+        // opting out here, SwiftUI honors the titlebar safe-area inset and
+        // leaves an unpainted strip above the rounded settings surface while
+        // the traffic lights float on its boundary.
+        .ignoresSafeArea()
     }
 
     @ViewBuilder

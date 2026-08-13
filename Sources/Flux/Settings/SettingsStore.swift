@@ -52,6 +52,12 @@ final class SettingsStore: ObservableObject {
         self.notchEnabled = defaults.bool(forKey: Keys.notchEnabled)
         let notchStyleRaw = defaults.string(forKey: Keys.notchStyle) ?? NotchStyle.alcove.rawValue
         self.notchStyle = NotchStyle(rawValue: notchStyleRaw) ?? .alcove
+        // v0.17 exposed a second Flux envelope. Normalize that legacy value
+        // on read so an existing install cannot reopen with a subtly different
+        // drawer size from the canonical Alcove footprint.
+        if notchStyleRaw != NotchStyle.alcove.rawValue {
+            defaults.set(NotchStyle.alcove.rawValue, forKey: Keys.notchStyle)
+        }
         let triggerRaw = defaults.string(forKey: Keys.notchExpansionTrigger) ?? NotchExpansionTrigger.hover.rawValue
         self.notchExpansionTrigger = NotchExpansionTrigger(rawValue: triggerRaw) ?? .hover
         self.notchHoverOpenDelay = defaults.double(forKey: Keys.notchHoverOpenDelay)
@@ -143,9 +149,9 @@ final class SettingsStore: ObservableObject {
 
     // MARK: Notch
 
-    /// Controls the expanded drawer's proportions. Alcove is the compact
-    /// default; Flux remains available for users who prefer the older roomy
-    /// fixed-height layout.
+    /// The notch uses the canonical Alcove footprint. The property remains a
+    /// small compatibility seam for the settings/wiring layers and for old
+    /// preferences migrated during initialization.
     @Published var notchStyle: NotchStyle {
         didSet { defaults.set(notchStyle.rawValue, forKey: Keys.notchStyle) }
     }
