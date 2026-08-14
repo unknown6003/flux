@@ -92,7 +92,7 @@ private struct ClipboardExpandedView: View {
         WidgetEmptyStateView(icon: "doc.on.clipboard", message: "Nothing copied yet")
     }
 
-    /// Alcove refit (M7): this panel's total height budget is 190, leaving
+    /// Alcove refit: this panel's total height budget is 164, leaving
     /// ~100–150 of usable content height after fixed padding. Each row is
     /// ~34pt (6pt vertical padding × 2 + a 12pt preview line + 2pt inner
     /// spacing + a 9pt age line, i.e. 12 + 6 + 12 + 2 + 9 ≈ 41 at the high

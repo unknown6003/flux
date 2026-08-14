@@ -156,7 +156,7 @@ private struct MarqueeContent: View {
 
 // MARK: - Flipping artwork
 
-/// The 56×56pt album-art tile, with a 3D Y-axis flip whenever `flipKey`
+/// The 52×52pt album-art tile, with a 3D Y-axis flip whenever `flipKey`
 /// changes (but not on first appearance). Keyed by an opaque `AnyHashable`
 /// rather than the image itself — the caller is expected to derive a key
 /// from track identity (title/artist/album/source, plus whether artwork is
@@ -192,8 +192,8 @@ struct FlippingArtwork: View {
     let image: NSImage?
     let flipKey: AnyHashable
 
-    private static let side: CGFloat = 56
-    private static let cornerRadius: CGFloat = 13
+    private static let side: CGFloat = 52
+    private static let cornerRadius: CGFloat = 12
     private static let halfDuration: Double = 0.175
 
     /// The keyframe-animated value: just the Y-axis rotation angle, in

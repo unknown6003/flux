@@ -80,16 +80,15 @@ enum LockScreenPillMetrics {
     static let verticalPadding: CGFloat = NotchDesign.space2
     static let maxWidth: CGFloat = 260
 
-    /// The media widget is intentionally wider than the physical notch,
-    /// matching Apple's lock-screen media surface rather than the tiny
-    /// in-notch pill.
-    static let mediaControlsWidth: CGFloat = 360
-    static let mediaCardHeight: CGFloat = 172
-    static let mediaControlsHeight: CGFloat = 208
-    static let mediaCardCornerRadius: CGFloat = 22
-    static let artworkSide: CGFloat = 58
-    static let artworkRadius: CGFloat = 12
-    static let auxiliaryPillHeight: CGFloat = 28
+    /// Compact lock-screen proportions based on Apple's media surface: one
+    /// material card, not a second oversized notch below the login UI.
+    static let mediaControlsWidth: CGFloat = 320
+    static let mediaCardHeight: CGFloat = 140
+    static let mediaControlsHeight: CGFloat = 178
+    static let mediaCardCornerRadius: CGFloat = 20
+    static let artworkSide: CGFloat = 48
+    static let artworkRadius: CGFloat = 11
+    static let auxiliaryPillHeight: CGFloat = 30
 
     static func widgetSize(hasMedia: Bool, hasAuxiliaryContent: Bool) -> CGSize {
         if hasMedia {
@@ -149,21 +148,26 @@ struct LockScreenMediaControlsView: View {
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Lock Screen Now Playing")
+        // The macOS lock screen presents these controls in its dark system
+        // appearance even when the desktop appearance is light. Applying the
+        // same environment keeps the material dark and the white glyphs
+        // legible in both the live lock screen and the snapshot harness.
+        .environment(\.colorScheme, .dark)
     }
 
     private func mediaCard(for state: NowPlayingState) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 artwork
                 VStack(alignment: .leading, spacing: 3) {
                     Text(state.title)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.white)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if let artist = state.artist, !artist.isEmpty {
                         Text(artist)
-                            .font(.system(size: 12, weight: .regular))
+                            .font(.system(size: 11, weight: .regular))
                             .foregroundStyle(Color.white.opacity(0.68))
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -171,48 +175,89 @@ struct LockScreenMediaControlsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Image(systemName: state.isPlaying ? "waveform" : "pause")
-                    .font(.system(size: 13, weight: .semibold))
+                Image(systemName: state.isPlaying ? "waveform" : "pause.fill")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.62))
                     .accessibilityHidden(true)
             }
             .frame(height: LockScreenPillMetrics.artworkSide)
 
-            progress(for: state)
-                .padding(.top, 13)
-
-            HStack {
-                Text(timeLabel(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed ?? 0))
-                Spacer(minLength: 0)
-                if let duration = state.duration {
-                    let elapsed = min(max(nowPlaying.currentElapsed(at: Date()) ?? state.elapsed ?? 0, 0), duration)
-                    Text("-\(timeLabel(max(duration - elapsed, 0)))")
-                }
-            }
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(0.52))
-            .padding(.top, 5)
+            progressRow(for: state)
+                .padding(.top, 9)
 
             transportRow(for: state)
-                .padding(.top, 9)
+                .padding(.top, 10)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .frame(width: LockScreenPillMetrics.mediaControlsWidth,
                height: LockScreenPillMetrics.mediaCardHeight)
-        // A restrained black surface keeps the widget legible over any
-        // wallpaper without repeating the rejected gradient/glass treatment.
+        // macOS's lock-screen surfaces use the system backdrop material. It
+        // keeps the wallpaper's light/dark character visible through the card
+        // while the hairline and shadow give it the same floating separation
+        // as Apple's own login affordances. There is deliberately no opaque
+        // black fill or hand-built gradient here.
         .background(
             RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                              style: .continuous)
-                .fill(Color.black.opacity(0.78))
+                .fill(.regularMaterial)
                 .overlay(
                     RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                                      style: .continuous)
-                        .stroke(Color.white.opacity(0.13), lineWidth: 0.75))
-                .shadow(color: Color.black.opacity(0.32), radius: 18, y: 8))
+                        .stroke(Color.white.opacity(0.22), lineWidth: 0.5))
+                .shadow(color: Color.black.opacity(0.22), radius: 18, y: 8))
         .clipShape(RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                                     style: .continuous))
+    }
+
+    /// Apple's lock-screen player keeps the elapsed/remaining labels on the
+    /// same horizontal line as the progress track. Keeping the labels beside
+    /// the track prevents the old three-row stack from pushing the transport
+    /// controls into the card's bottom edge on smaller displays.
+    @ViewBuilder
+    private func progressRow(for state: NowPlayingState) -> some View {
+        if state.isPlaying {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                progressRowBody(for: state, at: timeline.date)
+            }
+        } else {
+            progressRowBody(for: state, at: Date())
+        }
+    }
+
+    @ViewBuilder
+    private func progressRowBody(for state: NowPlayingState, at date: Date) -> some View {
+        let elapsed = nowPlaying.currentElapsed(at: date) ?? state.elapsed ?? 0
+        if let duration = state.duration, duration > 0 {
+            let boundedElapsed = min(max(elapsed, 0), duration)
+            HStack(spacing: 7) {
+                Text(timeLabel(boundedElapsed))
+                    .frame(width: 31, alignment: .leading)
+                progressTrack(duration: duration, elapsed: boundedElapsed)
+                Text("-\(timeLabel(max(duration - boundedElapsed, 0)))")
+                    .frame(width: 35, alignment: .trailing)
+            }
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(Color.white.opacity(0.58))
+            .frame(height: 12)
+        } else {
+            Capsule()
+                .fill(Color.white.opacity(0.24))
+                .frame(height: 3)
+        }
+    }
+
+    private func progressTrack(duration: TimeInterval, elapsed: TimeInterval) -> some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.24))
+                Capsule()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: geometry.size.width * elapsed / duration)
+            }
+        }
+        .frame(height: 3)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -258,39 +303,8 @@ struct LockScreenMediaControlsView: View {
         }
     }
 
-    @ViewBuilder
-    private func progress(for state: NowPlayingState) -> some View {
-        if let duration = state.duration, duration > 0 {
-            if state.isPlaying {
-                TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                    progressTrack(duration: duration, at: timeline.date)
-                }
-            } else {
-                progressTrack(duration: duration, at: Date())
-            }
-        } else {
-            Capsule()
-                .fill(Color.white.opacity(0.22))
-                .frame(height: 3)
-        }
-    }
-
-    private func progressTrack(duration: TimeInterval, at date: Date) -> some View {
-        let elapsed = min(max(nowPlaying.currentElapsed(at: date) ?? 0, 0), duration)
-        return GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.2))
-                Capsule()
-                    .fill(Color.white.opacity(0.9))
-                    .frame(width: geometry.size.width * elapsed / duration)
-            }
-        }
-        .frame(height: 3)
-        .accessibilityHidden(true)
-    }
-
     private func transportRow(for state: NowPlayingState) -> some View {
-        HStack(spacing: 34) {
+        HStack(spacing: 27) {
             transportButton("backward.end.fill", label: "Previous track", command: .previous)
             transportButton(state.isPlaying ? "pause.fill" : "play.fill",
                             label: state.isPlaying ? "Pause" : "Play",
@@ -360,8 +374,8 @@ private struct LockScreenActivityPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(Capsule().fill(Color.black.opacity(0.78)))
-        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        .background(.thinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
     }
 }
 
@@ -382,7 +396,7 @@ private struct LockScreenUnlockPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(Capsule().fill(Color.black.opacity(0.78)))
-        .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        .background(.thinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
     }
 }

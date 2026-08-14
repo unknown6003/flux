@@ -312,8 +312,8 @@ enum NotchSnapshot {
             showUnlockPill: true,
             showsMediaControls: true)
 
-        let panelSize = CGSize(width: LockScreenPillMetrics.mediaControlsWidth,
-                               height: LockScreenPillMetrics.mediaControlsHeight)
+        let panelSize = LockScreenPillMetrics.widgetSize(hasMedia: true,
+                                                         hasAuxiliaryContent: true)
         let root = ZStack {
             content
             LockScreenMediaControlsView(

@@ -135,11 +135,12 @@ private struct StaticEqualizerBars: View {
 /// Three stacked rows, top to bottom: artwork + title/artist + waveform,
 /// then the scrubber, then transport. Nothing here hardcodes a panel width —
 /// every row is built from flexible frames/`Spacer`s around a small number
-/// of fixed-size assets (the 56pt artwork tile, the ~33pt-wide waveform, icon
+/// of fixed-size assets (the 52pt artwork tile, the ~33pt-wide waveform, icon
 /// glyphs), so the whole thing lays out correctly whether the shell gives it
 /// the full expanded width or a narrower side-by-side slice.
 private struct NowPlayingExpandedView: View {
     @ObservedObject var service: NowPlayingService
+    @Environment(\.isNarrowPane) private var isNarrowPane
 
     @State private var isDragging = false
     @State private var dragValue: TimeInterval = 0
@@ -153,12 +154,6 @@ private struct NowPlayingExpandedView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Bug fix (M8): `NotchRootView`'s Duo layout gives this pane
-        // chrome's 16pt horizontal inset only on the panel's own outer edge
-        // (the artwork was nearly touching it), nothing on the inner edge
-        // against the divider — see `NotchDesign.paneInsets`'s own doc
-        // comment for why this is applied symmetrically.
-        .padding(.horizontal, NotchDesign.paneInsets)
     }
 
     private var emptyState: some View {
@@ -173,31 +168,28 @@ private struct NowPlayingExpandedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The `Spacer` is what makes this fill the panel instead of clinging to
-    /// its top edge.
-    ///
-    /// Every other widget is a list, so short content sitting at the top with
-    /// room below it looks entirely normal. This one is a fixed composition —
-    /// artwork, scrubber, transport — and with M12's single (taller) panel
-    /// size the same top-alignment left an obvious dead band under the
-    /// transport row, which reads as a layout bug rather than an empty list.
-    /// Anchoring the header to the top and the scrubber/transport pair to the
-    /// bottom puts the slack where a music player wants it, at any panel
-    /// height.
+    /// Alcove's player is a compact stack: the scrubber follows the artwork
+    /// immediately and the transport row sits below it. A flexible spacer
+    /// made the old player look vertically split, then overflow when the
+    /// drawer was brought back to Alcove's smaller footprint. Fixed row
+    /// heights keep this composition stable during the shell animation.
     private func content(for state: NowPlayingState) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             headerRow(state)
-            Spacer(minLength: 0)
+                .frame(height: 52, alignment: .top)
             scrubberSection(state)
+                .padding(.top, 4)
             transportRow(state)
+                .padding(.top, 5)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipped()
     }
 
     // MARK: Row 1 — artwork, title/artist, waveform
 
     private func headerRow(_ state: NowPlayingState) -> some View {
-        HStack(alignment: .top, spacing: NotchDesign.space3) {
+        HStack(alignment: .center, spacing: NotchDesign.space3) {
             FlippingArtwork(image: service.artwork, flipKey: AnyHashable(flipKey(for: state)))
 
             VStack(alignment: .leading, spacing: 2) {
@@ -210,8 +202,13 @@ private struct NowPlayingExpandedView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            WaveformVisualizer(isPlaying: state.isPlaying,
-                                gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
+            // Duo's Calendar pane is intentionally narrow. The waveform is a
+            // decorative affordance, so give that width back to the title and
+            // artist instead of allowing their marquee to start truncated.
+            if !isNarrowPane {
+                WaveformVisualizer(isPlaying: state.isPlaying,
+                                    gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
+            }
         }
     }
 
@@ -260,7 +257,7 @@ private struct NowPlayingExpandedView: View {
     private func interactiveScrubber(_ state: NowPlayingState, duration: TimeInterval, at date: Date) -> some View {
         let elapsed = min(max(isDragging ? dragValue : (service.currentElapsed(at: date) ?? 0), 0), duration)
         let remaining = max(duration - elapsed, 0)
-        return VStack(spacing: 4) {
+        return VStack(spacing: 2) {
             HStack {
                 Text(Self.format(elapsed))
                 Spacer()
@@ -324,6 +321,7 @@ private struct NowPlayingExpandedView: View {
             sourceButton(state)
             Spacer()
         }
+        .frame(height: 28)
     }
 
     /// `label` is required, not optional: these are glyph-only controls, so
@@ -335,7 +333,7 @@ private struct NowPlayingExpandedView: View {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: prominent ? .semibold : .medium))
                 .foregroundStyle(Color.white)
-                .frame(width: prominent ? 38 : 32, height: 30)
+                .frame(width: prominent ? 38 : 32, height: 28)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

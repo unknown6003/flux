@@ -15,25 +15,20 @@ enum NotchMetrics {
     /// while a live activity is current.
     static let wingWidth: CGFloat = 90
 
-    /// Alcove's width scale guide: 2.1x the camera housing — 420pt on the
-    /// representative 200pt notch used by the snapshot suite. The height is
-    /// held by `maxExpandedHeight` so page content never changes the shell.
-    static let expandedAspectRatio: CGFloat = 2.1
+    /// The smallest Alcove drawer width. It only applies to unusually narrow
+    /// simulated/notched displays; normal hardware derives its width from the
+    /// physical notch and the two Alcove wings below.
+    static let minimumExpandedWidth: CGFloat = 328
 
-    /// The shared Alcove drawer height. Every standard widget uses this same
-    /// visible footprint so switching pages never causes a subtle vertical
-    /// jump or leaves page-specific whitespace behind.
-    static let maxExpandedHeight: CGFloat = 190
+    /// Alcove's stable visible height. Every page, including Duo, uses this
+    /// same shell; content adapts inside it rather than resizing the notch.
+    static let maxExpandedHeight: CGFloat = 164
 
-    /// The extra width used by Alcove's side-by-side Now Playing + Calendar
-    /// layout. Duo is the one intentional two-pane exception to the standard
-    /// single-widget footprint.
-    static let duoExtraWidth: CGFloat = 220
-
-    /// The expanded width from the Alcove guide. The minimum keeps the drawer
-    /// usable on machines whose reported notch is narrower than the reference.
+    /// The exact shared Alcove width: physical notch plus one wing on each
+    /// side. Activity and expanded states therefore have one identical
+    /// horizontal footprint; only their content/height changes.
     static func expandedWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
-        max(notchWidth * expandedAspectRatio, 400)
+        max(notchWidth + wingWidth * 2, minimumExpandedWidth)
     }
 
     /// Alcove reserves the tallest content height for every standard page.
@@ -44,8 +39,7 @@ enum NotchMetrics {
     /// The visible height for one widget. The old implementation returned a
     /// different value for each widget, which made the notch visibly resize as
     /// pages changed. Content is now allowed to be compact inside one stable
-    /// Alcove envelope; Duo remains intentionally wider because it is a
-    /// two-pane layout.
+    /// Alcove envelope; Duo is composed responsively inside that same shell.
     static func expandedHeight(for _: WidgetID,
                                notchWidth: CGFloat,
                                style: NotchStyle = .alcove) -> CGFloat {
@@ -53,8 +47,8 @@ enum NotchMetrics {
     }
 
     static func duoWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+        // Duo is an internal composition, not a different shell size.
         expandedWidth(for: notchWidth, style: style)
-            + (style == .alcove ? duoExtraWidth : 0)
     }
 
     static func duoHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
@@ -64,8 +58,7 @@ enum NotchMetrics {
     /// The share of the expanded panel's *content* width that Duo view gives
     /// its Calendar pane; Now Playing takes the rest.
     ///
-    /// A fraction keeps both Duo panes balanced inside the dedicated wider
-    /// two-pane layout.
+    /// A fraction keeps both Duo panes balanced inside the shared shell.
     static let duoCalendarPaneFraction: CGFloat = 0.36
 
     /// Extra room reserved in the fixed panel/off-screen bounds — beyond the
@@ -84,9 +77,9 @@ enum NotchMetrics {
     /// `NSPanel` to, and `NotchSnapshot` sizes its off-screen capture window
     /// to — the one expanded footprint plus the shadow's bleed margin.
     ///
-    /// The envelope reserves the widest/tallest footprint of the selected
-    /// style. Standard Alcove widgets now use the same visible height; Duo is
-    /// intentionally wider because it contains two panes.
+    /// The envelope reserves the one stable Alcove footprint plus shadow bleed.
+    /// Duo deliberately does not widen it: its two panes are responsive inside
+    /// the same shell as every other page.
     ///
     /// Growing these bounds needs no compensating change to how the shape is
     /// positioned: `NotchWindowController.position` derives the panel origin
@@ -99,9 +92,7 @@ enum NotchMetrics {
     /// plain SwiftUI alignment. So the margin surfaces entirely below, and
     /// symmetrically to either side of, the visible shape.
     static func panelBounds(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGSize {
-        CGSize(width: max(expandedWidth(for: notchWidth, style: style),
-                          duoWidth(for: notchWidth, style: style)) + shadowMarginWidth,
-               height: max(expandedHeight(for: notchWidth, style: style),
-                           duoHeight(for: notchWidth, style: style)) + shadowMarginHeight)
+        CGSize(width: expandedWidth(for: notchWidth, style: style) + shadowMarginWidth,
+               height: expandedHeight(for: notchWidth, style: style) + shadowMarginHeight)
     }
 }
