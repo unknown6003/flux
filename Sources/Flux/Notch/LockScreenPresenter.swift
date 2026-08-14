@@ -25,18 +25,26 @@ enum LockScreenTransitionLogic {
     }
 }
 
-/// Keeps the companion widget in the same lower login lane across display
-/// sizes. The lock screen's clock/profile stack occupies the upper half; the
-/// media surface belongs just above the credential controls, not immediately
-/// below the notch. The 0.20 anchor and 0.10 lower floor move it decisively
-/// into the credential lane without changing the physical notch geometry.
+/// Keeps lock-screen widgets in two intentional lanes across display sizes.
+/// The music surface stays in its original higher lane; activity/unlock-only
+/// companions use the lower credential lane. Neither lane changes the physical
+/// notch geometry.
 enum LockScreenWidgetPositionLogic {
-    static let preferredCenterFraction: CGFloat = 0.20
-    static let minimumOriginFraction: CGFloat = 0.10
+    static let mediaPreferredCenterFraction: CGFloat = 0.28
+    static let mediaMinimumOriginFraction: CGFloat = 0.20
+    static let companionPreferredCenterFraction: CGFloat = 0.20
+    static let companionMinimumOriginFraction: CGFloat = 0.10
 
     static func originY(screenFrame: CGRect,
                         notchHeight: CGFloat,
-                        widgetHeight: CGFloat) -> CGFloat {
+                        widgetHeight: CGFloat,
+                        hasMedia: Bool) -> CGFloat {
+        let preferredCenterFraction = hasMedia
+            ? mediaPreferredCenterFraction
+            : companionPreferredCenterFraction
+        let minimumOriginFraction = hasMedia
+            ? mediaMinimumOriginFraction
+            : companionMinimumOriginFraction
         let preferredCenterY = screenFrame.minY + screenFrame.height * preferredCenterFraction
         let preferredOriginY = preferredCenterY - widgetHeight / 2
         let minimumOriginY = screenFrame.minY + screenFrame.height * minimumOriginFraction
@@ -907,9 +915,9 @@ final class LockScreenPresenter {
         resizeHostingView(hostingView, in: panel)
     }
 
-    /// Places the widget in the lower lock-screen login lane, close to the
-    /// profile/password controls instead of directly under the notch. The
-    /// pure positioning helper keeps the anchor and clamps testable.
+    /// Places the widget in the media lane when the player is visible, or in
+    /// the lower lock-screen login lane for companion-only content. The pure
+    /// positioning helper keeps both anchors and clamps testable.
     private func positionMediaPanel(_ panel: NSPanel,
                                     notchRect: NSRect,
                                     screenFrame: NSRect,
@@ -920,7 +928,8 @@ final class LockScreenPresenter {
         let originY = LockScreenWidgetPositionLogic.originY(
             screenFrame: screenFrame,
             notchHeight: notchRect.height,
-            widgetHeight: size.height)
+            widgetHeight: size.height,
+            hasMedia: hasMedia)
         let origin = NSPoint(
             x: notchRect.midX - size.width / 2,
             y: originY)
