@@ -191,9 +191,9 @@ private struct MarqueeContent: View {
 struct FlippingArtwork: View {
     let image: NSImage?
     let flipKey: AnyHashable
+    let side: CGFloat
 
-    private static let side: CGFloat = 52
-    private static let cornerRadius: CGFloat = 12
+    private static let cornerRadius: CGFloat = 13
     private static let halfDuration: Double = 0.175
 
     /// The keyframe-animated value: just the Y-axis rotation angle, in
@@ -222,9 +222,10 @@ struct FlippingArtwork: View {
     /// rather than a value captured back when it was scheduled.
     @State private var latestImage: NSImage?
 
-    init(image: NSImage?, flipKey: AnyHashable) {
+    init(image: NSImage?, flipKey: AnyHashable, side: CGFloat = 64) {
         self.image = image
         self.flipKey = flipKey
+        self.side = side
         _settledImage = State(initialValue: image)
         _committedKey = State(initialValue: flipKey)
         _latestImage = State(initialValue: image)
@@ -232,7 +233,7 @@ struct FlippingArtwork: View {
 
     var body: some View {
         Color.clear
-            .frame(width: Self.side, height: Self.side)
+            .frame(width: side, height: side)
             .keyframeAnimator(initialValue: FlipAngle(), trigger: flipKey) { _, value in
                 // Ignoring the placeholder `view` argument is deliberate:
                 // this flip needs to swap actual CONTENT (which image is
@@ -347,13 +348,13 @@ struct FlippingArtwork: View {
                     )
             }
         }
-        .frame(width: Self.side, height: Self.side)
-        .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: min(Self.cornerRadius, side * 0.24), style: .continuous))
         // A slight dim over the artwork itself — not the whole tile — so it
         // reads as a photograph against the dark panel rather than a framed
         // card.
         .overlay(
-            RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: min(Self.cornerRadius, side * 0.24), style: .continuous)
                 .fill(Color.black.opacity(0.06))
         )
         .shadow(color: .black.opacity(0.35), radius: 6, y: 3)
@@ -401,7 +402,7 @@ enum EqualizerAnimation {
 /// the compact strip's own animated/static split.
 struct WaveformVisualizer: View {
     let isPlaying: Bool
-    let gradientColors: (top: Color, bottom: Color)
+    let color: Color
 
     /// M8 audit fix: production wants `TimelineView(.animation)` — a
     /// display-link-driven schedule that tracks the real screen refresh rate
@@ -461,8 +462,7 @@ struct WaveformVisualizer: View {
         HStack(alignment: .bottom, spacing: Self.barSpacing) {
             ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
                 Capsule()
-                    .fill(LinearGradient(colors: [gradientColors.top, gradientColors.bottom],
-                                         startPoint: .top, endPoint: .bottom))
+                    .fill(color)
                     .frame(width: Self.barWidth, height: height)
             }
         }

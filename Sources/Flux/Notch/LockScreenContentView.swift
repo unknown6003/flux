@@ -192,20 +192,14 @@ struct LockScreenMediaControlsView: View {
         .padding(.vertical, 12)
         .frame(width: LockScreenPillMetrics.mediaControlsWidth,
                height: LockScreenPillMetrics.mediaCardHeight)
-        // macOS's lock-screen surfaces use the system backdrop material. It
-        // keeps the wallpaper's light/dark character visible through the card
-        // while the hairline and shadow give it the same floating separation
-        // as Apple's own login affordances. There is deliberately no opaque
-        // black fill or hand-built gradient here.
+        // Keep the lock-screen surface opaque black so it visually belongs to
+        // the physical notch instead of becoming another translucent/glass
+        // layer over the wallpaper.
         .background(
             RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                              style: .continuous)
-                .fill(.regularMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
-                                     style: .continuous)
-                        .stroke(Color.white.opacity(0.22), lineWidth: 0.5))
-                .shadow(color: Color.black.opacity(0.22), radius: 18, y: 8))
+                .fill(Color.black)
+                .shadow(color: Color.black.opacity(0.32), radius: 18, y: 8))
         .clipShape(RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                                     style: .continuous))
     }
@@ -374,7 +368,7 @@ private struct LockScreenActivityPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(.thinMaterial, in: Capsule())
+        .background(Color.black, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
     }
 }
@@ -396,7 +390,7 @@ private struct LockScreenUnlockPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(.thinMaterial, in: Capsule())
+        .background(Color.black, in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
     }
 }
