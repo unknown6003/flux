@@ -28,10 +28,10 @@ enum LockScreenTransitionLogic {
 /// Keeps the companion widget in the same lower login lane across display
 /// sizes. The lock screen's clock/profile stack occupies the upper half; the
 /// media surface belongs just above the credential controls, not immediately
-/// below the notch. The 0.32 anchor leaves a deliberate visual gap below the
+/// below the notch. The 0.28 anchor leaves a deliberate visual gap below the
 /// profile stack without changing the physical notch geometry.
 enum LockScreenWidgetPositionLogic {
-    static let preferredCenterFraction: CGFloat = 0.32
+    static let preferredCenterFraction: CGFloat = 0.28
     static let minimumOriginFraction: CGFloat = 0.20
 
     static func originY(screenFrame: CGRect,
