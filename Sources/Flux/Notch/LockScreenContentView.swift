@@ -115,6 +115,11 @@ struct LockScreenMediaControlsView: View {
     let allowActivities: Bool
     let showUnlockPill: Bool
     let onCommand: (NowPlayingCommand) -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var prominentControlForeground: Color {
+        colorScheme == .dark ? .black : .white
+    }
 
     var body: some View {
         let hasMedia = LockScreenMediaControlLogic.shouldShow(
@@ -148,11 +153,6 @@ struct LockScreenMediaControlsView: View {
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Lock Screen Now Playing")
-        // The macOS lock screen presents these controls in its dark system
-        // appearance even when the desktop appearance is light. Applying the
-        // same environment keeps the glass dark and the white glyphs legible
-        // in both the live lock screen and the snapshot harness.
-        .environment(\.colorScheme, .dark)
     }
 
     private func mediaCard(for state: NowPlayingState) -> some View {
@@ -162,13 +162,13 @@ struct LockScreenMediaControlsView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(state.title)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if let artist = state.artist, !artist.isEmpty {
                         Text(artist)
                             .font(.system(size: 11, weight: .regular))
-                            .foregroundStyle(Color.white.opacity(0.68))
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
@@ -177,7 +177,7 @@ struct LockScreenMediaControlsView: View {
 
                 Image(systemName: state.isPlaying ? "waveform" : "pause.fill")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.62))
+                    .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
             .frame(height: LockScreenPillMetrics.artworkSide)
@@ -195,7 +195,6 @@ struct LockScreenMediaControlsView: View {
         .lockScreenGlass(
             in: RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
                                  style: .continuous))
-        .shadow(color: Color.black.opacity(0.24), radius: 18, y: 8)
     }
 
     /// Apple's lock-screen player keeps the elapsed/remaining labels on the
@@ -226,11 +225,11 @@ struct LockScreenMediaControlsView: View {
                     .frame(width: 35, alignment: .trailing)
             }
             .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(Color.white.opacity(0.58))
+            .foregroundStyle(.secondary)
             .frame(height: 12)
         } else {
             Capsule()
-                .fill(Color.white.opacity(0.24))
+                .fill(Color.primary.opacity(0.24))
                 .frame(height: 3)
         }
     }
@@ -238,9 +237,9 @@ struct LockScreenMediaControlsView: View {
     private func progressTrack(duration: TimeInterval, elapsed: TimeInterval) -> some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.24))
+                Capsule().fill(Color.primary.opacity(0.24))
                 Capsule()
-                    .fill(Color.white.opacity(0.9))
+                    .fill(Color.primary.opacity(0.9))
                     .frame(width: geometry.size.width * elapsed / duration)
             }
         }
@@ -281,13 +280,13 @@ struct LockScreenMediaControlsView: View {
         } else {
             RoundedRectangle(cornerRadius: LockScreenPillMetrics.artworkRadius,
                              style: .continuous)
-                .fill(Color.white.opacity(0.12))
+                .fill(Color.primary.opacity(0.12))
                 .frame(width: LockScreenPillMetrics.artworkSide,
                        height: LockScreenPillMetrics.artworkSide)
                 .overlay(
                     Image(systemName: "music.note")
                         .font(.system(size: 18))
-                        .foregroundStyle(Color.white.opacity(0.58)))
+                        .foregroundStyle(.secondary))
         }
     }
 
@@ -311,13 +310,13 @@ struct LockScreenMediaControlsView: View {
             if prominent {
                 Image(systemName: systemName)
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(prominentControlForeground)
                     .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.white))
+                    .background(Circle().fill(.primary))
             } else {
                 Image(systemName: systemName)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(.primary)
                     .frame(width: 36, height: 36)
             }
         }
@@ -382,11 +381,11 @@ private struct LockScreenActivityPill: View {
             if let systemName {
                 Image(systemName: systemName)
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                    .foregroundStyle(.secondary)
             }
             Text(caption)
                 .font(NotchDesign.captionFont)
-                .foregroundStyle(Color.white)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
@@ -406,10 +405,10 @@ private struct LockScreenUnlockPill: View {
         HStack(spacing: NotchDesign.space1) {
             Image(systemName: "lock.fill")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(.secondary)
             Text(Self.label)
                 .font(NotchDesign.captionFont)
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)

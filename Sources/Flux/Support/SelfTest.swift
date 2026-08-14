@@ -2296,18 +2296,33 @@ enum SelfTest {
               && mediaWidgetWithPillsSize.height > mediaWidgetSize.height,
               "LockScreenPillMetrics: the media surface has one stable width and only grows for supporting pills")
         let loginFrame = CGRect(x: 0, y: 0, width: 900, height: 900)
-        let lockWidgetOrigin = LockScreenWidgetPositionLogic.originY(
+        let mediaWidgetOrigin = LockScreenWidgetPositionLogic.originY(
             screenFrame: loginFrame,
             notchHeight: 32,
-            widgetHeight: mediaWidgetWithPillsSize.height)
-        check(abs(LockScreenWidgetPositionLogic.preferredCenterFraction - 0.20) < 0.001,
-              "LockScreenWidgetPositionLogic: the widget uses the lower 0.20 login anchor")
-        check(abs(LockScreenWidgetPositionLogic.minimumOriginFraction - 0.10) < 0.001,
-              "LockScreenWidgetPositionLogic: the lower floor is 0.10 so the anchor is not held too high")
-        check(lockWidgetOrigin < loginFrame.height * 0.16,
-              "LockScreenWidgetPositionLogic: the widget sits decisively low in the credential lane")
-        check(lockWidgetOrigin >= loginFrame.height * LockScreenWidgetPositionLogic.minimumOriginFraction,
-              "LockScreenWidgetPositionLogic: the lower lane remains above the bottom edge")
+            widgetHeight: mediaWidgetWithPillsSize.height,
+            hasMedia: true)
+        let companionWidgetSize = LockScreenPillMetrics.widgetSize(
+            hasMedia: false, hasAuxiliaryContent: true)
+        let companionWidgetOrigin = LockScreenWidgetPositionLogic.originY(
+            screenFrame: loginFrame,
+            notchHeight: 32,
+            widgetHeight: companionWidgetSize.height,
+            hasMedia: false)
+        check(abs(LockScreenWidgetPositionLogic.mediaPreferredCenterFraction - 0.28) < 0.001,
+              "LockScreenWidgetPositionLogic: the music player keeps the 0.28 login anchor")
+        check(abs(LockScreenWidgetPositionLogic.mediaMinimumOriginFraction - 0.20) < 0.001,
+              "LockScreenWidgetPositionLogic: the music player keeps its higher 0.20 floor")
+        check(abs(LockScreenWidgetPositionLogic.companionPreferredCenterFraction - 0.20) < 0.001,
+              "LockScreenWidgetPositionLogic: companion widgets use the lower 0.20 anchor")
+        check(abs(LockScreenWidgetPositionLogic.companionMinimumOriginFraction - 0.10) < 0.001,
+              "LockScreenWidgetPositionLogic: companion widgets use the 0.10 lower floor")
+        check(mediaWidgetOrigin > companionWidgetOrigin,
+              "LockScreenWidgetPositionLogic: the music player remains higher than companion-only widgets")
+        check(companionWidgetOrigin < loginFrame.height * 0.20,
+              "LockScreenWidgetPositionLogic: companion-only widgets sit below the old higher lane")
+        check(mediaWidgetOrigin >= loginFrame.height * LockScreenWidgetPositionLogic.mediaMinimumOriginFraction
+              && companionWidgetOrigin >= loginFrame.height * LockScreenWidgetPositionLogic.companionMinimumOriginFraction,
+              "LockScreenWidgetPositionLogic: both lanes remain above the bottom edge")
 
         // --- M6: NotchActivityRouter — timer completion/ambient translation,
         // driven purely through a real (but headless) TimerService's own
