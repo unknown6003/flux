@@ -220,13 +220,14 @@ private struct SettingsDetailHeader: View {
     }
 }
 
-/// AppKit's material is what gives Alcove its window-level glass and lets the
-/// grouped cards remain light enough to read in both appearances.
+/// AppKit's semantic window material gives Alcove its native window-level
+/// surface. Light-mode cards use stronger semantic tokens on top so text does
+/// not depend on an unpredictable desktop backdrop to remain readable.
 private struct SettingsMaterialBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
+        view.material = .windowBackground
+        view.blendingMode = .withinWindow
         view.state = .active
         view.wantsLayer = true
         view.layer?.cornerRadius = 14
@@ -235,6 +236,8 @@ private struct SettingsMaterialBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = .windowBackground
+        nsView.blendingMode = .withinWindow
         nsView.state = .active
     }
 }

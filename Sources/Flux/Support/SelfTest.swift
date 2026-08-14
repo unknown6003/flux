@@ -2300,6 +2300,8 @@ enum SelfTest {
             screenFrame: loginFrame,
             notchHeight: 32,
             widgetHeight: mediaWidgetWithPillsSize.height)
+        check(abs(LockScreenWidgetPositionLogic.preferredCenterFraction - 0.28) < 0.001,
+              "LockScreenWidgetPositionLogic: the widget uses the requested 0.28 login anchor")
         check(lockWidgetOrigin < loginFrame.height * 0.38,
               "LockScreenWidgetPositionLogic: the widget sits below the old center lane, closer to credentials")
         check(lockWidgetOrigin >= loginFrame.height * LockScreenWidgetPositionLogic.minimumOriginFraction,
