@@ -340,22 +340,27 @@ struct LockScreenMediaControlsView: View {
     }
 }
 
-/// Uses Apple's Liquid Glass compositor on a real macOS 26 lock screen. The
-/// off-screen snapshot harness has no wallpaper/backdrop to lens and produces
-/// false gray bands, so snapshots deliberately use the stable semantic
-/// material fallback to keep visual review honest. Older macOS versions use
-/// that same native material fallback at runtime.
+/// Uses Apple's Liquid Glass compositor on a real macOS 26 lock screen when
+/// the app is built with the macOS 26 SDK. The release runner still builds
+/// against the macOS 15 SDK, so the newer symbol is isolated behind a compiler
+/// check and older builds retain the same native translucent material surface.
+/// The off-screen snapshot harness has no wallpaper/backdrop to lens and uses
+/// that material fallback deliberately to keep visual review honest.
 private struct LockScreenGlassModifier<S: Shape>: ViewModifier {
     let shape: S
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     @ViewBuilder
     func body(content: Content) -> some View {
+#if compiler(>=6.2)
         if #available(macOS 26.0, *), !isSnapshotRender {
             content.glassEffect(.regular, in: shape)
         } else {
             content.background(.regularMaterial, in: shape)
         }
+#else
+        content.background(.regularMaterial, in: shape)
+#endif
     }
 }
 
