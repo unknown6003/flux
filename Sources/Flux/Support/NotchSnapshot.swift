@@ -324,7 +324,12 @@ enum NotchSnapshot {
                 showUnlockPill: true) { _ in }
         }
         .frame(width: panelSize.width, height: panelSize.height, alignment: .center)
-        return (AnyView(root), panelSize, makeTempShelfDirectory())
+        // Keep the lock-screen fixture on the deterministic material path as
+        // well. The real macOS 26 Liquid Glass compositor needs a live
+        // wallpaper-backed window; the off-screen renderer has no backdrop and
+        // otherwise produces false lensing bands in review snapshots.
+        let snapshotRoot = root.environment(\.isSnapshotRender, true)
+        return (AnyView(snapshotRoot), panelSize, makeTempShelfDirectory())
     }
 
     /// Decodes the checked-in `streamFullSnapshotJSON` fixture (see

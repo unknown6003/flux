@@ -198,7 +198,7 @@ every widget — the items below need a real notched Mac.
       Confirm a *plain* click (no option key) right after still does the
       ordinary open/close toggle, unaffected.
 
-## M9/M15 — Alcove lock-screen parity: live media, controls, solid-black surfaces, unlock pill
+## M9/M15 — Alcove lock-screen parity: live media, controls, Liquid Glass surfaces, unlock pill
 
 Turn on "Show Flux on the lock screen" in Settings → Lock Screen before
 any of these — every item below assumes the master toggle is already on, and
@@ -206,7 +206,7 @@ the four sub-toggles beneath it are all on unless a specific item says
 otherwise.
 
 - [ ] **Lock with music playing**: start something playing, lock the screen,
-      and confirm the solid-black media card appears below the notch silhouette with
+      and confirm the native Liquid Glass media card appears below the notch silhouette with
       the right artwork/title/artist and previous/play/next controls, fading
       in over the notch silhouette rather than snapping into place. Skip/
       pause from another device (or just let the track change) and confirm
@@ -230,7 +230,7 @@ otherwise.
       (not before, not noticeably after). Turn the toggle off and confirm
       unlock is silent.
 - [ ] **Unlock pill**: turn on "Unlock pill," lock the screen, and confirm a
-      black pill reading "Press any key to unlock" with a padlock glyph shows
+      translucent Liquid Glass pill reading "Press any key to unlock" with a padlock glyph shows
       below whatever other pills are present.
 - [ ] **Activity allow-list respected**: turn off "Now Playing" (leaving
       "Notifications" on) with music playing and a live activity both
@@ -250,10 +250,11 @@ otherwise.
       the media card. Confirm there is no highlight or button feedback and
       typing your password to unlock still works exactly as if none of this
       were showing.
-- [ ] **Solid-black treatment**: view the lock screen and expanded notch in
-      both light and dark wallpaper. Confirm the surfaces remain a consistent
-      black that blends into the physical notch, with no material, gradient, or
-      bright border. The collapsed notch should remain seamless and shadow-free.
+- [ ] **Liquid Glass treatment**: view the lock screen in both light and dark
+      wallpaper. Confirm the media/activity/unlock surfaces remain translucent
+      and legible against the backdrop, using Apple's native glass treatment
+      without a hand-built gradient or opaque fill. The physical collapsed notch
+      remains solid black, seamless, and shadow-free.
 - [ ] **Master toggle off mid-lock**: while locked with content showing, have
       another device/session turn the master "Show on the lock screen" toggle
       off (or disable the notch panel entirely) — or simulate by unlocking,

@@ -125,9 +125,9 @@ arrangement across launches.
   passwords and other sensitive one-time text; nothing is ever written to
   disk, and password-manager-marked copies (the `nspasteboard.org`
   concealed/transient convention) are never captured at all.
-- **Lock screen** — optionally keeps the notch silhouette and
-  solid-black surfaces visible on the macOS lock screen. When something is playing,
-  the Now Playing card shows artwork/title/artist plus iOS-style
+- **Lock screen** — optionally keeps the solid-black notch silhouette and
+  native Liquid Glass surfaces visible on the macOS lock screen. When something
+  is playing, the Now Playing card shows artwork/title/artist plus iOS-style
   previous/play-next controls; the card is the only interactive overlay and
   the rest of the lock-screen UI remains mouse-transparent. The current live
   activity appears as a caption pill (battery, Bluetooth, calendar, timer,

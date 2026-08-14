@@ -40,22 +40,22 @@ enum Theme {
     static let surfaceRaised = dynamic(light: rgb(0xEFEBE5), dark: rgb(0x272729))
 
     static let textPrimary = dynamic(light: rgb(0x1A1A1C), dark: rgb(0xF5F4F2))
-    static let textSecondary = dynamic(light: rgb(0x6C675F), dark: rgb(0x9B968E))
+    static let textSecondary = dynamic(light: rgb(0x5C5852), dark: rgb(0x9B968E))
 
     /// Hairline separators / card borders — a whisper of the opposite tone.
-    static let hairline = dynamic(light: NSColor.black.withAlphaComponent(0.09),
+    static let hairline = dynamic(light: NSColor.black.withAlphaComponent(0.14),
                                   dark: NSColor.white.withAlphaComponent(0.10))
 
     /// Material-window tokens used by the Alcove-style Settings surface. They
-    /// stay translucent so the native window material can breathe through the
-    /// sidebar and grouped cards instead of producing a second opaque canvas.
-    static let settingsCard = dynamic(light: NSColor.white.withAlphaComponent(0.46),
+    /// retain a restrained translucency while keeping light-mode text and
+    /// controls on a stable, high-contrast surface.
+    static let settingsCard = dynamic(light: NSColor.white.withAlphaComponent(0.90),
                                       dark: NSColor.white.withAlphaComponent(0.09))
-    static let settingsSidebar = dynamic(light: NSColor.white.withAlphaComponent(0.24),
+    static let settingsSidebar = dynamic(light: rgb(0xEEEAE4),
                                          dark: NSColor.black.withAlphaComponent(0.16))
-    static let settingsSelection = dynamic(light: NSColor.white.withAlphaComponent(0.56),
+    static let settingsSelection = dynamic(light: rgb(0xE2DDD4),
                                            dark: NSColor.white.withAlphaComponent(0.13))
-    static let settingsDivider = dynamic(light: NSColor.black.withAlphaComponent(0.10),
+    static let settingsDivider = dynamic(light: rgb(0xD0CAC1),
                                          dark: NSColor.white.withAlphaComponent(0.11))
 
     /// 10% — Industrial Amber, the single accent. Used for fills, tints, the

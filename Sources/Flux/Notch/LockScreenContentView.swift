@@ -81,12 +81,12 @@ enum LockScreenPillMetrics {
     static let maxWidth: CGFloat = 260
 
     /// Compact lock-screen proportions based on Apple's media surface: one
-    /// material card, not a second oversized notch below the login UI.
+    /// glass card, not a second oversized notch below the login UI.
     static let mediaControlsWidth: CGFloat = 320
     static let mediaCardHeight: CGFloat = 140
     static let mediaControlsHeight: CGFloat = 178
     static let mediaCardCornerRadius: CGFloat = 20
-    static let artworkSide: CGFloat = 48
+    static let artworkSide: CGFloat = 56
     static let artworkRadius: CGFloat = 11
     static let auxiliaryPillHeight: CGFloat = 30
 
@@ -150,8 +150,8 @@ struct LockScreenMediaControlsView: View {
         .accessibilityLabel("Lock Screen Now Playing")
         // The macOS lock screen presents these controls in its dark system
         // appearance even when the desktop appearance is light. Applying the
-        // same environment keeps the material dark and the white glyphs
-        // legible in both the live lock screen and the snapshot harness.
+        // same environment keeps the glass dark and the white glyphs legible
+        // in both the live lock screen and the snapshot harness.
         .environment(\.colorScheme, .dark)
     }
 
@@ -183,25 +183,19 @@ struct LockScreenMediaControlsView: View {
             .frame(height: LockScreenPillMetrics.artworkSide)
 
             progressRow(for: state)
-                .padding(.top, 9)
+                .padding(.top, 7)
 
             transportRow(for: state)
-                .padding(.top, 10)
+                .padding(.top, 5)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 10)
         .frame(width: LockScreenPillMetrics.mediaControlsWidth,
                height: LockScreenPillMetrics.mediaCardHeight)
-        // Keep the lock-screen surface opaque black so it visually belongs to
-        // the physical notch instead of becoming another translucent/glass
-        // layer over the wallpaper.
-        .background(
-            RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
-                             style: .continuous)
-                .fill(Color.black)
-                .shadow(color: Color.black.opacity(0.32), radius: 18, y: 8))
-        .clipShape(RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
-                                    style: .continuous))
+        .lockScreenGlass(
+            in: RoundedRectangle(cornerRadius: LockScreenPillMetrics.mediaCardCornerRadius,
+                                 style: .continuous))
+        .shadow(color: Color.black.opacity(0.24), radius: 18, y: 8)
     }
 
     /// Apple's lock-screen player keeps the elapsed/remaining labels on the
@@ -298,7 +292,7 @@ struct LockScreenMediaControlsView: View {
     }
 
     private func transportRow(for state: NowPlayingState) -> some View {
-        HStack(spacing: 27) {
+        HStack(spacing: 24) {
             transportButton("backward.end.fill", label: "Previous track", command: .previous)
             transportButton(state.isPlaying ? "pause.fill" : "play.fill",
                             label: state.isPlaying ? "Pause" : "Play",
@@ -346,6 +340,31 @@ struct LockScreenMediaControlsView: View {
     }
 }
 
+/// Uses Apple's Liquid Glass compositor on a real macOS 26 lock screen. The
+/// off-screen snapshot harness has no wallpaper/backdrop to lens and produces
+/// false gray bands, so snapshots deliberately use the stable semantic
+/// material fallback to keep visual review honest. Older macOS versions use
+/// that same native material fallback at runtime.
+private struct LockScreenGlassModifier<S: Shape>: ViewModifier {
+    let shape: S
+    @Environment(\.isSnapshotRender) private var isSnapshotRender
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *), !isSnapshotRender {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.regularMaterial, in: shape)
+        }
+    }
+}
+
+private extension View {
+    func lockScreenGlass<S: Shape>(in shape: S) -> some View {
+        modifier(LockScreenGlassModifier(shape: shape))
+    }
+}
+
 /// The live-activity caption pill: an icon (when the activity carries one)
 /// plus its plain-text caption. It stays visually subordinate to the media
 /// surface and is kept in the same centered widget lane.
@@ -368,8 +387,7 @@ private struct LockScreenActivityPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(Color.black, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
+        .lockScreenGlass(in: Capsule())
     }
 }
 
@@ -390,7 +408,6 @@ private struct LockScreenUnlockPill: View {
         }
         .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .background(Color.black, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.5))
+        .lockScreenGlass(in: Capsule())
     }
 }
