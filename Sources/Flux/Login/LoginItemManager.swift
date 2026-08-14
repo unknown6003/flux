@@ -30,6 +30,10 @@ enum LoginItemManager {
     @discardableResult
     static func setEnabled(_ enabled: Bool) -> Bool {
         guard isBundledApplication else {
+            // The bundled-app migration below owns cleanup of any legacy
+            // registration. A bare executable cannot prove which registered
+            // service `SMAppService.mainApp` refers to, so it must never
+            // unregister the user's packaged Flux.app from this path.
             Log.login.error("Ignoring login-item change from an unbundled executable; launch Flux.app to manage autostart")
             return false
         }

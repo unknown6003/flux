@@ -132,12 +132,11 @@ private struct StaticEqualizerBars: View {
 
 // MARK: - Expanded panel view
 
-/// Three stacked rows, top to bottom: artwork + title/artist + waveform,
-/// then the scrubber, then transport. Nothing here hardcodes a panel width —
-/// every row is built from flexible frames/`Spacer`s around a small number
-/// of fixed-size assets (the 52pt artwork tile, the ~33pt-wide waveform, icon
-/// glyphs), so the whole thing lays out correctly whether the shell gives it
-/// the full expanded width or a narrower side-by-side slice.
+/// A compact two-row composition: enlarged artwork and track metadata share
+/// the first row with the scrubber, while transport controls occupy a second
+/// row. Keeping the scrubber beside the metadata is intentional — the shell's
+/// expanded height is fixed, so giving each piece its own full-width row makes
+/// the transport clip at the bottom.
 private struct NowPlayingExpandedView: View {
     @ObservedObject var service: NowPlayingService
     @Environment(\.isNarrowPane) private var isNarrowPane
@@ -168,17 +167,14 @@ private struct NowPlayingExpandedView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Alcove's player is a compact stack: the scrubber follows the artwork
-    /// immediately and the transport row sits below it. A flexible spacer
-    /// made the old player look vertically split, then overflow when the
-    /// drawer was brought back to Alcove's smaller footprint. Fixed row
-    /// heights keep this composition stable during the shell animation.
     private func content(for state: NowPlayingState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             headerRow(state)
-                .frame(height: 52, alignment: .top)
-            scrubberSection(state)
-                .padding(.top, 4)
+                .frame(height: 64, alignment: .top)
+            // The shell height is fixed. Let the transport row consume the
+            // remaining safe space so it sits against the chrome's bottom
+            // inset instead of leaving an accidental dead band below it.
+            Spacer(minLength: 0)
             transportRow(state)
                 .padding(.top, 5)
         }
@@ -190,7 +186,9 @@ private struct NowPlayingExpandedView: View {
 
     private func headerRow(_ state: NowPlayingState) -> some View {
         HStack(alignment: .center, spacing: NotchDesign.space3) {
-            FlippingArtwork(image: service.artwork, flipKey: AnyHashable(flipKey(for: state)))
+            FlippingArtwork(image: service.artwork,
+                            flipKey: AnyHashable(flipKey(for: state)),
+                            side: 64)
 
             VStack(alignment: .leading, spacing: 2) {
                 MarqueeText(text: state.title, font: NotchDesign.titleFont,
@@ -199,15 +197,17 @@ private struct NowPlayingExpandedView: View {
                     MarqueeText(text: artist, font: .system(size: 13),
                                 color: Color.white.opacity(NotchDesign.secondaryOpacity), height: 16)
                 }
+                Spacer(minLength: 0)
+                scrubberSection(state)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: 64, alignment: .leading)
 
             // Duo's Calendar pane is intentionally narrow. The waveform is a
             // decorative affordance, so give that width back to the title and
             // artist instead of allowing their marquee to start truncated.
             if !isNarrowPane {
                 WaveformVisualizer(isPlaying: state.isPlaying,
-                                    gradientColors: ArtworkPalette.waveformGradientColors(for: service.artwork))
+                                    color: .white.opacity(0.85))
             }
         }
     }
