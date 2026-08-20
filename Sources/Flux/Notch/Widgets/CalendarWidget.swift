@@ -168,7 +168,7 @@ private struct CalendarExpandedView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
                 .font(NotchDesign.microFont)
-                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                .foregroundStyle(NotchDesign.tertiaryColor)
                 .tracking(0.7)
             ForEach(events) { event in
                 EventRow(event: event, compact: compact)
@@ -203,24 +203,24 @@ private struct EventRow: View {
             // calendar color" and shouldn't borrow the accent just to have
             // *a* color.
             Circle()
-                .fill(event.calendarColor.map { Color(nsColor: $0) } ?? Color.white.opacity(NotchDesign.tertiaryOpacity))
+                .fill(event.calendarColor.map { Color(nsColor: $0) } ?? NotchDesign.tertiaryColor)
                 .frame(width: 7, height: 7)
                 .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.title)
                     .font(NotchDesign.bodyFont)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(NotchDesign.primaryColor)
                     .lineLimit(1)
                 HStack(spacing: NotchDesign.space1) {
                     Text(timeRange)
                         .font(NotchDesign.monoDigitsCaption)
-                        .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                        .foregroundStyle(NotchDesign.secondaryColor)
                         .lineLimit(1)
                     if !compact, let location = event.location {
                         Text("· \(location)")
                             .font(.caption2)
-                            .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                            .foregroundStyle(NotchDesign.tertiaryColor)
                             .lineLimit(1)
                     }
                 }

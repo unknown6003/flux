@@ -348,12 +348,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// preference itself displayed and persisted as off.
     private func configureNotch(notchEnabled: Bool? = nil) {
         let notchOn = notchEnabled ?? settings.notchEnabled
+        // Give transient Flux-owned overlays (Arrange Mode and overflow
+        // hints) the same appearance as the persistent Settings/notch windows.
+        NSApp.appearance = settings.appearance.nsAppearance
         // Applied before `setEnabled` so a fresh panel is built with the
         // right collection behavior from the start, rather than defaulting
         // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
         // tick and then immediately being corrected.
         notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
         notchWindow.setStyle(settings.notchStyle)
+        notchWindow.setAppearance(settings.appearance)
         notchWindow.setEnabled(notchOn)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
         notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
@@ -471,6 +475,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchStyle
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.setStyle(value) }
+            .store(in: &cancellables)
+
+        settings.$appearance
+            .dropFirst()
+            .sink { [weak self] value in
+                NSApp.appearance = value.nsAppearance
+                self?.notchWindow.setAppearance(value)
+            }
             .store(in: &cancellables)
 
         settings.$notchWidgetOrder

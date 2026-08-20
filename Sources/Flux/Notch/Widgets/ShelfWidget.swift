@@ -91,13 +91,13 @@ private struct ShelfExpandedView: View {
         HStack {
             Text("File Shelf")
                 .font(NotchDesign.captionFont.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
             Spacer()
             if !store.items.isEmpty {
                 Button("Clear All") { store.removeAll() }
                     .buttonStyle(.plain)
                     .font(NotchDesign.captionFont)
-                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                    .foregroundStyle(NotchDesign.tertiaryColor)
             }
         }
     }
@@ -142,13 +142,13 @@ private struct ShelfTileView: View {
             thumbnail
             Text(item.fileName)
                 .font(.system(size: 10))
-                .foregroundStyle(Color.white.opacity(0.8))
+                .foregroundStyle(NotchDesign.primaryColor.opacity(0.8))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: 64)
             Text(Formatters.age(from: item.addedAt))
                 .font(.system(size: 9))
-                .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                .foregroundStyle(NotchDesign.tertiaryColor)
         }
         .frame(width: 64)
         .contentShape(Rectangle())
@@ -179,7 +179,7 @@ private struct ShelfTileView: View {
                 } else {
                     Rectangle()
                         .fill(Theme.surfaceRaisedColor)
-                        .overlay(Image(systemName: "doc.fill").foregroundStyle(Color.white.opacity(0.35)))
+                        .overlay(Image(systemName: "doc.fill").foregroundStyle(NotchDesign.primaryColor.opacity(0.35)))
                 }
             }
             .frame(width: 44, height: 44)
@@ -194,7 +194,7 @@ private struct ShelfTileView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundStyle(.white, Color.black.opacity(0.6))
+                    .foregroundStyle(NotchDesign.primaryColor, Color.black.opacity(0.6))
             }
             .buttonStyle(.plain)
             .offset(x: 6, y: -6)

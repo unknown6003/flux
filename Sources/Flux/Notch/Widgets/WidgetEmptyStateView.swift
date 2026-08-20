@@ -13,10 +13,10 @@ struct WidgetEmptyStateView: View {
         VStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 20))
-                .foregroundStyle(Color.white.opacity(NotchDesign.quaternaryOpacity))
+                .foregroundStyle(NotchDesign.quaternaryColor)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

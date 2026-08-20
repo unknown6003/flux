@@ -1,6 +1,35 @@
 import AppKit
 import SwiftUI
 
+/// The appearance used by Flux-owned windows and the notch.
+///
+/// `.dark` is deliberately the first and default case so existing installs
+/// keep Flux's original look. `.system` leaves the window appearance unset,
+/// which lets macOS choose the current system appearance.
+enum FluxAppearance: String, CaseIterable, Identifiable, Equatable {
+    case dark
+    case light
+    case system
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .dark: return "Dark"
+        case .light: return "Light"
+        case .system: return "Follow System"
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .dark: return NSAppearance(named: .darkAqua)
+        case .light: return NSAppearance(named: .aqua)
+        case .system: return nil
+        }
+    }
+}
+
 /// Flux's design system.
 ///
 /// A small, *semantic* token set built on the brand palette — **Matte Black**
@@ -45,6 +74,17 @@ enum Theme {
     /// Hairline separators / card borders — a whisper of the opposite tone.
     static let hairline = dynamic(light: NSColor.black.withAlphaComponent(0.14),
                                   dark: NSColor.white.withAlphaComponent(0.10))
+
+    /// Small controls and separators inside the notch.
+    static let notchControlFill = dynamic(light: NSColor.black.withAlphaComponent(0.08),
+                                          dark: NSColor.white.withAlphaComponent(0.14))
+    /// Inverse colours for high-contrast primary actions in the notch.
+    static let notchInverseFill = dynamic(light: NSColor.black,
+                                          dark: NSColor.white)
+    static let notchInverseForeground = dynamic(light: NSColor.white,
+                                                dark: NSColor.black)
+    static let notchShadow = dynamic(light: NSColor.black.withAlphaComponent(0.22),
+                                     dark: NSColor.black.withAlphaComponent(0.55))
 
     /// Material-window tokens used by the Alcove-style Settings surface. They
     /// retain a restrained translucency while keeping light-mode text and
@@ -97,6 +137,10 @@ enum Theme {
     static var textPrimaryColor: Color { Color(nsColor: textPrimary) }
     static var textSecondaryColor: Color { Color(nsColor: textSecondary) }
     static var hairlineColor: Color { Color(nsColor: hairline) }
+    static var notchControlFillColor: Color { Color(nsColor: notchControlFill) }
+    static var notchInverseFillColor: Color { Color(nsColor: notchInverseFill) }
+    static var notchInverseForegroundColor: Color { Color(nsColor: notchInverseForeground) }
+    static var notchShadowColor: Color { Color(nsColor: notchShadow) }
     static var settingsCardColor: Color { Color(nsColor: settingsCard) }
     static var settingsSidebarColor: Color { Color(nsColor: settingsSidebar) }
     static var settingsSelectionColor: Color { Color(nsColor: settingsSelection) }

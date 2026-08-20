@@ -187,7 +187,7 @@ private struct TimersExpandedView: View {
             // the notch UI (`NotchRootView`'s gauge track, `EventRow`'s
             // dividing dot) instead.
             Rectangle()
-                .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
+                .fill(NotchDesign.hairlineColor)
                 .frame(height: 1)
             content
         }
@@ -207,7 +207,7 @@ private struct TimersExpandedView: View {
                 } label: {
                     Text("\(minutes)m")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(NotchDesign.primaryColor)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                         .background(Capsule().fill(NotchDesign.capsuleFill))
@@ -230,10 +230,10 @@ private struct TimersExpandedView: View {
             Button("Start") { start(minutes: customMinutes) }
                 .buttonStyle(.plain)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.black.opacity(0.92))
+                .foregroundStyle(NotchDesign.inverseForeground)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Capsule().fill(Color.white.opacity(0.9)))
+                .background(Capsule().fill(NotchDesign.inverseFill.opacity(0.9)))
         }
     }
 
@@ -255,7 +255,7 @@ private struct TimersExpandedView: View {
                 .accessibilityLabel("One minute less")
             Text("\(customMinutes) min")
                 .font(NotchDesign.monoDigitsBody)
-                .foregroundStyle(.white)
+                .foregroundStyle(NotchDesign.primaryColor)
                 .frame(minWidth: 44)
             StepperRepeatButton(systemName: "plus") { adjust(by: 1) }
                 .accessibilityLabel("One minute more")
@@ -368,7 +368,7 @@ private struct StepperRepeatButton: View {
     var body: some View {
         Image(systemName: systemName)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(NotchDesign.primaryColor)
             .frame(width: 22, height: 22)
             .background(Circle().fill(NotchDesign.capsuleFill))
             .contentShape(Circle())
@@ -423,11 +423,11 @@ private struct TimerRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(timer.label)
                     .font(NotchDesign.bodyFont)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(NotchDesign.primaryColor)
                     .lineLimit(1)
                 Text(TimersWidget.formatCountdown(max(timer.remaining(at: now), 0)))
                     .font(NotchDesign.monoDigitsLarge)
-                    .foregroundStyle(timer.isPaused ? Color.white.opacity(NotchDesign.tertiaryOpacity) : Color.white)
+                    .foregroundStyle(timer.isPaused ? NotchDesign.tertiaryColor : NotchDesign.primaryColor)
             }
 
             Spacer(minLength: 0)
@@ -441,7 +441,7 @@ private struct TimerRow: View {
             } label: {
                 Image(systemName: timer.isPaused ? "play.fill" : "pause.fill")
                     .font(.system(size: 12))
-                    .foregroundStyle(Color.white.opacity(0.8))
+                    .foregroundStyle(NotchDesign.primaryColor.opacity(0.8))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(timer.isPaused ? "Resume \(timer.label)" : "Pause \(timer.label)")
@@ -451,7 +451,7 @@ private struct TimerRow: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                    .foregroundStyle(NotchDesign.tertiaryColor)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Cancel \(timer.label)")

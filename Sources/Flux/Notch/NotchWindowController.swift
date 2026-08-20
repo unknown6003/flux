@@ -102,6 +102,8 @@ final class NotchWindowController {
     /// Mirrors `SettingsStore.notchStyle` into the hosted root view and panel
     /// envelope. Alcove is the compact default.
     private var notchStyle: NotchStyle = .alcove
+    /// Mirrors `SettingsStore.appearance` into the notch panel.
+    private var appearanceMode: FluxAppearance = .dark
     private var cancellables = Set<AnyCancellable>()
 
     /// True once a panel exists AND is actually shown over a real physical
@@ -282,6 +284,15 @@ final class NotchWindowController {
         if isEnabled { resolveScreen() }
     }
 
+    /// Applies the selected appearance to the live panel and remembers it for
+    /// a panel rebuilt after a screen change. Nil means Follow System.
+    func setAppearance(_ appearance: FluxAppearance) {
+        appearanceMode = appearance
+        panel?.appearance = appearance.nsAppearance
+        hostingView?.appearance = appearance.nsAppearance
+        refreshRootView()
+    }
+
     // MARK: - Hotkey
 
     /// Entry point for the global notch-toggle hotkey. The hotkey stays
@@ -346,8 +357,10 @@ final class NotchWindowController {
 
     private func makePanel() -> NotchPanel {
         let panel = NotchPanel(viewModel: viewModel)
+        panel.appearance = appearanceMode.nsAppearance
         panel.setShowInFullscreen(showInFullscreen)
         let hosting = NotchHostingView(viewModel: viewModel, rootView: makeRootView(notchSize: .zero))
+        hosting.appearance = appearanceMode.nsAppearance
         panel.contentView = hosting
         hostingView = hosting
         wireDragHandlers(to: panel)

@@ -39,6 +39,8 @@ final class SettingsStore: ObservableObject {
         self.autoRehideDelay = defaults.double(forKey: Keys.autoRehideDelay)
         self.enableHotkey = defaults.bool(forKey: Keys.enableHotkey)
         self.automaticUpdateChecks = defaults.bool(forKey: Keys.automaticUpdateChecks)
+        let appearanceRaw = defaults.string(forKey: Keys.appearance) ?? FluxAppearance.dark.rawValue
+        self.appearance = FluxAppearance(rawValue: appearanceRaw) ?? .dark
         let styleRaw = defaults.string(forKey: Keys.iconStyle) ?? MenuBarIconStyle.chevron.rawValue
         self.iconStyle = MenuBarIconStyle(rawValue: styleRaw) ?? .chevron
         // Source of truth is the live global default, not a mirrored Flux key, so
@@ -135,6 +137,10 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: Appearance
+
+    @Published var appearance: FluxAppearance {
+        didSet { defaults.set(appearance.rawValue, forKey: Keys.appearance) }
+    }
 
     @Published var iconStyle: MenuBarIconStyle {
         didSet { defaults.set(iconStyle.rawValue, forKey: Keys.iconStyle) }
@@ -372,6 +378,7 @@ final class SettingsStore: ObservableObject {
         Keys.autoRehideDelay: 8.0,
         Keys.enableHotkey: true,
         Keys.automaticUpdateChecks: true,
+        Keys.appearance: FluxAppearance.dark.rawValue,
         Keys.iconStyle: MenuBarIconStyle.chevron.rawValue,
         Keys.hotkeyKeyCode: Int(HotkeyShortcut.default.keyCode),
         Keys.hotkeyModifiers: Int(HotkeyShortcut.default.carbonModifiers),
@@ -414,6 +421,7 @@ final class SettingsStore: ObservableObject {
         static let autoRehideDelay = "flux.autoRehideDelay"
         static let enableHotkey = "flux.enableHotkey"
         static let automaticUpdateChecks = "flux.automaticUpdateChecks"
+        static let appearance = "flux.appearance"
         static let iconStyle = "flux.iconStyle"
         static let hotkeyKeyCode = "flux.hotkey.keyCode"
         static let hotkeyModifiers = "flux.hotkey.modifiers"

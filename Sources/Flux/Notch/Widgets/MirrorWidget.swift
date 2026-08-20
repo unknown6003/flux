@@ -143,6 +143,8 @@ private struct MirrorExpandedView: View {
     private var startingCaption: some View {
         Text("Starting camera…")
             .font(.caption)
+            // The caption sits on an intentionally black camera-overlay pill,
+            // so it keeps a white foreground in both Flux appearances.
             .foregroundStyle(Color.white.opacity(0.8))
             .padding(.vertical, 6)
             .padding(.horizontal, 10)

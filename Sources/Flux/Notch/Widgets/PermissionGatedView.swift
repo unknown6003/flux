@@ -63,10 +63,10 @@ struct PermissionGatedView<Content: View>: View {
         VStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 26))
-                .foregroundStyle(Color.white.opacity(NotchDesign.quaternaryOpacity))
+                .foregroundStyle(NotchDesign.quaternaryColor)
             Text(message)
                 .font(.caption)
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             if let actionTitle {
@@ -95,11 +95,11 @@ private struct NotchCapsuleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(NotchDesign.primaryColor)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 9)
             .background(
-                Capsule().fill(configuration.isPressed ? Color.white.opacity(0.20) : NotchDesign.capsuleFill)
+                Capsule().fill(configuration.isPressed ? NotchDesign.primaryColor.opacity(0.20) : NotchDesign.capsuleFill)
             )
             .contentShape(Capsule())
     }

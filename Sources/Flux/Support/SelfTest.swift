@@ -2477,6 +2477,15 @@ enum SelfTest {
             let m6SettingsSuiteName = "flux.selftest.m6settings"
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
             let m6Settings = SettingsStore(defaults: UserDefaults(suiteName: m6SettingsSuiteName)!)
+            check(m6Settings.appearance == .dark,
+                  "SettingsStore: Flux appearance defaults to dark")
+            check(FluxAppearance.allCases == [.dark, .light, .system]
+                  && FluxAppearance.system.title == "Follow System",
+                  "FluxAppearance: exposes Dark, Light, and Follow System modes")
+            m6Settings.appearance = .light
+            let reloadedAppearance = SettingsStore(defaults: UserDefaults(suiteName: m6SettingsSuiteName)!)
+            check(reloadedAppearance.appearance == .light,
+                  "SettingsStore: Flux appearance persists across reloads")
             check(m6Settings.notchStyle == .alcove,
                   "SettingsStore: notchStyle defaults to the compact Alcove layout")
             check(m6Settings.notchMirrorEnabled, "SettingsStore: notchMirrorEnabled defaults to true")

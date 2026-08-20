@@ -77,13 +77,13 @@ private struct ClipboardExpandedView: View {
         HStack {
             Text("Clipboard")
                 .font(NotchDesign.captionFont.weight(.semibold))
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
             Spacer()
             if !monitor.entries.isEmpty {
                 Button("Clear All") { monitor.clear() }
                     .buttonStyle(.plain)
                     .font(NotchDesign.captionFont)
-                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                    .foregroundStyle(NotchDesign.tertiaryColor)
             }
         }
     }
@@ -145,12 +145,12 @@ private struct ClipboardRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.preview)
                     .font(NotchDesign.bodyFont)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(NotchDesign.primaryColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Text(Formatters.age(from: entry.capturedAt))
                     .font(.system(size: 9))
-                    .foregroundStyle(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                    .foregroundStyle(NotchDesign.tertiaryColor)
             }
 
             Spacer(minLength: 4)
@@ -164,7 +164,7 @@ private struct ClipboardRow: View {
                 // Only a copyable row lifts on hover. Dimming a non-copyable
                 // one while still highlighting it under the pointer sends two
                 // opposite signals about the same row.
-                .fill(Color.white.opacity(isHovering && isCopyable ? 0.12 : 0.06))
+                .fill(NotchDesign.primaryColor.opacity(isHovering && isCopyable ? 0.12 : 0.06))
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: handleTap)
@@ -230,7 +230,7 @@ private struct ClipboardRow: View {
     private var trailingControl: some View {
         if didConfirmCopy {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.white)
+                .foregroundStyle(NotchDesign.primaryColor)
         } else {
             // Always built, faded rather than conditionally created: a view
             // that only exists while hovered also only exists in the
@@ -244,7 +244,7 @@ private struct ClipboardRow: View {
                     // link. Also in the context menu, for pointer-free use.
                     Button { NSWorkspace.shared.open(url) } label: {
                         Image(systemName: "arrow.up.forward.app.fill")
-                            .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
+                            .foregroundStyle(NotchDesign.secondaryColor)
                     }
                     .buttonStyle(.plain)
                     .opacity(isHovering ? 1 : 0)
@@ -255,7 +255,7 @@ private struct ClipboardRow: View {
                     monitor.remove(entry.id)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.white.opacity(NotchDesign.secondaryOpacity))
+                        .foregroundStyle(NotchDesign.secondaryColor)
                 }
                 .buttonStyle(.plain)
                 .opacity(isHovering ? 1 : 0)
@@ -300,12 +300,12 @@ private struct ClipboardRow: View {
                     // A hairline, so a white or fully transparent swatch is
                     // still visible against the panel's black.
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .strokeBorder(Color.white.opacity(NotchDesign.hairlineOpacity))
+                        .strokeBorder(NotchDesign.hairlineColor)
                 )
         } else {
             Image(systemName: icon)
                 .font(.system(size: 13))
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
         }
     }
 

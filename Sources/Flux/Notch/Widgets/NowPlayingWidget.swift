@@ -85,7 +85,7 @@ private struct NowPlayingCompactView: View {
         } else {
             Image(systemName: "music.note")
                 .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
                 .frame(width: 16, height: 16)
         }
     }
@@ -101,7 +101,7 @@ private struct AnimatedEqualizerBars: View {
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(0..<3, id: \.self) { index in
                     Capsule()
-                        .fill(Color.white.opacity(0.9))
+                        .fill(NotchDesign.primaryColor.opacity(0.9))
                         .frame(width: 2, height: barHeight(t, index: index))
                 }
             }
@@ -122,7 +122,7 @@ private struct StaticEqualizerBars: View {
         HStack(alignment: .bottom, spacing: 2) {
             ForEach([5, 8, 5], id: \.self) { height in
                 Capsule()
-                    .fill(Color.white.opacity(NotchDesign.tertiaryOpacity))
+                    .fill(NotchDesign.tertiaryColor)
                     .frame(width: 2, height: CGFloat(height))
             }
         }
@@ -159,10 +159,10 @@ private struct NowPlayingExpandedView: View {
         VStack(spacing: NotchDesign.space2) {
             Image(systemName: "music.note")
                 .font(.system(size: 28))
-                .foregroundStyle(Color.white.opacity(NotchDesign.quaternaryOpacity))
+                .foregroundStyle(NotchDesign.quaternaryColor)
             Text("Nothing playing")
                 .font(.callout)
-                .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+                .foregroundStyle(NotchDesign.secondaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -192,10 +192,10 @@ private struct NowPlayingExpandedView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 MarqueeText(text: state.title, font: NotchDesign.titleFont,
-                            color: .white, height: 18)
+                            color: NotchDesign.primaryColor, height: 18)
                 if let artist = state.artist {
                     MarqueeText(text: artist, font: .system(size: 13),
-                                color: Color.white.opacity(NotchDesign.secondaryOpacity), height: 16)
+                                color: NotchDesign.secondaryColor, height: 16)
                 }
                 Spacer(minLength: 0)
                 scrubberSection(state)
@@ -207,7 +207,7 @@ private struct NowPlayingExpandedView: View {
             // artist instead of allowing their marquee to start truncated.
             if !isNarrowPane {
                 WaveformVisualizer(isPlaying: state.isPlaying,
-                                    color: .white.opacity(0.85))
+                                    color: NotchDesign.primaryColor.opacity(0.85))
             }
         }
     }
@@ -264,7 +264,7 @@ private struct NowPlayingExpandedView: View {
                 Text("-\(Self.format(remaining))")
             }
             .font(NotchDesign.monoDigitsSmall)
-            .foregroundStyle(Color.white.opacity(NotchDesign.secondaryOpacity))
+            .foregroundStyle(NotchDesign.secondaryColor)
 
             ScrubberTrack(
                 progress: elapsed / duration,
@@ -288,7 +288,7 @@ private struct NowPlayingExpandedView: View {
     /// that reads as "progress is happening, scale unknown."
     private var indeterminateScrubber: some View {
         Capsule()
-            .fill(Color.white.opacity(0.15))
+            .fill(NotchDesign.primaryColor.opacity(0.15))
             .frame(height: 4)
     }
 
@@ -332,7 +332,7 @@ private struct NowPlayingExpandedView: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size, weight: prominent ? .semibold : .medium))
-                .foregroundStyle(Color.white)
+                .foregroundStyle(NotchDesign.primaryColor)
                 .frame(width: prominent ? 38 : 32, height: 28)
         }
         .buttonStyle(.plain)
@@ -358,7 +358,7 @@ private struct NowPlayingExpandedView: View {
         } label: {
             Image(systemName: "laptopcomputer")
                 .font(.system(size: 15))
-                .foregroundStyle(Color.white.opacity(
+                .foregroundStyle(NotchDesign.primaryColor.opacity(
                     appURL == nil ? NotchDesign.quaternaryOpacity : NotchDesign.tertiaryOpacity))
         }
         .buttonStyle(.plain)

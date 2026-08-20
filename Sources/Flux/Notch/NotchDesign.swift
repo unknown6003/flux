@@ -129,7 +129,15 @@ enum NotchDesign {
     /// The quiet white wash used to fill capsules/rows/buttons across the
     /// notch's near-monochrome surface (preset capsules, hover states, the
     /// `PermissionGatedView` action button, the custom stepper's buttons).
-    static let capsuleFill = Color.white.opacity(0.14)
+    static var panelFill: Color { Theme.groundColor }
+    static var primaryColor: Color { Theme.textPrimaryColor }
+    static var secondaryColor: Color { Theme.textPrimaryColor.opacity(secondaryOpacity) }
+    static var tertiaryColor: Color { Theme.textPrimaryColor.opacity(tertiaryOpacity) }
+    static var quaternaryColor: Color { Theme.textPrimaryColor.opacity(quaternaryOpacity) }
+    static var hairlineColor: Color { Theme.hairlineColor }
+    static var capsuleFill: Color { Theme.notchControlFillColor }
+    static var inverseFill: Color { Theme.notchInverseFillColor }
+    static var inverseForeground: Color { Theme.notchInverseForegroundColor }
 
     // MARK: - Scroll fade (bottom-clipping fix)
 

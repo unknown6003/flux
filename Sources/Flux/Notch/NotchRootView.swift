@@ -308,11 +308,11 @@ struct NotchRootView: View {
     /// the Alcove reference now that it's rendered off one flattened layer
     /// instead of the shape's raw silhouette.
     private var shapeLayer: some View {
-        shape.fill(Color.black)
+        shape.fill(NotchDesign.panelFill)
             .frame(width: containerSize.width, height: containerSize.height)
             .scaleEffect(breathingScale)
             .compositingGroup()
-            .shadow(color: isCollapsed ? .clear : .black.opacity(0.55),
+            .shadow(color: isCollapsed ? .clear : Theme.notchShadowColor,
                     radius: isCollapsed ? 0 : 12,
                     y: isCollapsed ? 0 : 4)
     }
@@ -569,7 +569,7 @@ struct NotchRootView: View {
                 .padding(.trailing, NotchDesign.paneInsets)
 
                 Rectangle()
-                    .fill(Color.white.opacity(NotchDesign.hairlineOpacity))
+                    .fill(NotchDesign.hairlineColor)
                     .frame(width: 1)
                     .padding(.vertical, 12)
 
@@ -598,7 +598,7 @@ struct NotchRootView: View {
     /// like low battery); everything else renders plain white.
     @ViewBuilder
     private func content(for value: LiveActivity.Content, tint: LiveActivity.ActivityTint = .normal) -> some View {
-        let tintColor = tint == .warning ? Theme.warningColor : Color.white
+        let tintColor = tint == .warning ? Theme.warningColor : NotchDesign.primaryColor
         switch value {
         case .none:
             EmptyView()
@@ -630,17 +630,17 @@ struct NotchRootView: View {
                 // value changes — no continuous/repeating animation, matching
                 // this app's 0%-idle-CPU contract.
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.22))
+                    Capsule().fill(NotchDesign.primaryColor.opacity(0.22))
                     GeometryReader { geometry in
                         Capsule()
-                            .fill(Color.white.opacity(0.9))
+                            .fill(NotchDesign.primaryColor.opacity(0.9))
                             .frame(width: geometry.size.width * clamped)
                     }
                 }
                 .frame(width: 28, height: 3)
                 .animation(.easeOut(duration: 0.15), value: clamped)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(NotchDesign.primaryColor)
         case .artwork:
             if let image = artworkProvider?() {
                 Image(nsImage: image)
@@ -650,7 +650,7 @@ struct NotchRootView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
                 Image(systemName: "music.note")
-                    .foregroundStyle(Color.white.opacity(0.9))
+                    .foregroundStyle(NotchDesign.primaryColor.opacity(0.9))
             }
         }
     }

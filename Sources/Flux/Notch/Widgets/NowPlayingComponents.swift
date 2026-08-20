@@ -340,11 +340,11 @@ struct FlippingArtwork: View {
                     .aspectRatio(contentMode: .fill)
             } else {
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(NotchDesign.primaryColor.opacity(0.08))
                     .overlay(
                         Image(systemName: "music.note")
                             .font(.system(size: 18))
-                            .foregroundStyle(Color.white.opacity(0.3))
+                            .foregroundStyle(NotchDesign.primaryColor.opacity(0.3))
                     )
             }
         }
@@ -503,7 +503,7 @@ struct ScrubberTrack: View {
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.18))
+                    .fill(NotchDesign.primaryColor.opacity(0.18))
                     .frame(width: trackWidth, height: Self.trackHeight)
                     .offset(x: inset)
                 // The system accent-color fill here (and on the knob below) is
@@ -570,7 +570,7 @@ enum ArtworkPalette {
     /// A flat monochrome pair used whenever there's no artwork to derive a
     /// gradient from (or extraction fails) — matches the waveform's
     /// no-artwork monochrome look.
-    static let monochromeFallback = Color.white.opacity(0.85)
+    static var monochromeFallback: Color { NotchDesign.primaryColor.opacity(0.85) }
 
     /// Single-entry memo of the most recently derived gradient, keyed AND
     /// retained by the artwork image itself (not just an `ObjectIdentifier`).

@@ -147,7 +147,9 @@ final class LockScreenPresenter {
     private var mediaPanel: NSPanel?
     private var mediaHostingView: NSHostingView<LockScreenMediaControlsView>?
     private var currentNotchSize: CGSize = .zero
+    private var appearanceMode: FluxAppearance
     private var cancellables = Set<AnyCancellable>()
+    private var appearanceCancellable: AnyCancellable?
     private var distributedObserverTokens = [DistributedLockObserver]()
     private var unlockSound: NSSound?
 
@@ -200,7 +202,14 @@ final class LockScreenPresenter {
         self.nowPlaying = nowPlaying
         self.activities = activities
         self.settings = settings
+        self.appearanceMode = settings.appearance
         loadCachedGeometry()
+
+        appearanceCancellable = settings.$appearance
+            .removeDuplicates()
+            .sink { [weak self] appearance in
+                self?.setAppearance(appearance)
+            }
     }
 
     deinit {
@@ -235,6 +244,17 @@ final class LockScreenPresenter {
             stopObserving()
             dismissImmediately()
         }
+    }
+
+    /// Applies the Flux appearance to both lock-screen panels. The physical
+    /// notch silhouette stays black, while the media and companion surfaces
+    /// follow Dark, Light, or the system appearance like the live notch.
+    private func setAppearance(_ appearance: FluxAppearance) {
+        appearanceMode = appearance
+        panel?.appearance = appearance.nsAppearance
+        panel?.contentView?.appearance = appearance.nsAppearance
+        mediaPanel?.appearance = appearance.nsAppearance
+        mediaPanel?.contentView?.appearance = appearance.nsAppearance
     }
 
     // MARK: - Lock/unlock observation
@@ -767,11 +787,13 @@ final class LockScreenPresenter {
     /// large panel can never intercept a click intended for macOS's unlock UI.
     private func makePanel(notchSize: CGSize) -> NSPanel {
         let hosting = NSHostingView(rootView: makeContentView())
+        hosting.appearance = appearanceMode.nsAppearance
         self.hostingView = hosting
 
         let panel = LockScreenPanel(contentRect: .zero,
                                     styleMask: [.borderless, .nonactivatingPanel],
                                     backing: .buffered, defer: false)
+        panel.appearance = appearanceMode.nsAppearance
         // Shared with `NotchPanel`/`NotchHighlightWindowController` — see
         // `OverlayPanel`'s own doc comment for the recipe this applies.
         OverlayPanel.applyOverlayStyle(to: panel, level: Self.shieldedLevel, ignoresMouseEvents: true)
@@ -864,11 +886,13 @@ final class LockScreenPresenter {
             rootView: makeMediaControlsView(allowNowPlaying: allowNowPlaying,
                                             allowActivities: allowActivities,
                                             showUnlockPill: showUnlockPill))
+        hosting.appearance = appearanceMode.nsAppearance
         mediaHostingView = hosting
 
         let panel = LockScreenControlPanel(contentRect: .zero,
                                             styleMask: [.borderless, .nonactivatingPanel],
                                             backing: .buffered, defer: false)
+        panel.appearance = appearanceMode.nsAppearance
         OverlayPanel.applyOverlayStyle(to: panel,
                                        level: Self.shieldedLevel,
                                        ignoresMouseEvents: false)

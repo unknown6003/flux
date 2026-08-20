@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 /// Hosts the SwiftUI settings UI in the same material/sidebar window shape as
 /// Alcove. The detail pane scrolls internally, so changing sections never
@@ -14,6 +15,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let permissions: PermissionCenter
     private let crashReporter: CrashReporter
     private var window: NSWindow?
+    private var cancellables = Set<AnyCancellable>()
 
     /// Fires with the new visibility whenever the window is shown or closed.
     /// Lets the app suppress the floating arrange hint while Settings — which
@@ -34,6 +36,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.permissions = permissions
         self.crashReporter = crashReporter
         super.init()
+
+        settings.$appearance
+            .removeDuplicates()
+            .sink { [weak self] appearance in
+                self?.applyAppearance(appearance)
+            }
+            .store(in: &cancellables)
     }
 
     private static let contentSize = SettingsView.designSize
@@ -49,6 +58,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         } else {
             clampSizeToScreen()
         }
+        applyAppearance(settings.appearance)
         // Become a regular app for as long as Settings is open — see
         // `applyRegularActivationPolicy`.
         Self.applyRegularActivationPolicy()
@@ -144,7 +154,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.hasShadow = true
         window.collectionBehavior = [.moveToActiveSpace]
         window.delegate = self
+        window.appearance = settings.appearance.nsAppearance
         return window
+    }
+
+    private func applyAppearance(_ appearance: FluxAppearance) {
+        window?.appearance = appearance.nsAppearance
+        window?.contentView?.appearance = appearance.nsAppearance
     }
 
     // MARK: Sizing
