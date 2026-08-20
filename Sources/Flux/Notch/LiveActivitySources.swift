@@ -123,6 +123,7 @@ final class NotchActivityRouter {
         observeTimerGating()
         observeNotchState()
         observeDuoActive()
+        observeDuoSettings()
         observePresentation(presentation)
         applyMonitorState()
         recomputeTimerActivity()
@@ -586,6 +587,17 @@ final class NotchActivityRouter {
             .store(in: &cancellables)
     }
 
+    private func observeDuoSettings() {
+        settings.$notchDuoEnabled
+            .combineLatest(settings.$notchCalendarEnabled)
+            .dropFirst()
+            .sink { [weak self] duoEnabled, calendarEnabled in
+                self?.applyMonitorState(calendarWidgetEnabled: calendarEnabled,
+                                        duoSettingOn: duoEnabled)
+            }
+            .store(in: &cancellables)
+    }
+
 
     /// Caches the injected `presentation` publisher's latest value into
     /// `isPresenting` and re-applies both the monitor state and the
@@ -653,9 +665,11 @@ final class NotchActivityRouter {
     /// `permissions.statuses` from inside a sink subscribed to that exact
     /// publisher would otherwise see the STALE pre-change value.
     private func applyMonitorState(notchEnabled: Bool? = nil, batteryEnabled: Bool? = nil,
-                                    bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil,
-                                    calendarPermissionGranted: Bool? = nil,
-                                    state: NotchState? = nil, duoActive: Bool? = nil) {
+                                   bluetoothEnabled: Bool? = nil, calendarEnabled: Bool? = nil,
+                                   calendarWidgetEnabled: Bool? = nil,
+                                   calendarPermissionGranted: Bool? = nil,
+                                   state: NotchState? = nil, duoActive: Bool? = nil,
+                                   duoSettingOn: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
 
@@ -676,10 +690,11 @@ final class NotchActivityRouter {
         let shouldRunCalendar = Self.calendarServiceShouldRun(
             permissionGranted: calendarPermissionGranted ?? (permissions.statuses[.calendar] == .granted),
             notchPresenting: isPresenting,
-            widgetEnabled: settings.notchCalendarEnabled,
+            widgetEnabled: calendarWidgetEnabled ?? settings.notchCalendarEnabled,
             state: state ?? viewModel.state,
             activityToggleOn: calendarEnabled ?? settings.notchActivityCalendarEventEnabled,
-            duoActive: duoActive ?? viewModel.duoActive)
+            duoActive: duoActive ?? viewModel.duoActive,
+            duoSettingOn: duoSettingOn ?? settings.notchDuoEnabled)
         if shouldRunCalendar {
             calendar.start()
         } else {
@@ -695,31 +710,25 @@ final class NotchActivityRouter {
     /// the service, because neither owner's own start condition was
     /// individually true at that instant).
     ///
-    /// The service only ever needs to run for one of two reasons — the
-    /// Calendar widget itself is the one currently expanded (so its agenda
-    /// needs live data), or the event-soon activity toggle is on (so a wing
-    /// can appear even while the widget itself is closed) — and neither
-    /// reason matters without BOTH calendar permission and somewhere to
+    /// The service runs when the Calendar widget is expanded, the event-soon
+    /// activity toggle is on, or Duo is configured. Duo needs the service
+    /// running before it knows whether an event exists. None of these reasons
+    /// matters without BOTH calendar permission and somewhere to
     /// actually present: a denied permission has nothing to show, and a
     /// service running with the notch's screen gone (or the panel disabled)
     /// has nowhere to render either the widget or the wing.
-    /// M7: extended with `duoActive` — Duo (Now Playing + Calendar side by
-    /// side, see `NotchViewModel.duoActive`) shows the Calendar pane's own
-    /// agenda even when the event-soon toggle is off and the Calendar widget
-    /// itself isn't the one `.expanded`, so `CalendarService` must be running
-    /// in that state too, or the Duo pane renders an empty agenda. `duoActive`
-    /// alone isn't sufficient on its own (it stays true even while some OTHER
-    /// widget, or nothing, is expanded) — it only matters here alongside the
-    /// Duo pane actually being the thing on screen, i.e. `state ==
-    /// .expanded(.nowPlaying)` (Duo always renders as the Now Playing widget
-    /// slot widened to include Calendar — see `NotchRootView.duoContent`).
+    /// `duoActive` still covers the case where the Duo pane is on screen.
+    /// `duoSettingOn` keeps the service alive while Duo is configured, so the
+    /// first EventKit fetch can decide whether the pane should appear.
     static func calendarServiceShouldRun(permissionGranted: Bool, notchPresenting: Bool,
                                           widgetEnabled: Bool, state: NotchState,
-                                          activityToggleOn: Bool, duoActive: Bool) -> Bool {
+                                          activityToggleOn: Bool, duoActive: Bool,
+                                          duoSettingOn: Bool = false) -> Bool {
         guard permissionGranted, notchPresenting else { return false }
         let widgetOpen = widgetEnabled && state == .expanded(.calendar)
         let duoShowing = duoActive && state == .expanded(.nowPlaying)
-        return widgetOpen || activityToggleOn || duoShowing
+        let duoConfigured = duoSettingOn && widgetEnabled
+        return widgetOpen || activityToggleOn || duoShowing || duoConfigured
     }
 
     // MARK: - Timers (M6)

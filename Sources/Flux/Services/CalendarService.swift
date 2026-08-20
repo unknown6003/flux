@@ -353,6 +353,66 @@ final class CalendarService: ObservableObject {
         return relativeStartPhrase(title: next.title, start: next.start, now: now)
     }
 
+    static let duoLateNightHour = 20
+    static let duoNextMorningEndHour = 12
+
+    /// Events that justify showing the Calendar pane beside Now Playing.
+    /// After 20:00, events tomorrow morning through noon also qualify.
+    static func duoEvents(events: [CalendarEvent], now: Date,
+                          calendar: Calendar = .current) -> [CalendarEvent] {
+        let startOfToday = calendar.startOfDay(for: now)
+        guard let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday),
+              let tomorrowMorningEnd = calendar.date(bySettingHour: duoNextMorningEndHour,
+                                                       minute: 0, second: 0,
+                                                       of: startOfTomorrow)
+        else { return [] }
+
+        let isLateNight = calendar.component(.hour, from: now) >= duoLateNightHour
+        return events.filter { event in
+            guard event.end > now else { return false }
+            let overlapsToday = event.start < startOfTomorrow && event.end > startOfToday
+            let startsTomorrowMorning = isLateNight &&
+                event.start >= startOfTomorrow && event.start < tomorrowMorningEnd
+            return overlapsToday || startsTomorrowMorning
+        }
+    }
+
+    static func hasDuoEvents(events: [CalendarEvent], now: Date,
+                             calendar: Calendar = .current) -> Bool {
+        !duoEvents(events: events, now: now, calendar: calendar).isEmpty
+    }
+
+    /// Finds the next event or clock change that can alter `hasDuoEvents`.
+    static func nextDuoVisibilityBoundary(events: [CalendarEvent], now: Date,
+                                           calendar: Calendar = .current) -> Date? {
+        let startOfToday = calendar.startOfDay(for: now)
+        var boundaries = events.flatMap { [$0.start, $0.end] }.filter { $0 > now }
+
+        if let startOfTomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) {
+            boundaries.append(startOfTomorrow)
+            if let tomorrowMorningEnd = calendar.date(bySettingHour: duoNextMorningEndHour,
+                                                        minute: 0, second: 0,
+                                                        of: startOfTomorrow),
+               tomorrowMorningEnd > now {
+                boundaries.append(tomorrowMorningEnd)
+            }
+        }
+
+        let lateNightToday = calendar.date(bySettingHour: duoLateNightHour,
+                                           minute: 0, second: 0, of: startOfToday)
+        if let lateNightToday, lateNightToday > now {
+            boundaries.append(lateNightToday)
+        } else if let nextDay = calendar.date(byAdding: .day, value: 1, to: startOfToday),
+                  let lateNightTomorrow = calendar.date(bySettingHour: duoLateNightHour,
+                                                         minute: 0, second: 0,
+                                                         of: nextDay),
+                  lateNightTomorrow > now {
+            boundaries.append(lateNightTomorrow)
+        }
+
+        return boundaries.min()
+    }
+
     /// The Calendar widget's Today/Tomorrow agenda sections. Anchored purely
     /// on each event's `start` (including all-day events, whose `start` is
     /// local midnight) against `calendar`'s notion of day boundaries — an

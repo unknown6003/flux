@@ -54,12 +54,9 @@ final class NotchViewModel: ObservableObject {
 
     /// M7 (Alcove parity): whether the expanded Now Playing panel should
     /// render side-by-side with Calendar (Duo view) instead of alone. Plain
-    /// data, not derived here — `NotchViewModel` stays view-free and has no
-    /// way to see Calendar's own settings, so `AppDelegate` computes this via
-    /// the pure `duoActive(...)` seam below and writes it here. Permission is
-    /// not a layout gate: Duo can show Calendar's own permission prompt
-    /// instead of silently hiding the pane. `NotchRootView` reads this
-    /// directly, keeping it a purely declarative consumer.
+    /// data, not derived here. `AppDelegate` computes it from settings,
+    /// permission, and the current event window. `NotchRootView` reads this
+    /// directly, keeping it a declarative consumer.
     @Published var duoActive = false
 
     /// Whether the most recent state transition SHRANK the visible shape
@@ -221,14 +218,14 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - Duo view (M7)
 
-    /// Whether Duo view should currently render — a pure function of exactly
-    /// the two settings facts that decide its layout, so `--selftest` can drive
-    /// every combination directly without constructing the whole settings/
-    /// registry graph. The permission argument remains in this seam because
-    /// the router uses it to gate EventKit, but it does not hide the pane.
-    static func duoActive(duoSettingEnabled: Bool, calendarWidgetEnabled: Bool, calendarPermissionGranted: Bool) -> Bool {
-        _ = calendarPermissionGranted
-        return duoSettingEnabled && calendarWidgetEnabled
+    /// Whether Duo view should currently render. Calendar permission and a
+    /// relevant event are both required, so an empty agenda falls back to the
+    /// normal Now Playing panel.
+    static func duoActive(duoSettingEnabled: Bool, calendarWidgetEnabled: Bool,
+                          calendarPermissionGranted: Bool,
+                          calendarHasRelevantEvents: Bool) -> Bool {
+        duoSettingEnabled && calendarWidgetEnabled && calendarPermissionGranted &&
+            calendarHasRelevantEvents
     }
 
     // MARK: - Inputs

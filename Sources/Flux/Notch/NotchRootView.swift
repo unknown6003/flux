@@ -546,26 +546,23 @@ struct NotchRootView: View {
     /// stable shell's inner padding.
     private func duoContent(nowPlaying: NotchWidget?, calendar: NotchWidget) -> some View {
         GeometryReader { proxy in
-            let calendarWidth = (proxy.size.width * NotchMetrics.duoCalendarPaneFraction).rounded()
+            let availableWidth = max(0, proxy.size.width)
+            let calendarWidth = (availableWidth * NotchMetrics.duoCalendarPaneFraction).rounded()
             let dividerWidth: CGFloat = 1
-            let nowPlayingWidth = max(0, proxy.size.width - calendarWidth - dividerWidth)
+            let nowPlayingWidth = max(0, availableWidth - calendarWidth - dividerWidth)
             HStack(spacing: 0) {
                 Group {
                     if let nowPlaying { nowPlaying.makeExpandedView() }
+                    else { Color.clear }
                 }
                 // Duo's Now Playing pane is narrow too. The shared player
                 // uses this environment to drop decorative waveform chrome
                 // and give its metadata the width back; without it, long
                 // titles were clipped even after Calendar became compact.
                 .environment(\.isNarrowPane, true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // The single-widget view gets the shell's outer chrome. Duo
-                // needs only a small divider-side gutter; adding the old
-                // symmetric pane padding inside the widget made the solo
-                // player look inset and left Duo with an unnecessarily narrow
-                // media column.
                 .padding(.trailing, NotchDesign.paneInsets)
                 .frame(width: nowPlayingWidth, height: proxy.size.height, alignment: .topLeading)
+                .clipped()
 
                 Rectangle()
                     .fill(NotchDesign.hairlineColor)
@@ -578,9 +575,12 @@ struct NotchRootView: View {
                     // lines — see `EnvironmentValues.isNarrowPane`.
                     .environment(\.isNarrowPane, true)
                     .frame(width: calendarWidth, height: proxy.size.height, alignment: .topLeading)
+                    .clipped()
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .frame(width: availableWidth, height: proxy.size.height, alignment: .topLeading)
+            .clipped()
         }
+        .clipped()
     }
 
     /// Renders one `LiveActivity.Content` value with Theme tokens. The single

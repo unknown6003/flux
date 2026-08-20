@@ -101,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notchHighlight: NotchHighlightWindowController?
 
     private var cancellables = Set<AnyCancellable>()
+    private let duoCalendarBoundaryTask = DeadlineTask()
     private var settingsVisible = false
     /// See the `$launchAtLogin` sink — guards its own write-back from
     /// re-entering it.
@@ -175,6 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureNotch()
         configureUpdateChecks()
         observeSettings()
+        observeDuoCalendar()
         observeCrashBreadcrumbs()
     }
 
@@ -410,16 +412,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lockScreenPresenter.setEnabled((notchEnabled ?? settings.notchEnabled) && experimentEnabled)
     }
 
-    /// M7 (Alcove parity): pushes the pure `NotchViewModel.duoActive(...)`
-    /// derivation into the live view model — called from every input that
-    /// could change its answer: the Duo setting itself, the Calendar
-    /// widget's own enabled state (`settings.$notchCalendarEnabled`'s sink,
-    /// below), and Calendar permission (`permissionCenter.$statuses`'s sink,
-    /// below), plus once here at launch. Kept as this one small function
-    /// (rather than inlined into each sink) so every trigger stays in sync
-    /// with the same read of `notchWindow.registry`/`permissionCenter`.
+    private func observeDuoCalendar() {
+        calendarService.$upcoming
+            .sink { [weak self] events in
+                self?.recomputeDuoActive(calendarEvents: events)
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Updates Duo when settings, permission, calendar data, or the clock
+    /// changes. The boundary task avoids a repeating timer.
     ///
-    /// `duoSettingEnabled`/`calendarPermissionGranted` are optionals,
+    /// `duoSettingEnabled`/`calendarPermissionGranted`/`calendarEvents` are optionals,
     /// defaulting to `nil` (read live from `settings`/`permissionCenter`) —
     /// callers reacting to a settings/permission change THAT ISN'T
     /// `notchDuoEnabled`/`permissionCenter.statuses` itself (e.g.
@@ -432,11 +436,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `permissionCenter.statuses` from inside one of those two sinks would
     /// see the STALE pre-change value — the exact bug class M6's
     /// `recomputeTimerActivity(timers:)` fix addressed for `timers.$timers`.
-    private func recomputeDuoActive(duoSettingEnabled: Bool? = nil, calendarPermissionGranted: Bool? = nil) {
+    private func recomputeDuoActive(duoSettingEnabled: Bool? = nil,
+                                    calendarPermissionGranted: Bool? = nil,
+                                    calendarEvents: [CalendarEvent]? = nil) {
+        let events = calendarEvents ?? calendarService.upcoming
+        let now = Date()
+        let calendarEnabled = notchWindow.registry.enabledWidgets.contains { $0.id == .calendar }
         notchWindow.viewModel.duoActive = NotchViewModel.duoActive(
             duoSettingEnabled: duoSettingEnabled ?? settings.notchDuoEnabled,
-            calendarWidgetEnabled: notchWindow.registry.enabledWidgets.contains { $0.id == .calendar },
-            calendarPermissionGranted: calendarPermissionGranted ?? (permissionCenter.statuses[.calendar] == .granted))
+            calendarWidgetEnabled: calendarEnabled,
+            calendarPermissionGranted: calendarPermissionGranted ?? (permissionCenter.statuses[.calendar] == .granted),
+            calendarHasRelevantEvents: CalendarService.hasDuoEvents(events: events, now: now))
+
+        let duoConfigured = (duoSettingEnabled ?? settings.notchDuoEnabled) && calendarEnabled
+        if duoConfigured {
+            duoCalendarBoundaryTask.reschedule(
+                to: CalendarService.nextDuoVisibilityBoundary(events: events, now: now),
+                action: { [weak self] in self?.recomputeDuoActive() })
+        } else {
+            duoCalendarBoundaryTask.cancel()
+        }
     }
 
     private func observeNotchSettings() {

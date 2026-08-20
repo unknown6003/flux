@@ -270,10 +270,9 @@ final class SettingsStore: ObservableObject {
 
     /// M7 (Alcove v1.7 parity): show Now Playing and Calendar side by side
     /// (Duo view) when Now Playing is the expanded widget, instead of Now
-    /// Playing alone — only actually renders when Calendar is ALSO enabled
-    /// (see `NotchViewModel.duoActive(...)`). If permission is missing, the
-    /// pane shows Calendar's access prompt. This toggle expresses the user's
-    /// layout preference. Defaults to
+    /// Playing alone. It renders only when Calendar is enabled and has a
+    /// relevant event (see `NotchViewModel.duoActive(...)`). This toggle
+    /// expresses the user's layout preference. Defaults to
     /// `false`: a wider panel is a bigger visual claim than this app should
     /// make without an explicit opt-in.
     @Published var notchDuoEnabled: Bool {

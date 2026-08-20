@@ -1603,6 +1603,31 @@ enum SelfTest {
         check(emptyGroups.today.isEmpty && emptyGroups.tomorrow.isEmpty,
               "CalendarService: groupByDay is empty/empty for an empty list")
 
+        let daytimeNow = calCalendar.date(bySettingHour: 10, minute: 0, second: 0,
+                                           of: startOfToday)!
+        let daytimeEvent = makeCalendarTestEvent(id: "duo-today", title: "Duo Today",
+            start: daytimeNow.addingTimeInterval(3600), end: daytimeNow.addingTimeInterval(7200))
+        check(CalendarService.hasDuoEvents(events: [daytimeEvent], now: daytimeNow, calendar: calCalendar),
+              "CalendarService: Duo shows an upcoming event later today")
+        check(!CalendarService.hasDuoEvents(events: [tomorrowEvent], now: daytimeNow, calendar: calCalendar),
+              "CalendarService: Duo hides tomorrow's event during the day when today has no event")
+
+        let lateNightNow = calCalendar.date(bySettingHour: 21, minute: 0, second: 0,
+                                            of: startOfToday)!
+        let tomorrowMorningEvent = makeCalendarTestEvent(id: "duo-morning", title: "Duo Morning",
+            start: startOfTomorrow.addingTimeInterval(9 * 3600),
+            end: startOfTomorrow.addingTimeInterval(10 * 3600))
+        let tomorrowAfternoonEvent = makeCalendarTestEvent(id: "duo-afternoon", title: "Duo Afternoon",
+            start: startOfTomorrow.addingTimeInterval(14 * 3600),
+            end: startOfTomorrow.addingTimeInterval(15 * 3600))
+        check(CalendarService.hasDuoEvents(events: [tomorrowMorningEvent], now: lateNightNow, calendar: calCalendar),
+              "CalendarService: Duo shows tomorrow morning's event late at night")
+        check(!CalendarService.hasDuoEvents(events: [tomorrowAfternoonEvent], now: lateNightNow, calendar: calCalendar),
+              "CalendarService: Duo hides tomorrow afternoon's event late at night")
+        check(CalendarService.nextDuoVisibilityBoundary(events: [], now: daytimeNow, calendar: calCalendar) ==
+              calCalendar.date(bySettingHour: CalendarService.duoLateNightHour, minute: 0, second: 0, of: startOfToday),
+              "CalendarService: Duo rechecks at the late-night threshold")
+
         // start()/stop() are plain, idempotent booleans (mirroring PowerMonitor's shape).
         let lifecycleCalendar = CalendarService()
         lifecycleCalendar.start()
@@ -1726,6 +1751,10 @@ enum SelfTest {
                 permissionGranted: true, notchPresenting: true, widgetEnabled: true,
                 state: .collapsed, activityToggleOn: false, duoActive: false),
               "NotchActivityRouter: calendarServiceShouldRun is false when neither the widget is open nor the event-soon toggle is on")
+        check(NotchActivityRouter.calendarServiceShouldRun(
+                permissionGranted: true, notchPresenting: true, widgetEnabled: true,
+                state: .collapsed, activityToggleOn: false, duoActive: false, duoSettingOn: true),
+              "NotchActivityRouter: calendarServiceShouldRun stays on while Duo is configured so it can discover events")
         check(!NotchActivityRouter.calendarServiceShouldRun(
                 permissionGranted: true, notchPresenting: true, widgetEnabled: false,
                 state: .expanded(.calendar), activityToggleOn: false, duoActive: false),
@@ -2739,15 +2768,22 @@ enum SelfTest {
         }
 
         // --- M7: NotchViewModel.duoActive(...) — the pure Duo-view
-        // derivation, testable without settings/registry/permission. ---
-        check(NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: true),
-              "NotchViewModel: duoActive is true when the setting and Calendar widget are enabled")
-        check(!NotchViewModel.duoActive(duoSettingEnabled: false, calendarWidgetEnabled: true, calendarPermissionGranted: true),
+        // derivation, testable without the live settings or registry. ---
+        check(NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true,
+                                       calendarPermissionGranted: true, calendarHasRelevantEvents: true),
+              "NotchViewModel: duoActive is true when a relevant event is available")
+        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true,
+                                        calendarPermissionGranted: true, calendarHasRelevantEvents: false),
+              "NotchViewModel: duoActive is false when the relevant event window is empty")
+        check(!NotchViewModel.duoActive(duoSettingEnabled: false, calendarWidgetEnabled: true,
+                                        calendarPermissionGranted: true, calendarHasRelevantEvents: true),
               "NotchViewModel: duoActive is false when the Duo setting itself is off")
-        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: false, calendarPermissionGranted: true),
+        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: false,
+                                        calendarPermissionGranted: true, calendarHasRelevantEvents: true),
               "NotchViewModel: duoActive is false when the Calendar widget itself isn't enabled")
-        check(NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: false),
-              "NotchViewModel: duoActive stays true without Calendar permission so Duo can show its permission prompt")
+        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true,
+                                        calendarPermissionGranted: false, calendarHasRelevantEvents: true),
+              "NotchViewModel: duoActive is false without Calendar permission")
 
         // --- M7: MarqueeText.overflowWidth — the scroll-distance threshold
         // decision behind the Now Playing header's scrolling title/artist,
