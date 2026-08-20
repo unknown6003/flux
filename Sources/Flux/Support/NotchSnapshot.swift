@@ -75,7 +75,7 @@ enum NotchSnapshot {
             ("empty-shelf", "empty-shelf.png"),
             ("expanded-calendar", "expanded-calendar.png"),
             ("empty-calendar", "empty-calendar.png"),
-            ("expanded-timers", "expanded-timers.png"),
+            ("timer-activity", "timer-activity.png"),
             ("expanded-clipboard", "expanded-clipboard.png"),
             ("expanded-mirror", "expanded-mirror.png"),
             ("expanded-duo", "expanded-duo.png"),
@@ -121,7 +121,7 @@ enum NotchSnapshot {
     /// iterations), seeded and transitioned to `state`, plus the fixed panel
     /// bounds (`NotchMetrics.panelBounds`) that state should render at.
     ///
-    /// Every one of the six widgets is registered here (not just whichever
+    /// Every one of the five widgets is registered here (not just whichever
     /// one `state` is about to expand) — matching how `AppDelegate` wires the
     /// real app, and required for `expanded-duo` (which needs both Now
     /// Playing and Calendar registered at once).
@@ -156,7 +156,6 @@ enum NotchSnapshot {
         registry.register(ShelfWidget(store: shelfStore))
         registry.register(CalendarWidget(service: calendarService, permissions: permissions))
         registry.register(MirrorWidget(service: cameraService, permissions: permissions))
-        registry.register(TimersWidget(service: timerService))
         registry.register(ClipboardWidget(monitor: clipboardMonitor))
         registry.order = WidgetID.allCases
 
@@ -211,15 +210,18 @@ enum NotchSnapshot {
             // empty state instead of the permission explainer.
             permissions.injectPreviewStatus(.calendar, .granted)
 
-        case "expanded-timers":
-            // `TimerService.start(duration:label:)` is the real, already-
-            // public API — no fixture seam needed. Remaining time is derived
-            // from `startedAt`, so starting these immediately before render
-            // (rather than injecting a frozen "remaining" value) lands
-            // almost exactly on the durations below.
+        case "timer-activity":
+            // The timer is now a live activity, not a widget page. Use the
+            // real service and formatter so this snapshot reviews the same
+            // countdown text the running app shows in the collapsed wings.
             timerService.start(duration: 4 * 60 + 32, label: "Break")
-            timerService.start(duration: 24 * 60 + 10, label: "Focus")
-            viewModel.expand(.timers)
+            let line = TimerActivity.nearestRemainingLine(timers: timerService.timers, at: Date()) ?? "4:32"
+            activities.post(LiveActivity(
+                kind: .timer,
+                leading: .icon(systemName: "timer"),
+                trailing: .text(line),
+                duration: nil,
+                priority: 110))
 
         case "expanded-clipboard":
             clipboardMonitor.injectPreviewEntries(clipboardFixtureEntries())

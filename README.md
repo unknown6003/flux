@@ -73,8 +73,8 @@ arrangement across launches.
   menu bar so assigning icons to Shown / Hidden / Always-Hidden is clear and visible.
 - Optional **Always-Hidden** zone.
 - **Notch panel — Alcove-inspired compact redesign (M7)** — a seamless
-  solid-black panel sized to the notch suite's shared footprint, with an
-  Alcove/Flux style setting and overshoot springs on
+  solid-black panel sized to the notch suite's shared footprint, with
+  overshoot springs on
   open and a snappy, no-bounce close, plus a soft content morph as it expands.
   Hover (or click) the camera housing to expand a **Now Playing** widget:
   artwork, title/artist, a scrubber, and transport controls for whatever's
@@ -82,9 +82,9 @@ arrangement across launches.
   delays, and which widgets are enabled are all configurable in Settings →
   Notch.
 - **Duo view (M7)** — an opt-in toggle in Settings → Notch shows Now Playing
-  and Calendar side by side when Now Playing is expanded (needs Calendar
-  enabled and its permission granted too); expanding Calendar on its own still
-  shows it alone.
+  and Calendar side by side when Now Playing is expanded (with a clear access
+  prompt if Calendar permission is missing); expanding Calendar on its own
+  still shows it alone.
 - **Activity cycling & restore (M7)** — while a live-activity wing is
   showing, swipe left/right to cycle through every other queued activity,
   swipe up to dismiss the one showing (restorable — the last 5 dismissed
@@ -114,17 +114,18 @@ arrangement across launches.
   "how do I look" check. The camera only ever runs while the widget is
   actually open; needs Camera access, with the same live grant/denied status
   and re-request button as every other permission-gated feature.
-- **Timers** — quick-start (1/5/10/25 min) or custom countdown timers in the
-  notch, with pause/resume/cancel. A wing (with a sound) announces a finished
-  timer; an ambient countdown wing shows the nearest remaining time while
-  one's running, or a paused indicator when every timer is paused. Both wings
-  share the single **Timer alerts** toggle in Settings → Notch.
+- **Timers** — start a 1/5/10/25 minute countdown from the shared Flux menu.
+  A live wing shows the nearest remaining time with second precision while a
+  timer runs, and a higher-priority wing (with a sound) announces completion.
+  The **Timer live display** toggle in Settings → Notch controls both.
 - **Clipboard** — an in-memory-only history of what you copy, with
   click-to-copy-back, per-item removal, and Clear All. Off by default —
   history collection is opt-in, since clipboard contents routinely include
   passwords and other sensitive one-time text; nothing is ever written to
   disk, and password-manager-marked copies (the `nspasteboard.org`
-  concealed/transient convention) are never captured at all.
+  concealed/transient convention) are never captured at all. Cmd-C/Cmd-X are
+  captured immediately, with pasteboard change polling as a fallback for menu
+  copies, screenshots, files, and scripts.
 - **Lock screen** — optionally keeps the solid-black notch silhouette and
   native Liquid Glass surfaces visible on the macOS lock screen. When something
   is playing, the Now Playing card shows artwork/title/artist plus iOS-style
@@ -239,11 +240,11 @@ Sources/Flux/
     NotchWidget.swift        # widget protocol + registry
     LiveActivity.swift       # priority-queued "wings" content
     LiveActivitySources.swift  # NotchActivityRouter — single home for every activity producer
+    TimerActivity.swift       # live timer-wing formatting and selection
     Widgets/NowPlayingWidget.swift
     Widgets/ShelfWidget.swift  # tiles, drag in/out, AirDrop/Finder/Copy
     Widgets/CalendarWidget.swift # agenda, permission states
     Widgets/MirrorWidget.swift # live camera preview; owns CameraService start/stop itself
-    Widgets/TimersWidget.swift # presets/custom countdowns, pause/resume/cancel
     Widgets/ClipboardWidget.swift # history list, click-to-copy-back, Clear All
     LockScreenPresenter.swift  # EXPERIMENTAL: fade in/out, lock/unlock, unlock sound
     LockScreenContentView.swift # EXPERIMENTAL: live media/activity/unlock pills on the lock screen
@@ -253,7 +254,7 @@ Sources/Flux/
   Services/PowerMonitor.swift    # IOKit battery/AC events (plug/unplug, low battery)
   Services/DeviceMonitor.swift     # permission-free BT connect/disconnect: IOKit matching notifications + CoreAudio device list + IORegistry battery
   Services/CameraService.swift    # AVCaptureSession behind Mirror, started/stopped by the widget itself
-  Services/ClipboardMonitor.swift # NSPasteboard.changeCount poll, settings-driven start/stop
+  Services/ClipboardMonitor.swift # keyboard-assisted capture + changeCount fallback
   Services/TimerService.swift     # countdown timers, single boundary Task, completions publisher
   Login/LoginItemManager.swift   # SMAppService launch-at-login
   Hotkey/HotkeyManager.swift     # Carbon global hotkeys (menu-bar toggle + notch toggle)

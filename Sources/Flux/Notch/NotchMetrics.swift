@@ -27,12 +27,12 @@ enum NotchMetrics {
     /// The exact shared Alcove width: physical notch plus one wing on each
     /// side. Activity and expanded states therefore have one identical
     /// horizontal footprint; only their content/height changes.
-    static func expandedWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+    static func expandedWidth(for notchWidth: CGFloat) -> CGFloat {
         max(notchWidth + wingWidth * 2, minimumExpandedWidth)
     }
 
     /// Alcove reserves the tallest content height for every standard page.
-    static func expandedHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+    static func expandedHeight(for notchWidth: CGFloat) -> CGFloat {
         maxExpandedHeight
     }
 
@@ -41,18 +41,17 @@ enum NotchMetrics {
     /// pages changed. Content is now allowed to be compact inside one stable
     /// Alcove envelope; Duo is composed responsively inside that same shell.
     static func expandedHeight(for _: WidgetID,
-                               notchWidth: CGFloat,
-                               style: NotchStyle = .alcove) -> CGFloat {
-        expandedHeight(for: notchWidth, style: style)
+                               notchWidth: CGFloat) -> CGFloat {
+        expandedHeight(for: notchWidth)
     }
 
-    static func duoWidth(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
+    static func duoWidth(for notchWidth: CGFloat) -> CGFloat {
         // Duo is an internal composition, not a different shell size.
-        expandedWidth(for: notchWidth, style: style)
+        expandedWidth(for: notchWidth)
     }
 
-    static func duoHeight(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGFloat {
-        expandedHeight(for: notchWidth, style: style)
+    static func duoHeight(for notchWidth: CGFloat) -> CGFloat {
+        expandedHeight(for: notchWidth)
     }
 
     /// The share of the expanded panel's *content* width that Duo view gives
@@ -91,8 +90,8 @@ enum NotchMetrics {
     /// `NotchRootView`'s outer `.frame(alignment: .top)` does the same with
     /// plain SwiftUI alignment. So the margin surfaces entirely below, and
     /// symmetrically to either side of, the visible shape.
-    static func panelBounds(for notchWidth: CGFloat, style: NotchStyle = .alcove) -> CGSize {
-        CGSize(width: expandedWidth(for: notchWidth, style: style) + shadowMarginWidth,
-               height: expandedHeight(for: notchWidth, style: style) + shadowMarginHeight)
+    static func panelBounds(for notchWidth: CGFloat) -> CGSize {
+        CGSize(width: expandedWidth(for: notchWidth) + shadowMarginWidth,
+               height: expandedHeight(for: notchWidth) + shadowMarginHeight)
     }
 }

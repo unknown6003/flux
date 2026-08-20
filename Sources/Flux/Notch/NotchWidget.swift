@@ -5,7 +5,7 @@ import Combine
 /// last-used widget) and for `NotchState.expanded`, so the state machine and
 /// settings never need to hold a live widget reference.
 enum WidgetID: String, CaseIterable, Codable {
-    case nowPlaying, shelf, calendar, mirror, timers, clipboard
+    case nowPlaying, shelf, calendar, mirror, clipboard
 
     /// Human-readable name. The single source of truth for how a widget is
     /// labelled anywhere outside its own view — currently the notch's
@@ -18,7 +18,6 @@ enum WidgetID: String, CaseIterable, Codable {
         case .shelf: return "File Shelf"
         case .calendar: return "Calendar"
         case .mirror: return "Mirror"
-        case .timers: return "Timers"
         case .clipboard: return "Clipboard"
         }
     }
@@ -30,7 +29,6 @@ enum WidgetID: String, CaseIterable, Codable {
         case .shelf: return "tray.full"
         case .calendar: return "calendar"
         case .mirror: return "video"
-        case .timers: return "timer"
         case .clipboard: return "doc.on.clipboard"
         }
     }

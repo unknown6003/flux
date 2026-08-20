@@ -9,7 +9,7 @@ extension WidgetID {
     ///
     /// One mapping, used by everything that needs it: the notch's right-click
     /// menu (read + toggle), and the Settings "Cycle order" card's Off badge.
-    /// Those were two independent switches over the same six cases, which is
+    /// Those were two independent switches over the same widget cases, which is
     /// one edit away from disagreeing the next time a widget is added.
     var enabledSettingKey: ReferenceWritableKeyPath<SettingsStore, Bool> {
         switch self {
@@ -17,7 +17,6 @@ extension WidgetID {
         case .shelf: return \.notchShelfEnabled
         case .calendar: return \.notchCalendarEnabled
         case .mirror: return \.notchMirrorEnabled
-        case .timers: return \.notchTimersEnabled
         case .clipboard: return \.notchClipboardEnabled
         }
     }
@@ -52,14 +51,9 @@ final class SettingsStore: ObservableObject {
         )
 
         self.notchEnabled = defaults.bool(forKey: Keys.notchEnabled)
-        let notchStyleRaw = defaults.string(forKey: Keys.notchStyle) ?? NotchStyle.alcove.rawValue
-        self.notchStyle = NotchStyle(rawValue: notchStyleRaw) ?? .alcove
-        // v0.17 exposed a second Flux envelope. Normalize that legacy value
-        // on read so an existing install cannot reopen with a subtly different
-        // drawer size from the canonical Alcove footprint.
-        if notchStyleRaw != NotchStyle.alcove.rawValue {
-            defaults.set(NotchStyle.alcove.rawValue, forKey: Keys.notchStyle)
-        }
+        // Remove the obsolete one-option geometry preference from older
+        // installs. The notch now has one fixed layout.
+        defaults.removeObject(forKey: "flux.notch.style")
         let triggerRaw = defaults.string(forKey: Keys.notchExpansionTrigger) ?? NotchExpansionTrigger.hover.rawValue
         self.notchExpansionTrigger = NotchExpansionTrigger(rawValue: triggerRaw) ?? .hover
         self.notchHoverOpenDelay = defaults.double(forKey: Keys.notchHoverOpenDelay)
@@ -76,7 +70,6 @@ final class SettingsStore: ObservableObject {
         self.notchDuoEnabled = defaults.bool(forKey: Keys.notchDuoEnabled)
         self.notchMirrorEnabled = defaults.bool(forKey: Keys.notchMirrorEnabled)
         self.notchClipboardEnabled = defaults.bool(forKey: Keys.notchClipboardEnabled)
-        self.notchTimersEnabled = defaults.bool(forKey: Keys.notchTimersEnabled)
         self.notchActivityTimerEnabled = defaults.bool(forKey: Keys.notchActivityTimerEnabled)
         self.notchLockScreenExperimentEnabled = defaults.bool(forKey: Keys.notchLockScreenExperimentEnabled)
         self.notchLockScreenNowPlayingEnabled = defaults.bool(forKey: Keys.notchLockScreenNowPlayingEnabled)
@@ -154,13 +147,6 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: Notch
-
-    /// The notch uses the canonical Alcove footprint. The property remains a
-    /// small compatibility seam for the settings/wiring layers and for old
-    /// preferences migrated during initialization.
-    @Published var notchStyle: NotchStyle {
-        didSet { defaults.set(notchStyle.rawValue, forKey: Keys.notchStyle) }
-    }
 
     /// Master on/off for the notch panel feature.
     @Published var notchEnabled: Bool {
@@ -282,16 +268,12 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchClipboardEnabled, forKey: Keys.notchClipboardEnabled) }
     }
 
-    /// Whether the Timers widget is enabled in the notch's cycle.
-    @Published var notchTimersEnabled: Bool {
-        didSet { defaults.set(notchTimersEnabled, forKey: Keys.notchTimersEnabled) }
-    }
-
     /// M7 (Alcove v1.7 parity): show Now Playing and Calendar side by side
     /// (Duo view) when Now Playing is the expanded widget, instead of Now
     /// Playing alone — only actually renders when Calendar is ALSO enabled
-    /// and its permission is granted (see `NotchViewModel.duoActive(...)`);
-    /// this toggle alone just expresses the user's preference. Defaults to
+    /// (see `NotchViewModel.duoActive(...)`). If permission is missing, the
+    /// pane shows Calendar's access prompt. This toggle expresses the user's
+    /// layout preference. Defaults to
     /// `false`: a wider panel is a bigger visual claim than this app should
     /// make without an explicit opt-in.
     @Published var notchDuoEnabled: Bool {
@@ -383,13 +365,12 @@ final class SettingsStore: ObservableObject {
         Keys.hotkeyKeyCode: Int(HotkeyShortcut.default.keyCode),
         Keys.hotkeyModifiers: Int(HotkeyShortcut.default.carbonModifiers),
         Keys.notchEnabled: true,
-        Keys.notchStyle: NotchStyle.alcove.rawValue,
         Keys.notchExpansionTrigger: NotchExpansionTrigger.hover.rawValue,
         Keys.notchHoverOpenDelay: 0.15,
         Keys.notchHoverCloseDelay: 0.40,
         Keys.notchShowInFullscreen: true,
         Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue,
-                                WidgetID.mirror.rawValue, WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
+                                WidgetID.mirror.rawValue, WidgetID.clipboard.rawValue],
         Keys.notchNowPlayingEnabled: true,
         Keys.notchShelfEnabled: true,
         Keys.notchShelfExpiryDays: 0.0,
@@ -403,7 +384,6 @@ final class SettingsStore: ObservableObject {
         Keys.notchDuoEnabled: false,
         Keys.notchMirrorEnabled: true,
         Keys.notchClipboardEnabled: false,
-        Keys.notchTimersEnabled: true,
         Keys.notchActivityTimerEnabled: true,
         Keys.notchLockScreenExperimentEnabled: false,
         Keys.notchLockScreenNowPlayingEnabled: true,
@@ -426,7 +406,6 @@ final class SettingsStore: ObservableObject {
         static let hotkeyKeyCode = "flux.hotkey.keyCode"
         static let hotkeyModifiers = "flux.hotkey.modifiers"
         static let notchEnabled = "flux.notch.enabled"
-        static let notchStyle = "flux.notch.style"
         static let notchExpansionTrigger = "flux.notch.expansionTrigger"
         static let notchHoverOpenDelay = "flux.notch.hoverOpenDelay"
         static let notchHoverCloseDelay = "flux.notch.hoverCloseDelay"
@@ -442,7 +421,6 @@ final class SettingsStore: ObservableObject {
         static let notchDuoEnabled = "flux.notch.duo"
         static let notchMirrorEnabled = "flux.notch.mirror.enabled"
         static let notchClipboardEnabled = "flux.notch.clipboard.enabled"
-        static let notchTimersEnabled = "flux.notch.timers.enabled"
         static let notchActivityTimerEnabled = "flux.notch.activities.timer"
         static let notchLockScreenExperimentEnabled = "flux.notch.lockScreenExperiment"
         static let notchLockScreenNowPlayingEnabled = "flux.notch.lockScreen.nowPlaying"

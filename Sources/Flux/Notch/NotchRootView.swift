@@ -27,11 +27,6 @@ struct NotchRootView: View {
     /// back to a generic note glyph.
     var artworkProvider: (() -> NSImage?)?
 
-    /// The canonical Alcove drawer layout. Kept as an injected value so the
-    /// settings/wiring seam remains stable; the current release exposes one
-    /// geometry contract for all standard pages.
-    var style: NotchStyle = .alcove
-
     /// Lets the wiring agent intercept a tap while a live activity's wings are
     /// showing — e.g. routing a `.menuBarOverflow` tap into Arrange Mode
     /// instead of the notch's own open/close toggle. Return `true` to mark
@@ -187,11 +182,11 @@ struct NotchRootView: View {
                           height: max(notchSize.height, 32))
         case .expanded(let widgetID):
             if isDuoLayout(for: widgetID) {
-                return CGSize(width: NotchMetrics.duoWidth(for: notchSize.width, style: style),
-                              height: NotchMetrics.duoHeight(for: notchSize.width, style: style))
+                return CGSize(width: NotchMetrics.duoWidth(for: notchSize.width),
+                              height: NotchMetrics.duoHeight(for: notchSize.width))
             }
-            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width, style: style),
-                          height: NotchMetrics.expandedHeight(for: notchSize.width, style: style))
+            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
+                          height: NotchMetrics.expandedHeight(for: notchSize.width))
         }
     }
 
@@ -547,10 +542,13 @@ struct NotchRootView: View {
     /// needing a second, separate morph.
     ///
     /// The Calendar pane is a *proportion* of the available width rather than
-    /// a fixed 200pt. `GeometryReader` keeps the split correct for either
-    /// style and for the chrome's inner padding.
+    /// a fixed 200pt. `GeometryReader` keeps the split correct inside the
+    /// stable shell's inner padding.
     private func duoContent(nowPlaying: NotchWidget?, calendar: NotchWidget) -> some View {
         GeometryReader { proxy in
+            let calendarWidth = (proxy.size.width * NotchMetrics.duoCalendarPaneFraction).rounded()
+            let dividerWidth: CGFloat = 1
+            let nowPlayingWidth = max(0, proxy.size.width - calendarWidth - dividerWidth)
             HStack(spacing: 0) {
                 Group {
                     if let nowPlaying { nowPlaying.makeExpandedView() }
@@ -567,10 +565,11 @@ struct NotchRootView: View {
                 // player look inset and left Duo with an unnecessarily narrow
                 // media column.
                 .padding(.trailing, NotchDesign.paneInsets)
+                .frame(width: nowPlayingWidth, height: proxy.size.height, alignment: .topLeading)
 
                 Rectangle()
                     .fill(NotchDesign.hairlineColor)
-                    .frame(width: 1)
+                    .frame(width: dividerWidth)
                     .padding(.vertical, 12)
 
                 calendar.makeExpandedView()
@@ -578,9 +577,9 @@ struct NotchRootView: View {
                     // to start-times-only rather than wrapping onto three
                     // lines — see `EnvironmentValues.isNarrowPane`.
                     .environment(\.isNarrowPane, true)
-                    .frame(width: (proxy.size.width * NotchMetrics.duoCalendarPaneFraction).rounded())
-                    .frame(maxHeight: .infinity)
+                    .frame(width: calendarWidth, height: proxy.size.height, alignment: .topLeading)
             }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
     }
 

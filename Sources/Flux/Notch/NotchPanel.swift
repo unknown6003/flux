@@ -139,8 +139,8 @@ final class NotchPanel: NSPanel {
     /// ## A claimed gesture is still swallowed whole
     /// This used to call `super.sendEvent(event)` unconditionally, so every
     /// swipe did two things at once: it switched the page, AND it scrolled
-    /// whatever was inside the widget. Four of the six widgets (Shelf,
-    /// Calendar, Clipboard, Timers) host a `ScrollView`, so swiping between
+    /// whatever was inside the widget. Three of the five widgets (Shelf,
+    /// Calendar, Clipboard) host a `ScrollView`, so swiping between
     /// pages visibly scrolled the list you were swiping away from — and,
     /// worse, delivered scroll events into a SwiftUI subtree that the very
     /// same gesture had just torn down, since `viewModel.swiped(_:)` runs

@@ -1874,27 +1874,27 @@ enum SelfTest {
             wakeSub.cancel()
         }
 
-        // --- M6: TimersWidget — nearestRemainingLine/formatCountdown formatting ---
+        // --- M6: TimerActivity — live-wing selection/formatting ---
         let trRunning = NotchTimer(label: "Focus", duration: 125, startedAt: ntNow) // 125s left
         let trPaused = NotchTimer(label: "Paused", duration: 10, startedAt: ntNow.addingTimeInterval(-5), pausedAt: ntNow)
-        check(TimersWidget.nearestRemainingLine(timers: [trPaused], at: ntNow) == nil,
-              "TimersWidget: nearestRemainingLine is nil when every timer is paused")
-        check(TimersWidget.nearestRemainingLine(timers: [trRunning, trPaused], at: ntNow) == "2 min",
-              "TimersWidget: nearestRemainingLine picks the soonest-to-finish RUNNING timer (ignoring a paused one), showing whole minutes above 60s")
-        check(TimersWidget.nearestRemainingLine(timers: [], at: ntNow) == nil,
-              "TimersWidget: nearestRemainingLine is nil with no timers at all")
+        check(TimerActivity.nearestRemainingLine(timers: [trPaused], at: ntNow) == nil,
+              "TimerActivity: nearestRemainingLine is nil when every timer is paused")
+        check(TimerActivity.nearestRemainingLine(timers: [trRunning, trPaused], at: ntNow) == "2:05",
+              "TimerActivity: nearestRemainingLine picks the soonest-to-finish RUNNING timer with live seconds")
+        check(TimerActivity.nearestRemainingLine(timers: [], at: ntNow) == nil,
+              "TimerActivity: nearestRemainingLine is nil with no timers at all")
 
-        // --- M6 fix: TimersWidget.nearestPausedRemainingLine — the paused
+        // --- M6 fix: TimerActivity.nearestPausedRemainingLine — the paused
         // counterpart to nearestRemainingLine, backing the ambient wing's
         // "show a paused indicator instead of dismissing" fix below. ---
         let trPausedSooner = NotchTimer(label: "SoonerPaused", duration: 10, startedAt: ntNow.addingTimeInterval(-5), pausedAt: ntNow) // frozen at 5s
         let trPausedLater = NotchTimer(label: "LaterPaused", duration: 600, startedAt: ntNow.addingTimeInterval(-100), pausedAt: ntNow) // frozen at 500s
-        check(TimersWidget.nearestPausedRemainingLine(timers: [trPausedSooner, trPausedLater], at: ntNow) == "0:05",
-              "TimersWidget: nearestPausedRemainingLine picks the paused timer with the SMALLEST frozen remaining time")
-        check(TimersWidget.nearestPausedRemainingLine(timers: [trRunning], at: ntNow) == nil,
-              "TimersWidget: nearestPausedRemainingLine is nil when every timer is running (none paused)")
-        check(TimersWidget.nearestPausedRemainingLine(timers: [], at: ntNow) == nil,
-              "TimersWidget: nearestPausedRemainingLine is nil with no timers at all")
+        check(TimerActivity.nearestPausedRemainingLine(timers: [trPausedSooner, trPausedLater], at: ntNow) == "0:05",
+              "TimerActivity: nearestPausedRemainingLine picks the paused timer with the SMALLEST frozen remaining time")
+        check(TimerActivity.nearestPausedRemainingLine(timers: [trRunning], at: ntNow) == nil,
+              "TimerActivity: nearestPausedRemainingLine is nil when every timer is running (none paused)")
+        check(TimerActivity.nearestPausedRemainingLine(timers: [], at: ntNow) == nil,
+              "TimerActivity: nearestPausedRemainingLine is nil with no timers at all")
 
         // --- M6 fix: NotchActivityRouter.timerWingState — the pure core that
         // replaced timerActivityShouldRun, adding the .paused case: when
@@ -1909,7 +1909,7 @@ enum SelfTest {
         check(NotchActivityRouter.timerWingState(timers: [trRunning], toggleOn: true, notchPresenting: false, at: ntNow) == .hidden,
               "NotchActivityRouter: timerWingState is .hidden when the notch isn't presenting")
         if case .running(_, let runningLine) = NotchActivityRouter.timerWingState(timers: [trRunning], toggleOn: true, notchPresenting: true, at: ntNow) {
-            check(runningLine == "2 min", "NotchActivityRouter: timerWingState's .running case carries the running timer's countdown text")
+            check(runningLine == "2:05", "NotchActivityRouter: timerWingState's .running case carries live seconds")
         } else {
             check(false, "NotchActivityRouter: timerWingState should be .running with an unpaused timer, the toggle on, and the notch presenting")
         }
@@ -1919,53 +1919,46 @@ enum SelfTest {
         } else {
             check(false, "NotchActivityRouter: timerWingState should be .paused when every timer is paused (not empty, not hidden)")
         }
-        check(TimersWidget.formatCountdown(65) == "1:05", "TimersWidget: formatCountdown renders m:ss with zero-padded seconds")
-        check(TimersWidget.formatCountdown(5) == "0:05", "TimersWidget: formatCountdown zero-pads seconds under 10")
-        check(TimersWidget.formatCountdown(-3) == "0:00", "TimersWidget: formatCountdown never shows a negative value")
-        check(TimersWidget.formatCountdown(.infinity) == "0:00", "TimersWidget: formatCountdown guards a non-finite input")
+        check(TimerActivity.formatCountdown(65) == "1:05", "TimerActivity: formatCountdown renders m:ss with zero-padded seconds")
+        check(TimerActivity.formatCountdown(5) == "0:05", "TimerActivity: formatCountdown zero-pads seconds under 10")
+        check(TimerActivity.formatCountdown(-3) == "0:00", "TimerActivity: formatCountdown never shows a negative value")
+        check(TimerActivity.formatCountdown(.infinity) == "0:00", "TimerActivity: formatCountdown guards a non-finite input")
         // `customMinutesRange` allows up to 120 minutes, and a plain m:ss
         // rendered that as "120:00" — a malformed clock, not a long one.
-        check(TimersWidget.formatCountdown(3599) == "59:59",
-              "TimersWidget: formatCountdown stays m:ss right up to the hour boundary")
-        check(TimersWidget.formatCountdown(3600) == "1:00:00",
-              "TimersWidget: formatCountdown rolls over to h:mm:ss at exactly one hour")
-        check(TimersWidget.formatCountdown(120 * 60) == "2:00:00",
-              "TimersWidget: formatCountdown renders the longest allowed timer (120 min) as 2:00:00, not 120:00")
-        check(TimersWidget.formatCountdown(3661) == "1:01:01",
-              "TimersWidget: formatCountdown zero-pads both minutes and seconds past an hour")
+        check(TimerActivity.formatCountdown(3599) == "59:59",
+              "TimerActivity: formatCountdown stays m:ss right up to the hour boundary")
+        check(TimerActivity.formatCountdown(3600) == "1:00:00",
+              "TimerActivity: formatCountdown rolls over to h:mm:ss at exactly one hour")
+        check(TimerActivity.formatCountdown(120 * 60) == "2:00:00",
+              "TimerActivity: formatCountdown renders a two-hour timer as 2:00:00, not 120:00")
+        check(TimerActivity.formatCountdown(3661) == "1:01:01",
+              "TimerActivity: formatCountdown zero-pads both minutes and seconds past an hour")
 
-        // --- M6 fix: TimersWidget.formatAmbientRemaining — the ambient wing's
-        // own format, deliberately different from formatCountdown above:
-        // whole minutes (no seconds digit) above 60s, since the wing only
-        // refreshes once a minute there and a seconds digit would visibly
-        // freeze between refreshes; m:ss under 60s, where the wing switches
-        // to a per-second refresh instead (see LiveActivitySources.
-        // nextTimerRefreshBoundary). ---
-        check(TimersWidget.formatAmbientRemaining(125) == "2 min",
-              "TimersWidget: formatAmbientRemaining shows whole (floored) minutes above 60s")
-        check(TimersWidget.formatAmbientRemaining(61) == "1 min",
-              "TimersWidget: formatAmbientRemaining floors just above the 60s boundary rather than rounding up")
-        check(TimersWidget.formatAmbientRemaining(60) == "1:00",
-              "TimersWidget: formatAmbientRemaining switches to m:ss AT exactly 60s remaining, not just below it")
-        check(TimersWidget.formatAmbientRemaining(42) == "0:42",
-              "TimersWidget: formatAmbientRemaining shows m:ss under 60s remaining")
-        check(TimersWidget.formatAmbientRemaining(-3) == "0:00",
-              "TimersWidget: formatAmbientRemaining never shows a negative value")
-        check(TimersWidget.formatAmbientRemaining(.infinity) == "0:00",
-              "TimersWidget: formatAmbientRemaining guards a non-finite input")
+        // --- M6 fix: TimerActivity.formatAmbientRemaining — live wings keep
+        // second precision for the full countdown. ---
+        check(TimerActivity.formatAmbientRemaining(125) == "2:05",
+              "TimerActivity: formatAmbientRemaining keeps seconds above one minute")
+        check(TimerActivity.formatAmbientRemaining(61) == "1:01",
+              "TimerActivity: formatAmbientRemaining shows the exact live value at 61s")
+        check(TimerActivity.formatAmbientRemaining(60) == "1:00",
+              "TimerActivity: formatAmbientRemaining keeps m:ss at exactly 60s")
+        check(TimerActivity.formatAmbientRemaining(42) == "0:42",
+              "TimerActivity: formatAmbientRemaining shows m:ss under 60s remaining")
+        check(TimerActivity.formatAmbientRemaining(-3) == "0:00",
+              "TimerActivity: formatAmbientRemaining never shows a negative value")
+        check(TimerActivity.formatAmbientRemaining(.infinity) == "0:00",
+              "TimerActivity: formatAmbientRemaining guards a non-finite input")
 
         // --- M6 fix: NotchActivityRouter.nextTimerRefreshBoundary — ticks
-        // once a MINUTE while more than a minute remains, but once a SECOND
-        // once inside the final minute, matching formatAmbientRemaining's
-        // own cadence switch so the displayed text is never stale. ---
+        // once per second so the live wing never freezes. ---
         let ntFarDeadline = ntNow.addingTimeInterval(300) // 5 minutes out
         let ntFarBoundary = NotchActivityRouter.nextTimerRefreshBoundary(deadline: ntFarDeadline, now: ntNow)
-        check(ntFarBoundary.timeIntervalSince(ntNow) <= 60 + 0.01,
-              "NotchActivityRouter: nextTimerRefreshBoundary ticks at most a minute out while well over a minute remains")
+        check(ntFarBoundary.timeIntervalSince(ntNow) <= 1 + 0.01,
+              "NotchActivityRouter: nextTimerRefreshBoundary ticks at most a second out for a live countdown")
         let ntNearDeadline = ntNow.addingTimeInterval(42) // inside the final minute
         let ntNearBoundary = NotchActivityRouter.nextTimerRefreshBoundary(deadline: ntNearDeadline, now: ntNow)
         check(ntNearBoundary.timeIntervalSince(ntNow) <= 1 + 0.01,
-              "NotchActivityRouter: nextTimerRefreshBoundary ticks at most a second out once inside the final minute")
+              "NotchActivityRouter: nextTimerRefreshBoundary stays at one-second precision near completion")
 
         // --- M6: ClipboardMonitor.classify — the text-vs-URL seam extracted
         // out of `capture(from:)` so this is testable against a plain
@@ -2020,6 +2013,14 @@ enum SelfTest {
               "ClipboardMonitor: classify treats a scheme-only string with no host as .text, not .url")
         check(ClipboardMonitor.classify(string: "just some text: with a colon in it") == .text,
               "ClipboardMonitor: classify doesn't misfire on a string that merely contains a colon")
+        check(ClipboardMonitor.isCopyShortcut(keyCode: 8, characters: "c", modifiers: .command),
+              "ClipboardMonitor: Cmd-C is recognized as a copy shortcut")
+        check(ClipboardMonitor.isCopyShortcut(keyCode: 7, characters: "x", modifiers: .command),
+              "ClipboardMonitor: Cmd-X is recognized as a cut shortcut")
+        check(!ClipboardMonitor.isCopyShortcut(keyCode: 8, characters: "c", modifiers: []),
+              "ClipboardMonitor: a plain C key is not treated as a copy")
+        check(!ClipboardMonitor.isCopyShortcut(keyCode: 8, characters: "c", modifiers: [.command, .option]),
+              "ClipboardMonitor: Option-C is not treated as a copy shortcut")
 
         // --- M6 smoke tests: CameraService/ClipboardMonitor/LockScreenPresenter
         // construct and tear down safely on a headless CI runner with no
@@ -2362,13 +2363,13 @@ enum SelfTest {
                 // (a 120s timer reading as either exactly 2 minutes left, or
                 // a hair under it, floors to "1 min") — the precise
                 // formatting is already pinned deterministically by the
-                // `TimersWidget.nearestRemainingLine`/`formatAmbientRemaining`
+                // `TimerActivity.nearestRemainingLine`/`formatAmbientRemaining`
                 // checks above; this only needs to confirm the router
                 // actually surfaces SOME countdown text, not re-verify its
                 // exact value.
                 if case .text(let ambientLine)? = timerRouterActivities.current?.trailing {
-                    check(ambientLine == "2 min" || ambientLine == "1 min",
-                          "NotchActivityRouter: the ambient wing shows the nearest remaining timer's countdown text (got \(ambientLine))")
+                    check(ambientLine.range(of: "^[0-9]+:[0-9]{2}(:[0-9]{2})?$", options: .regularExpression) != nil,
+                          "NotchActivityRouter: the ambient wing shows a live countdown (got \(ambientLine))")
                 } else {
                     check(false, "NotchActivityRouter: the ambient wing's trailing content should be countdown .text")
                 }
@@ -2470,8 +2471,8 @@ enum SelfTest {
         }
 
         // --- M6: SettingsStore — fresh-install defaults for every new key,
-        // including the widget-order extension (mirror/timers/clipboard
-        // appended after calendar). Mirrors the "Hotkey" section's own
+        // including the widget-order extension (mirror/clipboard appended
+        // after calendar). Mirrors the "Hotkey" section's own
         // fresh-suite-defaults pattern earlier in this file. ---
         do {
             let m6SettingsSuiteName = "flux.selftest.m6settings"
@@ -2486,19 +2487,16 @@ enum SelfTest {
             let reloadedAppearance = SettingsStore(defaults: UserDefaults(suiteName: m6SettingsSuiteName)!)
             check(reloadedAppearance.appearance == .light,
                   "SettingsStore: Flux appearance persists across reloads")
-            check(m6Settings.notchStyle == .alcove,
-                  "SettingsStore: notchStyle defaults to the compact Alcove layout")
             check(m6Settings.notchMirrorEnabled, "SettingsStore: notchMirrorEnabled defaults to true")
             check(!m6Settings.notchClipboardEnabled,
                   "SettingsStore: notchClipboardEnabled defaults to false — clipboard history collection is opt-in")
-            check(m6Settings.notchTimersEnabled, "SettingsStore: notchTimersEnabled defaults to true")
             check(m6Settings.notchActivityTimerEnabled, "SettingsStore: notchActivityTimerEnabled defaults to true")
             check(!m6Settings.notchLockScreenExperimentEnabled,
                   "SettingsStore: notchLockScreenExperimentEnabled (EXPERIMENTAL) defaults to false")
             check(m6Settings.notchWidgetOrder == [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue,
                                                    WidgetID.calendar.rawValue, WidgetID.mirror.rawValue,
-                                                   WidgetID.timers.rawValue, WidgetID.clipboard.rawValue],
-                  "SettingsStore: the default notchWidgetOrder appends mirror/timers/clipboard after calendar")
+                                                   WidgetID.clipboard.rawValue],
+                  "SettingsStore: the default notchWidgetOrder appends mirror/clipboard after calendar")
 
             // M9/M15 (Alcove lock-screen parity): the four sub-toggles that
             // only matter once the master experimental flag above is on
@@ -2519,29 +2517,20 @@ enum SelfTest {
                   "SettingsStore: notchLockScreenUnlockSoundEnabled defaults to true once lock-screen mode is opted into")
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)
 
-            let legacySuiteName = "flux.selftest.legacy-notch-style"
-            let legacyDefaults = UserDefaults(suiteName: legacySuiteName)!
-            legacyDefaults.removePersistentDomain(forName: legacySuiteName)
-            legacyDefaults.set("flux", forKey: "flux.notch.style")
-            let migratedSettings = SettingsStore(defaults: legacyDefaults)
-            check(migratedSettings.notchStyle == .alcove
-                  && legacyDefaults.string(forKey: "flux.notch.style") == NotchStyle.alcove.rawValue,
-                  "SettingsStore: legacy Flux geometry is migrated to the canonical Alcove footprint")
-            legacyDefaults.removePersistentDomain(forName: legacySuiteName)
         }
 
-        // --- M6: NotchWidgetRegistry — every one of the app's 6 WidgetIDs
+        // --- M6: NotchWidgetRegistry — every one of the app's 5 WidgetIDs
         // registers and orders correctly (nowPlaying, shelf, calendar,
-        // mirror, timers, clipboard). ---
-        check(WidgetID.allCases.count == 6,
-              "WidgetID: exactly 6 widgets exist in the notch suite (nowPlaying, shelf, calendar, mirror, timers, clipboard)")
-        let sixRegistry = NotchWidgetRegistry()
-        let sixWidgets = WidgetID.allCases.map { SelfTestWidget(id: $0) }
-        for widget in sixWidgets { sixRegistry.register(widget) }
-        sixRegistry.order = WidgetID.allCases
-        check(sixRegistry.widgets.count == 6, "NotchWidgetRegistry: all 6 WidgetIDs register successfully")
-        check(sixRegistry.enabledWidgets.map(\.id) == WidgetID.allCases,
-              "NotchWidgetRegistry: all 6 widgets appear, in order, when every one is enabled")
+        // mirror, clipboard). ---
+        check(WidgetID.allCases.count == 5,
+              "WidgetID: exactly 5 widgets exist in the notch suite (nowPlaying, shelf, calendar, mirror, clipboard)")
+        let fiveRegistry = NotchWidgetRegistry()
+        let fiveWidgets = WidgetID.allCases.map { SelfTestWidget(id: $0) }
+        for widget in fiveWidgets { fiveRegistry.register(widget) }
+        fiveRegistry.order = WidgetID.allCases
+        check(fiveRegistry.widgets.count == 5, "NotchWidgetRegistry: all 5 WidgetIDs register successfully")
+        check(fiveRegistry.enabledWidgets.map(\.id) == WidgetID.allCases,
+              "NotchWidgetRegistry: all 5 widgets appear, in order, when every one is enabled")
 
         // --- M7: SettingsStore — fresh-install default for the Duo view
         // toggle, mirroring the M6 defaults block's own pattern. (This block
@@ -2752,13 +2741,13 @@ enum SelfTest {
         // --- M7: NotchViewModel.duoActive(...) — the pure Duo-view
         // derivation, testable without settings/registry/permission. ---
         check(NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: true),
-              "NotchViewModel: duoActive is true when the setting is on, Calendar is enabled, AND permission is granted")
+              "NotchViewModel: duoActive is true when the setting and Calendar widget are enabled")
         check(!NotchViewModel.duoActive(duoSettingEnabled: false, calendarWidgetEnabled: true, calendarPermissionGranted: true),
               "NotchViewModel: duoActive is false when the Duo setting itself is off")
         check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: false, calendarPermissionGranted: true),
               "NotchViewModel: duoActive is false when the Calendar widget itself isn't enabled")
-        check(!NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: false),
-              "NotchViewModel: duoActive is false without Calendar permission granted, even with everything else on")
+        check(NotchViewModel.duoActive(duoSettingEnabled: true, calendarWidgetEnabled: true, calendarPermissionGranted: false),
+              "NotchViewModel: duoActive stays true without Calendar permission so Duo can show its permission prompt")
 
         // --- M7: MarqueeText.overflowWidth — the scroll-distance threshold
         // decision behind the Now Playing header's scrolling title/artist,
@@ -2829,12 +2818,12 @@ enum SelfTest {
         // second page-specific width. ---
         do {
             let notchWidth: CGFloat = 180
-            let alcoveWidth = NotchMetrics.expandedWidth(for: notchWidth, style: .alcove)
-            let alcoveHeight = NotchMetrics.expandedHeight(for: notchWidth, style: .alcove)
+            let alcoveWidth = NotchMetrics.expandedWidth(for: notchWidth)
+            let alcoveHeight = NotchMetrics.expandedHeight(for: notchWidth)
             check(alcoveWidth == 360 && alcoveHeight == 164,
                   "NotchMetrics: Alcove uses one stable width and height for standard widget pages")
             let alcoveHeights = WidgetID.allCases.map {
-                NotchMetrics.expandedHeight(for: $0, notchWidth: notchWidth, style: .alcove)
+                NotchMetrics.expandedHeight(for: $0, notchWidth: notchWidth)
             }
             check(Set(alcoveHeights).count == 1
                   && alcoveHeights.allSatisfy { $0 == NotchMetrics.maxExpandedHeight },
@@ -2845,11 +2834,11 @@ enum SelfTest {
             check(NotchMetrics.duoCalendarPaneFraction > 0.25 && NotchMetrics.duoCalendarPaneFraction < 0.5,
                   "NotchMetrics: Duo's Calendar pane takes a minority share, leaving Now Playing the larger half")
 
-            check(NotchMetrics.duoWidth(for: notchWidth, style: .alcove) == alcoveWidth
-                  && NotchMetrics.duoHeight(for: notchWidth, style: .alcove) == alcoveHeight,
+            check(NotchMetrics.duoWidth(for: notchWidth) == alcoveWidth
+                  && NotchMetrics.duoHeight(for: notchWidth) == alcoveHeight,
                   "NotchMetrics: Duo keeps the same shell size as every other page")
 
-            let bounds = NotchMetrics.panelBounds(for: notchWidth, style: .alcove)
+            let bounds = NotchMetrics.panelBounds(for: notchWidth)
             check(bounds.height == NotchMetrics.maxExpandedHeight + NotchMetrics.shadowMarginHeight,
                   "NotchMetrics: Alcove panelBounds reserves the tallest content plus shadow bleed")
             check(bounds.width == alcoveWidth + NotchMetrics.shadowMarginWidth,
@@ -2862,7 +2851,7 @@ enum SelfTest {
                   "NotchMetrics: Alcove width exactly matches the physical notch plus two wings")
 
             let largerNotchWidth: CGFloat = 200
-            check(NotchMetrics.expandedWidth(for: largerNotchWidth, style: .alcove) == 380,
+            check(NotchMetrics.expandedWidth(for: largerNotchWidth) == 380,
                   "NotchMetrics: larger hardware scales fluidly without a second fixed shell")
         }
 

@@ -17,7 +17,6 @@ struct NotchTab: View {
                 noNotchNotice
             }
             generalCard
-            appearanceCard
             if settings.notchEnabled {
                 behaviorCard
                 widgetsCard
@@ -48,25 +47,6 @@ struct NotchTab: View {
             ToggleRow(title: "Enable the notch panel",
                       subtitle: "Turns the camera housing into an expandable panel for live activities and widgets.",
                       isOn: $settings.notchEnabled)
-        }
-    }
-
-    private var appearanceCard: some View {
-        FluxCard(title: "Appearance") {
-            HStack(spacing: 12) {
-                RowText(title: "Notch style",
-                        subtitle: settings.notchStyle.subtitle)
-                Spacer(minLength: 12)
-                Picker("Notch style", selection: $settings.notchStyle) {
-                    ForEach(NotchStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 125, alignment: .trailing)
-            }
-            .padding(.vertical, 11)
-            .padding(.horizontal, 14)
         }
     }
 
@@ -148,10 +128,6 @@ struct NotchTab: View {
                 RowDivider()
                 PermissionRow(kind: .camera, title: "Camera access", permissions: permissions)
             }
-            RowDivider()
-            ToggleRow(title: "Timers",
-                      subtitle: "Quick countdown timers, right in the notch.",
-                      isOn: $settings.notchTimersEnabled)
             RowDivider()
             ToggleRow(title: "Clipboard",
                       subtitle: "Keep a short history of what you copy, in memory only — never written to disk. Off by default; turn on to opt in.",
@@ -269,8 +245,8 @@ struct NotchTab: View {
                       subtitle: "Show a wing when a calendar event is starting within 10 minutes.",
                       isOn: $settings.notchActivityCalendarEventEnabled)
             RowDivider()
-            ToggleRow(title: "Timer alerts",
-                      subtitle: "Show a wing (and play a sound) when a timer finishes, plus an ambient countdown while one's running.",
+            ToggleRow(title: "Timer live display",
+                      subtitle: "Show a live countdown wing while a timer is running, and an alert when it finishes.",
                       isOn: $settings.notchActivityTimerEnabled)
         }
     }

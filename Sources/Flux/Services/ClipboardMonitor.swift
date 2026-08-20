@@ -115,20 +115,17 @@ struct ClipboardEntry: Identifiable, Equatable {
     }
 }
 
-/// Polls `NSPasteboard.general.changeCount` on a 1-second timer — the ONLY
-/// timer this type ever runs, and only for as long as `start()` has been
-/// called. This is the notch suite's zero-idle-timer perf contract applied
-/// here exactly the way `ShelfStore`/`CalendarService` apply it to their own
-/// on-access/notification-driven work: no repeating work at all while the
-/// feature is switched off.
+/// Captures clipboard changes with two complementary paths: a fast keyboard
+/// copy/cut monitor for Cmd-C/Cmd-X, plus a short `changeCount` poll for menu
+/// copies, screenshots, files, and scripts. Both paths are active only while
+/// `start()` is enabled.
 ///
 /// ## Why polling at all
 /// `NSPasteboard` exposes no change *notification* — a bumped `changeCount`
 /// since the last time this looked is the one documented way to detect "the
 /// user just copied something," and polling it is Apple's own recommended
-/// approach for exactly this. A 1-second interval captures a copy
-/// effectively instantly from the user's perspective without making this app
-/// meaningfully busier than any other once-a-second idle tick.
+/// approach for exactly this. Keyboard monitoring closes the polling gap where
+/// two quick copies could collapse into one observed pasteboard state.
 ///
 /// ## Lifecycle: driven by the SETTINGS toggle, not widget visibility
 /// Unlike every other notch-suite service, this one's `start()`/`stop()` are
@@ -180,6 +177,8 @@ final class ClipboardMonitor: ObservableObject {
 
     private let pasteboard: NSPasteboard
     private var timer: Timer?
+    private var copyShortcutMonitors: [Any] = []
+    private var lifecycleGeneration = 0
     private var lastChangeCount: Int
 
     /// Set to the pasteboard's `changeCount` immediately AFTER `copyBack(_:)`
@@ -223,6 +222,7 @@ final class ClipboardMonitor: ObservableObject {
 
     deinit {
         timer?.invalidate()
+        copyShortcutMonitors.forEach { NSEvent.removeMonitor($0) }
     }
 
     // MARK: - Lifecycle
@@ -232,13 +232,13 @@ final class ClipboardMonitor: ObservableObject {
     /// subsequent `start()` after a `stop()`.
     func start() {
         guard timer == nil else { return }
+        lifecycleGeneration += 1
         lastChangeCount = pasteboard.changeCount
-        // 0.35s, not 1s. `changeCount` only ever reports the LATEST change,
-        // so two copies inside one poll window collapse into one and the
-        // first is lost outright — a large part of "it doesn't detect
-        // everything I copy". This NARROWS that window rather than closing
-        // it; NSPasteboard offers no change notification, so some rate of
-        // miss is inherent.
+        installCopyShortcutMonitors()
+        // `changeCount` only reports the LATEST change, so polling alone can
+        // still miss two copies inside one poll window. The keyboard monitor
+        // handles Cmd-C/Cmd-X; this remains the fallback for every other
+        // pasteboard producer.
         //
         // `tolerance` is set deliberately. `changeCount` is a Mach IPC
         // round-trip to `pbs`, not the local integer read an earlier comment
@@ -247,16 +247,18 @@ final class ClipboardMonitor: ObservableObject {
         // advertises ~0% at idle. A 0.15s tolerance lets the system batch
         // these wakeups against others without materially widening the miss
         // window.
-        let poll = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+        let poll = Timer.scheduledTimer(withTimeInterval: 0.20, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
-        poll.tolerance = 0.15
+        poll.tolerance = 0.05
         timer = poll
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        lifecycleGeneration += 1
+        removeCopyShortcutMonitors()
         suppressedChangeCount = nil
     }
 
@@ -276,6 +278,13 @@ final class ClipboardMonitor: ObservableObject {
     // MARK: - Polling
 
     private func poll() {
+        captureIfChanged()
+    }
+
+    /// Shared capture path used by the keyboard shortcut monitor and the
+    /// change-count fallback. The keyboard path calls this shortly after the
+    /// copy/cut event so the source app can finish writing its pasteboard item.
+    private func captureIfChanged() {
         let current = pasteboard.changeCount
         guard current != lastChangeCount else { return }
         lastChangeCount = current
@@ -289,6 +298,69 @@ final class ClipboardMonitor: ObservableObject {
         guard !isConcealedOrTransient else { return }
         guard let entry = Self.capture(from: pasteboard) else { return }
         record(entry)
+    }
+
+    // MARK: - Keyboard-assisted capture
+
+    private func installCopyShortcutMonitors() {
+        guard copyShortcutMonitors.isEmpty else { return }
+        let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp]
+
+        let global = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            let keyCode = event.keyCode
+            let characters = event.charactersIgnoringModifiers
+            let modifiers = event.modifierFlags
+            let isRepeat = event.isARepeat
+            Task { @MainActor in
+                self?.handleCopyShortcut(keyCode: keyCode, characters: characters,
+                                         modifiers: modifiers, isRepeat: isRepeat)
+            }
+        }
+
+        let local = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.handleCopyShortcut(keyCode: event.keyCode,
+                                     characters: event.charactersIgnoringModifiers,
+                                     modifiers: event.modifierFlags,
+                                     isRepeat: event.isARepeat)
+            return event
+        }
+        copyShortcutMonitors = [global, local].compactMap { $0 }
+    }
+
+    private func removeCopyShortcutMonitors() {
+        copyShortcutMonitors.forEach { NSEvent.removeMonitor($0) }
+        copyShortcutMonitors.removeAll()
+    }
+
+    private func handleCopyShortcut(keyCode: UInt16, characters: String?,
+                                    modifiers: NSEvent.ModifierFlags,
+                                    isRepeat: Bool) {
+        guard !isRepeat,
+              Self.isCopyShortcut(keyCode: keyCode, characters: characters, modifiers: modifiers) else {
+            return
+        }
+
+        let generation = lifecycleGeneration
+        Task { @MainActor [weak self] in
+            // Copy/cut handlers run after the key event reaches the source
+            // app. A short delay makes the read reliable for apps that write
+            // rich text or image data asynchronously.
+            try? await Task.sleep(for: .milliseconds(70))
+            guard let self, self.lifecycleGeneration == generation, self.timer != nil else { return }
+            self.captureIfChanged()
+        }
+    }
+
+    /// Pure shortcut recognition, kept separate so the event-monitor policy
+    /// can be tested without creating AppKit events.
+    static func isCopyShortcut(keyCode: UInt16, characters: String?,
+                               modifiers: NSEvent.ModifierFlags) -> Bool {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command), !flags.contains(.option), !flags.contains(.control) else {
+            return false
+        }
+        let key = characters?.lowercased()
+        return key == "c" || key == "x" || keyCode == 8 || keyCode == 7
     }
 
     /// Pure decision core of the suppression check above — split out of

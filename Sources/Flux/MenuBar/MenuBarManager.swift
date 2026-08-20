@@ -12,6 +12,7 @@ import Combine
 final class MenuBarManager {
     private let settings: SettingsStore
     private let arranger: MenuBarArranger
+    private let timerService: TimerService?
     private let onOpenSettings: () -> Void
 
     private let chevron: ControlItem
@@ -42,9 +43,11 @@ final class MenuBarManager {
 
     init(settings: SettingsStore,
          arranger: MenuBarArranger,
+         timerService: TimerService? = nil,
          onOpenSettings: @escaping () -> Void) {
         self.settings = settings
         self.arranger = arranger
+        self.timerService = timerService
         self.onOpenSettings = onOpenSettings
 
         // Before creating any status items: (1) drop any off-screen-corrupt saved
@@ -538,8 +541,12 @@ final class MenuBarManager {
     /// download/install controls actually are.
     var onOpenSettingsTab: ((SettingsTab) -> Void)?
 
-    private func showMenu() {
-        let menu = NSMenu()
+    /// Builds the menu used by both the menu-bar chevron and the collapsed
+    /// notch. Keeping one builder prevents the two right-click paths from
+    /// drifting apart again.
+    func makeMenu() -> NSMenu {
+        let menu = NSMenu(title: "Flux")
+        menu.autoenablesItems = false
 
         if let version = pendingUpdateVersion?() {
             let item = makeItem("Update to \(version)…", #selector(menuOpenUpdateSettings))
@@ -563,10 +570,20 @@ final class MenuBarManager {
             menu.addItem(.separator())
             menu.addItem(makeItem("Arrange Menu Bar Items…", #selector(menuToggleArrange)))
         }
+        if timerService != nil {
+            menu.addItem(.separator())
+            menu.addItem(makeTimerMenuItem())
+        }
         menu.addItem(.separator())
         menu.addItem(makeItem("Flux Settings…", #selector(menuOpenSettings), key: ","))
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit Flux", #selector(menuQuit), key: "q"))
+
+        return menu
+    }
+
+    private func showMenu() {
+        let menu = makeMenu()
 
         // Pop the menu directly under the chevron. Using popUp(positioning:…)
         // avoids assigning statusItem.menu, which would otherwise suppress the
@@ -575,6 +592,25 @@ final class MenuBarManager {
             let origin = NSPoint(x: 0, y: button.bounds.height + 4)
             menu.popUp(positioning: nil, at: origin, in: button)
         }
+    }
+
+    private func makeTimerMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Start Timer", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Start Timer")
+        submenu.autoenablesItems = false
+
+        for minutes in TimerActivity.presetMinutes {
+            let timerItem = makeItem("\(minutes) minutes", #selector(menuStartTimer(_:)))
+            timerItem.representedObject = NSNumber(value: minutes)
+            submenu.addItem(timerItem)
+        }
+
+        if timerService?.timers.isEmpty == false {
+            submenu.addItem(.separator())
+            submenu.addItem(makeItem("Stop All Timers", #selector(menuStopAllTimers)))
+        }
+        item.submenu = submenu
+        return item
     }
 
     private func makeItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -588,6 +624,20 @@ final class MenuBarManager {
     @objc private func menuRevealAll() { revealAll() }
 
     @objc private func menuToggleArrange() { arranger.toggle() }
+
+    @objc private func menuStartTimer(_ sender: NSMenuItem) {
+        guard let minutes = (sender.representedObject as? NSNumber)?.intValue,
+              TimerActivity.presetMinutes.contains(minutes) else { return }
+        timerService?.start(duration: TimeInterval(minutes * 60),
+                            label: TimerActivity.defaultLabel(minutes: minutes))
+    }
+
+    @objc private func menuStopAllTimers() {
+        guard let timerService else { return }
+        for timer in timerService.timers {
+            timerService.cancel(timer.id)
+        }
+    }
 
     // MARK: Diagnostics
 

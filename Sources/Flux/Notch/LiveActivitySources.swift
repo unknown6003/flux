@@ -45,15 +45,12 @@ final class NotchActivityRouter {
     /// `statuses`; `request`/`openSystemSettings` are Settings-UI actions the
     /// Calendar widget itself owns.
     private let permissions: PermissionCenter
-    /// M6: shared with `TimersWidget` — like `calendar`, this router isn't
+    /// M6: shared with the context menu — like `calendar`, this router isn't
     /// the countdown machinery's only consumer, so it's injected rather than
     /// default-constructed. Unlike `calendar`, this router never calls
-    /// `start()`/`stop()` on it: `TimerService` has no such lifecycle at all
-    /// (see its own doc comment — a single cancellable boundary `Task`, never
-    /// a repeating timer, so there's nothing to gate on presentation the way
-    /// Calendar's EventKit fetch needs to be). This router only turns its
-    /// `completions` events and live `timers` into `.timer` live-activity
-    /// wings.
+    /// `start()`/`stop()` on it: `TimerService` has no such lifecycle at all.
+    /// This router only turns its `completions` events and live `timers` into
+    /// `.timer` live-activity wings.
     private let timers: TimerService
     /// The notch's state machine — read directly (`viewModel.state`) rather
     /// than through a bespoke closure, so `calendarServiceShouldRun` always
@@ -906,41 +903,25 @@ final class NotchActivityRouter {
     static func timerWingState(timers: [NotchTimer], toggleOn: Bool, notchPresenting: Bool, at now: Date) -> TimerWingState {
         guard toggleOn, notchPresenting, !timers.isEmpty else { return .hidden }
         if let deadline = TimerService.nextDeadline(in: timers, after: now),
-           let line = TimersWidget.nearestRemainingLine(timers: timers, at: now) {
+           let line = TimerActivity.nearestRemainingLine(timers: timers, at: now) {
             return .running(deadline: deadline, line: line)
         }
-        if let line = TimersWidget.nearestPausedRemainingLine(timers: timers, at: now) {
+        if let line = TimerActivity.nearestPausedRemainingLine(timers: timers, at: now) {
             return .paused(line: line)
         }
         return .hidden
     }
 
     /// The next instant the ambient wing's displayed countdown text should
-    /// refresh: once a minute while more than a minute remains (matching
-    /// `nextMinuteBoundary`'s cadence for the calendar wing, and
-    /// `TimersWidget.formatAmbientRemaining`'s whole-minutes text over that
-    /// same window), or once a SECOND once under a minute remains, matching
-    /// `formatAmbientRemaining`'s switch to `m:ss` text there — anything
-    /// coarser would show a seconds digit that visibly doesn't move between
-    /// refreshes. This is a deliberate, narrow exception to the notch suite's
-    /// no-frequent-timers perf contract: it's bounded to at most 60 wakes
-    /// (once the countdown is already inside its final minute) rather than
-    /// an open-ended per-second timer, and it only exists at all because a
-    /// countdown wing that's about to finish reads as broken if its last
-    /// minute visibly freezes. Also wakes at the exact instant the countdown
-    /// crosses under a minute, so the cadence switch itself doesn't wait up
-    /// to a full minute late.
+    /// refresh. Timer live activities use second precision for the full
+    /// countdown, so this is one bounded one-second wake while a timer runs.
     static func nextTimerRefreshBoundary(deadline: Date, now: Date) -> Date {
-        let remaining = deadline.timeIntervalSince(now)
-        let tick = remaining > 60 ? nextMinuteBoundary(after: now) : nextTickBoundary(after: now, every: 1)
-        let crossover = deadline.addingTimeInterval(-60)
-        return crossover > now ? min(tick, crossover) : tick
+        _ = deadline
+        nextTickBoundary(after: now, every: 1)
     }
 
     /// The next wall-clock instant strictly after `now` that's an even
-    /// multiple of `interval` seconds since the reference date — the general
-    /// form of `nextMinuteBoundary`'s `interval == 60` case, used here for
-    /// the under-a-minute 10s refresh cadence.
+    /// multiple of `interval` seconds since the reference date.
     static func nextTickBoundary(after now: Date, every interval: TimeInterval) -> Date {
         let epoch = now.timeIntervalSinceReferenceDate
         let nextEpoch = (epoch / interval).rounded(.down) * interval + interval

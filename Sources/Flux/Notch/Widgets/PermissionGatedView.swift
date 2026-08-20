@@ -86,7 +86,7 @@ struct PermissionGatedView<Content: View>: View {
 /// Alcove's near-monochrome notch surface has no amber left to fill a
 /// prominent button with, so this is a white-on-dark capsule instead: a
 /// quiet `white.opacity(0.14)` fill with white text, matching the same
-/// interactive-fill language `TimersWidget`'s preset capsules use. Deliberately
+/// interactive-fill language the timer menu's preset actions use. Deliberately
 /// defined here rather than in `Theme.swift` — the notch's Alcove restyle is
 /// scoped to `Sources/Flux/Notch/Widgets`, and `Theme.fluxProminent` is still
 /// the correct amber-filled style for the (unrestyled) Settings surface, so

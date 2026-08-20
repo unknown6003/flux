@@ -100,8 +100,8 @@ struct NotchTimer: Identifiable, Equatable {
 /// itself) — never a `Timer.scheduledTimer` ticking every second regardless
 /// of whether anything is actually due. Live countdown *display* (the
 /// per-second tick a running timer's remaining-time text needs) is the
-/// widget's own concern, gated on presentation — this service never ticks on
-/// a wall-clock cadence at all.
+/// live-activity router's concern, gated on presentation — this service never
+/// ticks on a wall-clock cadence at all.
 @MainActor
 final class TimerService: ObservableObject {
     @Published private(set) var timers: [NotchTimer] = []
@@ -176,7 +176,7 @@ final class TimerService: ObservableObject {
     }
 
     /// Starts a new countdown timer and returns it. `label` is entirely the
-    /// caller's concern (`TimersWidget` supplies something like "5 min" by
+    /// caller's concern (the shared timer menu supplies something like "5 min" by
     /// default) — this service has no opinion about labeling.
     @discardableResult
     func start(duration: TimeInterval, label: String) -> NotchTimer {
@@ -234,7 +234,7 @@ final class TimerService: ObservableObject {
     /// The earliest still-counting-down (unpaused) timer's `endDate` — the
     /// deadline `rescheduleBoundary` arms its single `Task` against, and the
     /// same deadline the integrator's sticky `.timer` live activity (via
-    /// `TimersWidget.nextDeadline`/`nearestRemainingLine`) would want to key
+    /// `TimerService.nextDeadline`/`TimerActivity.nearestRemainingLine`) would want to key
     /// off of. `nil` when every timer is paused, or there are no timers at
     /// all.
     ///

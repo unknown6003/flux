@@ -55,11 +55,11 @@ final class NotchViewModel: ObservableObject {
     /// M7 (Alcove parity): whether the expanded Now Playing panel should
     /// render side-by-side with Calendar (Duo view) instead of alone. Plain
     /// data, not derived here — `NotchViewModel` stays view-free and has no
-    /// way to see Calendar's own permission status, so `AppDelegate` computes
-    /// this (via the pure `duoActive(duoSettingEnabled:calendarWidgetEnabled:
-    /// calendarPermissionGranted:)` below) and writes it here on every input
-    /// that could change the answer. `NotchRootView` reads this directly,
-    /// keeping it a purely declarative consumer.
+    /// way to see Calendar's own settings, so `AppDelegate` computes this via
+    /// the pure `duoActive(...)` seam below and writes it here. Permission is
+    /// not a layout gate: Duo can show Calendar's own permission prompt
+    /// instead of silently hiding the pane. `NotchRootView` reads this
+    /// directly, keeping it a purely declarative consumer.
     @Published var duoActive = false
 
     /// Whether the most recent state transition SHRANK the visible shape
@@ -222,14 +222,13 @@ final class NotchViewModel: ObservableObject {
     // MARK: - Duo view (M7)
 
     /// Whether Duo view should currently render — a pure function of exactly
-    /// the three independent facts that decide it, so `--selftest` can drive
+    /// the two settings facts that decide its layout, so `--selftest` can drive
     /// every combination directly without constructing the whole settings/
-    /// registry/permission graph. `AppDelegate` recomputes this (see its own
-    /// `recomputeDuoActive()`) whenever any of the three could have changed —
-    /// the setting itself, the Calendar widget's own enabled state, or
-    /// Calendar permission — and writes the result into `duoActive` above.
+    /// registry graph. The permission argument remains in this seam because
+    /// the router uses it to gate EventKit, but it does not hide the pane.
     static func duoActive(duoSettingEnabled: Bool, calendarWidgetEnabled: Bool, calendarPermissionGranted: Bool) -> Bool {
-        duoSettingEnabled && calendarWidgetEnabled && calendarPermissionGranted
+        _ = calendarPermissionGranted
+        return duoSettingEnabled && calendarWidgetEnabled
     }
 
     // MARK: - Inputs

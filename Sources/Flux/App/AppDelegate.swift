@@ -50,12 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor: clipboardMonitor, isEnabled: settings.notchClipboardEnabled)
     // M6: `TimerService` has no start/stop lifecycle at all (a single
     // cancellable boundary `Task`, rearmed on mutation — see its own doc
-    // comment), so unlike every other notch-suite service there's nothing
-    // for either `TimersWidget` or `notchActivityRouter` to start/stop here;
-    // both just consume this one shared instance.
+    // comment). The shared menu starts timers, while the activity router
+    // consumes this same instance for the live countdown wing.
     private let timerService = TimerService()
-    private lazy var timersWidget = TimersWidget(
-        service: timerService, isEnabled: settings.notchTimersEnabled)
     // M6/M9: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment.
     // Gated from `configureLockScreenPresenter()` below. `lazy` (like the
     // widgets above) because its initializer reads sibling instance
@@ -116,7 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // anything this launch does can overwrite it.
         crashReporter.beginSession()
 
-        menuBar = MenuBarManager(settings: settings, arranger: arranger) { [weak self] in
+        menuBar = MenuBarManager(settings: settings, arranger: arranger,
+                                 timerService: timerService) { [weak self] in
             self?.openSettings()
         }
         // Lets a background-found update surface somewhere the user actually
@@ -132,7 +130,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.register(shelfWidget)
         notchWindow.registry.register(calendarWidget)
         notchWindow.registry.register(mirrorWidget)
-        notchWindow.registry.register(timersWidget)
         notchWindow.registry.register(clipboardWidget)
         notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
         // A file dropped on the *collapsed* notch is caught at the window
@@ -160,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // itself. `NotchWindowController` decides *when* a right-click counts
         // as on the notch; this closure is the only thing that knows what
         // should be *in* the menu.
-        notchWindow.menuProvider = { [weak self] in self?.makeNotchMenu() ?? NSMenu() }
+        notchWindow.menuProvider = { [weak self] in self?.menuBar?.makeMenu() ?? NSMenu() }
         // Screen changes (external display connect/disconnect, clamshell
         // open/close) flip `notchWindow.isPresenting` independently of every
         // settings toggle `notchActivityRouter` already reacts to.
@@ -356,7 +353,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
         // tick and then immediately being corrected.
         notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
-        notchWindow.setStyle(settings.notchStyle)
         notchWindow.setAppearance(settings.appearance)
         notchWindow.setEnabled(notchOn)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
@@ -367,7 +363,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.setEnabled(.shelf, settings.notchShelfEnabled)
         notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
         notchWindow.registry.setEnabled(.mirror, settings.notchMirrorEnabled)
-        notchWindow.registry.setEnabled(.timers, settings.notchTimersEnabled)
         notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
         shelfStore.expiryInterval = settings.notchShelfExpiryInterval
         configureNotchOverflowCoexistence(notchEnabled: notchOn)
@@ -472,11 +467,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] value in self?.notchWindow.setShowInFullscreen(value) }
             .store(in: &cancellables)
 
-        settings.$notchStyle
-            .dropFirst()
-            .sink { [weak self] value in self?.notchWindow.setStyle(value) }
-            .store(in: &cancellables)
-
         settings.$appearance
             .dropFirst()
             .sink { [weak self] value in
@@ -529,11 +519,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchMirrorEnabled
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.mirror, value) }
-            .store(in: &cancellables)
-
-        settings.$notchTimersEnabled
-            .dropFirst()
-            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.timers, value) }
             .store(in: &cancellables)
 
         settings.$notchClipboardEnabled
@@ -670,95 +655,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         return main
     }
-
-    // MARK: Notch context menu
-
-    /// Built fresh on every right-click (not cached) so every dynamic part —
-    /// the expand/collapse verb, the widget checkmarks — reflects the state
-    /// at the moment the menu opens rather than whenever it was last built.
-    private func makeNotchMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-
-        // Same signpost the chevron's menu carries — see
-        // `MenuBarManager.pendingUpdateVersion`.
-        if let version = updater.pendingRelease?.version {
-            // `.general`, not the generic open — the install controls are
-            // there, and `show()` alone would preserve whatever tab the user
-            // last had open (Codex PR13 finding).
-            let item = makeNotchItem("Update to \(version)…", #selector(notchMenuOpenUpdateSettings))
-            item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
-            menu.addItem(item)
-            menu.addItem(.separator())
-        }
-
-        let isExpanded: Bool
-        if case .expanded = notchWindow.viewModel.state { isExpanded = true } else { isExpanded = false }
-        menu.addItem(makeNotchItem(isExpanded ? "Collapse Notch" : "Expand Notch",
-                                   #selector(notchMenuToggle)))
-
-        menu.addItem(.separator())
-
-        let widgets = NSMenuItem(title: "Widgets", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        // Walks `WidgetID.allCases` rather than `registry.enabledWidgets` on
-        // purpose: a *disabled* widget is exactly the one the user needs to
-        // find here to switch back on, and it's absent from `enabledWidgets`
-        // by definition.
-        for id in WidgetID.allCases {
-            let item = makeNotchItem(id.title, #selector(notchMenuToggleWidget))
-            item.state = settings[keyPath: id.enabledSettingKey] ? .on : .off
-            item.image = NSImage(systemSymbolName: id.symbol, accessibilityDescription: nil)
-            item.representedObject = id.rawValue
-            submenu.addItem(item)
-        }
-        widgets.submenu = submenu
-        menu.addItem(widgets)
-
-        menu.addItem(.separator())
-        menu.addItem(makeNotchItem("Notch Settings…", #selector(notchMenuOpenNotchSettings)))
-        menu.addItem(makeNotchItem("Flux Settings…", #selector(notchMenuOpenSettings), key: ","))
-        menu.addItem(.separator())
-        menu.addItem(makeNotchItem("Turn Off Notch", #selector(notchMenuDisable)))
-        menu.addItem(.separator())
-        menu.addItem(makeNotchItem("Quit Flux", #selector(notchMenuQuit), key: "q"))
-        return menu
-    }
-
-    /// `isEnabled` is set explicitly because `menu.autoenablesItems` is off —
-    /// with automatic enabling on, AppKit validates against the responder
-    /// chain, and a menu popped from a non-activating panel in an accessory
-    /// app has no useful responder chain to validate against, so every item
-    /// would come up greyed out.
-    private func makeNotchItem(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        item.target = self
-        item.isEnabled = true
-        return item
-    }
-
-    @objc private func notchMenuToggle() { notchWindow.hotkeyToggled() }
-
-    @objc private func notchMenuToggleWidget(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let id = WidgetID(rawValue: raw) else { return }
-        // Written through `settings` (not `registry.setEnabled` directly) so
-        // the change persists and the Settings window's own toggle updates
-        // with it — the registry is driven from the settings sink in
-        // `observeNotchSettings()`.
-        settings[keyPath: id.enabledSettingKey].toggle()
-    }
-
-    @objc private func notchMenuOpenNotchSettings() { settingsWindow.show(tab: .notch) }
-
-    @objc private func notchMenuOpenUpdateSettings() { settingsWindow.show(tab: .general) }
-
-    @objc private func notchMenuOpenSettings() { openSettings() }
-
-    @objc private func notchMenuDisable() { settings.notchEnabled = false }
-
-    @objc private func notchMenuQuit() { NSApp.terminate(nil) }
 
     // MARK: Software update
 

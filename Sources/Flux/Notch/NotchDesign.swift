@@ -20,7 +20,7 @@ import SwiftUI
 /// - Shelf's relative-age captions reading future tense ("in 0s") for
 ///   just-added items — not a token either; see `Formatters.age(from:to:)`.
 /// - Timers' stock white `Stepper` clashing with the dark panel — not a
-///   token; see `TimersWidget`'s custom stepper, which does reuse
+///   token; see the shared timer menu, which does reuse
 ///   `capsuleFill`/spacing tokens from here.
 /// - cramped Duo-pane padding — see `paneInsets`.
 ///
