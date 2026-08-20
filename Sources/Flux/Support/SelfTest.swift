@@ -2312,8 +2312,8 @@ enum SelfTest {
               "LockScreenWidgetPositionLogic: the music player keeps the 0.28 login anchor")
         check(abs(LockScreenWidgetPositionLogic.mediaMinimumOriginFraction - 0.20) < 0.001,
               "LockScreenWidgetPositionLogic: the music player keeps its higher 0.20 floor")
-        check(abs(LockScreenWidgetPositionLogic.companionPreferredCenterFraction - 0.22) < 0.001,
-              "LockScreenWidgetPositionLogic: companion widgets use the slightly raised 0.22 anchor")
+        check(abs(LockScreenWidgetPositionLogic.companionPreferredCenterFraction - 0.21) < 0.001,
+              "LockScreenWidgetPositionLogic: companion widgets use the slightly raised 0.21 anchor")
         check(abs(LockScreenWidgetPositionLogic.companionMinimumOriginFraction - 0.10) < 0.001,
               "LockScreenWidgetPositionLogic: companion widgets use the 0.10 lower floor")
         check(mediaWidgetOrigin > companionWidgetOrigin,

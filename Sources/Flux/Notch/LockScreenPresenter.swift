@@ -32,7 +32,7 @@ enum LockScreenTransitionLogic {
 enum LockScreenWidgetPositionLogic {
     static let mediaPreferredCenterFraction: CGFloat = 0.28
     static let mediaMinimumOriginFraction: CGFloat = 0.20
-    static let companionPreferredCenterFraction: CGFloat = 0.22
+    static let companionPreferredCenterFraction: CGFloat = 0.21
     static let companionMinimumOriginFraction: CGFloat = 0.10
 
     static func originY(screenFrame: CGRect,
