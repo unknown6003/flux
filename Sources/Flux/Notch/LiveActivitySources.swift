@@ -917,7 +917,7 @@ final class NotchActivityRouter {
     /// countdown, so this is one bounded one-second wake while a timer runs.
     static func nextTimerRefreshBoundary(deadline: Date, now: Date) -> Date {
         _ = deadline
-        nextTickBoundary(after: now, every: 1)
+        return nextTickBoundary(after: now, every: 1)
     }
 
     /// The next wall-clock instant strictly after `now` that's an even
