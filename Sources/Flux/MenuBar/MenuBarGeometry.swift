@@ -9,12 +9,12 @@ enum NotchScreenGeometry {
                           menuBarThickness: CGFloat,
                           leftArea: CGRect,
                           rightArea: CGRect) -> CGRect? {
-        guard safeAreaTop > 0,
-              rightArea.minX > leftArea.maxX else { return nil }
+        guard rightArea.minX > leftArea.maxX else { return nil }
 
-        // Keep the current calculation for the first red run. The physical
-        // housing height should come from safeAreaTop, not the full menu bar.
-        let height = menuBarThickness
+        // The menu bar can include extra space below the camera housing. The
+        // safe-area inset is the height macOS reserves for the housing itself.
+        let height = safeAreaTop > 0 ? safeAreaTop : menuBarThickness
+        guard height > 0 else { return nil }
         return CGRect(x: leftArea.maxX,
                       y: frame.maxY - height,
                       width: rightArea.minX - leftArea.maxX,
