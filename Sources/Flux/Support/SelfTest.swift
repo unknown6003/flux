@@ -2986,7 +2986,10 @@ enum SelfTest {
                 backingScaleFactor: 2) {
                 let measuredWidthInPixels = (fractionalRightArea.minX - fractionalLeftArea.maxX) * 2
                 let renderedWidthInPixels = notch.width * 2
-                let expectedWidthInPixels = max(measuredWidthInPixels.rounded(.down) - 4, 1)
+                let expectedWidthInPixels = max(
+                    measuredWidthInPixels.rounded(.down)
+                        - NotchScreenGeometry.collapsedSideInsetInPixels * 2,
+                    1)
                 check(abs(renderedWidthInPixels - expectedWidthInPixels) < 0.001,
                       "Notch geometry: minimized housing leaves two backing pixels clear at each side")
             } else {

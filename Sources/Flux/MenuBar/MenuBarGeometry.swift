@@ -4,6 +4,10 @@ import AppKit
 /// Keeping the calculation separate makes the hardware-height rule testable
 /// without requiring a real notched Mac in CI.
 enum NotchScreenGeometry {
+    /// Keeps the minimized shell a couple of physical pixels inside AppKit's
+    /// safe-area boundary on each side.
+    static let collapsedSideInsetInPixels: CGFloat = 2
+
     static func notchRect(frame: CGRect,
                           safeAreaTop: CGFloat,
                           menuBarThickness: CGFloat,
@@ -23,10 +27,14 @@ enum NotchScreenGeometry {
         // Work in backing pixels first so the two sides land on the same pixel
         // boundary instead of producing a one-pixel leak on one side. The
         // gap can end halfway through a backing pixel; round down rather than
-        // expanding the drawn shell beyond the physical housing.
+        // expanding the drawn shell beyond the physical housing. Leave a small
+        // extra inset because AppKit's safe-area gap is a placement boundary,
+        // not the exact visible edge of the black housing.
         let scale = backingScaleFactor > 0 ? backingScaleFactor : 1
         let measuredWidthInPixels = (rightArea.minX - leftArea.maxX) * scale
-        let widthInPixels = max(measuredWidthInPixels.rounded(.down), 1)
+        let widthInPixels = max(
+            measuredWidthInPixels.rounded(.down) - collapsedSideInsetInPixels * 2,
+            1)
         let centerInPixels = frame.midX * scale
         let minX = (centerInPixels - widthInPixels / 2) / scale
         return CGRect(x: minX,
