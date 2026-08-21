@@ -129,6 +129,8 @@ enum NotchDesign {
     /// The quiet white wash used to fill capsules/rows/buttons across the
     /// notch's near-monochrome surface (preset capsules, hover states, the
     /// `PermissionGatedView` action button, the custom stepper's buttons).
+    /// The physical camera housing stays black in every Flux appearance.
+    static let physicalNotchFill = Color.black
     static var panelFill: Color { Theme.groundColor }
     static var primaryColor: Color { Theme.textPrimaryColor }
     static var secondaryColor: Color { Theme.textPrimaryColor.opacity(secondaryOpacity) }

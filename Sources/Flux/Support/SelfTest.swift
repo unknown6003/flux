@@ -2123,6 +2123,51 @@ enum SelfTest {
             check(clipboardProbe.entries.isEmpty, "ClipboardMonitor: start()/stop() cycles alone never capture anything")
         }
 
+        // Clipboard persistence keeps useful text history across launches,
+        // while leaving files and image bytes out of the saved file. Use an
+        // isolated temporary path so this test never reads or writes a real
+        // user's clipboard history.
+        do {
+            let persistenceURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("flux-selftest-clipboard-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: persistenceURL) }
+
+            let now = Date()
+            let persistenceProbe = ClipboardMonitor(pasteboard: .general,
+                                                     persistenceURL: persistenceURL)
+            persistenceProbe.setPersistenceEnabled(true)
+            persistenceProbe.injectPreviewEntries([
+                ClipboardEntry(id: UUID(), capturedAt: now, kind: .text,
+                                preview: "saved text", fullString: "saved text", filePaths: nil),
+                ClipboardEntry(id: UUID(), capturedAt: now.addingTimeInterval(-1), kind: .url,
+                                preview: "https://example.com", fullString: "https://example.com", filePaths: nil),
+                ClipboardEntry(id: UUID(), capturedAt: now.addingTimeInterval(-2), kind: .color,
+                                preview: "#FF0000", fullString: "#ff0000", filePaths: nil,
+                                colorComponents: ClipboardMonitor.parseHexColor("#ff0000")),
+                ClipboardEntry(id: UUID(), capturedAt: now.addingTimeInterval(-3), kind: .file,
+                                preview: "secret.txt", fullString: nil, filePaths: ["/tmp/secret.txt"]),
+                ClipboardEntry(id: UUID(), capturedAt: now.addingTimeInterval(-4), kind: .image,
+                                preview: "Image (1×1)", fullString: nil, filePaths: nil,
+                                imageData: Data([0, 1, 2, 3]))
+            ])
+
+            check(FileManager.default.fileExists(atPath: persistenceURL.path),
+                  "ClipboardMonitor: enabled persistence writes a history file")
+
+            let restored = ClipboardMonitor(pasteboard: .general, persistenceURL: persistenceURL)
+            restored.setPersistenceEnabled(true)
+            check(restored.entries.map(\.kind) == [.text, .url, .color],
+                  "ClipboardMonitor: reload restores text, URL, and colour entries only")
+            check(restored.entries.first?.fullString == "saved text",
+                  "ClipboardMonitor: reload preserves saved text for copy-back")
+            check(restored.entries.last?.colorComponents == ClipboardMonitor.parseHexColor("#ff0000"),
+                  "ClipboardMonitor: reload rebuilds colour swatch data")
+
+            restored.clear()
+            check(!FileManager.default.fileExists(atPath: persistenceURL.path),
+                  "ClipboardMonitor: Clear All removes the persisted history file")
+        }
+
         // --- M8: fixture-injection seams behind NotchSnapshot's
         // all-widgets snapshot coverage (`CalendarService.injectPreviewEvents`,
         // `ClipboardMonitor.injectPreviewEntries`, `PermissionCenter.
@@ -2519,6 +2564,8 @@ enum SelfTest {
             check(m6Settings.notchMirrorEnabled, "SettingsStore: notchMirrorEnabled defaults to true")
             check(!m6Settings.notchClipboardEnabled,
                   "SettingsStore: notchClipboardEnabled defaults to false — clipboard history collection is opt-in")
+            check(m6Settings.notchClipboardPersistenceEnabled,
+                  "SettingsStore: clipboard persistence defaults to on once clipboard history is enabled")
             check(m6Settings.notchActivityTimerEnabled, "SettingsStore: notchActivityTimerEnabled defaults to true")
             check(!m6Settings.notchLockScreenExperimentEnabled,
                   "SettingsStore: notchLockScreenExperimentEnabled (EXPERIMENTAL) defaults to false")

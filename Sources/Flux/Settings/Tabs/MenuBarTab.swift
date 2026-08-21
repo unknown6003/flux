@@ -65,18 +65,6 @@ struct MenuBarTab: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-
-                RowDivider()
-
-                RowText(title: "Flux appearance",
-                        subtitle: "Choose dark, light, or follow macOS.")
-                Picker("Flux appearance", selection: $settings.appearance) {
-                    ForEach(FluxAppearance.allCases) { appearance in
-                        Text(appearance.title).tag(appearance)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
             }
             .padding(.vertical, 12)
             .padding(.horizontal, 14)

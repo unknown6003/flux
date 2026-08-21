@@ -90,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, updater: updater,
         nowPlaying: nowPlayingService, permissions: permissionCenter,
-        crashReporter: crashReporter)
+        crashReporter: crashReporter, clipboardMonitor: clipboardMonitor)
     private lazy var arrangeHint = ArrangeHintWindowController(
         arranger: arranger,
         showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
@@ -385,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// history in (see `ClipboardMonitor`'s own doc comment on why its
     /// lifecycle is settings-, not presentation-, driven).
     private func configureClipboardMonitor(notchEnabled: Bool? = nil) {
+        clipboardMonitor.setPersistenceEnabled(settings.notchClipboardPersistenceEnabled)
         if (notchEnabled ?? settings.notchEnabled) && settings.notchClipboardEnabled {
             clipboardMonitor.start()
         } else {
@@ -545,6 +546,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] value in
                 self?.notchWindow.registry.setEnabled(.clipboard, value)
                 self?.configureClipboardMonitor()
+            }
+            .store(in: &cancellables)
+
+        settings.$notchClipboardPersistenceEnabled
+            .dropFirst()
+            .sink { [weak self] value in
+                self?.clipboardMonitor.setPersistenceEnabled(value)
             }
             .store(in: &cancellables)
 

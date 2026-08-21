@@ -123,13 +123,6 @@ struct NotchRootView: View {
                     updateInteractiveRect(panelWidth: proxy.size.width)
                 }
         }
-        // Kept at this stable, always-present position (rather than nested
-        // inside `contentLayer`'s per-state switch) so it reliably observes
-        // every transition of `shouldBreathe` — including the one back to
-        // `false` when a state change tears down the branch the modifier
-        // would otherwise have been attached to, which could otherwise leave
-        // the `repeatForever` animation started below running indefinitely.
-        .onChange(of: shouldBreathe) { _, breathe in updateBreathing(breathe) }
         .animation(springFor(viewModel.state), value: viewModel.state)
         .ignoresSafeArea()
     }
@@ -273,8 +266,9 @@ struct NotchRootView: View {
         }
     }
 
-    /// Every state stays pure black so the collapsed shape disappears into the
-    /// physical camera housing and the open drawer reads as one simple surface.
+    /// The collapsed shell must match the real camera housing, which stays
+    /// black even when Flux uses its light appearance. Open states use the
+    /// selected Flux surface color below the physical notch.
     private var isCollapsed: Bool { viewModel.state == .collapsed }
 
     /// A soft drop shadow is what actually sells the "lifted" panel now that
@@ -303,31 +297,12 @@ struct NotchRootView: View {
     /// the Alcove reference now that it's rendered off one flattened layer
     /// instead of the shape's raw silhouette.
     private var shapeLayer: some View {
-        shape.fill(NotchDesign.panelFill)
+        shape.fill(isCollapsed ? NotchDesign.physicalNotchFill : NotchDesign.panelFill)
             .frame(width: containerSize.width, height: containerSize.height)
-            .scaleEffect(breathingScale)
             .compositingGroup()
             .shadow(color: isCollapsed ? .clear : Theme.notchShadowColor,
                     radius: isCollapsed ? 0 : 12,
                     y: isCollapsed ? 0 : 4)
-    }
-
-    // MARK: - Breathing hover cue (click mode only)
-
-    @State private var breathePhase = false
-
-    /// Click mode gives hover no functional effect, so without *some* signal
-    /// a user hovering the bare notch has no reason to believe clicking does
-    /// anything. This gentle, looping scale — armed only while collapsed,
-    /// click-triggered, and actually hovered — is that affordance. It only
-    /// runs while a cursor is actively over the notch, so it never costs
-    /// anything at idle.
-    private var shouldBreathe: Bool {
-        viewModel.expansionTrigger == .click && viewModel.hoverHint && viewModel.state == .collapsed
-    }
-
-    private var breathingScale: CGFloat {
-        shouldBreathe && breathePhase ? 1.02 : 1.0
     }
 
     // MARK: - Content layer
@@ -341,16 +316,6 @@ struct NotchRootView: View {
             activityContent
         case .expanded(let widgetID):
             expandedContent(for: widgetID)
-        }
-    }
-
-    private func updateBreathing(_ breathe: Bool) {
-        if breathe {
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                breathePhase = true
-            }
-        } else {
-            withAnimation(.easeOut(duration: 0.2)) { breathePhase = false }
         }
     }
 

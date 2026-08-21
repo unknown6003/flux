@@ -10,6 +10,8 @@ struct NotchTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var nowPlaying: NowPlayingService
     @EnvironmentObject private var permissions: PermissionCenter
+    @EnvironmentObject private var clipboardMonitor: ClipboardMonitor
+    @State private var confirmingClipboardClear = false
 
     var body: some View {
         VStack(spacing: 18) {
@@ -130,8 +132,35 @@ struct NotchTab: View {
             }
             RowDivider()
             ToggleRow(title: "Clipboard",
-                      subtitle: "Keep a short history of what you copy, in memory only — never written to disk. Off by default; turn on to opt in.",
+                      subtitle: "Keep a short history of what you copy. Off by default; turn it on to opt in.",
                       isOn: $settings.notchClipboardEnabled)
+            RowDivider()
+            ToggleRow(title: "Save clipboard history",
+                      subtitle: "Keep text and URLs between launches. Flux skips images, files, and concealed or temporary copies.",
+                      isOn: $settings.notchClipboardPersistenceEnabled)
+            if settings.notchClipboardPersistenceEnabled {
+                RowDivider()
+                HStack {
+                    RowText(title: "Saved entries",
+                            subtitle: "Stored only on this Mac. The file is limited and private to your user account.")
+                    Spacer(minLength: 12)
+                    Button("Clear History", role: .destructive) {
+                        confirmingClipboardClear = true
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.warningColor)
+                    .disabled(clipboardMonitor.entries.isEmpty)
+                }
+                .padding(.vertical, 11)
+                .padding(.horizontal, 14)
+            }
+        }
+        .confirmationDialog("Clear clipboard history?", isPresented: $confirmingClipboardClear,
+                            titleVisibility: .visible) {
+            Button("Clear History", role: .destructive) { clipboardMonitor.clear() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the current history and its saved copy.")
         }
     }
 

@@ -14,6 +14,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let nowPlaying: NowPlayingService
     private let permissions: PermissionCenter
     private let crashReporter: CrashReporter
+    private let clipboardMonitor: ClipboardMonitor
     private var window: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
@@ -28,13 +29,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker,
          nowPlaying: NowPlayingService, permissions: PermissionCenter,
-         crashReporter: CrashReporter) {
+         crashReporter: CrashReporter, clipboardMonitor: ClipboardMonitor) {
         self.settings = settings
         self.arranger = arranger
         self.updater = updater
         self.nowPlaying = nowPlaying
         self.permissions = permissions
         self.crashReporter = crashReporter
+        self.clipboardMonitor = clipboardMonitor
         super.init()
 
         settings.$appearance
@@ -132,6 +134,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         .environmentObject(nowPlaying)
         .environmentObject(permissions)
         .environmentObject(crashReporter)
+        .environmentObject(clipboardMonitor)
         let hosting = NSHostingController(rootView: root)
         // We own the window's size (measured + clamped to the screen below); the
         // SwiftUI ScrollView absorbs any overflow. Letting the hosting controller

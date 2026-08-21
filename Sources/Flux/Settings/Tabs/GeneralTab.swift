@@ -14,6 +14,7 @@ struct GeneralTab: View {
             // screen and it comes with the one action that actually helps.
             CrashNoticeCard()
             generalCard
+            appearanceCard
             hotkeysCard
             SoftwareUpdateCard()
         }
@@ -28,6 +29,24 @@ struct GeneralTab: View {
                           : "Build and open Flux.app to manage autostart.",
                       isOn: $settings.launchAtLogin)
             .disabled(!LoginItemManager.isBundledApplication)
+        }
+    }
+
+    private var appearanceCard: some View {
+        FluxCard(title: "Appearance") {
+            VStack(alignment: .leading, spacing: 10) {
+                RowText(title: "Flux appearance",
+                        subtitle: "Choose Dark, Light, or Follow System. Dark is the default.")
+                Picker("Flux appearance", selection: $settings.appearance) {
+                    ForEach(FluxAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
         }
     }
 

@@ -70,6 +70,7 @@ final class SettingsStore: ObservableObject {
         self.notchDuoEnabled = defaults.bool(forKey: Keys.notchDuoEnabled)
         self.notchMirrorEnabled = defaults.bool(forKey: Keys.notchMirrorEnabled)
         self.notchClipboardEnabled = defaults.bool(forKey: Keys.notchClipboardEnabled)
+        self.notchClipboardPersistenceEnabled = defaults.bool(forKey: Keys.notchClipboardPersistenceEnabled)
         self.notchActivityTimerEnabled = defaults.bool(forKey: Keys.notchActivityTimerEnabled)
         self.notchLockScreenExperimentEnabled = defaults.bool(forKey: Keys.notchLockScreenExperimentEnabled)
         self.notchLockScreenNowPlayingEnabled = defaults.bool(forKey: Keys.notchLockScreenNowPlayingEnabled)
@@ -268,6 +269,14 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchClipboardEnabled, forKey: Keys.notchClipboardEnabled) }
     }
 
+    /// Whether safe clipboard entries survive a Flux restart. ClipboardMonitor
+    /// keeps images, files, and concealed or transient pasteboard items out of
+    /// this saved history. Defaults to true so enabling clipboard history does
+    /// what users expect across launches.
+    @Published var notchClipboardPersistenceEnabled: Bool {
+        didSet { defaults.set(notchClipboardPersistenceEnabled, forKey: Keys.notchClipboardPersistenceEnabled) }
+    }
+
     /// M7 (Alcove v1.7 parity): show Now Playing and Calendar side by side
     /// (Duo view) when Now Playing is the expanded widget, instead of Now
     /// Playing alone. It renders only when Calendar is enabled and has a
@@ -383,6 +392,7 @@ final class SettingsStore: ObservableObject {
         Keys.notchDuoEnabled: false,
         Keys.notchMirrorEnabled: true,
         Keys.notchClipboardEnabled: false,
+        Keys.notchClipboardPersistenceEnabled: true,
         Keys.notchActivityTimerEnabled: true,
         Keys.notchLockScreenExperimentEnabled: false,
         Keys.notchLockScreenNowPlayingEnabled: true,
@@ -420,6 +430,7 @@ final class SettingsStore: ObservableObject {
         static let notchDuoEnabled = "flux.notch.duo"
         static let notchMirrorEnabled = "flux.notch.mirror.enabled"
         static let notchClipboardEnabled = "flux.notch.clipboard.enabled"
+        static let notchClipboardPersistenceEnabled = "flux.notch.clipboard.persistence.enabled"
         static let notchActivityTimerEnabled = "flux.notch.activities.timer"
         static let notchLockScreenExperimentEnabled = "flux.notch.lockScreenExperiment"
         static let notchLockScreenNowPlayingEnabled = "flux.notch.lockScreen.nowPlaying"
