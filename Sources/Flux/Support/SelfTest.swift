@@ -2948,6 +2948,29 @@ enum SelfTest {
                       "Notch geometry: collapsed housing fixture produces a notch rect")
             }
 
+            // AppKit can round the two auxiliary menu-bar edges differently.
+            // The camera housing itself is centered on the display, so the
+            // collapsed shell must use the reported gap width but recenter it
+            // on the screen. This catches a one-pixel left/right mismatch that
+            // leaves the physical black housing peeking out on one side.
+            let unevenLeftArea = CGRect(x: 0, y: 950, width: 664, height: 32)
+            let unevenRightArea = CGRect(x: 849, y: 950, width: 663, height: 32)
+            if let notch = NotchScreenGeometry.notchRect(
+                frame: screenFrame,
+                safeAreaTop: 32,
+                menuBarThickness: 37,
+                leftArea: unevenLeftArea,
+                rightArea: unevenRightArea) {
+                let leftMargin = notch.minX - screenFrame.minX
+                let rightMargin = screenFrame.maxX - notch.maxX
+                check(abs(notch.midX - screenFrame.midX) < 0.001
+                      && abs(leftMargin - rightMargin) < 0.001,
+                      "Notch geometry: collapsed housing stays centered when AppKit rounds its two side areas unevenly")
+            } else {
+                check(false,
+                      "Notch geometry: uneven side-area fixture produces a notch rect")
+            }
+
             // The collapsed shell is drawn in SwiftUI's top-left coordinate
             // space, while AppKit reports both frames in bottom-left screen
             // coordinates. Reconstructing the screen rect catches the old
