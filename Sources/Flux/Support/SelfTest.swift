@@ -2972,6 +2972,27 @@ enum SelfTest {
                       "Notch geometry: uneven side-area fixture produces a notch rect")
             }
 
+            // A fractional logical-point gap can land halfway through a
+            // backing pixel. The minimized shell must never round that width
+            // outward, or it paints past the physical housing on both sides.
+            let fractionalLeftArea = CGRect(x: 0, y: 950, width: 663.25, height: 32)
+            let fractionalRightArea = CGRect(x: 848.5, y: 950, width: 663.5, height: 32)
+            if let notch = NotchScreenGeometry.notchRect(
+                frame: screenFrame,
+                safeAreaTop: 32,
+                menuBarThickness: 37,
+                leftArea: fractionalLeftArea,
+                rightArea: fractionalRightArea,
+                backingScaleFactor: 2) {
+                let measuredWidthInPixels = (fractionalRightArea.minX - fractionalLeftArea.maxX) * 2
+                let renderedWidthInPixels = notch.width * 2
+                check(abs(renderedWidthInPixels - measuredWidthInPixels.rounded(.down)) < 0.001,
+                      "Notch geometry: fractional housing width never rounds outward into both side edges")
+            } else {
+                check(false,
+                      "Notch geometry: fractional side-area fixture produces a notch rect")
+            }
+
             // The collapsed shell is drawn in SwiftUI's top-left coordinate
             // space, while AppKit reports both frames in bottom-left screen
             // coordinates. Reconstructing the screen rect catches the old
