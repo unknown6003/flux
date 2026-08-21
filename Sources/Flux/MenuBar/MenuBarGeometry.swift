@@ -1,5 +1,27 @@
 import AppKit
 
+/// Pure screen geometry used by `NSScreen.notchRect` and the self-test.
+/// Keeping the calculation separate makes the hardware-height rule testable
+/// without requiring a real notched Mac in CI.
+enum NotchScreenGeometry {
+    static func notchRect(frame: CGRect,
+                          safeAreaTop: CGFloat,
+                          menuBarThickness: CGFloat,
+                          leftArea: CGRect,
+                          rightArea: CGRect) -> CGRect? {
+        guard safeAreaTop > 0,
+              rightArea.minX > leftArea.maxX else { return nil }
+
+        // Keep the current calculation for the first red run. The physical
+        // housing height should come from safeAreaTop, not the full menu bar.
+        let height = menuBarThickness
+        return CGRect(x: leftArea.maxX,
+                      y: frame.maxY - height,
+                      width: rightArea.minX - leftArea.maxX,
+                      height: height)
+    }
+}
+
 /// Notch- and menu-bar geometry helpers.
 ///
 /// Everything Flux needs to reason about *where status items can physically live*
@@ -45,8 +67,11 @@ extension NSScreen {
               let left = auxiliaryTopLeftArea,
               let right = auxiliaryTopRightArea,
               right.minX > left.maxX else { return nil }
-        return NSRect(x: left.maxX, y: frame.maxY - menuBarThickness,
-                      width: right.minX - left.maxX, height: menuBarThickness)
+        return NotchScreenGeometry.notchRect(frame: frame,
+                                              safeAreaTop: safeAreaInsets.top,
+                                              menuBarThickness: menuBarThickness,
+                                              leftArea: left,
+                                              rightArea: right)
     }
 
     /// Whether a status item with this window `frame` sits clear of the notch and

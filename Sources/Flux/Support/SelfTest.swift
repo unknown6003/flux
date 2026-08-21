@@ -2929,6 +2929,25 @@ enum SelfTest {
             check(bounds.width > alcoveWidth && bounds.height > alcoveHeight,
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
 
+            // AppKit's menu bar can be taller than the camera housing. The
+            // collapsed white shell must use the safe-area height or it hangs
+            // below the physical notch, which is the reported light-mode bug.
+            let screenFrame = CGRect(x: 0, y: 0, width: 1512, height: 982)
+            let leftArea = CGRect(x: 0, y: 950, width: 663.5, height: 32)
+            let rightArea = CGRect(x: 848.5, y: 950, width: 663.5, height: 32)
+            if let notch = NotchScreenGeometry.notchRect(
+                frame: screenFrame,
+                safeAreaTop: 32,
+                menuBarThickness: 37,
+                leftArea: leftArea,
+                rightArea: rightArea) {
+                check(notch.height == 32 && notch.minY == 950,
+                      "Notch geometry: collapsed housing uses safe-area height instead of the taller menu bar")
+            } else {
+                check(false,
+                      "Notch geometry: collapsed housing fixture produces a notch rect")
+            }
+
             // The collapsed shell is drawn in SwiftUI's top-left coordinate
             // space, while AppKit reports both frames in bottom-left screen
             // coordinates. Reconstructing the screen rect catches the old
