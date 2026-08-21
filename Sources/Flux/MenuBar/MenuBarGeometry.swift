@@ -8,16 +8,27 @@ enum NotchScreenGeometry {
                           safeAreaTop: CGFloat,
                           menuBarThickness: CGFloat,
                           leftArea: CGRect,
-                          rightArea: CGRect) -> CGRect? {
+                          rightArea: CGRect,
+                          backingScaleFactor: CGFloat = 1) -> CGRect? {
         guard rightArea.minX > leftArea.maxX else { return nil }
 
         // The menu bar can include extra space below the camera housing. The
         // safe-area inset is the height macOS reserves for the housing itself.
         let height = safeAreaTop > 0 ? safeAreaTop : menuBarThickness
         guard height > 0 else { return nil }
-        return CGRect(x: leftArea.maxX,
+
+        // AppKit can round the two auxiliary areas to different logical-point
+        // edges. The physical housing is centered on the built-in display, so
+        // keep the measured gap width but mirror it around the screen center.
+        // Work in backing pixels first so the two sides land on the same pixel
+        // boundary instead of producing a one-pixel leak on one side.
+        let scale = backingScaleFactor > 0 ? backingScaleFactor : 1
+        let widthInPixels = max((rightArea.minX - leftArea.maxX) * scale, 1).rounded()
+        let centerInPixels = frame.midX * scale
+        let minX = (centerInPixels - widthInPixels / 2) / scale
+        return CGRect(x: minX,
                       y: frame.maxY - height,
-                      width: rightArea.minX - leftArea.maxX,
+                      width: widthInPixels / scale,
                       height: height)
     }
 }
@@ -71,7 +82,8 @@ extension NSScreen {
                                               safeAreaTop: safeAreaInsets.top,
                                               menuBarThickness: menuBarThickness,
                                               leftArea: left,
-                                              rightArea: right)
+                                              rightArea: right,
+                                              backingScaleFactor: backingScaleFactor)
     }
 
     /// Whether a status item with this window `frame` sits clear of the notch and

@@ -2960,7 +2960,8 @@ enum SelfTest {
                 safeAreaTop: 32,
                 menuBarThickness: 37,
                 leftArea: unevenLeftArea,
-                rightArea: unevenRightArea) {
+                rightArea: unevenRightArea,
+                backingScaleFactor: 2) {
                 let leftMargin = notch.minX - screenFrame.minX
                 let rightMargin = screenFrame.maxX - notch.maxX
                 check(abs(notch.midX - screenFrame.midX) < 0.001
