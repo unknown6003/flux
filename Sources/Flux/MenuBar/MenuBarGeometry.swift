@@ -21,9 +21,12 @@ enum NotchScreenGeometry {
         // edges. The physical housing is centered on the built-in display, so
         // keep the measured gap width but mirror it around the screen center.
         // Work in backing pixels first so the two sides land on the same pixel
-        // boundary instead of producing a one-pixel leak on one side.
+        // boundary instead of producing a one-pixel leak on one side. The
+        // gap can end halfway through a backing pixel; round down rather than
+        // expanding the drawn shell beyond the physical housing.
         let scale = backingScaleFactor > 0 ? backingScaleFactor : 1
-        let widthInPixels = max((rightArea.minX - leftArea.maxX) * scale, 1).rounded()
+        let measuredWidthInPixels = (rightArea.minX - leftArea.maxX) * scale
+        let widthInPixels = max(measuredWidthInPixels.rounded(.down), 1)
         let centerInPixels = frame.midX * scale
         let minX = (centerInPixels - widthInPixels / 2) / scale
         return CGRect(x: minX,
