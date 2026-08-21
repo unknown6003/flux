@@ -329,8 +329,8 @@ final class NotchWindowController {
         physicalNotchRect = notchRect
         let panel = panel ?? makePanel()
         self.panel = panel
-        hostingView?.rootView = makeRootView(notchSize: notchRect.size)
         position(panel, on: screen, notchRect: notchRect)
+        hostingView?.rootView = makeRootView(notchRect: notchRect, panelFrame: panel.frame)
         panel.orderFrontRegardless()
         isPresenting = true
         // A state-machine *change* re-syncs `ignoresMouseEvents`/monitors on
@@ -346,7 +346,9 @@ final class NotchWindowController {
         let panel = NotchPanel(viewModel: viewModel)
         panel.appearance = appearanceMode.nsAppearance
         panel.setShowInFullscreen(showInFullscreen)
-        let hosting = NotchHostingView(viewModel: viewModel, rootView: makeRootView(notchSize: .zero))
+        let hosting = NotchHostingView(viewModel: viewModel,
+                                       rootView: makeRootView(notchRect: .zero,
+                                                              panelFrame: .zero))
         hosting.appearance = appearanceMode.nsAppearance
         panel.contentView = hosting
         hostingView = hosting
@@ -354,15 +356,20 @@ final class NotchWindowController {
         return panel
     }
 
-    private func makeRootView(notchSize: CGSize) -> AnyView {
-        AnyView(NotchRootView(viewModel: viewModel, notchSize: notchSize,
-                              artworkProvider: artworkProvider,
-                              onActivityTap: onActivityTap))
+    private func makeRootView(notchRect: CGRect, panelFrame: CGRect) -> AnyView {
+        let collapsedFrame = NotchMetrics.collapsedFrame(notchRect: notchRect,
+                                                         panelFrame: panelFrame)
+        return AnyView(NotchRootView(viewModel: viewModel, notchSize: notchRect.size,
+                                     collapsedFrame: collapsedFrame.width > 0 ? collapsedFrame : nil,
+                                     artworkProvider: artworkProvider,
+                                     onActivityTap: onActivityTap))
     }
 
     private func refreshRootView() {
-        guard let hostingView, let notchSize = NSScreen.builtInNotchedScreen?.notchRect?.size else { return }
-        hostingView.rootView = makeRootView(notchSize: notchSize)
+        guard let hostingView, let panel,
+              !physicalNotchRect.isNull else { return }
+        hostingView.rootView = makeRootView(notchRect: physicalNotchRect,
+                                            panelFrame: panel.frame)
     }
 
     /// Sizes the panel to the fixed panel bounds (`NotchMetrics.panelBounds`

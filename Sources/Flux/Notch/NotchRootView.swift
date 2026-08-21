@@ -22,6 +22,12 @@ struct NotchRootView: View {
     /// activity/expanded shapes so nothing is drawn where the camera sits.
     let notchSize: CGSize
 
+    /// The physical notch's exact frame in this view's panel coordinate space.
+    /// It is supplied after AppKit has laid out the panel, so the collapsed
+    /// shell covers the hardware notch without relying on a second centering
+    /// calculation. Snapshot callers can omit it and use the centered fallback.
+    var collapsedFrame: CGRect? = nil
+
     /// Supplies now-playing artwork for `LiveActivity.Content.artwork`.
     /// Optional and set by the wiring agent; `nil` (or a `nil` return) falls
     /// back to a generic note glyph.
@@ -94,9 +100,11 @@ struct NotchRootView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            shapeLayer
-                .overlay(contentLayer)
-                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+            ZStack(alignment: .topLeading) {
+                shapeLayer(panelWidth: proxy.size.width)
+            }
+                .frame(width: proxy.size.width, height: proxy.size.height,
+                       alignment: .topLeading)
                 // A plain tap toggles collapse/expand (unless `onActivityTap`
                 // claims it first — see `handleTap`). This sits on the
                 // *container*, underneath whatever a widget's expanded view
@@ -169,7 +177,7 @@ struct NotchRootView: View {
     private func size(for state: NotchState) -> CGSize {
         switch state {
         case .collapsed:
-            return notchSize
+            return validCollapsedFrame?.size ?? notchSize
         case .activity:
             return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2,
                           height: max(notchSize.height, 32))
@@ -198,14 +206,25 @@ struct NotchRootView: View {
         return viewModel.registry.enabledWidgets.contains { $0.id == .calendar }
     }
 
-    /// The shape's current footprint — `viewModel.state`'s size, centered in
-    /// the fixed-size panel.
+    /// The exact collapsed frame when the real panel supplied one. Snapshot
+    /// fixtures use the centered fallback because they have no screen frame.
+    private var validCollapsedFrame: CGRect? {
+        guard let collapsedFrame,
+              collapsedFrame.width > 0,
+              collapsedFrame.height > 0 else { return nil }
+        return collapsedFrame
+    }
+
+    /// The shape's current footprint in the fixed-size panel.
     private var containerSize: CGSize { size(for: viewModel.state) }
 
     /// The rect `state`'s shape occupies in this view's own coordinate space
-    /// (top-anchored, horizontally centered — matching how `shapeLayer` and
-    /// `NotchWindowController.position` both lay the panel out).
+    /// (top-anchored, horizontally centered for open states, and exact for
+    /// the collapsed physical-notch state).
     private func rect(for state: NotchState, panelWidth: CGFloat) -> CGRect {
+        if case .collapsed = state, let validCollapsedFrame {
+            return validCollapsedFrame
+        }
         let size = size(for: state)
         let origin = CGPoint(x: (panelWidth - size.width) / 2, y: 0)
         return CGRect(origin: origin, size: size)
@@ -214,7 +233,7 @@ struct NotchRootView: View {
     /// Publishes the shape's current bounds, in this view's own coordinate
     /// space, back to the view model. `NotchHostingView.hitTest` and hover
     /// containment both hit-test against exactly this rect, so clicks and
-    /// hover outside the visible black shape fall through to whatever's
+    /// hover outside the visible shape fall through to whatever's
     /// behind the (otherwise fully transparent) panel instead of being
     /// swallowed by it.
     ///
@@ -266,9 +285,8 @@ struct NotchRootView: View {
         }
     }
 
-    /// The collapsed shell must match the real camera housing, which stays
-    /// black even when Flux uses its light appearance. Open states use the
-    /// selected Flux surface color below the physical notch.
+    /// The collapsed shell covers the physical camera housing. Open states use
+    /// the selected Flux surface color below the physical notch.
     private var isCollapsed: Bool { viewModel.state == .collapsed }
 
     /// A soft drop shadow is what actually sells the "lifted" panel now that
@@ -296,13 +314,17 @@ struct NotchRootView: View {
     /// — softer/tighter blur is both cheaper to composite and reads closer to
     /// the Alcove reference now that it's rendered off one flattened layer
     /// instead of the shape's raw silhouette.
-    private var shapeLayer: some View {
-        shape.fill(isCollapsed ? NotchDesign.physicalNotchFill : NotchDesign.panelFill)
-            .frame(width: containerSize.width, height: containerSize.height)
+    private func shapeLayer(panelWidth: CGFloat) -> some View {
+        let frame = rect(for: viewModel.state, panelWidth: panelWidth)
+        return shape.fill(isCollapsed ? NotchDesign.physicalNotchFill : NotchDesign.panelFill)
+            .frame(width: frame.width, height: frame.height)
             .compositingGroup()
             .shadow(color: isCollapsed ? .clear : Theme.notchShadowColor,
                     radius: isCollapsed ? 0 : 12,
                     y: isCollapsed ? 0 : 4)
+            .overlay(contentLayer)
+            .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+            .offset(x: frame.minX, y: frame.minY)
     }
 
     // MARK: - Content layer

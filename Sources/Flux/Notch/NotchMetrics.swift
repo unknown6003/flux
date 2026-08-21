@@ -94,4 +94,19 @@ enum NotchMetrics {
         CGSize(width: expandedWidth(for: notchWidth) + shadowMarginWidth,
                height: expandedHeight(for: notchWidth) + shadowMarginHeight)
     }
+
+    /// Converts the screen-space physical notch into the top-left-origin
+    /// coordinate space used by `NotchRootView` inside the fixed panel. Using
+    /// the panel frame after AppKit lays it out avoids a sub-point drift from
+    /// separately centering two rectangles that may have been pixel-rounded
+    /// differently.
+    static func collapsedFrame(notchRect: CGRect, panelFrame: CGRect) -> CGRect {
+        guard notchRect.width > 0, notchRect.height > 0,
+              panelFrame.width > 0, panelFrame.height > 0 else { return .zero }
+        let top = panelFrame.maxY - notchRect.maxY
+        return CGRect(x: notchRect.minX - panelFrame.minX,
+                      y: top,
+                      width: notchRect.width,
+                      height: notchRect.height)
+    }
 }

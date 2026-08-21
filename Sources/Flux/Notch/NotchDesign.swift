@@ -126,11 +126,9 @@ enum NotchDesign {
     static let tileRadius: CGFloat = 8
     /// A list row's hover/selection background.
     static let rowRadius: CGFloat = 8
-    /// The quiet white wash used to fill capsules/rows/buttons across the
-    /// notch's near-monochrome surface (preset capsules, hover states, the
-    /// `PermissionGatedView` action button, the custom stepper's buttons).
-    /// The physical camera housing stays black in every Flux appearance.
-    static let physicalNotchFill = Color.black
+    /// The collapsed shell covers the physical camera housing. Its fill tracks
+    /// Flux's appearance so light mode does not leave a second black notch.
+    static var physicalNotchFill: Color { Theme.notchCollapsedColor }
     static var panelFill: Color { Theme.groundColor }
     static var primaryColor: Color { Theme.textPrimaryColor }
     static var secondaryColor: Color { Theme.textPrimaryColor.opacity(secondaryOpacity) }

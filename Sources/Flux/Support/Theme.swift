@@ -83,6 +83,10 @@ enum Theme {
                                           dark: NSColor.white)
     static let notchInverseForeground = dynamic(light: NSColor.white,
                                                 dark: NSColor.black)
+    /// The collapsed software shell covers the physical camera housing. It is
+    /// deliberately white in light mode and black in dark mode.
+    static let notchCollapsed = dynamic(light: NSColor.white,
+                                        dark: NSColor.black)
     static let notchShadow = dynamic(light: NSColor.black.withAlphaComponent(0.22),
                                      dark: NSColor.black.withAlphaComponent(0.55))
 
@@ -140,6 +144,7 @@ enum Theme {
     static var notchControlFillColor: Color { Color(nsColor: notchControlFill) }
     static var notchInverseFillColor: Color { Color(nsColor: notchInverseFill) }
     static var notchInverseForegroundColor: Color { Color(nsColor: notchInverseForeground) }
+    static var notchCollapsedColor: Color { Color(nsColor: notchCollapsed) }
     static var notchShadowColor: Color { Color(nsColor: notchShadow) }
     static var settingsCardColor: Color { Color(nsColor: settingsCard) }
     static var settingsSidebarColor: Color { Color(nsColor: settingsSidebar) }

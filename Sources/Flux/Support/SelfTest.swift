@@ -2929,6 +2929,27 @@ enum SelfTest {
             check(bounds.width > alcoveWidth && bounds.height > alcoveHeight,
                   "NotchMetrics: the fixed panel is strictly larger than the visible shape it hosts")
 
+            // The collapsed shell is drawn in SwiftUI's top-left coordinate
+            // space, while AppKit reports both frames in bottom-left screen
+            // coordinates. Reconstructing the screen rect catches the old
+            // sub-point drift that made a light shell expose a second notch.
+            let physicalRect = CGRect(x: 666.25, y: 945.5,
+                                      width: 185.5, height: 37.0)
+            let panelFrame = CGRect(x: 570.0, y: 817.5,
+                                    width: bounds.width, height: bounds.height)
+            let localCollapsed = NotchMetrics.collapsedFrame(notchRect: physicalRect,
+                                                             panelFrame: panelFrame)
+            let recoveredRect = CGRect(
+                x: panelFrame.minX + localCollapsed.minX,
+                y: panelFrame.maxY - localCollapsed.minY - localCollapsed.height,
+                width: localCollapsed.width,
+                height: localCollapsed.height)
+            check(abs(recoveredRect.minX - physicalRect.minX) < 0.001
+                  && abs(recoveredRect.minY - physicalRect.minY) < 0.001
+                  && abs(recoveredRect.width - physicalRect.width) < 0.001
+                  && abs(recoveredRect.height - physicalRect.height) < 0.001,
+                  "NotchMetrics: collapsed frame maps back to the exact physical notch after panel layout")
+
             check(alcoveWidth == max(notchWidth + NotchMetrics.wingWidth * 2,
                                     NotchMetrics.minimumExpandedWidth),
                   "NotchMetrics: Alcove width exactly matches the physical notch plus two wings")
