@@ -1075,6 +1075,27 @@ enum SelfTest {
                   "Notch click: a null notch rect matches nothing")
             check(NotchWindowController.openHoverRect(interactiveRect: .zero).isNull,
                   "Notch hover: an unlaid-out (zero) interactive rect matches nothing")
+
+            // The legacy overflow warning shown while the main notch feature
+            // is off uses a mouse-transparent glow plus a separate badge-sized
+            // window. The old single 210pt-wide window accepted clicks across
+            // its clear area and blocked app toolbars below the notch.
+            let badgeSize = CGSize(width: 148, height: 31)
+            let badgeOrigin = NotchHighlightWindowController.badgeOrigin(
+                notch: notch, badgeSize: badgeSize)
+            let badgeFrame = CGRect(origin: badgeOrigin, size: badgeSize)
+            check(NotchHighlightWindowController.ignoresMouseEvents(for: .glow),
+                  "Notch overflow warning: the full glow window always passes mouse events through")
+            check(!NotchHighlightWindowController.ignoresMouseEvents(for: .badge),
+                  "Notch overflow warning: only the fitted visible badge accepts mouse events")
+            check(badgeFrame.midX == notch.midX,
+                  "Notch overflow warning: the mouse-active badge stays centered on the notch")
+            check(badgeFrame.maxY == notch.minY - 3,
+                  "Notch overflow warning: the mouse-active badge starts below the notch with the visual gap")
+            check(badgeFrame.size == badgeSize,
+                  "Notch overflow warning: its mouse-active window is only the fitted badge size, not the old full overlay")
+            check(!badgeFrame.contains(CGPoint(x: notch.minX, y: badgeFrame.midY)),
+                  "Notch overflow warning: clear top-center toolbar space beside the badge is not mouse-active")
         }
 
         // --- M3: PowerMonitor.lowBatteryEvent — the low-battery hysteresis,
