@@ -6,7 +6,7 @@ import Foundation
 /// `OffscreenRender`'s shared pipeline — for the notch panel, which (unlike
 /// Settings) has no window of its own to screenshot outside a real notch Mac.
 ///
-///   Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded|lockscreen]
+///   Flux --snapshot-notch <path> [dark] [collapsed|activity|expanded|lockscreen...]
 ///   Flux --snapshot-notch <dir> all [dark]   (batch mode — see `captureAll`)
 @MainActor
 enum NotchSnapshot {
@@ -25,9 +25,10 @@ enum NotchSnapshot {
         // Lock-screen rendering uses the dedicated base/card fixture rather
         // than `NotchRootView` (every other state), so it is dispatched
         // separately instead of teaching `buildRoot(for:)` about the lock
-        // overlay's two-panel composition.
-        let (root, panelSize, tempShelfDirectory) = state == "lockscreen"
-            ? buildLockScreenRoot()
+        // overlay's two-panel composition. The three lock-screen variants
+        // exercise the empty/media/activity gates without a real lock session.
+        let (root, panelSize, tempShelfDirectory) = state.hasPrefix("lockscreen")
+            ? buildLockScreenRoot(variant: state)
             : buildRoot(for: state)
 
         // M8 fix: `buildRoot` always creates a fresh temp `ShelfStore`
@@ -80,10 +81,12 @@ enum NotchSnapshot {
             ("expanded-mirror", "expanded-mirror.png"),
             ("expanded-duo", "expanded-duo.png"),
             ("lockscreen", "lockscreen.png"),
+            ("lockscreen-media-only", "lockscreen-media-only.png"),
+            ("lockscreen-activity-only", "lockscreen-activity-only.png"),
         ]
 
         var allSucceeded = true
-        // M8 fix: every `buildRoot(for:)`/`buildLockScreenRoot()` call below
+        // M8 fix: every `buildRoot(for:)`/`buildLockScreenRoot(variant:)` call below
         // creates its own fresh temp directory (used or not, depending on
         // `state`) — with a dozen states rendered per run, that used to leak
         // one directory per state under the system temp dir on every CI run
@@ -95,8 +98,8 @@ enum NotchSnapshot {
             // The lock-screen fixture is a dedicated base/card composition —
             // see `capture(to:dark:state:)`'s identical dispatch above for why
             // this can't just be another `buildRoot(for:)` case.
-            let (root, panelSize, tempShelfDirectory) = state == "lockscreen"
-                ? buildLockScreenRoot()
+            let (root, panelSize, tempShelfDirectory) = state.hasPrefix("lockscreen")
+                ? buildLockScreenRoot(variant: state)
                 : buildRoot(for: state)
             tempShelfDirectories.append(tempShelfDirectory)
             let path = (dir as NSString).appendingPathComponent(file)
@@ -273,13 +276,12 @@ enum NotchSnapshot {
         return (AnyView(snapshotRoot), panelSize, tempShelfDirectory)
     }
 
-    /// Lock-screen parity snapshot: builds the mouse-transparent notch
-    /// silhouette plus the centered Apple-style interactive media widget at a
-    /// representative fixed size on the transparent background, with a
-    /// fixture Now Playing track and a fixture battery live activity —
-    /// reviewing the controller and activity surfaces together in one CI
-    /// artifact. Deliberately separate
-    /// from `buildRoot(for:)` (which every other state shares): that
+    /// Lock-screen parity snapshots: build the mouse-transparent notch
+    /// silhouette plus centered Apple-style widgets at representative fixed
+    /// sizes on the transparent background. The full variant reviews media
+    /// and activity together; the media-only and activity-only variants prove
+    /// the content gates and compact activity width separately. Deliberately
+    /// separate from `buildRoot(for:)` (which every other state shares): that
     /// function's product is always `NotchRootView` wrapping a full
     /// `NotchWidgetRegistry`/`NotchViewModel`, neither of which
     /// `LockScreenContentView` needs at all — it only ever takes a
@@ -293,30 +295,38 @@ enum NotchSnapshot {
     /// a path, it doesn't create anything on disk, so there is nothing for
     /// the caller's `removeItem` to actually find (and its `try?` silently
     /// no-ops on that).
-    private static func buildLockScreenRoot() -> (AnyView, CGSize, URL) {
+    private static func buildLockScreenRoot(variant: String) -> (AnyView, CGSize, URL) {
+        let hasMedia = variant != "lockscreen-activity-only"
+        let hasActivity = variant != "lockscreen-media-only"
         let nowPlayingService = NowPlayingService()
-        seedFixtureState(into: nowPlayingService)
+        if hasMedia {
+            seedFixtureState(into: nowPlayingService)
+        }
 
         let activities = LiveActivityCenter()
-        activities.post(LiveActivity(
-            kind: .battery,
-            leading: .icon(systemName: "battery.25"),
-            trailing: .text("18%"),
-            duration: nil,
-            priority: 200))
+        if hasActivity {
+            activities.post(LiveActivity(
+                kind: .battery,
+                leading: .icon(systemName: "battery.25"),
+                trailing: .text("18%"),
+                duration: nil,
+                priority: 200))
+        }
 
         let content = LockScreenContentView(
             notchSize: notchSize)
 
-        let panelSize = LockScreenPillMetrics.widgetSize(hasMedia: true,
-                                                         hasAuxiliaryContent: true)
+        let panelSize = LockScreenPillMetrics.widgetSize(hasMedia: hasMedia,
+                                                         hasAuxiliaryContent: hasActivity)
         let root = ZStack {
             content
-            LockScreenMediaControlsView(
-                nowPlaying: nowPlayingService,
-                activities: activities,
-                allowNowPlaying: true,
-                allowActivities: true) { _ in }
+            if hasMedia || hasActivity {
+                LockScreenMediaControlsView(
+                    nowPlaying: nowPlayingService,
+                    activities: activities,
+                    allowNowPlaying: hasMedia,
+                    allowActivities: hasActivity) { _ in }
+            }
         }
         .frame(width: panelSize.width, height: panelSize.height, alignment: .center)
         // Keep the lock-screen fixture on the deterministic material path as
