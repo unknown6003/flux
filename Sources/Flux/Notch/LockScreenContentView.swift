@@ -7,12 +7,6 @@ import AppKit
 /// password field and the rest of macOS's lock UI remain untouched.
 struct LockScreenContentView: View {
     let notchSize: CGSize
-    @ObservedObject var nowPlaying: NowPlayingService
-    @ObservedObject var activities: LiveActivityCenter
-    let allowNowPlaying: Bool
-    let allowActivities: Bool
-    let showUnlockPill: Bool
-    let showsMediaControls: Bool
 
     var body: some View {
         NotchShape.collapsed
@@ -23,28 +17,23 @@ struct LockScreenContentView: View {
     }
 }
 
-/// The three kinds of lock-screen affordance, in stable media/activity/unlock
-/// order. The pure derivation is retained separately from the views so the
-/// whole preference matrix can be checked by the headless self-test.
+/// The two kinds of lock-screen affordance, in stable media/activity order.
+/// The pure derivation is retained separately from the views so the whole
+/// preference matrix can be checked by the headless self-test.
 enum LockScreenPillKind: Equatable {
     case nowPlaying
     case activity
-    case unlock
 }
 
 enum LockScreenPillLogic {
     static func visiblePills(hasNowPlaying: Bool, allowNowPlaying: Bool,
-                              hasActivityCaption: Bool, allowActivities: Bool,
-                              showUnlockPill: Bool) -> [LockScreenPillKind] {
+                              hasActivityCaption: Bool, allowActivities: Bool) -> [LockScreenPillKind] {
         var pills: [LockScreenPillKind] = []
         if hasNowPlaying && allowNowPlaying {
             pills.append(.nowPlaying)
         }
         if hasActivityCaption && allowActivities {
             pills.append(.activity)
-        }
-        if showUnlockPill {
-            pills.append(.unlock)
         }
         return pills
     }
@@ -62,33 +51,27 @@ enum LockScreenMediaControlLogic {
     static func shouldShowWidget(hasNowPlaying: Bool,
                                  allowNowPlaying: Bool,
                                  hasActivityCaption: Bool,
-                                 allowActivities: Bool,
-                                 showUnlockPill: Bool) -> Bool {
+                                 allowActivities: Bool) -> Bool {
         !LockScreenPillLogic.visiblePills(
             hasNowPlaying: hasNowPlaying,
             allowNowPlaying: allowNowPlaying,
             hasActivityCaption: hasActivityCaption,
-            allowActivities: allowActivities,
-            showUnlockPill: showUnlockPill).isEmpty
+            allowActivities: allowActivities).isEmpty
     }
 }
 
 // MARK: - Widget metrics
 
 enum LockScreenPillMetrics {
-    static let horizontalPadding: CGFloat = NotchDesign.space3
-    static let verticalPadding: CGFloat = NotchDesign.space2
-    static let maxWidth: CGFloat = 260
-
-    /// Compact lock-screen proportions based on Apple's media surface: one
-    /// glass card, not a second oversized notch below the login UI.
-    static let mediaControlsWidth: CGFloat = 320
-    static let mediaCardHeight: CGFloat = 140
-    static let mediaControlsHeight: CGFloat = 178
-    static let mediaCardCornerRadius: CGFloat = 20
-    static let artworkSide: CGFloat = 56
-    static let artworkRadius: CGFloat = 11
-    static let auxiliaryPillHeight: CGFloat = 30
+    /// Tahoe's lock-screen controls are a centered, floating glass surface:
+    /// generous artwork, clear hierarchy, and one soft continuous corner.
+    static let mediaControlsWidth: CGFloat = 348
+    static let activityOnlyWidth: CGFloat = 240
+    static let mediaCardHeight: CGFloat = 164
+    static let mediaCardCornerRadius: CGFloat = 24
+    static let artworkSide: CGFloat = 64
+    static let artworkRadius: CGFloat = 14
+    static let auxiliaryPillHeight: CGFloat = 38
 
     static func widgetSize(hasMedia: Bool, hasAuxiliaryContent: Bool) -> CGSize {
         if hasMedia {
@@ -98,7 +81,7 @@ enum LockScreenPillMetrics {
             return CGSize(width: mediaControlsWidth,
                           height: mediaCardHeight + auxiliaryHeight)
         }
-        return CGSize(width: mediaControlsWidth,
+        return CGSize(width: hasAuxiliaryContent ? activityOnlyWidth : 1,
                       height: hasAuxiliaryContent ? auxiliaryPillHeight : 1)
     }
 }
@@ -113,7 +96,6 @@ struct LockScreenMediaControlsView: View {
     @ObservedObject var activities: LiveActivityCenter
     let allowNowPlaying: Bool
     let allowActivities: Bool
-    let showUnlockPill: Bool
     let onCommand: (NowPlayingCommand) -> Void
     @Environment(\.colorScheme) private var colorScheme
 
@@ -129,9 +111,8 @@ struct LockScreenMediaControlsView: View {
             hasNowPlaying: nowPlaying.state != nil,
             allowNowPlaying: allowNowPlaying,
             hasActivityCaption: activities.current?.captionText != nil,
-            allowActivities: allowActivities,
-            showUnlockPill: showUnlockPill)
-        let hasAuxiliaryContent = pills.contains { $0 != .nowPlaying }
+            allowActivities: allowActivities)
+        let hasAuxiliaryContent = pills.contains(.activity)
         let size = LockScreenPillMetrics.widgetSize(hasMedia: hasMedia,
                                                     hasAuxiliaryContent: hasAuxiliaryContent)
 
@@ -152,22 +133,22 @@ struct LockScreenMediaControlsView: View {
         }
         .frame(width: size.width, height: size.height)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Lock Screen Now Playing")
+        .accessibilityLabel(hasMedia ? "Lock Screen Now Playing" : "Lock Screen Activity")
     }
 
     private func mediaCard(for state: NowPlayingState) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: NotchDesign.space3) {
                 artwork
                 VStack(alignment: .leading, spacing: 3) {
                     Text(state.title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(NotchDesign.titleFont)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if let artist = state.artist, !artist.isEmpty {
                         Text(artist)
-                            .font(.system(size: 11, weight: .regular))
+                            .font(NotchDesign.captionFont)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -175,7 +156,7 @@ struct LockScreenMediaControlsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Image(systemName: state.isPlaying ? "waveform" : "pause.fill")
+                Image(systemName: state.isPlaying ? "waveform" : "music.note")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
@@ -188,8 +169,8 @@ struct LockScreenMediaControlsView: View {
             transportRow(for: state)
                 .padding(.top, 5)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, NotchDesign.space4)
+        .padding(.vertical, NotchDesign.space3)
         .frame(width: LockScreenPillMetrics.mediaControlsWidth,
                height: LockScreenPillMetrics.mediaCardHeight)
         .lockScreenGlass(
@@ -259,8 +240,6 @@ struct LockScreenMediaControlsView: View {
                         LockScreenActivityPill(systemName: Self.iconName(from: current.leading),
                                                 caption: caption)
                     }
-                case .unlock:
-                    LockScreenUnlockPill()
                 }
             }
         }
@@ -311,7 +290,7 @@ struct LockScreenMediaControlsView: View {
                 Image(systemName: systemName)
                     .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(prominentControlForeground)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 38, height: 38)
                     .background(Circle().fill(.primary))
             } else {
                 Image(systemName: systemName)
@@ -353,12 +332,20 @@ private struct LockScreenGlassModifier<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
 #if compiler(>=6.2)
         if #available(macOS 26.0, *), !isSnapshotRender {
-            content.glassEffect(.regular, in: shape)
+            content
+                .glassEffect(.regular, in: shape)
+                .overlay(shape.stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
         } else {
-            content.background(.regularMaterial, in: shape)
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.20), radius: 14, y: 6)
         }
 #else
-        content.background(.regularMaterial, in: shape)
+        content
+            .background(.regularMaterial, in: shape)
+            .overlay(shape.stroke(Color.primary.opacity(0.14), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.20), radius: 14, y: 6)
 #endif
     }
 }
@@ -377,40 +364,21 @@ private struct LockScreenActivityPill: View {
     let caption: String
 
     var body: some View {
-        HStack(spacing: NotchDesign.space1) {
+        HStack(spacing: NotchDesign.space2) {
             if let systemName {
                 Image(systemName: systemName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color.primary.opacity(0.12)))
             }
             Text(caption)
-                .font(NotchDesign.captionFont)
+                .font(NotchDesign.bodyFont)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
-        .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
-        .lockScreenGlass(in: Capsule())
-    }
-}
-
-/// The optional localizable unlock affordance. It sits below the media
-/// controls, above the password field, just like the supporting prompt on
-/// Apple's lock screen.
-private struct LockScreenUnlockPill: View {
-    private static let label = String(localized: "Press any key to unlock")
-
-    var body: some View {
-        HStack(spacing: NotchDesign.space1) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Text(Self.label)
-                .font(NotchDesign.captionFont)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, LockScreenPillMetrics.horizontalPadding)
+        .padding(.horizontal, NotchDesign.space3)
         .frame(height: LockScreenPillMetrics.auxiliaryPillHeight)
         .lockScreenGlass(in: Capsule())
     }

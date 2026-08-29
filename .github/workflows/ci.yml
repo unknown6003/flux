@@ -43,6 +43,9 @@ jobs:
       - name: Render notch snapshots
         run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots all
 
+      - name: Render lock-screen light snapshot
+        run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots/lockscreen-light.png light lockscreen
+
       - name: Render settings snapshots
         run: |
           mkdir -p settings-snapshots

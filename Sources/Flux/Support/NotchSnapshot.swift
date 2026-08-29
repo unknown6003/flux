@@ -276,9 +276,9 @@ enum NotchSnapshot {
     /// Lock-screen parity snapshot: builds the mouse-transparent notch
     /// silhouette plus the centered Apple-style interactive media widget at a
     /// representative fixed size on the transparent background, with a
-    /// fixture Now Playing track, a fixture battery live activity, and the
-    /// unlock pill forced on — reviewing the controller, activity, and unlock
-    /// surfaces together in one CI artifact. Deliberately separate
+    /// fixture Now Playing track and a fixture battery live activity —
+    /// reviewing the controller and activity surfaces together in one CI
+    /// artifact. Deliberately separate
     /// from `buildRoot(for:)` (which every other state shares): that
     /// function's product is always `NotchRootView` wrapping a full
     /// `NotchWidgetRegistry`/`NotchViewModel`, neither of which
@@ -300,19 +300,13 @@ enum NotchSnapshot {
         let activities = LiveActivityCenter()
         activities.post(LiveActivity(
             kind: .battery,
-            leading: .icon(systemName: "battery.100.bolt"),
-            trailing: .text("76%"),
+            leading: .icon(systemName: "battery.25"),
+            trailing: .text("18%"),
             duration: nil,
             priority: 200))
 
         let content = LockScreenContentView(
-            notchSize: notchSize,
-            nowPlaying: nowPlayingService,
-            activities: activities,
-            allowNowPlaying: true,
-            allowActivities: true,
-            showUnlockPill: true,
-            showsMediaControls: true)
+            notchSize: notchSize)
 
         let panelSize = LockScreenPillMetrics.widgetSize(hasMedia: true,
                                                          hasAuxiliaryContent: true)
@@ -322,8 +316,7 @@ enum NotchSnapshot {
                 nowPlaying: nowPlayingService,
                 activities: activities,
                 allowNowPlaying: true,
-                allowActivities: true,
-                showUnlockPill: true) { _ in }
+                allowActivities: true) { _ in }
         }
         .frame(width: panelSize.width, height: panelSize.height, alignment: .center)
         // Keep the lock-screen fixture on the deterministic material path as

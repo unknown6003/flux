@@ -128,14 +128,14 @@ arrangement across launches.
   copies, screenshots, files, and scripts.
 - **Lock screen** — optionally keeps the solid-black notch silhouette and
   native Liquid Glass surfaces visible on the macOS lock screen. When something
-  is playing, the Now Playing card shows artwork/title/artist plus iOS-style
+  is playing, the centered Now Playing card shows artwork/title/artist plus
   previous/play-next controls; the card is the only interactive overlay and
   the rest of the lock-screen UI remains mouse-transparent. The current live
-  activity appears as a caption pill (battery, Bluetooth, calendar, timer,
-  ...), with an optional "Press any key to unlock" pill and a short thunky
-  system click on unlock. Each sub-feature has its own toggle, all nested
-  under the master switch. Off by default: it uses macOS lock-screen notifications
-  and a dynamically loaded system-level window-space bridge, so the integration is
+  activity appears as a compact caption widget (battery, Bluetooth, calendar,
+  timer, ...), with a short thunky system click on unlock. Each sub-feature has
+  its own toggle, all nested under the master switch. Off by default: it uses
+  macOS lock-screen notifications and a dynamically loaded system-level
+  window-space bridge, so the integration is
   isolated and can be disabled cleanly if a future macOS release changes it — see
   Settings → Lock Screen.
 - **Auto re-hide** after an adjustable delay.
@@ -247,7 +247,7 @@ Sources/Flux/
     Widgets/MirrorWidget.swift # live camera preview; owns CameraService start/stop itself
     Widgets/ClipboardWidget.swift # history list, click-to-copy-back, Clear All
     LockScreenPresenter.swift  # EXPERIMENTAL: fade in/out, lock/unlock, unlock sound
-    LockScreenContentView.swift # EXPERIMENTAL: live media/activity/unlock pills on the lock screen
+    LockScreenContentView.swift # EXPERIMENTAL: live media/activity widgets on the lock screen
   Services/NowPlaying/       # MediaRemote adapter — the sole Now Playing source
   Services/Shelf/            # ShelfStore (copy-in, manifest, QuickLook thumbs, expiry)
   Services/CalendarService.swift # EventKit, refresh on EKEventStoreChanged (no polling)

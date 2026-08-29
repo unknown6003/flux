@@ -26,9 +26,9 @@ enum LockScreenTransitionLogic {
 }
 
 /// Keeps lock-screen widgets in two intentional lanes across display sizes.
-/// The music surface stays in its original higher lane; activity/unlock-only
-/// companions use the lower credential lane. Neither lane changes the physical
-/// notch geometry.
+/// The music surface stays in its original higher lane; activity-only
+/// companions use the lower credential lane. Neither lane changes the
+/// physical notch geometry.
 enum LockScreenWidgetPositionLogic {
     static let mediaPreferredCenterFraction: CGFloat = 0.28
     static let mediaMinimumOriginFraction: CGFloat = 0.20
@@ -58,13 +58,13 @@ enum LockScreenWidgetPositionLogic {
 /// (the wiring agent's `setEnabled(_:)` call, in `AppDelegate.
 /// configureLockScreenPresenter()` — this class has no opinion of its own
 /// about the default or the key name, and that master flag remains the ONE
-/// gate: every sub-feature below (`LockScreenContentView`'s Now Playing
-/// pill/activity pill/unlock pill, plus the unlock sound) only ever runs
-/// while this is enabled).
+/// gate: every sub-feature below (`LockScreenContentView`'s Now Playing and
+/// activity widgets, plus the unlock sound) only ever runs while this is
+/// enabled).
 ///
 /// M15 (Alcove lock-screen parity): keeps a LIVE `LockScreenContentView` —
-/// the notch silhouette, a material Now Playing card, the current live
-/// activity's caption, and an optional "Press any key to unlock" pill —
+/// the notch silhouette, a material Now Playing card, and the current live
+/// activity's caption —
 /// visible on the macOS lock screen between `screenIsLocked`/
 /// `screenIsUnlocked` distributed notifications. The Now Playing card is
 /// interactive through a separate, card-sized panel; the base surface remains
@@ -358,32 +358,18 @@ final class LockScreenPresenter {
             }
             .store(in: &cancellables)
 
-        // Live-update the already-showing panel's pill visibility the moment
-        // any of the three sub-feature toggles changes, without waiting for
+        // Live-update the already-showing panel's widget visibility the moment
+        // either sub-feature toggle changes, without waiting for
         // the next lock/unlock cycle. In practice the lock screen itself
         // blocks reaching Settings while locked, so this mostly matters
         // right after `setEnabled(true)` (seeding a freshly-enabled
-        // experiment's flags) and as defensive belt-and-suspenders — see
-        // `updateHostingContent`'s own doc comment.
-        // Passes the sink's own emitted tuple straight into
-        // `updateHostingContent`/`makeContentView` rather than having them
-        // re-read `settings.notchLockScreen*Enabled` — `@Published` delivers
-        // via `willSet`, so a sink that re-reads the stored properties
-        // instead of using its own emitted values would see the OLD ones,
-        // one toggle behind (the same stale-`willSet`-read class documented
-        // elsewhere in this codebase, e.g. `NotchActivityRouter`'s several
-        // `observe*Gating` sinks and `AppDelegate.configureLockScreenPresenter`).
+        // experiment's flags) and as defensive belt-and-suspenders.
         settings.$notchLockScreenNowPlayingEnabled
-            .combineLatest(settings.$notchLockScreenActivitiesEnabled, settings.$notchLockScreenUnlockPillEnabled)
+            .combineLatest(settings.$notchLockScreenActivitiesEnabled)
             .dropFirst()
-            .sink { [weak self] nowPlayingEnabled, activitiesEnabled, unlockPillEnabled in
-                self?.updateHostingContent(allowNowPlaying: nowPlayingEnabled,
-                                            allowActivities: activitiesEnabled,
-                                            showUnlockPill: unlockPillEnabled,
-                                            hasNowPlaying: self?.nowPlaying.state != nil)
+            .sink { [weak self] nowPlayingEnabled, activitiesEnabled in
                 self?.syncMediaControlPanel(allowNowPlaying: nowPlayingEnabled,
                                              allowActivities: activitiesEnabled,
-                                             showUnlockPill: unlockPillEnabled,
                                              hasNowPlaying: self?.nowPlaying.state != nil)
             }
             .store(in: &cancellables)
@@ -394,7 +380,6 @@ final class LockScreenPresenter {
         // without controls for one render.
         nowPlaying.$state
             .sink { [weak self] state in
-                self?.updateHostingContent(hasNowPlaying: state != nil)
                 self?.syncMediaControlPanel(hasNowPlaying: state != nil)
             }
             .store(in: &cancellables)
@@ -583,7 +568,7 @@ final class LockScreenPresenter {
     private func showPanel(notchRect: NSRect, screenFrame: NSRect) {
         currentNotchSize = notchRect.size
         activateNowPlayingForLockIfNeeded()
-        let panel = makePanel(notchSize: notchRect.size)
+        let panel = makePanel()
         self.panel = panel
         position(panel, notchRect: notchRect, screenFrame: screenFrame)
         delegateWithLockScreenSpace(panel)
@@ -601,10 +586,9 @@ final class LockScreenPresenter {
     /// Updates an already-showing panel's content/position in place instead
     /// of building a new one — the `handleLocked()` re-entry path. Content
     /// itself only needs re-derivation here for `notchSize` (a screen change
-    /// mid-lock is exotic but not impossible) and the `allow*`/
-    /// `showUnlockPill` flags; the Now Playing/activity DATA those pills
-    /// show is already live via `LockScreenContentView`'s own
-    /// `@ObservedObject` bindings, so there is nothing to re-inject there.
+    /// mid-lock is exotic but not impossible). The Now Playing/activity data
+    /// is already live through the companion panel's `@ObservedObject`
+    /// bindings, so there is nothing to re-inject into the base silhouette.
     /// Also resumes the fade-in from wherever alpha currently sits (a lock
     /// arriving while a still-in-progress fade-out is winding down — the
     /// task itself was already cancelled by `handleLocked` before this runs)
@@ -728,55 +712,15 @@ final class LockScreenPresenter {
         masterEnabled && nowPlayingAllowed && !serviceActive
     }
 
-    /// Rebuilds the hosted silhouette's plain inputs in place. The centered
-    /// interactive widget observes the same service objects in its companion
-    /// panel; keeping the two surfaces separate ensures the base panel remains
-    /// mouse-transparent.
+    /// Rebuilds the hosted silhouette in place after a display geometry change.
+    /// The centered widget observes the service objects in its own panel; the
+    /// base panel only ever draws the physical notch.
     private func updateHostingContent() {
-        updateHostingContent(allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
-                              allowActivities: settings.notchLockScreenActivitiesEnabled,
-                              showUnlockPill: settings.notchLockScreenUnlockPillEnabled,
-                              hasNowPlaying: nowPlaying.state != nil)
-    }
-
-    /// The sink-facing overload above — takes the three flags explicitly
-    /// rather than reading `settings` itself, so the settings-changed sink in
-    /// `startObserving` can hand this its own freshly-emitted values instead
-    /// of this function re-reading (and risking a stale `willSet`-era read
-    /// of) the same properties. The no-arg overload above is what
-    /// `showPanel`/`refreshPanel` call, where reading `settings` live is
-    /// exactly right (they're not running inside that sink at all).
-    private func updateHostingContent(allowNowPlaying: Bool? = nil,
-                                      allowActivities: Bool? = nil,
-                                      showUnlockPill: Bool? = nil,
-                                      hasNowPlaying: Bool? = nil) {
-        guard let hostingView else { return }
-        hostingView.rootView = makeContentView(
-            allowNowPlaying: allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled,
-            allowActivities: allowActivities ?? settings.notchLockScreenActivitiesEnabled,
-            showUnlockPill: showUnlockPill ?? settings.notchLockScreenUnlockPillEnabled,
-            hasNowPlaying: hasNowPlaying ?? (nowPlaying.state != nil))
+        hostingView?.rootView = makeContentView()
     }
 
     private func makeContentView() -> LockScreenContentView {
-        makeContentView(allowNowPlaying: settings.notchLockScreenNowPlayingEnabled,
-                         allowActivities: settings.notchLockScreenActivitiesEnabled,
-                         showUnlockPill: settings.notchLockScreenUnlockPillEnabled,
-                         hasNowPlaying: nowPlaying.state != nil)
-    }
-
-    private func makeContentView(allowNowPlaying: Bool,
-                                 allowActivities: Bool,
-                                 showUnlockPill: Bool,
-                                 hasNowPlaying: Bool) -> LockScreenContentView {
-        LockScreenContentView(
-            notchSize: currentNotchSize,
-            nowPlaying: nowPlaying,
-            activities: activities,
-            allowNowPlaying: allowNowPlaying,
-            allowActivities: allowActivities,
-            showUnlockPill: showUnlockPill,
-            showsMediaControls: hasNowPlaying && allowNowPlaying)
+        LockScreenContentView(notchSize: currentNotchSize)
     }
 
     /// Builds the safe base lock-screen panel: the `NotchHighlightWindow`
@@ -785,7 +729,7 @@ final class LockScreenPresenter {
     /// `.statusBar`. It is always mouse-transparent. The media controls are
     /// hosted separately by `makeMediaPanel()` in a card-sized window, so this
     /// large panel can never intercept a click intended for macOS's unlock UI.
-    private func makePanel(notchSize: CGSize) -> NSPanel {
+    private func makePanel() -> NSPanel {
         let hosting = NSHostingView(rootView: makeContentView())
         hosting.appearance = appearanceMode.nsAppearance
         self.hostingView = hosting
@@ -806,27 +750,20 @@ final class LockScreenPresenter {
     /// made interactive as these values change.
     private func syncMediaControlPanel(allowNowPlaying: Bool? = nil,
                                        allowActivities: Bool? = nil,
-                                       showUnlockPill: Bool? = nil,
                                        hasNowPlaying: Bool? = nil) {
         guard let panel else { return }
 
         let nowPlayingAllowed = allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled
         let activitiesAllowed = allowActivities ?? settings.notchLockScreenActivitiesEnabled
-        let unlockPillShown = showUnlockPill ?? settings.notchLockScreenUnlockPillEnabled
         let hasState = hasNowPlaying ?? (nowPlaying.state != nil)
         let hasActivityCaption = activities.current?.captionText != nil
-        updateHostingContent(allowNowPlaying: nowPlayingAllowed,
-                              allowActivities: activitiesAllowed,
-                              showUnlockPill: unlockPillShown,
-                              hasNowPlaying: hasState)
 
         guard isPresentingOnLockScreen,
               LockScreenMediaControlLogic.shouldShowWidget(
                   hasNowPlaying: hasState,
                   allowNowPlaying: nowPlayingAllowed,
                   hasActivityCaption: hasActivityCaption,
-                  allowActivities: activitiesAllowed,
-                  showUnlockPill: unlockPillShown) else {
+                  allowActivities: activitiesAllowed) else {
             mediaPanel?.orderOut(nil)
             mediaPanel = nil
             mediaHostingView = nil
@@ -838,12 +775,10 @@ final class LockScreenPresenter {
             card = mediaPanel
             mediaHostingView?.rootView = makeMediaControlsView(
                 allowNowPlaying: nowPlayingAllowed,
-                allowActivities: activitiesAllowed,
-                showUnlockPill: unlockPillShown)
+                allowActivities: activitiesAllowed)
         } else {
             card = makeMediaPanel(allowNowPlaying: nowPlayingAllowed,
-                                  allowActivities: activitiesAllowed,
-                                  showUnlockPill: unlockPillShown)
+                                  allowActivities: activitiesAllowed)
             mediaPanel = card
             card.alphaValue = panel.alphaValue
         }
@@ -855,7 +790,7 @@ final class LockScreenPresenter {
                            hasMedia: LockScreenMediaControlLogic.shouldShow(
                                hasNowPlaying: hasState,
                                allowNowPlaying: nowPlayingAllowed),
-                           hasAuxiliaryContent: hasActivityCaption && activitiesAllowed || unlockPillShown)
+                           hasAuxiliaryContent: hasActivityCaption && activitiesAllowed)
         delegateWithLockScreenSpace(card)
         card.orderFrontRegardless()
         if card.alphaValue < 1, panel.alphaValue >= 1 {
@@ -867,25 +802,21 @@ final class LockScreenPresenter {
     /// A weak presenter capture prevents the SwiftUI root from keeping the
     /// presenter alive through the panel it owns.
     private func makeMediaControlsView(allowNowPlaying: Bool,
-                                       allowActivities: Bool,
-                                       showUnlockPill: Bool) -> LockScreenMediaControlsView {
+                                       allowActivities: Bool) -> LockScreenMediaControlsView {
         LockScreenMediaControlsView(
             nowPlaying: nowPlaying,
             activities: activities,
             allowNowPlaying: allowNowPlaying,
-            allowActivities: allowActivities,
-            showUnlockPill: showUnlockPill) { [weak self] command in
+            allowActivities: allowActivities) { [weak self] command in
                 self?.nowPlaying.send(command)
             }
     }
 
     private func makeMediaPanel(allowNowPlaying: Bool,
-                                allowActivities: Bool,
-                                showUnlockPill: Bool) -> NSPanel {
+                                allowActivities: Bool) -> NSPanel {
         let hosting = NSHostingView(
             rootView: makeMediaControlsView(allowNowPlaying: allowNowPlaying,
-                                            allowActivities: allowActivities,
-                                            showUnlockPill: showUnlockPill))
+                                            allowActivities: allowActivities))
         hosting.appearance = appearanceMode.nsAppearance
         mediaHostingView = hosting
 

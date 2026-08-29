@@ -75,7 +75,6 @@ final class SettingsStore: ObservableObject {
         self.notchLockScreenExperimentEnabled = defaults.bool(forKey: Keys.notchLockScreenExperimentEnabled)
         self.notchLockScreenNowPlayingEnabled = defaults.bool(forKey: Keys.notchLockScreenNowPlayingEnabled)
         self.notchLockScreenActivitiesEnabled = defaults.bool(forKey: Keys.notchLockScreenActivitiesEnabled)
-        self.notchLockScreenUnlockPillEnabled = defaults.bool(forKey: Keys.notchLockScreenUnlockPillEnabled)
         self.notchLockScreenUnlockSoundEnabled = defaults.bool(forKey: Keys.notchLockScreenUnlockSoundEnabled)
         self.notchHotkey = HotkeyShortcut(
             keyCode: UInt32(defaults.integer(forKey: Keys.notchHotkeyKeyCode)),
@@ -327,16 +326,6 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchLockScreenActivitiesEnabled, forKey: Keys.notchLockScreenActivitiesEnabled) }
     }
 
-    /// M9: shows a "Press any key to unlock" pill (the Alcove hero-shot
-    /// affordance) below the lock-screen silhouette. Defaults to `false`,
-    /// unlike the two toggles above — it's a purely decorative addition (macOS
-    /// already shows its own "press any key" hint on the real lock screen),
-    /// not something surfacing information the user would otherwise miss, so
-    /// there's less reason to default it on.
-    @Published var notchLockScreenUnlockPillEnabled: Bool {
-        didSet { defaults.set(notchLockScreenUnlockPillEnabled, forKey: Keys.notchLockScreenUnlockPillEnabled) }
-    }
-
     /// Plays a short, low "Pop" system click (falling back to Glass/Tink) the
     /// moment `LockScreenPresenter` observes `"com.apple.screenIsUnlocked"`.
     /// Defaults to `true` once the user opts into the experimental lock-screen
@@ -397,7 +386,6 @@ final class SettingsStore: ObservableObject {
         Keys.notchLockScreenExperimentEnabled: false,
         Keys.notchLockScreenNowPlayingEnabled: true,
         Keys.notchLockScreenActivitiesEnabled: true,
-        Keys.notchLockScreenUnlockPillEnabled: false,
         Keys.notchLockScreenUnlockSoundEnabled: true,
         Keys.notchHotkeyKeyCode: Int(HotkeyShortcut.notchDefault.keyCode),
         Keys.notchHotkeyModifiers: Int(HotkeyShortcut.notchDefault.carbonModifiers),
@@ -435,7 +423,6 @@ final class SettingsStore: ObservableObject {
         static let notchLockScreenExperimentEnabled = "flux.notch.lockScreenExperiment"
         static let notchLockScreenNowPlayingEnabled = "flux.notch.lockScreen.nowPlaying"
         static let notchLockScreenActivitiesEnabled = "flux.notch.lockScreen.activities"
-        static let notchLockScreenUnlockPillEnabled = "flux.notch.lockScreen.unlockPill"
         static let notchLockScreenUnlockSoundEnabled = "flux.notch.lockScreen.unlockSound"
         static let notchHotkeyKeyCode = "flux.notch.hotkey.keyCode"
         static let notchHotkeyModifiers = "flux.notch.hotkey.modifiers"
