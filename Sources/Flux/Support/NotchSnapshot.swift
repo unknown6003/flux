@@ -28,7 +28,7 @@ enum NotchSnapshot {
         // overlay's two-panel composition. The three lock-screen variants
         // exercise the empty/media/activity gates without a real lock session.
         let (root, panelSize, tempShelfDirectory) = state.hasPrefix("lockscreen")
-            ? buildLockScreenRoot(variant: state)
+            ? buildLockScreenRoot(variant: state, dark: dark)
             : buildRoot(for: state)
 
         // M8 fix: `buildRoot` always creates a fresh temp `ShelfStore`
@@ -99,7 +99,7 @@ enum NotchSnapshot {
             // see `capture(to:dark:state:)`'s identical dispatch above for why
             // this can't just be another `buildRoot(for:)` case.
             let (root, panelSize, tempShelfDirectory) = state.hasPrefix("lockscreen")
-                ? buildLockScreenRoot(variant: state)
+                ? buildLockScreenRoot(variant: state, dark: dark)
                 : buildRoot(for: state)
             tempShelfDirectories.append(tempShelfDirectory)
             let path = (dir as NSString).appendingPathComponent(file)
@@ -295,7 +295,8 @@ enum NotchSnapshot {
     /// a path, it doesn't create anything on disk, so there is nothing for
     /// the caller's `removeItem` to actually find (and its `try?` silently
     /// no-ops on that).
-    private static func buildLockScreenRoot(variant: String) -> (AnyView, CGSize, URL) {
+    private static func buildLockScreenRoot(variant: String,
+                                            dark: Bool) -> (AnyView, CGSize, URL) {
         let hasMedia = variant != "lockscreen-activity-only"
         let hasActivity = variant != "lockscreen-media-only"
         let nowPlayingService = NowPlayingService()
@@ -329,6 +330,7 @@ enum NotchSnapshot {
             }
         }
         .frame(width: panelSize.width, height: panelSize.height, alignment: .center)
+        .environment(\.colorScheme, dark ? .dark : .light)
         // Keep the lock-screen fixture on the deterministic material path as
         // well. The real macOS 26 Liquid Glass compositor needs a live
         // wallpaper-backed window; the off-screen renderer has no backdrop and
