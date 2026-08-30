@@ -358,7 +358,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.setAppearance(settings.appearance)
         notchWindow.setEnabled(notchOn)
         notchWindow.viewModel.expansionTrigger = settings.notchExpansionTrigger
-        notchWindow.viewModel.hoverOpenDelay = settings.notchHoverOpenDelay
         notchWindow.viewModel.hoverCloseDelay = settings.notchHoverCloseDelay
         notchWindow.registry.order = settings.notchWidgetOrder.compactMap(WidgetID.init(rawValue:))
         notchWindow.registry.setEnabled(.nowPlaying, settings.notchNowPlayingEnabled)
@@ -470,11 +469,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchExpansionTrigger
             .dropFirst()
             .sink { [weak self] value in self?.notchWindow.viewModel.expansionTrigger = value }
-            .store(in: &cancellables)
-
-        settings.$notchHoverOpenDelay
-            .dropFirst()
-            .sink { [weak self] value in self?.notchWindow.viewModel.hoverOpenDelay = value }
             .store(in: &cancellables)
 
         settings.$notchHoverCloseDelay

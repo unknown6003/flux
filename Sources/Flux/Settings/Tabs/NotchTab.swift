@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import Foundation
 
-/// Notch feature settings: master enable, how it opens, hover timing,
+/// Notch feature settings: master enable, how it opens, hover-out timing,
 /// fullscreen visibility, and per-widget controls — Now Playing's enable
 /// toggle plus a live status row (M1), and File Shelf's enable toggle plus
 /// an auto-clear picker (M2).
@@ -56,7 +56,7 @@ struct NotchTab: View {
         FluxCard(title: "Behavior") {
             VStack(alignment: .leading, spacing: 10) {
                 RowText(title: "Open with",
-                        subtitle: "Hover pauses briefly before expanding; click only opens on a tap.")
+                        subtitle: "Hover opens immediately; click only opens on a tap.")
                 Picker("", selection: $settings.notchExpansionTrigger) {
                     Text("Hover").tag(NotchExpansionTrigger.hover)
                     Text("Click").tag(NotchExpansionTrigger.click)
@@ -68,8 +68,6 @@ struct NotchTab: View {
             .padding(.horizontal, 14)
 
             if settings.notchExpansionTrigger == .hover {
-                RowDivider()
-                delayRow(title: "Open delay", value: $settings.notchHoverOpenDelay, range: 0.05...1.0)
                 RowDivider()
                 delayRow(title: "Close delay", value: $settings.notchHoverCloseDelay, range: 0.1...2.0)
             }

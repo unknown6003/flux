@@ -56,7 +56,6 @@ final class SettingsStore: ObservableObject {
         defaults.removeObject(forKey: "flux.notch.style")
         let triggerRaw = defaults.string(forKey: Keys.notchExpansionTrigger) ?? NotchExpansionTrigger.hover.rawValue
         self.notchExpansionTrigger = NotchExpansionTrigger(rawValue: triggerRaw) ?? .hover
-        self.notchHoverOpenDelay = defaults.double(forKey: Keys.notchHoverOpenDelay)
         self.notchHoverCloseDelay = defaults.double(forKey: Keys.notchHoverCloseDelay)
         self.notchShowInFullscreen = defaults.bool(forKey: Keys.notchShowInFullscreen)
         self.notchWidgetOrder = defaults.stringArray(forKey: Keys.notchWidgetOrder) ?? [WidgetID.nowPlaying.rawValue]
@@ -156,11 +155,6 @@ final class SettingsStore: ObservableObject {
     /// Which gesture opens the notch panel — mirrors `NotchViewModel.expansionTrigger`.
     @Published var notchExpansionTrigger: NotchExpansionTrigger {
         didSet { defaults.set(notchExpansionTrigger.rawValue, forKey: Keys.notchExpansionTrigger) }
-    }
-
-    /// Hover-in intent delay before the notch expands, in seconds.
-    @Published var notchHoverOpenDelay: Double {
-        didSet { defaults.set(notchHoverOpenDelay, forKey: Keys.notchHoverOpenDelay) }
     }
 
     /// Hover-out intent delay before the notch collapses, in seconds.
@@ -363,7 +357,6 @@ final class SettingsStore: ObservableObject {
         Keys.hotkeyModifiers: Int(HotkeyShortcut.default.carbonModifiers),
         Keys.notchEnabled: true,
         Keys.notchExpansionTrigger: NotchExpansionTrigger.hover.rawValue,
-        Keys.notchHoverOpenDelay: 0.15,
         Keys.notchHoverCloseDelay: 0.40,
         Keys.notchShowInFullscreen: true,
         Keys.notchWidgetOrder: [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue, WidgetID.calendar.rawValue,
@@ -404,7 +397,6 @@ final class SettingsStore: ObservableObject {
         static let hotkeyModifiers = "flux.hotkey.modifiers"
         static let notchEnabled = "flux.notch.enabled"
         static let notchExpansionTrigger = "flux.notch.expansionTrigger"
-        static let notchHoverOpenDelay = "flux.notch.hoverOpenDelay"
         static let notchHoverCloseDelay = "flux.notch.hoverCloseDelay"
         static let notchShowInFullscreen = "flux.notch.showInFullscreen"
         static let notchWidgetOrder = "flux.notch.widgetOrder"

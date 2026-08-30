@@ -421,7 +421,7 @@ final class NotchWindowController {
         updatePassThrough(for: viewModel.state)
         // If Flux starts while the pointer is already over the housing, no
         // mouse-enter event is guaranteed. Probe once after attaching so the
-        // normal hover delay still starts without requiring a second move.
+        // immediate hover-open still happens without requiring a second move.
         if case .collapsed = viewModel.state {
             refreshHover()
         }
@@ -822,6 +822,27 @@ final class NotchWindowController {
         return !globalMonitorAvailable || !localMonitorAvailable
     }
 
+    /// Whether monitored input may reach the notch windows. A fullscreen
+    /// auxiliary window can be visible and receive events while AppKit still
+    /// reports `isOnActiveSpace == false`; treating that flag as authoritative
+    /// makes hover and click dead exactly where fullscreen support is needed.
+    /// When fullscreen visibility is disabled, the active-Space check remains
+    /// the guard that keeps a hidden overlay inert over the app underneath.
+    ///
+    /// Pure and self-test-covered because this policy is the seam between
+    /// AppKit's window state and every global/local monitor callback.
+    static func shouldAcceptMonitoredInput(isPresenting: Bool,
+                                           mainWindowVisible: Bool,
+                                           triggerWindowVisible: Bool,
+                                           showInFullscreen: Bool,
+                                           mainWindowOnActiveSpace: Bool,
+                                           triggerWindowOnActiveSpace: Bool) -> Bool {
+        guard isPresenting, mainWindowVisible || triggerWindowVisible else { return false }
+        if showInFullscreen { return true }
+        return (mainWindowVisible && mainWindowOnActiveSpace)
+            || (triggerWindowVisible && triggerWindowOnActiveSpace)
+    }
+
     /// Panel-space hover target for the open shape. The transition union is
     /// wanted here (unlike the collapsed case above): while the shape is
     /// mid-morph the union is a superset of what's actually drawn, which is
@@ -930,14 +951,19 @@ final class NotchWindowController {
     // MARK: - Monitored input
 
     /// Collection behavior can hide both overlay windows in a fullscreen
-    /// Space when the user has disabled fullscreen visibility. Monitors still
-    /// run globally, so gate their actions on a window that is actually on
-    /// screen; otherwise a stationary cursor could expand an invisible notch.
+    /// Space when the user has disabled fullscreen visibility. With fullscreen
+    /// support enabled, AppKit may report a visible `.fullScreenAuxiliary`
+    /// window as not being on the active Space, so use that flag only for the
+    /// opt-out path. Monitors still require a visible overlay and a presenting
+    /// screen, so an ordered-out panel can never expand invisibly.
     private var isOverlayVisible: Bool {
-        let mainVisible = panel?.isVisible == true && panel?.isOnActiveSpace == true
-        let triggerVisible = collapsedHoverPanel?.isVisible == true
-            && collapsedHoverPanel?.isOnActiveSpace == true
-        return mainVisible || triggerVisible
+        Self.shouldAcceptMonitoredInput(
+            isPresenting: isPresenting,
+            mainWindowVisible: panel?.isVisible == true,
+            triggerWindowVisible: collapsedHoverPanel?.isVisible == true,
+            showInFullscreen: showInFullscreen,
+            mainWindowOnActiveSpace: panel?.isOnActiveSpace == true,
+            triggerWindowOnActiveSpace: collapsedHoverPanel?.isOnActiveSpace == true)
     }
 
     private func handleMonitoredMove(at location: NSPoint) {

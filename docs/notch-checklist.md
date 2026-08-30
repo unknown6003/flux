@@ -123,8 +123,8 @@ every widget — the items below need a real notched Mac.
 - [ ] **Collapsed hover after launch and display changes**: start Flux with
       the pointer already over the physical notch, then open and close the
       lid or connect/disconnect an external display. Confirm the notch appears
-      without moving the pointer, opens after the normal hover delay, and
-      keeps the app toolbar below the expanded panel clickable while collapsed.
+      without moving the pointer, opens immediately, and keeps the app toolbar
+      below the expanded panel clickable while collapsed.
 
 - [ ] **Forgiving hover and click trigger**: with the notch collapsed, rest the
       pointer slightly to either side of the camera housing or up to about

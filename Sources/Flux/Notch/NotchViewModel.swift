@@ -33,9 +33,9 @@ enum SwipeDirection {
 /// caused the move — which is the perf contract the whole notch suite leans
 /// on (a widget that's never told to stop can't be blamed for leaking).
 ///
-/// Deliberately view-free: everything here is plain state and `Task`-based
-/// delays, so `--selftest` can drive the full transition table without a
-/// window server.
+/// Deliberately view-free: everything here is plain state. The only delayed
+/// transition is hover-out, so `--selftest` can drive the full transition
+/// table without a window server.
 @MainActor
 final class NotchViewModel: ObservableObject {
     @Published private(set) var state: NotchState = .collapsed
@@ -96,8 +96,8 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// Which gesture opens the notch. Switching to `.click` cancels any
-    /// in-flight hover-intent delay so a stale timer can't fire an open/close
-    /// after the mode that scheduled it no longer applies.
+    /// in-flight hover-out delay so a stale timer can't close the panel after
+    /// the mode that scheduled it no longer applies.
     var expansionTrigger: NotchExpansionTrigger {
         didSet {
             guard expansionTrigger != oldValue else { return }
@@ -105,14 +105,9 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Hover-in intent delay before expanding — long enough that a cursor
-    /// merely passing over the notch on its way to the clock doesn't trigger
-    /// it, short enough to feel responsive when the user actually pauses.
-    var hoverOpenDelay: TimeInterval = 0.15
-
-    /// Hover-out intent delay before collapsing — longer than the open delay
-    /// so a brief flick off the notch (e.g. to glance at another wing) or the
-    /// gap while the cursor crosses the notch's own bezel doesn't slam it shut.
+    /// Hover-out intent delay before collapsing — a brief flick off the notch
+    /// (e.g. to glance at another wing) or the gap while the cursor crosses
+    /// the notch's own bezel must not slam it shut.
     var hoverCloseDelay: TimeInterval = 0.40
 
     let registry: NotchWidgetRegistry
@@ -125,9 +120,8 @@ final class NotchViewModel: ObservableObject {
 
     /// Debounced enter/exit intent, tracked separately from `state` so the
     /// (frequent) `mouseMoved` re-deliveries within an unchanged hover state
-    /// are cheap no-ops rather than restarting the delay on every pixel.
+    /// are cheap no-ops rather than restarting the close delay on every pixel.
     private var isHovering = false
-    private var hoverOpenTask: Task<Void, Never>?
     private var hoverCloseTask: Task<Void, Never>?
 
     private var cancellables = Set<AnyCancellable>()
@@ -143,7 +137,6 @@ final class NotchViewModel: ObservableObject {
     }
 
     deinit {
-        hoverOpenTask?.cancel()
         hoverCloseTask?.cancel()
     }
 
@@ -293,13 +286,13 @@ final class NotchViewModel: ObservableObject {
         hoverChanged(inside: inside)
     }
 
-    /// Debounced hover containment. `inside` is the pointer's containment in
+    /// Hover containment. `inside` is the pointer's containment in
     /// whichever rect is relevant for the current state, recomputed on every
     /// enter/exit/moved event — so this is called far more often than the
     /// hover state actually changes; the `isHovering` guard below turns the
     /// redundant calls into no-ops instead of continuously restarting the
-    /// open/close delay while the cursor merely wanders inside (or stays
-    /// outside) the same region.
+    /// close delay while the cursor merely wanders inside (or stays outside)
+    /// the same region.
     func hoverChanged(inside: Bool) {
         guard !suppressHover else { return }
         // `mouseMoved` redelivers on every pixel of movement inside/outside the
@@ -315,17 +308,12 @@ final class NotchViewModel: ObservableObject {
         if inside {
             hoverCloseTask?.cancel()
             hoverCloseTask = nil
-            guard !isExpanded else { return }   // already open; nothing to schedule
-            hoverOpenTask?.cancel()
-            let delay = hoverOpenDelay
-            hoverOpenTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(delay))
-                guard !Task.isCancelled else { return }
-                self?.expand(nil)
-            }
+            guard !isExpanded else { return }   // already open; nothing to do
+            // Opening is deliberately synchronous. A pointer that is already
+            // over the notch must get a visible response on the same event;
+            // only hover-out keeps a grace period to prevent flicker.
+            expand(nil)
         } else {
-            hoverOpenTask?.cancel()
-            hoverOpenTask = nil
             hoverCloseTask?.cancel()
             let delay = hoverCloseDelay
             hoverCloseTask = Task { [weak self] in
@@ -338,7 +326,7 @@ final class NotchViewModel: ObservableObject {
 
     /// A click on the notch. Acts as a plain open/close toggle regardless of
     /// `expansionTrigger` — in hover mode a click is still the fast path to
-    /// pin the panel open without waiting out the hover delay; in click mode
+    /// pin the panel open without waiting out a hover-out close delay; in click mode
     /// it's the *only* way in, per `expansionTrigger`.
     ///
     /// An option-click (`optionDown: true`), in ANY state, does something
@@ -561,7 +549,6 @@ final class NotchViewModel: ObservableObject {
     }
 
     private func cancelHoverTasks() {
-        hoverOpenTask?.cancel(); hoverOpenTask = nil
         hoverCloseTask?.cancel(); hoverCloseTask = nil
     }
 

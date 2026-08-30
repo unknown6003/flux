@@ -83,10 +83,10 @@ enum Theme {
                                           dark: NSColor.white)
     static let notchInverseForeground = dynamic(light: NSColor.white,
                                                 dark: NSColor.black)
-    /// The collapsed software shell covers the physical camera housing. It is
-    /// deliberately white in light mode and black in dark mode.
-    static let notchCollapsed = dynamic(light: NSColor.white,
-                                        dark: NSColor.black)
+    /// The collapsed software shell covers the physical camera housing. The
+    /// hardware is black in every appearance, so this must stay opaque pure
+    /// black in light mode too.
+    static let notchCollapsed = NSColor.black
     static let notchShadow = dynamic(light: NSColor.black.withAlphaComponent(0.22),
                                      dark: NSColor.black.withAlphaComponent(0.55))
 

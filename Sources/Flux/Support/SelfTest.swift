@@ -424,8 +424,8 @@ enum SelfTest {
         // loaded CI runner's real scheduling jitter is easily tens of ms, and
         // this needs to reliably land BEFORE one deadline and AFTER another
         // rather than merely after some elapsed time (unlike e.g.
-        // `hoverOpenDelay + 0.15`'s simpler "wait comfortably past" checks
-        // elsewhere in this file).
+        // the close-delay checks below use the same "wait comfortably past"
+        // margin rather than tight fractions of a short duration.
         let repostCenter = LiveActivityCenter()
         let repostDuration: TimeInterval = 0.6
         let repostGapBeforeRepost: TimeInterval = 0.3 // comfortably < repostDuration
