@@ -619,12 +619,14 @@ final class NotchWindowController {
     /// Polling is needed while the notch is collapsed: that is the state in
     /// which the real panel is intentionally mouse-transparent and hover has
     /// no local view to fall back to. Once a widget is open, the global move
-    /// monitor normally owns the outside-app path; keep the timer there only
-    /// when that monitor could not be installed, so hover-out still works.
+    /// monitor normally owns the outside-app path and the local monitor covers
+    /// Flux's own windows; keep the timer open-state alive if either one could
+    /// not be installed, so hover-out still works in every target app.
     private func syncHoverPollTimer(for state: NotchState) {
         guard Self.shouldPollHover(state: state,
                                    isPresenting: isPresenting,
-                                   globalMonitorAvailable: globalMoveMonitor != nil) else {
+                                   globalMonitorAvailable: globalMoveMonitor != nil,
+                                   localMonitorAvailable: localMoveMonitor != nil) else {
             hoverPollTimer?.invalidate()
             hoverPollTimer = nil
             return
@@ -799,17 +801,18 @@ final class NotchWindowController {
     }
 
     /// The cursor poll is always needed while collapsed, where the panel is
-    /// pass-through. In open states it stays alive only if AppKit could not
-    /// install the global move monitor; without that monitor, leaving the
-    /// panel for another app would otherwise never deliver a hover-out.
+    /// pass-through. In open states it stays alive if AppKit could not install
+    /// either move monitor; without both paths, leaving the panel for another
+    /// app or Flux's own Settings window would never deliver a hover-out.
     /// Keeping this predicate pure makes the energy-saving lifecycle rule
     /// visible to the headless self-test instead of hiding it in Timer code.
     static func shouldPollHover(state: NotchState,
                                 isPresenting: Bool,
-                                globalMonitorAvailable: Bool = true) -> Bool {
+                                globalMonitorAvailable: Bool = true,
+                                localMonitorAvailable: Bool = true) -> Bool {
         guard isPresenting else { return false }
         if case .collapsed = state { return true }
-        return !globalMonitorAvailable
+        return !globalMonitorAvailable || !localMonitorAvailable
     }
 
     /// Panel-space hover target for the open shape. The transition union is

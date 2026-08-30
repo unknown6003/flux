@@ -1127,11 +1127,16 @@ enum SelfTest {
             check(!NotchWindowController.shouldPollHover(state: .activity(UUID()),
                                                           isPresenting: true,
                                                           globalMonitorAvailable: true),
-                  "Notch hover poll: an open panel with a working global monitor stays event-driven")
+                  "Notch hover poll: an open panel with both move monitors stays event-driven")
             check(NotchWindowController.shouldPollHover(state: .activity(UUID()),
                                                         isPresenting: true,
                                                         globalMonitorAvailable: false),
                   "Notch hover poll: an open panel keeps the fallback when the global monitor is unavailable")
+            check(NotchWindowController.shouldPollHover(state: .activity(UUID()),
+                                                        isPresenting: true,
+                                                        globalMonitorAvailable: true,
+                                                        localMonitorAvailable: false),
+                  "Notch hover poll: an open panel keeps the fallback when the local monitor is unavailable")
             check(!NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: false),
                   "Notch hover poll: the fallback stops while no notched screen is presenting")
 
