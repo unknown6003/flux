@@ -1066,6 +1066,27 @@ enum SelfTest {
             check(!openHover.contains(CGPoint(x: 300, y: 220)),
                   "Notch hover: a point well outside the expanded panel is outside")
 
+            // Low-battery (and every other live activity) uses the wider
+            // `.activity` shape. The fixed panel still reaches below that
+            // shape, so mouse capture must follow the visible rect rather
+            // than the state alone. Otherwise transparent space over an app's
+            // toolbar swallows its clicks.
+            check(NotchWindowController.shouldIgnoreMouseEvents(
+                state: .activity(UUID()), pointInsideVisibleShape: false),
+                  "Notch mouse capture: an activity panel ignores events outside its visible shape")
+            check(!NotchWindowController.shouldIgnoreMouseEvents(
+                state: .activity(UUID()), pointInsideVisibleShape: true),
+                  "Notch mouse capture: an activity panel accepts events inside its visible shape")
+            check(NotchWindowController.shouldIgnoreMouseEvents(
+                state: .expanded(.shelf), pointInsideVisibleShape: false),
+                  "Notch mouse capture: an expanded panel ignores events outside its visible shape")
+            check(!NotchWindowController.shouldIgnoreMouseEvents(
+                state: .expanded(.shelf), pointInsideVisibleShape: true),
+                  "Notch mouse capture: an expanded panel accepts events inside its visible shape")
+            check(NotchWindowController.shouldIgnoreMouseEvents(
+                state: .collapsed, pointInsideVisibleShape: true),
+                  "Notch mouse capture: the collapsed panel remains pass-through for its monitor-driven click path")
+
             // A zero rect is what these hold with no notched screen attached,
             // or before the root view has ever laid out — it must never
             // swallow the whole screen.
@@ -2322,40 +2343,29 @@ enum SelfTest {
               "LockScreenPresenter.shouldActivateForLock: activates when both flags are on and the service is currently inactive")
 
         // --- M9 (Alcove lock-screen parity): LockScreenPillLogic.visiblePills
-        // — the pure derivation behind which of the (up to) three lock-screen
-        // pills actually render, covering the on/off matrix headlessly. ---
+        // — the pure derivation behind which of the two lock-screen widgets
+        // actually render, covering the on/off matrix headlessly. ---
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
-                                                hasActivityCaption: false, allowActivities: true,
-                                                showUnlockPill: false) == [],
+                                                hasActivityCaption: false, allowActivities: true) == [],
               "LockScreenPillLogic: nothing to show, nothing enabled → no pills")
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: true,
-                                                hasActivityCaption: false, allowActivities: true,
-                                                showUnlockPill: false) == [.nowPlaying],
+                                                hasActivityCaption: false, allowActivities: true) == [.nowPlaying],
               "LockScreenPillLogic: Now Playing has state and is allowed → just the media pill")
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: false,
-                                                hasActivityCaption: false, allowActivities: true,
-                                                showUnlockPill: false) == [],
+                                                hasActivityCaption: false, allowActivities: true) == [],
               "LockScreenPillLogic: Now Playing has state but the sub-toggle is off → no media pill")
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
-                                                hasActivityCaption: true, allowActivities: true,
-                                                showUnlockPill: false) == [.activity],
+                                                hasActivityCaption: true, allowActivities: true) == [.activity],
               "LockScreenPillLogic: a captioned activity, allowed → just the activity pill")
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
-                                                hasActivityCaption: true, allowActivities: false,
-                                                showUnlockPill: false) == [],
+                                                hasActivityCaption: true, allowActivities: false) == [],
               "LockScreenPillLogic: a captioned activity but the sub-toggle is off → no activity pill")
-        check(LockScreenPillLogic.visiblePills(hasNowPlaying: false, allowNowPlaying: true,
-                                                hasActivityCaption: false, allowActivities: true,
-                                                showUnlockPill: true) == [.unlock],
-              "LockScreenPillLogic: nothing else showing, unlock pill on → just the unlock pill")
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: true,
-                                                hasActivityCaption: true, allowActivities: true,
-                                                showUnlockPill: true) == [.nowPlaying, .activity, .unlock],
-              "LockScreenPillLogic: everything showing and allowed → all three, in fixed media/activity/unlock order")
+                                                hasActivityCaption: true, allowActivities: true) == [.nowPlaying, .activity],
+              "LockScreenPillLogic: everything showing and allowed → media then activity")
         check(LockScreenPillLogic.visiblePills(hasNowPlaying: true, allowNowPlaying: false,
-                                                hasActivityCaption: true, allowActivities: false,
-                                                showUnlockPill: true) == [.unlock],
-              "LockScreenPillLogic: Now Playing and the activity both disallowed → only the unlock pill survives")
+                                                hasActivityCaption: true, allowActivities: false) == [],
+              "LockScreenPillLogic: Now Playing and the activity both disallowed → no widgets")
 
         // M15: the interactive card has its own pure gate. A missing track
         // must never leave a transparent but mouse-sensitive panel behind,
@@ -2376,13 +2386,11 @@ enum SelfTest {
               "LockScreenTransitionLogic: the unlock sound/fade gate opens exactly once per session")
         check(!LockScreenMediaControlLogic.shouldShowWidget(
             hasNowPlaying: false, allowNowPlaying: false,
-            hasActivityCaption: false, allowActivities: false,
-            showUnlockPill: false),
+            hasActivityCaption: false, allowActivities: false),
               "LockScreenMediaControlLogic: an empty lock screen has no companion panel")
         check(LockScreenMediaControlLogic.shouldShowWidget(
             hasNowPlaying: false, allowNowPlaying: false,
-            hasActivityCaption: true, allowActivities: true,
-            showUnlockPill: false),
+            hasActivityCaption: true, allowActivities: true),
               "LockScreenMediaControlLogic: an allowed activity can keep the centered widget visible without media")
         let mediaWidgetSize = LockScreenPillMetrics.widgetSize(hasMedia: true,
                                                                hasAuxiliaryContent: false)
@@ -2391,14 +2399,18 @@ enum SelfTest {
         check(mediaWidgetSize.width == LockScreenPillMetrics.mediaControlsWidth
               && mediaWidgetWithPillsSize.height > mediaWidgetSize.height,
               "LockScreenPillMetrics: the media surface has one stable width and only grows for supporting pills")
+        let activityWidgetSize = LockScreenPillMetrics.widgetSize(
+            hasMedia: false, hasAuxiliaryContent: true)
+        check(activityWidgetSize.width == LockScreenPillMetrics.activityOnlyWidth
+              && activityWidgetSize.width < mediaWidgetSize.width,
+              "LockScreenPillMetrics: activity-only content stays in a compact panel instead of inheriting the media card width")
         let loginFrame = CGRect(x: 0, y: 0, width: 900, height: 900)
         let mediaWidgetOrigin = LockScreenWidgetPositionLogic.originY(
             screenFrame: loginFrame,
             notchHeight: 32,
             widgetHeight: mediaWidgetWithPillsSize.height,
             hasMedia: true)
-        let companionWidgetSize = LockScreenPillMetrics.widgetSize(
-            hasMedia: false, hasAuxiliaryContent: true)
+        let companionWidgetSize = activityWidgetSize
         let companionWidgetOrigin = LockScreenWidgetPositionLogic.originY(
             screenFrame: loginFrame,
             notchHeight: 32,
@@ -2595,21 +2607,18 @@ enum SelfTest {
                                                    WidgetID.clipboard.rawValue],
                   "SettingsStore: the default notchWidgetOrder appends mirror/clipboard after calendar")
 
-            // M9/M15 (Alcove lock-screen parity): the four sub-toggles that
+            // M9/M15 (Alcove lock-screen parity): the three sub-toggles that
             // only matter once the master experimental flag above is on
             // default to Now Playing/Notifications ON (they surface
             // information a passerby could otherwise miss, the same bar
-            // every other on-by-default notch feature clears). The unlock
-            // pill remains OFF because it is decorative, while the
-            // thunky unlock sound defaults ON once the user opts into the
+            // every other on-by-default notch feature clears. The thunky
+            // unlock sound defaults ON once the user opts into the
             // experimental lock-screen surface — see each property's own doc
             // comment on `SettingsStore`.
             check(m6Settings.notchLockScreenNowPlayingEnabled,
                   "SettingsStore: notchLockScreenNowPlayingEnabled defaults to true")
             check(m6Settings.notchLockScreenActivitiesEnabled,
                   "SettingsStore: notchLockScreenActivitiesEnabled defaults to true")
-            check(!m6Settings.notchLockScreenUnlockPillEnabled,
-                  "SettingsStore: notchLockScreenUnlockPillEnabled defaults to false")
             check(m6Settings.notchLockScreenUnlockSoundEnabled,
                   "SettingsStore: notchLockScreenUnlockSoundEnabled defaults to true once lock-screen mode is opted into")
             UserDefaults.standard.removePersistentDomain(forName: m6SettingsSuiteName)

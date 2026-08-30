@@ -198,11 +198,11 @@ every widget — the items below need a real notched Mac.
       Confirm a *plain* click (no option key) right after still does the
       ordinary open/close toggle, unaffected.
 
-## M9/M15 — Alcove lock-screen parity: live media, controls, Liquid Glass surfaces, unlock pill
+## M9/M15 — Alcove lock-screen parity: live media, controls, Liquid Glass surfaces
 
 Turn on "Show Flux on the lock screen" in Settings → Lock Screen before
 any of these — every item below assumes the master toggle is already on, and
-the four sub-toggles beneath it are all on unless a specific item says
+the three sub-toggles beneath it are all on unless a specific item says
 otherwise.
 
 - [ ] **Lock with music playing**: start something playing, lock the screen,
@@ -229,16 +229,12 @@ otherwise.
       and confirm a short, low click plays right at the moment of unlocking
       (not before, not noticeably after). Turn the toggle off and confirm
       unlock is silent.
-- [ ] **Unlock pill**: turn on "Unlock pill," lock the screen, and confirm a
-      translucent Liquid Glass pill reading "Press any key to unlock" with a padlock glyph shows
-      below whatever other pills are present.
 - [ ] **Activity allow-list respected**: turn off "Now Playing" (leaving
-      "Notifications" on) with music playing and a live activity both
-      available, lock the screen, and confirm only the notification pill
-      shows — no media pill. Then flip it the other way (Now Playing on,
-      Notifications off) and confirm only the media pill shows. Turning both
-      off (with the master toggle still on) should show just the silhouette
-      (plus the unlock pill, if that's on).
+      "Live activity" on) with music playing and a live activity both
+      available, lock the screen, and confirm only the activity widget
+      shows — no media card. Then flip it the other way (Now Playing on,
+      Live activity off) and confirm only the media card shows. Turning both
+      off (with the master toggle still on) should show just the silhouette.
 - [ ] **Rapid lock/unlock cycling**: lock and unlock the screen several times
       in quick succession (faster than the fade durations) — including
       re-locking WHILE a fade-out from the previous unlock is still visibly in
@@ -246,12 +242,12 @@ otherwise.
       behind, and never crashes; the content should always end up in the
       state matching whatever the CURRENT lock state actually is.
 - [ ] **Safe pass-through outside media**: with the lock-screen content
-      showing, click the activity/unlock pills and the transparent space around
-      the media card. Confirm there is no highlight or button feedback and
+      showing, click the activity widget and the transparent space around the
+      media card. Confirm there is no highlight or button feedback and
       typing your password to unlock still works exactly as if none of this
       were showing.
 - [ ] **Liquid Glass treatment**: view the lock screen in both light and dark
-      wallpaper. Confirm the media/activity/unlock surfaces remain translucent
+      wallpaper. Confirm the media/activity surfaces remain translucent
       and legible against the backdrop, using Apple's native glass treatment
       without a hand-built gradient or opaque fill. The physical collapsed notch
       remains solid black, seamless, and shadow-free.

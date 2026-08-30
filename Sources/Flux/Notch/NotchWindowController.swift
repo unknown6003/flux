@@ -122,17 +122,18 @@ final class NotchWindowController {
 
     // MARK: - Pointer monitors
     //
-    // While `.collapsed`, `panel.ignoresMouseEvents` is `true` (see
-    // `NotchPanel`'s doc comment for why `hitTest` alone can't achieve
-    // pass-through) — which also means the panel itself stops receiving
-    // mouse events. Global monitors see events over every other app; local
-    // monitors see events over Flux's own windows (global monitors never
-    // fire for own-app events), so both are needed to cover the screen.
+    // The fixed panel is pass-through while collapsed and whenever the
+    // pointer is outside the visible shape. Inside an open activity/widget,
+    // it accepts events so SwiftUI controls still work. Global monitors see
+    // events over every other app; local monitors see events over Flux's own
+    // windows (global monitors never fire for own-app events), so both are
+    // needed to cover the screen.
     //
     // ## M12 hover-reliability fix: move monitors run in EVERY state
     // These used to be installed only while `.collapsed`, on the theory that
     // the panel's own `NSTrackingArea` (see `NotchHostingView`) covers hover
-    // once `ignoresMouseEvents` goes back to `false`. It doesn't, reliably:
+    // once `ignoresMouseEvents` goes back to `false` inside the visible shape.
+    // It doesn't, reliably:
     // AppKit only guarantees `mouseMoved:` delivery to the KEY window, and
     // this panel is a `.nonactivatingPanel` that deliberately refuses key
     // (`NotchPanel.canBecomeKey` is `false`) in an app that is almost never
@@ -222,6 +223,14 @@ final class NotchWindowController {
         // of `isPresenting` itself, not just `state`).
         viewModel.$state
             .sink { [weak self] state in self?.updatePassThrough(for: state) }
+            .store(in: &cancellables)
+
+        // The root view publishes a union rect during its spring transition
+        // and the settled shape afterwards. Re-evaluate the panel's mouse
+        // capture whenever that rect changes, even if the pointer is still —
+        // a low-battery activity can appear underneath a stationary cursor.
+        viewModel.$interactiveRect
+            .sink { [weak self] _ in self?.updateMouseCapture(at: NSEvent.mouseLocation) }
             .store(in: &cancellables)
     }
 
@@ -395,9 +404,9 @@ final class NotchWindowController {
     /// `NotchPanel.sendEvent` recognizes (`swiped(.down)` opening from
     /// `.collapsed`) — `ignoresMouseEvents` suppresses scroll-wheel delivery
     /// to the panel exactly like every other mouse event, so that gesture is
-    /// only live while `.activity`/`.expanded`. Hover and click already cover
-    /// opening from collapsed, so this is a narrower gesture surface, not a
-    /// silent break of the primary open paths.
+    /// only live while the pointer is inside an open shape. Hover and click
+    /// already cover opening from collapsed, so this is a narrower gesture
+    /// surface, not a silent break of the primary open paths.
     private func updatePassThrough(for state: NotchState) {
         guard let panel, isPresenting else {
             removePointerMonitors()
@@ -406,12 +415,14 @@ final class NotchWindowController {
         }
         installPointerMonitors()
         let wasIgnoring = panel.ignoresMouseEvents
+        panel.ignoresMouseEvents = Self.shouldIgnoreMouseEvents(
+            state: state,
+            pointInsideVisibleShape: pointerInsideVisibleShape(for: state,
+                                                                at: NSEvent.mouseLocation))
         switch state {
         case .collapsed:
-            panel.ignoresMouseEvents = true
             installCollapsedClickMonitors()
         case .activity, .expanded:
-            panel.ignoresMouseEvents = false
             removeCollapsedClickMonitors()
         }
         // A gesture in flight when this flips is cut off without its `ended`
@@ -614,6 +625,23 @@ final class NotchWindowController {
         return rect.insetBy(dx: -openHoverSlop, dy: -openHoverSlop)
     }
 
+    /// Whether the fixed panel should be mouse-transparent for a state and
+    /// pointer location. Open states only capture events inside the exact
+    /// visible shape; the surrounding panel envelope must stay pass-through
+    /// so an app's toolbar below the notch keeps receiving clicks.
+    ///
+    /// Pure and self-test-covered. Keeping this policy separate from AppKit
+    /// lets the low-battery regression run without a window server.
+    static func shouldIgnoreMouseEvents(state: NotchState,
+                                        pointInsideVisibleShape: Bool) -> Bool {
+        switch state {
+        case .collapsed:
+            return true
+        case .activity, .expanded:
+            return !pointInsideVisibleShape
+        }
+    }
+
     /// The physical notch's own footprint in screen coordinates, or `.null`
     /// when there is no notched screen to speak of.
     ///
@@ -639,6 +667,34 @@ final class NotchWindowController {
             guard let local = notchSpacePoint(screenPoint) else { return false }
             return Self.openHoverRect(interactiveRect: viewModel.interactiveRect).contains(local)
         }
+    }
+
+    /// Exact (no hover slop) containment used only for deciding whether the
+    /// fixed panel may capture a click. Hover remains slightly forgiving, but
+    /// that extra band must never become a mouse-blocking band over another
+    /// app's window.
+    private func pointerInsideVisibleShape(for state: NotchState, at screenPoint: NSPoint) -> Bool {
+        switch state {
+        case .collapsed:
+            return false
+        case .activity, .expanded:
+            guard let local = notchSpacePoint(screenPoint) else { return false }
+            return viewModel.interactiveRect.contains(local)
+        }
+    }
+
+    /// Synchronizes the fixed panel's capture state with the current pointer
+    /// location. Called on state/geometry changes and before hover handling so
+    /// a panel that is open for a live activity never owns transparent space.
+    private func updateMouseCapture(at location: NSPoint) {
+        guard let panel, isPresenting else { return }
+        let shouldIgnore = Self.shouldIgnoreMouseEvents(
+            state: viewModel.state,
+            pointInsideVisibleShape: pointerInsideVisibleShape(for: viewModel.state,
+                                                                at: location))
+        guard panel.ignoresMouseEvents != shouldIgnore else { return }
+        panel.ignoresMouseEvents = shouldIgnore
+        panel.resetGestureState()
     }
 
     /// Where a right-click pops the context menu: the physical notch's own
@@ -668,6 +724,7 @@ final class NotchWindowController {
 
     private func handleMonitoredMove(at location: NSPoint) {
         guard isPresenting, !isShowingMenu else { return }
+        updateMouseCapture(at: location)
         let inside = isHovering(screenPoint: location)
         guard inside != lastMonitoredInside else { return }
         lastMonitoredInside = inside
@@ -684,7 +741,9 @@ final class NotchWindowController {
     /// pinned open indefinitely.
     private func refreshHover() {
         guard isPresenting else { return }
-        let inside = isHovering(screenPoint: NSEvent.mouseLocation)
+        let location = NSEvent.mouseLocation
+        updateMouseCapture(at: location)
+        let inside = isHovering(screenPoint: location)
         lastMonitoredInside = inside
         // `resyncHover`, not `hoverChanged`: the view model's own
         // `isHovering` cache is stale by construction here — see that

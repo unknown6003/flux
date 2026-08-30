@@ -27,11 +27,6 @@ struct LockScreenTab: View {
                         isOn: $settings.notchLockScreenActivitiesEnabled)
                     RowDivider()
                     ToggleRow(
-                        title: "Unlock hint",
-                        subtitle: "Show a small “Press any key to unlock” pill below the notch.",
-                        isOn: $settings.notchLockScreenUnlockPillEnabled)
-                    RowDivider()
-                    ToggleRow(
                         title: "Unlock sound",
                         subtitle: "Play a short confirmation sound when the lock screen disappears.",
                         isOn: $settings.notchLockScreenUnlockSoundEnabled)

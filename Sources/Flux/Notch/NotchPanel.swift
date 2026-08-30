@@ -31,13 +31,12 @@ import SwiftUI
 /// from claiming the event.
 ///
 /// The actual fix is `NSWindow.ignoresMouseEvents`, toggled by
-/// `NotchWindowController` to match `NotchViewModel.state`: `true` while
-/// `.collapsed` (the physical notch has no interactive pixels of its own
-/// regardless, so nothing is lost) truly hands every event to whatever's
-/// beneath, and `false` while `.activity`/`.expanded` restores normal
-/// hit-testing for the wider shape's real interactive content. Collapsed
-/// hover/click detection moves to global+local `NSEvent` monitors in that
-/// state (see `NotchWindowController`), since a window that ignores mouse
+/// `NotchWindowController` to match the visible shape: it is always `true`
+/// while `.collapsed`, and in `.activity`/`.expanded` it is `true` outside
+/// the exact shape and `false` inside it. That keeps the fixed panel's clear
+/// margins pass-through while preserving SwiftUI controls in the drawn area.
+/// Collapsed hover/click detection moves to global+local `NSEvent` monitors in
+/// that state (see `NotchWindowController`), since a window that ignores mouse
 /// events also stops seeing them itself.
 final class NotchPanel: NSPanel {
     private let viewModel: NotchViewModel
@@ -310,7 +309,8 @@ final class NotchPanel: NSPanel {
     // SwiftUI tree claims a drag — removes that race entirely: one
     // destination, no handoff.
     //
-    // `ignoresMouseEvents` (`true` while `.collapsed`) only suppresses
+    // `ignoresMouseEvents` (true while collapsed or outside the visible
+    // open shape) only suppresses
     // ordinary mouse-event delivery (`sendEvent`'s usual path); AppKit's
     // drag-and-drop machinery resolves a dragging destination through a
     // separate mechanism untouched by it. `NSWindow` conforms to
