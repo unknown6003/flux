@@ -215,9 +215,10 @@ final class NotchWindowController {
     /// below an invisible camera housing.
     private static let hoverSlopBelow: CGFloat = 20
 
-    /// The polling fallback runs often enough to feel immediate but keeps the
-    /// main run loop and battery cost tiny compared with a display refresh.
-    private static let hoverPollInterval: TimeInterval = 1.0 / 30.0
+    /// The polling fallback runs often enough to feel immediate while keeping
+    /// idle wakeups low for a menu-bar app. Mouse monitors remain the fast
+    /// path; this only bounds the recovery latency when they miss a move.
+    private static let hoverPollInterval: TimeInterval = 0.10
 
     /// Slop for the already-open shape. Small: the open panel is a large,
     /// visible target that needs no help being hit — this only keeps a
@@ -596,7 +597,7 @@ final class NotchWindowController {
             let location = NSEvent.mouseLocation
             Task { @MainActor in self?.handleMonitoredMove(at: location) }
         }
-        timer.tolerance = 0.02
+        timer.tolerance = 0.05
         RunLoop.main.add(timer, forMode: .common)
         hoverPollTimer = timer
     }
