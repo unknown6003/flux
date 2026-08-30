@@ -479,11 +479,11 @@ enum SelfTest {
         let notchVM = NotchViewModel(registry: notchRegistry, activities: activities, expansionTrigger: .hover)
         check(notchVM.state == .collapsed, "Notch: starts collapsed")
 
-        // Hover-open only fires in hover mode, after the configured delay.
+        // Hover-open is immediate in hover mode. Only hover-out keeps an
+        // intent delay, so a pointer resting on the notch never feels stuck.
         notchVM.hoverChanged(inside: true)
-        RunLoop.current.run(until: Date().addingTimeInterval(notchVM.hoverOpenDelay + 0.15))
         check(notchVM.state == .expanded(.nowPlaying),
-              "Notch: hovering in hover mode opens to the first enabled widget after the open delay")
+              "Notch: hovering in hover mode opens to the first enabled widget immediately")
         check(widgetA.presentCount == 1 && widgetA.dismissCount == 0,
               "Notch: willPresent fires exactly once for the widget that opened")
 
@@ -495,7 +495,6 @@ enum SelfTest {
         // Click mode: hover has no effect at all.
         notchVM.expansionTrigger = .click
         notchVM.hoverChanged(inside: true)
-        RunLoop.current.run(until: Date().addingTimeInterval(notchVM.hoverOpenDelay + 0.15))
         check(notchVM.state == .collapsed, "Notch: hovering in click mode never opens the panel")
         notchVM.hoverChanged(inside: false)
 
@@ -1123,6 +1122,30 @@ enum SelfTest {
                   && !NotchWindowController.shouldShowCollapsedHoverPanel(state: .collapsed,
                                                                            isPresenting: false),
                   "Notch hover trigger: it is hidden for open states and while no notched screen is presenting")
+            check(NotchWindowController.shouldAcceptMonitoredInput(
+                isPresenting: true,
+                mainWindowVisible: true,
+                triggerWindowVisible: true,
+                showInFullscreen: true,
+                mainWindowOnActiveSpace: false,
+                triggerWindowOnActiveSpace: false),
+                  "Notch input: a visible fullscreen auxiliary window remains interactive even when AppKit reports no active Space")
+            check(!NotchWindowController.shouldAcceptMonitoredInput(
+                isPresenting: true,
+                mainWindowVisible: true,
+                triggerWindowVisible: true,
+                showInFullscreen: false,
+                mainWindowOnActiveSpace: false,
+                triggerWindowOnActiveSpace: false),
+                  "Notch input: fullscreen visibility off keeps a non-active overlay inert")
+            check(!NotchWindowController.shouldAcceptMonitoredInput(
+                isPresenting: false,
+                mainWindowVisible: true,
+                triggerWindowVisible: true,
+                showInFullscreen: true,
+                mainWindowOnActiveSpace: true,
+                triggerWindowOnActiveSpace: true),
+                  "Notch input: no presenting screen never accepts monitored input")
             check(NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: true),
                   "Notch hover poll: the fallback runs while the presented notch is collapsed")
             check(!NotchWindowController.shouldPollHover(state: .activity(UUID()),
@@ -3222,6 +3245,13 @@ enum SelfTest {
             check(NotchDesign.scrollFadeLength > 0 && NotchDesign.scrollFadeContentInset > 0,
                   "NotchDesign: the scroll-fade length and its matching content inset are both positive")
             check(NotchDesign.paneInsets > 0, "NotchDesign: paneInsets is a real, positive inset")
+
+            let collapsedBlack = Theme.notchCollapsed.usingColorSpace(.sRGB)
+            check(collapsedBlack?.redComponent == 0
+                    && collapsedBlack?.greenComponent == 0
+                    && collapsedBlack?.blueComponent == 0
+                    && collapsedBlack?.alphaComponent == 1,
+                  "NotchDesign: the collapsed physical-notch mask is opaque pure black in every appearance")
         }
 
         // --- M8: Formatters.age(from:to:) — the fix for Shelf/Clipboard row
