@@ -395,17 +395,12 @@ extension NotchPanel: NSDraggingDestination {
 /// the one place where a collapsed hover is useful, even when a global mouse
 /// monitor misses the first move after launch.
 final class NotchHoverPanel: NSPanel {
-    var onDraggingMoved: ((NSPoint) -> NSDragOperation)?
-    var onDraggingExited: (() -> Void)?
-    var onPerformDragOperation: ((NSPasteboard) -> Bool)?
-
     init(onMove: @escaping (NSPoint) -> Void) {
         super.init(contentRect: .zero,
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         OverlayPanel.applyOverlayStyle(to: self, level: .statusBar, ignoresMouseEvents: false)
         acceptsMouseMovedEvents = true
-        registerForDraggedTypes([.fileURL])
         contentView = NotchHoverTrackingView(onMove: onMove)
     }
 
@@ -416,6 +411,16 @@ final class NotchHoverPanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    /// Matches the main notch panel's fullscreen preference. The trigger is
+    /// hidden with the main panel when fullscreen overlays are disabled.
+    func setShowInFullscreen(_ show: Bool) {
+        if show {
+            collectionBehavior.insert(.fullScreenAuxiliary)
+        } else {
+            collectionBehavior.remove(.fullScreenAuxiliary)
+        }
+    }
 }
 
 private final class NotchHoverTrackingView: NSView {
@@ -453,24 +458,6 @@ private final class NotchHoverTrackingView: NSView {
 
     override func mouseExited(with event: NSEvent) {
         onMove(NSEvent.mouseLocation)
-    }
-}
-
-extension NotchHoverPanel: NSDraggingDestination {
-    func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        onDraggingMoved?(convertToScreen(sender.draggingLocation)) ?? []
-    }
-
-    func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        onDraggingMoved?(convertToScreen(sender.draggingLocation)) ?? []
-    }
-
-    func draggingExited(_ sender: NSDraggingInfo?) {
-        onDraggingExited?()
-    }
-
-    func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        onPerformDragOperation?(sender.draggingPasteboard) ?? false
     }
 }
 

@@ -254,7 +254,6 @@ final class NotchWindowController {
 
     deinit {
         screenResolutionTask?.cancel()
-        collapsedHoverPanel?.orderOut(nil)
         // `NSEvent.removeMonitor` is safe to call from `deinit` — it's a
         // plain class method taking the opaque token, not a call on `self`.
         [globalMoveMonitor, localMoveMonitor, globalRightClickMonitor, localRightClickMonitor,
@@ -297,9 +296,10 @@ final class NotchWindowController {
     }
 
     /// Re-resolve immediately for a real display change, then keep trying for
-    /// a short bounded window. AppKit sometimes posts the notification before
-    /// the auxiliary notch rectangles have settled, so one synchronous read
-    /// is not enough to make the panel reliable at login or lid-open time.
+    /// a short bounded window of about ten seconds. AppKit sometimes posts
+    /// the notification before the auxiliary notch rectangles have settled,
+    /// so one synchronous read is not enough to make the panel reliable at
+    /// login or lid-open time.
     private func screenParametersChanged() {
         guard isEnabled else { return }
         resolveScreen()
@@ -312,7 +312,7 @@ final class NotchWindowController {
     private func scheduleScreenResolutionRetries() {
         screenResolutionTask?.cancel()
         guard isEnabled else { return }
-        let delays: [TimeInterval] = [0.05, 0.20, 0.60, 1.20]
+        let delays: [TimeInterval] = [0.05, 0.20, 0.60, 1.20, 2.50, 5.00]
         screenResolutionTask = Task { @MainActor [weak self] in
             for delay in delays {
                 guard !Task.isCancelled else { return }
@@ -332,6 +332,7 @@ final class NotchWindowController {
     func setShowInFullscreen(_ show: Bool) {
         showInFullscreen = show
         panel?.setShowInFullscreen(show)
+        collapsedHoverPanel?.setShowInFullscreen(show)
     }
 
     /// Applies the selected appearance to the live panel and remembers it for
@@ -430,15 +431,7 @@ final class NotchWindowController {
         let hoverPanel = NotchHoverPanel { [weak self] location in
             self?.handleMonitoredMove(at: location)
         }
-        hoverPanel.onDraggingMoved = { [weak self] location in
-            self?.handleDraggingUpdate(atScreen: location) ?? []
-        }
-        hoverPanel.onDraggingExited = { [weak self] in
-            self?.handleDraggingExited()
-        }
-        hoverPanel.onPerformDragOperation = { [weak self] pasteboard in
-            self?.handlePerformDrag(pasteboard) ?? false
-        }
+        hoverPanel.setShowInFullscreen(showInFullscreen)
         collapsedHoverPanel = hoverPanel
         return hoverPanel
     }
@@ -982,11 +975,6 @@ final class NotchWindowController {
     /// window-space location into that same space and testing containment
     /// (with slop only in the collapsed case) is both correct and avoids a
     /// second, easily-drifting copy of the same geometry.
-    private func handleDraggingUpdate(atScreen screenLocation: NSPoint) -> NSDragOperation {
-        guard let localPoint = notchSpacePoint(screenLocation) else { return [] }
-        return handleDraggingUpdate(localPoint: localPoint)
-    }
-
     private func handleDraggingUpdate(at windowLocation: NSPoint) -> NSDragOperation {
         guard let localPoint = notchSpacePoint(fromWindow: windowLocation) else { return [] }
         return handleDraggingUpdate(localPoint: localPoint)
