@@ -1124,9 +1124,16 @@ enum SelfTest {
                   "Notch hover trigger: it is hidden for open states and while no notched screen is presenting")
             check(NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: true),
                   "Notch hover poll: the fallback runs while the presented notch is collapsed")
-            check(!NotchWindowController.shouldPollHover(state: .activity(UUID()), isPresenting: true)
-                  && !NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: false),
-                  "Notch hover poll: the fallback stops for open states and absent screens")
+            check(!NotchWindowController.shouldPollHover(state: .activity(UUID()),
+                                                          isPresenting: true,
+                                                          globalMonitorAvailable: true),
+                  "Notch hover poll: an open panel with a working global monitor stays event-driven")
+            check(NotchWindowController.shouldPollHover(state: .activity(UUID()),
+                                                        isPresenting: true,
+                                                        globalMonitorAvailable: false),
+                  "Notch hover poll: an open panel keeps the fallback when the global monitor is unavailable")
+            check(!NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: false),
+                  "Notch hover poll: the fallback stops while no notched screen is presenting")
 
             // A zero rect is what these hold with no notched screen attached,
             // or before the root view has ever laid out — it must never

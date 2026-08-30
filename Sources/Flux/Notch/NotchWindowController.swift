@@ -616,13 +616,15 @@ final class NotchWindowController {
         hoverPollTimer = timer
     }
 
-    /// Polling is only needed while the notch is collapsed: that is the state
-    /// in which the real panel is intentionally mouse-transparent and hover
-    /// has no local view to fall back to. Once a widget is open, the panel and
-    /// its always-on monitors own the visible shape, so keeping a timer alive
-    /// would add wakeups without improving the path.
+    /// Polling is needed while the notch is collapsed: that is the state in
+    /// which the real panel is intentionally mouse-transparent and hover has
+    /// no local view to fall back to. Once a widget is open, the global move
+    /// monitor normally owns the outside-app path; keep the timer there only
+    /// when that monitor could not be installed, so hover-out still works.
     private func syncHoverPollTimer(for state: NotchState) {
-        guard Self.shouldPollHover(state: state, isPresenting: isPresenting) else {
+        guard Self.shouldPollHover(state: state,
+                                   isPresenting: isPresenting,
+                                   globalMonitorAvailable: globalMoveMonitor != nil) else {
             hoverPollTimer?.invalidate()
             hoverPollTimer = nil
             return
@@ -796,13 +798,18 @@ final class NotchWindowController {
         return false
     }
 
-    /// The cursor poll is needed only for the collapsed, pass-through state.
+    /// The cursor poll is always needed while collapsed, where the panel is
+    /// pass-through. In open states it stays alive only if AppKit could not
+    /// install the global move monitor; without that monitor, leaving the
+    /// panel for another app would otherwise never deliver a hover-out.
     /// Keeping this predicate pure makes the energy-saving lifecycle rule
     /// visible to the headless self-test instead of hiding it in Timer code.
-    static func shouldPollHover(state: NotchState, isPresenting: Bool) -> Bool {
+    static func shouldPollHover(state: NotchState,
+                                isPresenting: Bool,
+                                globalMonitorAvailable: Bool = true) -> Bool {
         guard isPresenting else { return false }
         if case .collapsed = state { return true }
-        return false
+        return !globalMonitorAvailable
     }
 
     /// Panel-space hover target for the open shape. The transition union is
@@ -917,7 +924,10 @@ final class NotchWindowController {
     /// run globally, so gate their actions on a window that is actually on
     /// screen; otherwise a stationary cursor could expand an invisible notch.
     private var isOverlayVisible: Bool {
-        panel?.isVisible == true || collapsedHoverPanel?.isVisible == true
+        let mainVisible = panel?.isVisible == true && panel?.isOnActiveSpace == true
+        let triggerVisible = collapsedHoverPanel?.isVisible == true
+            && collapsedHoverPanel?.isOnActiveSpace == true
+        return mainVisible || triggerVisible
     }
 
     private func handleMonitoredMove(at location: NSPoint) {

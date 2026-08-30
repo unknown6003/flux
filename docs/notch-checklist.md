@@ -138,6 +138,10 @@ every widget — the items below need a real notched Mac.
       hidden notch position. Confirm Flux does not open invisibly and does not
       toggle when you click the app below it; leave fullscreen and confirm the
       notch is still collapsed.
+- [ ] **No Input Monitoring permission**: deny Flux Input Monitoring (or test
+      on a fresh user account), open the notch, then move the pointer into
+      another app. Confirm the lightweight cursor fallback still collapses the
+      notch after the normal close delay.
 
 - [ ] **Overshoot feel on open**: hover (or click, per your trigger setting)
       to open the notch from collapsed and confirm the panel visibly bounces
