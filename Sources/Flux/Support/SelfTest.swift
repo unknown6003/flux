@@ -1066,11 +1066,12 @@ enum SelfTest {
             // to tiles/rows, and a monitor observes a right-click without
             // consuming it — so a shell menu covering the panel body would
             // fight the widget's own menu over one click.
-            check(NotchWindowController.collapsedClickRect(notchRect: notch)
-                    .contains(CGPoint(x: 300, y: 980)),
+            let contextMenu = NotchWindowController.collapsedContextMenuRect(notchRect: notch)
+            check(contextMenu.contains(CGPoint(x: 300, y: 980)),
                   "Notch context menu: the physical notch strip is the target")
-            check(!NotchWindowController.collapsedClickRect(notchRect: notch)
-                    .contains(CGPoint(x: 300, y: 800)),
+            check(!contextMenu.contains(CGPoint(x: 285, y: 980)),
+                  "Notch context menu: the forgiving left-click side band is NOT a right-click target")
+            check(!contextMenu.contains(CGPoint(x: 300, y: 800)),
                   "Notch context menu: the expanded panel's body is NOT a target — widgets own their own context menus there")
 
             // The open shape needs no aim assistance (it's large and visible);

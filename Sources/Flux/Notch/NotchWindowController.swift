@@ -771,6 +771,13 @@ final class NotchWindowController {
                       width: rect.width + clickSlopX * 2, height: rect.height)
     }
 
+    /// Screen-space right-click target for the collapsed notch. Right-clicks
+    /// stay on the physical housing, unlike left-clicks, because the monitor
+    /// cannot consume a right-click that lands on an app's nearby menu item.
+    static func collapsedContextMenuRect(notchRect rect: CGRect) -> CGRect {
+        collapsedHoverPanelRect(notchRect: rect)
+    }
+
     /// Screen-space frame for the collapsed hover trigger. It deliberately
     /// has no slop. The surrounding forgiving hover band stays monitor-only,
     /// so this companion window cannot block an app toolbar beneath it.
@@ -917,7 +924,7 @@ final class NotchWindowController {
     /// `notchSize.height + 6` of top padding (see `NotchRootView.
     /// ExpandedChrome`) — so confining the shell menu to it resolves both.
     private var contextMenuRect: CGRect {
-        Self.collapsedClickRect(notchRect: physicalNotchRect)
+        Self.collapsedContextMenuRect(notchRect: physicalNotchRect)
     }
 
     // MARK: - Monitored input
@@ -1008,9 +1015,9 @@ final class NotchWindowController {
 
     /// Right-click anywhere on the physical notch — in any state — pops up
     /// the app's context menu, matching the chevron's own right-click
-    /// affordance in the menu bar. It uses the safe horizontal click band,
-    /// not the broader hover-only band, so a right-click below the menu bar
-    /// can never summon Flux over another app.
+    /// affordance in the menu bar. It uses the exact physical notch, not
+    /// either forgiving left-click or hover band, so a right-click on a
+    /// nearby app menu item cannot summon Flux over that app.
     ///
     /// Popped on the next runloop turn rather than inline: `NSMenu.popUp`
     /// spins its own modal tracking loop, and starting that from inside an

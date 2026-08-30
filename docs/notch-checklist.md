@@ -426,7 +426,8 @@ lifetime. Both changes exist to make the crash *impossible* rather than
       event it observes, so this relies on the right-click target being
       confined to the menu-bar strip, where nothing else offers a context
       menu. If you *do* see two menus, that means something under the strip
-      claims right-clicks there, and the target needs shrinking further.
+      claims right-clicks there, and the physical-notch target needs checking.
+      The forgiving left-click side band is not a right-click target.
 
 ### M12 review follow-ups (Codex + adversarial pass)
 
