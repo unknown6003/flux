@@ -93,7 +93,18 @@ final class NotchWindowController {
 
     private var panel: NotchPanel?
     private var hostingView: NotchHostingView?
+    /// A tiny, exact-size trigger window used while the main panel is
+    /// collapsed. The main panel must ignore mouse events in that state so
+    /// app toolbars beneath its fixed envelope stay usable, but a separate
+    /// window over only the physical housing gives AppKit a reliable local
+    /// hover target even when a global mouse monitor misses the first move.
+    private var collapsedHoverPanel: NotchHoverPanel?
     private var isEnabled = false
+    /// A screen can report its safe-area data a moment after the app starts
+    /// (especially when Flux launches at login or the lid is opening). A
+    /// short bounded retry keeps that transient nil from leaving the notch
+    /// hidden until the next display-change notification.
+    private var screenResolutionTask: Task<Void, Never>?
     /// Mirrors `SettingsStore.notchShowInFullscreen`; applied to `panel` as
     /// soon as one exists, and re-applied to every panel `makePanel()` builds
     /// (a screen change tears down and rebuilds the panel, which would
@@ -213,7 +224,14 @@ final class NotchWindowController {
         // built-in notched one: a monitor connects/disconnects, or the lid
         // closes/opens over a clamshell setup. Both fire this notification.
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-            .sink { [weak self] _ in self?.resolveScreen() }
+            .sink { [weak self] _ in self?.screenParametersChanged() }
+            .store(in: &cancellables)
+
+        // `didChangeScreenParameters` is not guaranteed after a login-item
+        // launch, so activation is a second cheap chance to attach after the
+        // window server has finished publishing its screen list.
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in self?.scheduleScreenResolutionRetries() }
             .store(in: &cancellables)
 
         // Keeps the panel's `ignoresMouseEvents`/monitor setup in lockstep
@@ -235,6 +253,8 @@ final class NotchWindowController {
     }
 
     deinit {
+        screenResolutionTask?.cancel()
+        collapsedHoverPanel?.orderOut(nil)
         // `NSEvent.removeMonitor` is safe to call from `deinit` — it's a
         // plain class method taking the opaque token, not a call on `self`.
         [globalMoveMonitor, localMoveMonitor, globalRightClickMonitor, localRightClickMonitor,
@@ -251,7 +271,10 @@ final class NotchWindowController {
         isEnabled = enabled
         if enabled {
             resolveScreen()
+            scheduleScreenResolutionRetries()
         } else {
+            screenResolutionTask?.cancel()
+            screenResolutionTask = nil
             // `isPresenting` (and the monitors it gates) go first so the
             // `forceCollapse()` below — which republishes `.collapsed` on
             // `viewModel.$state` — can't turn around and reinstall them on a
@@ -266,9 +289,40 @@ final class NotchWindowController {
             // vanished — `forceCollapse()` guarantees the exactly-once
             // willPresent/didDismiss pairing holds even on the way out.
             viewModel.forceCollapse()
+            collapsedHoverPanel?.orderOut(nil)
             panel?.orderOut(nil)
             panel = nil
             hostingView = nil
+        }
+    }
+
+    /// Re-resolve immediately for a real display change, then keep trying for
+    /// a short bounded window. AppKit sometimes posts the notification before
+    /// the auxiliary notch rectangles have settled, so one synchronous read
+    /// is not enough to make the panel reliable at login or lid-open time.
+    private func screenParametersChanged() {
+        guard isEnabled else { return }
+        resolveScreen()
+        scheduleScreenResolutionRetries()
+    }
+
+    /// Retries screen discovery at increasing, short delays. The task stops
+    /// as soon as a notched built-in screen is presenting, and cancellation
+    /// on disable prevents a late retry from resurrecting a turned-off panel.
+    private func scheduleScreenResolutionRetries() {
+        screenResolutionTask?.cancel()
+        guard isEnabled else { return }
+        let delays: [TimeInterval] = [0.05, 0.20, 0.60, 1.20]
+        screenResolutionTask = Task { @MainActor [weak self] in
+            for delay in delays {
+                guard !Task.isCancelled else { return }
+                if delay > 0 {
+                    try? await Task.sleep(for: .seconds(delay))
+                }
+                guard !Task.isCancelled, let self, self.isEnabled else { return }
+                self.resolveScreen()
+                if self.isPresenting { return }
+            }
         }
     }
 
@@ -330,6 +384,7 @@ final class NotchWindowController {
             physicalNotchRect = .null
             removePointerMonitors()
             removeCollapsedClickMonitors()
+            collapsedHoverPanel?.orderOut(nil)
             panel?.orderOut(nil)
             viewModel.forceCollapse()
             return
@@ -349,6 +404,12 @@ final class NotchWindowController {
         // was lost), so this explicit call is what actually arms the
         // monitors for a freshly-(re)presented panel.
         updatePassThrough(for: viewModel.state)
+        // If Flux starts while the pointer is already over the housing, no
+        // mouse-enter event is guaranteed. Probe once after attaching so the
+        // normal hover delay still starts without requiring a second move.
+        if case .collapsed = viewModel.state {
+            refreshHover()
+        }
     }
 
     private func makePanel() -> NotchPanel {
@@ -363,6 +424,23 @@ final class NotchWindowController {
         hostingView = hosting
         wireDragHandlers(to: panel)
         return panel
+    }
+
+    private func makeCollapsedHoverPanel() -> NotchHoverPanel {
+        let hoverPanel = NotchHoverPanel { [weak self] location in
+            self?.handleMonitoredMove(at: location)
+        }
+        hoverPanel.onDraggingMoved = { [weak self] location in
+            self?.handleDraggingUpdate(atScreen: location) ?? []
+        }
+        hoverPanel.onDraggingExited = { [weak self] in
+            self?.handleDraggingExited()
+        }
+        hoverPanel.onPerformDragOperation = { [weak self] pasteboard in
+            self?.handlePerformDrag(pasteboard) ?? false
+        }
+        collapsedHoverPanel = hoverPanel
+        return hoverPanel
     }
 
     private func makeRootView(notchRect: CGRect, panelFrame: CGRect) -> AnyView {
@@ -411,6 +489,7 @@ final class NotchWindowController {
         guard let panel, isPresenting else {
             removePointerMonitors()
             removeCollapsedClickMonitors()
+            collapsedHoverPanel?.orderOut(nil)
             return
         }
         installPointerMonitors()
@@ -425,9 +504,32 @@ final class NotchWindowController {
         case .activity, .expanded:
             removeCollapsedClickMonitors()
         }
+        syncCollapsedHoverPanel(for: state)
         // A gesture in flight when this flips is cut off without its `ended`
         // — see `NotchPanel.resetGestureState`.
         if wasIgnoring != panel.ignoresMouseEvents { panel.resetGestureState() }
+    }
+
+    /// Shows the exact physical-notch trigger only while the main panel is
+    /// collapsed. Keeping this window to the housing itself is what preserves
+    /// pass-through for app content below the menu bar, while still giving
+    /// AppKit a local mouse target for the collapsed hover path.
+    private func syncCollapsedHoverPanel(for state: NotchState) {
+        guard Self.shouldShowCollapsedHoverPanel(state: state,
+                                                 isPresenting: isPresenting),
+              !physicalNotchRect.isNull else {
+            collapsedHoverPanel?.orderOut(nil)
+            return
+        }
+
+        let hoverPanel = collapsedHoverPanel ?? makeCollapsedHoverPanel()
+        let rect = Self.collapsedHoverPanelRect(notchRect: physicalNotchRect)
+        guard !rect.isNull else {
+            hoverPanel.orderOut(nil)
+            return
+        }
+        hoverPanel.setFrame(rect, display: true)
+        hoverPanel.orderFrontRegardless()
     }
 
     /// No-op if already installed — callers (the `viewModel.$state` sink,
@@ -613,6 +715,23 @@ final class NotchWindowController {
         guard rect.width > 0, rect.height > 0 else { return .null }
         return CGRect(x: rect.minX - hoverSlopX, y: rect.minY,
                       width: rect.width + hoverSlopX * 2, height: rect.height)
+    }
+
+    /// Screen-space frame for the collapsed hover trigger. It deliberately
+    /// has no slop. The surrounding forgiving hover band stays monitor-only,
+    /// so this companion window cannot block an app toolbar beneath it.
+    static func collapsedHoverPanelRect(notchRect rect: CGRect) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return .null }
+        return rect
+    }
+
+    /// The exact states in which the local collapsed hover trigger is visible.
+    /// It must disappear as soon as the real panel opens or loses its screen.
+    static func shouldShowCollapsedHoverPanel(state: NotchState,
+                                               isPresenting: Bool) -> Bool {
+        guard isPresenting else { return false }
+        if case .collapsed = state { return true }
+        return false
     }
 
     /// Panel-space hover target for the open shape. The transition union is
@@ -863,8 +982,17 @@ final class NotchWindowController {
     /// window-space location into that same space and testing containment
     /// (with slop only in the collapsed case) is both correct and avoids a
     /// second, easily-drifting copy of the same geometry.
+    private func handleDraggingUpdate(atScreen screenLocation: NSPoint) -> NSDragOperation {
+        guard let localPoint = notchSpacePoint(screenLocation) else { return [] }
+        return handleDraggingUpdate(localPoint: localPoint)
+    }
+
     private func handleDraggingUpdate(at windowLocation: NSPoint) -> NSDragOperation {
         guard let localPoint = notchSpacePoint(fromWindow: windowLocation) else { return [] }
+        return handleDraggingUpdate(localPoint: localPoint)
+    }
+
+    private func handleDraggingUpdate(localPoint: NSPoint) -> NSDragOperation {
         let shelfEnabled = registry.enabledWidgets.contains { $0.id == .shelf }
 
         let pointInNotch: Bool
