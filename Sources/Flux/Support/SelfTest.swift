@@ -1087,6 +1087,24 @@ enum SelfTest {
                 state: .collapsed, pointInsideVisibleShape: true),
                   "Notch mouse capture: the collapsed panel remains pass-through for its monitor-driven click path")
 
+            // The collapsed hover trigger is a separate, exact-size window
+            // over the physical housing. It must never grow into the fixed
+            // expanded-panel envelope, or it would bring back the original
+            // toolbar click-through bug. It is visible only while the main
+            // notch is presenting its collapsed state.
+            check(NotchWindowController.collapsedHoverPanelRect(notchRect: notch) == notch,
+                  "Notch hover trigger: the fallback tracking panel hugs the physical notch exactly")
+            check(NotchWindowController.collapsedHoverPanelRect(notchRect: .zero).isNull,
+                  "Notch hover trigger: an unavailable notch produces no tracking panel")
+            check(NotchWindowController.shouldShowCollapsedHoverPanel(state: .collapsed,
+                                                                       isPresenting: true),
+                  "Notch hover trigger: the exact tracking panel is shown while the presented notch is collapsed")
+            check(!NotchWindowController.shouldShowCollapsedHoverPanel(state: .activity(UUID()),
+                                                                        isPresenting: true)
+                  && !NotchWindowController.shouldShowCollapsedHoverPanel(state: .collapsed,
+                                                                           isPresenting: false),
+                  "Notch hover trigger: it is hidden for open states and while no notched screen is presenting")
+
             // A zero rect is what these hold with no notched screen attached,
             // or before the root view has ever laid out — it must never
             // swallow the whole screen.

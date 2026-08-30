@@ -35,9 +35,10 @@ import SwiftUI
 /// while `.collapsed`, and in `.activity`/`.expanded` it is `true` outside
 /// the exact shape and `false` inside it. That keeps the fixed panel's clear
 /// margins pass-through while preserving SwiftUI controls in the drawn area.
-/// Collapsed hover/click detection moves to global+local `NSEvent` monitors in
-/// that state (see `NotchWindowController`), since a window that ignores mouse
-/// events also stops seeing them itself.
+/// Collapsed hover/click detection moves to global+local `NSEvent` monitors and
+/// the controller's exact-size hover trigger in that state (see
+/// `NotchWindowController`), since the main window ignores mouse events and
+/// therefore cannot see them itself.
 final class NotchPanel: NSPanel {
     private let viewModel: NotchViewModel
 
@@ -384,6 +385,79 @@ extension NotchPanel: NSDraggingDestination {
 
     func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onPerformDragOperation?(sender.draggingPasteboard) ?? false
+    }
+}
+
+/// A small, transparent window that hugs the physical notch while the main
+/// panel is collapsed. The main panel stays mouse-transparent in that state,
+/// which is what lets app toolbars under its fixed expanded envelope receive
+/// clicks. This exact-size companion gives AppKit a local tracking target over
+/// the one place where a collapsed hover is useful, even when a global mouse
+/// monitor misses the first move after launch.
+final class NotchHoverPanel: NSPanel {
+    init(onMove: @escaping (NSPoint) -> Void) {
+        super.init(contentRect: .zero,
+                   styleMask: [.borderless, .nonactivatingPanel],
+                   backing: .buffered, defer: false)
+        OverlayPanel.applyOverlayStyle(to: self, level: .statusBar, ignoresMouseEvents: false)
+        acceptsMouseMovedEvents = true
+        contentView = NotchHoverTrackingView(onMove: onMove)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("NotchHoverPanel does not support NSCoding")
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    /// Matches the main notch panel's fullscreen preference. The trigger is
+    /// hidden with the main panel when fullscreen overlays are disabled.
+    func setShowInFullscreen(_ show: Bool) {
+        if show {
+            collectionBehavior.insert(.fullScreenAuxiliary)
+        } else {
+            collectionBehavior.remove(.fullScreenAuxiliary)
+        }
+    }
+}
+
+private final class NotchHoverTrackingView: NSView {
+    private let onMove: (NSPoint) -> Void
+    private var trackingArea: NSTrackingArea?
+
+    init(onMove: @escaping (NSPoint) -> Void) {
+        self.onMove = onMove
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("NotchHoverTrackingView does not support NSCoding")
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onMove(NSEvent.mouseLocation)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onMove(NSEvent.mouseLocation)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onMove(NSEvent.mouseLocation)
     }
 }
 

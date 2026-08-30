@@ -120,6 +120,12 @@ look at collapsed/activity/expanded-nowPlaying, but a still PNG can't show
 motion, real-Mac shadow rendering, or per-widget height differences across
 every widget — the items below need a real notched Mac.
 
+- [ ] **Collapsed hover after launch and display changes**: start Flux with
+      the pointer already over the physical notch, then open and close the
+      lid or connect/disconnect an external display. Confirm the notch appears
+      without moving the pointer, opens after the normal hover delay, and
+      keeps the app toolbar below the expanded panel clickable while collapsed.
+
 - [ ] **Overshoot feel on open**: hover (or click, per your trigger setting)
       to open the notch from collapsed and confirm the panel visibly bounces
       slightly past its final size before settling — the Alcove-style
