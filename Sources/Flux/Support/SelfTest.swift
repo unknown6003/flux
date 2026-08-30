@@ -1122,6 +1122,11 @@ enum SelfTest {
                   && !NotchWindowController.shouldShowCollapsedHoverPanel(state: .collapsed,
                                                                            isPresenting: false),
                   "Notch hover trigger: it is hidden for open states and while no notched screen is presenting")
+            check(NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: true),
+                  "Notch hover poll: the fallback runs while the presented notch is collapsed")
+            check(!NotchWindowController.shouldPollHover(state: .activity(UUID()), isPresenting: true)
+                  && !NotchWindowController.shouldPollHover(state: .collapsed, isPresenting: false),
+                  "Notch hover poll: the fallback stops for open states and absent screens")
 
             // A zero rect is what these hold with no notched screen attached,
             // or before the root view has ever laid out — it must never

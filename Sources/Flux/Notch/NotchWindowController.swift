@@ -517,9 +517,23 @@ final class NotchWindowController {
             removeCollapsedClickMonitors()
         }
         syncCollapsedHoverPanel(for: state)
+        syncHoverPollTimer(for: state)
         // A gesture in flight when this flips is cut off without its `ended`
         // — see `NotchPanel.resetGestureState`.
         if wasIgnoring != panel.ignoresMouseEvents { panel.resetGestureState() }
+
+        // The state publisher delivers during `willSet`, so `viewModel.state`
+        // still names the previous shape on this stack frame. Re-sample once
+        // on the next turn after an open-state change; this closes a panel if
+        // the cursor is already outside its new visible shape even when no
+        // mouse-move event was delivered for the transition.
+        if case .collapsed = state {
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self, self.isPresenting else { return }
+            self.handleMonitoredMove(at: NSEvent.mouseLocation)
+        }
     }
 
     /// Shows the exact physical-notch trigger only while the main panel is
@@ -582,7 +596,7 @@ final class NotchWindowController {
             self?.handleMonitoredRightClick(at: NSEvent.mouseLocation)
             return event
         }
-        installHoverPollTimer()
+        syncHoverPollTimer(for: viewModel.state)
     }
 
     /// AppKit's global monitor is best-effort. A timer is the reliable
@@ -600,6 +614,20 @@ final class NotchWindowController {
         timer.tolerance = 0.05
         RunLoop.main.add(timer, forMode: .common)
         hoverPollTimer = timer
+    }
+
+    /// Polling is only needed while the notch is collapsed: that is the state
+    /// in which the real panel is intentionally mouse-transparent and hover
+    /// has no local view to fall back to. Once a widget is open, the panel and
+    /// its always-on monitors own the visible shape, so keeping a timer alive
+    /// would add wakeups without improving the path.
+    private func syncHoverPollTimer(for state: NotchState) {
+        guard Self.shouldPollHover(state: state, isPresenting: isPresenting) else {
+            hoverPollTimer?.invalidate()
+            hoverPollTimer = nil
+            return
+        }
+        installHoverPollTimer()
     }
 
     private func removePointerMonitors() {
@@ -768,6 +796,15 @@ final class NotchWindowController {
         return false
     }
 
+    /// The cursor poll is needed only for the collapsed, pass-through state.
+    /// Keeping this predicate pure makes the energy-saving lifecycle rule
+    /// visible to the headless self-test instead of hiding it in Timer code.
+    static func shouldPollHover(state: NotchState, isPresenting: Bool) -> Bool {
+        guard isPresenting else { return false }
+        if case .collapsed = state { return true }
+        return false
+    }
+
     /// Panel-space hover target for the open shape. The transition union is
     /// wanted here (unlike the collapsed case above): while the shape is
     /// mid-morph the union is a superset of what's actually drawn, which is
@@ -875,8 +912,16 @@ final class NotchWindowController {
 
     // MARK: - Monitored input
 
+    /// Collection behavior can hide both overlay windows in a fullscreen
+    /// Space when the user has disabled fullscreen visibility. Monitors still
+    /// run globally, so gate their actions on a window that is actually on
+    /// screen; otherwise a stationary cursor could expand an invisible notch.
+    private var isOverlayVisible: Bool {
+        panel?.isVisible == true || collapsedHoverPanel?.isVisible == true
+    }
+
     private func handleMonitoredMove(at location: NSPoint) {
-        guard isPresenting, !isShowingMenu else { return }
+        guard isPresenting, isOverlayVisible, !isShowingMenu else { return }
         updateMouseCapture(at: location)
         let inside = isHovering(screenPoint: location)
         // Forward every sampled result. A controller-side cache can be stale
@@ -893,7 +938,7 @@ final class NotchWindowController {
     /// meaningless — and a normal debounced report could swallow the one
     /// that matters (cursor now outside), leaving the panel pinned open.
     private func refreshHover() {
-        guard isPresenting else { return }
+        guard isPresenting, isOverlayVisible else { return }
         let location = NSEvent.mouseLocation
         updateMouseCapture(at: location)
         let inside = isHovering(screenPoint: location)
@@ -915,7 +960,7 @@ final class NotchWindowController {
     /// handling for the activity/expanded states (where the panel itself
     /// receives the click instead of these monitors).
     private func handleMonitoredClick(at location: NSPoint, optionDown: Bool) {
-        guard isPresenting, !isShowingMenu,
+        guard isPresenting, isOverlayVisible, !isShowingMenu,
               case .collapsed = viewModel.state,
               Self.collapsedClickRect(notchRect: physicalNotchRect).contains(location) else { return }
         // When the exact companion is visible it receives the event itself
@@ -936,7 +981,7 @@ final class NotchWindowController {
     /// forgiving horizontal side band outside this window.
     private func handleCollapsedHoverPanelClick(at location: NSPoint,
                                                 optionDown: Bool) {
-        guard isPresenting, !isShowingMenu,
+        guard isPresenting, isOverlayVisible, !isShowingMenu,
               case .collapsed = viewModel.state,
               Self.collapsedHoverPanelOwnsClick(
                   notchRect: physicalNotchRect,
@@ -961,7 +1006,7 @@ final class NotchWindowController {
     /// `isShowingMenu` suppresses hover for the menu's lifetime — see that
     /// property's doc comment.
     private func handleMonitoredRightClick(at location: NSPoint) {
-        guard isPresenting, !isShowingMenu,
+        guard isPresenting, isOverlayVisible, !isShowingMenu,
               contextMenuRect.contains(location),
               let menu = menuProvider?() else { return }
 

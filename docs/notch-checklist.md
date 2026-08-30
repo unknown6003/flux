@@ -133,6 +133,11 @@ every widget — the items below need a real notched Mac.
       housing once and confirm it opens exactly once; click the nearby side
       band and confirm it also opens, while a click farther below still goes
       to the app underneath.
+- [ ] **Fullscreen visibility off stays inert**: turn off "Show while in
+      fullscreen apps", enter a fullscreen app, and park the pointer over the
+      hidden notch position. Confirm Flux does not open invisibly and does not
+      toggle when you click the app below it; leave fullscreen and confirm the
+      notch is still collapsed.
 
 - [ ] **Overshoot feel on open**: hover (or click, per your trigger setting)
       to open the notch from collapsed and confirm the panel visibly bounces
