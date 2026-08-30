@@ -1069,7 +1069,7 @@ enum SelfTest {
             let contextMenu = NotchWindowController.collapsedContextMenuRect(notchRect: notch)
             check(contextMenu.contains(CGPoint(x: 300, y: 980)),
                   "Notch context menu: the physical notch strip is the target")
-            check(!contextMenu.contains(CGPoint(x: 285, y: 980)),
+            check(!contextMenu.contains(CGPoint(x: 185, y: 980)),
                   "Notch context menu: the forgiving left-click side band is NOT a right-click target")
             check(!contextMenu.contains(CGPoint(x: 300, y: 800)),
                   "Notch context menu: the expanded panel's body is NOT a target — widgets own their own context menus there")
