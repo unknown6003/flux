@@ -160,17 +160,20 @@ final class NotchWindowController {
     private var localMoveMonitor: Any?
     private var globalRightClickMonitor: Any?
     private var localRightClickMonitor: Any?
+    /// A low-rate cursor poll backs up AppKit's global/local mouse monitors.
+    /// Those monitors can be absent (for example when macOS has not granted
+    /// Input Monitoring yet), and neither monitor is guaranteed to report a
+    /// stationary cursor when a panel is shown underneath it. Polling the
+    /// cursor position keeps hover deterministic without putting another
+    /// mouse-active window over an app's toolbar.
+    private var hoverPollTimer: Timer?
     /// Left-click monitors, unlike the two pairs above, stay COLLAPSED-ONLY:
     /// in every other state the panel itself receives the click and
-    /// `NotchRootView`'s own `onTapGesture` handles it, so keeping these
-    /// installed would toggle the notch twice per click.
+    /// `NotchRootView`'s own `onTapGesture` handles it. While collapsed, the
+    /// monitor covers the forgiving side band and a hidden exact trigger;
+    /// `NotchHoverPanel` owns the exact physical-notch click.
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
-    /// Debounces the monitors' (frequent) `mouseMoved` reports the same way
-    /// `NotchHostingView.updateHover` debounces its own tracking-area
-    /// redeliveries — only an actual inside/outside transition should reach
-    /// `viewModel.hoverChanged`.
-    private var lastMonitoredInside = false
     /// See `installPointerMonitors()` — idempotence can't be keyed on a
     /// monitor token, since `addGlobalMonitorForEvents` may return nil.
     private var pointerMonitorsInstalled = false
@@ -198,14 +201,23 @@ final class NotchWindowController {
     /// slop makes the target match where people actually aim. It costs
     /// nothing in pass-through terms: these monitors are passive observers
     /// that never consume the events they see.
-    private static let hoverSlopX: CGFloat = 8
+    private static let hoverSlopX: CGFloat = 24
+
+    /// Clicks use a smaller horizontal band than hover. It is still twice as
+    /// forgiving as the old target, while keeping the active region inside
+    /// the menu-bar strip and away from unrelated app controls.
+    private static let clickSlopX: CGFloat = 16
 
     /// Vertical slop, applied DOWNWARD only (the notch is flush with the top
-    /// of the screen, so there is no "above" to extend into). Deliberately
-    /// smaller than `hoverSlopX` — this is the direction that reaches into
-    /// another app's window, so it stays inside the menu-bar strip's own
-    /// visual neighbourhood.
-    private static let hoverSlopBelow: CGFloat = 8
+    /// of the screen, so there is no "above" to extend into). This direction
+    /// reaches into another app's window, so it stays inside the menu-bar
+    /// strip's own visual neighbourhood while covering the common aim error
+    /// below an invisible camera housing.
+    private static let hoverSlopBelow: CGFloat = 20
+
+    /// The polling fallback runs often enough to feel immediate but keeps the
+    /// main run loop and battery cost tiny compared with a display refresh.
+    private static let hoverPollInterval: TimeInterval = 1.0 / 30.0
 
     /// Slop for the already-open shape. Small: the open panel is a large,
     /// visible target that needs no help being hit — this only keeps a
@@ -254,6 +266,7 @@ final class NotchWindowController {
 
     deinit {
         screenResolutionTask?.cancel()
+        hoverPollTimer?.invalidate()
         // `NSEvent.removeMonitor` is safe to call from `deinit` — it's a
         // plain class method taking the opaque token, not a call on `self`.
         [globalMoveMonitor, localMoveMonitor, globalRightClickMonitor, localRightClickMonitor,
@@ -428,9 +441,14 @@ final class NotchWindowController {
     }
 
     private func makeCollapsedHoverPanel() -> NotchHoverPanel {
-        let hoverPanel = NotchHoverPanel { [weak self] location in
-            self?.handleMonitoredMove(at: location)
-        }
+        let hoverPanel = NotchHoverPanel(
+            onMove: { [weak self] location in
+                self?.handleMonitoredMove(at: location)
+            },
+            onClick: { [weak self] location, modifierFlags in
+                self?.handleCollapsedHoverPanelClick(at: location,
+                                                     optionDown: modifierFlags.contains(.option))
+            })
         hoverPanel.setShowInFullscreen(showInFullscreen)
         collapsedHoverPanel = hoverPanel
         return hoverPanel
@@ -538,7 +556,6 @@ final class NotchWindowController {
     private func installPointerMonitors() {
         guard !pointerMonitorsInstalled else { return }
         pointerMonitorsInstalled = true
-        lastMonitoredInside = false
 
         globalMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             // Captured synchronously — matching `MenuBarManager`'s own
@@ -564,11 +581,31 @@ final class NotchWindowController {
             self?.handleMonitoredRightClick(at: NSEvent.mouseLocation)
             return event
         }
+        installHoverPollTimer()
+    }
+
+    /// AppKit's global monitor is best-effort. A timer is the reliable
+    /// fallback for the two cases it cannot cover: a monitor token being nil
+    /// because Input Monitoring is unavailable, and a cursor that was already
+    /// stationary when the collapsed trigger appeared. This timer observes
+    /// only the cursor position; it never owns a window or consumes an event,
+    /// so app controls below the notch remain untouched.
+    private func installHoverPollTimer() {
+        guard hoverPollTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.hoverPollInterval, repeats: true) { [weak self] _ in
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in self?.handleMonitoredMove(at: location) }
+        }
+        timer.tolerance = 0.02
+        RunLoop.main.add(timer, forMode: .common)
+        hoverPollTimer = timer
     }
 
     private func removePointerMonitors() {
         // Deferred for the same reason as `removeCollapsedClickMonitors()` —
         // these local monitors also call their handlers synchronously.
+        hoverPollTimer?.invalidate()
+        hoverPollTimer = nil
         let monitors = [globalMoveMonitor, localMoveMonitor,
                         globalRightClickMonitor, localRightClickMonitor].compactMap { $0 }
         if !monitors.isEmpty {
@@ -580,20 +617,11 @@ final class NotchWindowController {
         localRightClickMonitor = nil
         pointerMonitorsInstalled = false
 
-        // Resetting `lastMonitoredInside` alone leaves the two sides
-        // disagreeing: this controller would come back believing the cursor
-        // is outside while `NotchViewModel.isHovering` still says it's in.
-        // `hoverChanged`'s own change-debounce would then swallow the first
-        // genuine hover-in after the notch returned (a screen reattach, or
-        // the feature being switched back on), so hovering would appear dead
-        // until the cursor left and came back. `forceCollapse()` doesn't
-        // cover this — it only moves `state`, never `isHovering`.
         // `resetHoverState`, NOT `resyncHover`: this is teardown, so the
-        // cache has to be forgotten without reporting a hover-out — see that
-        // method's doc comment. Reporting one schedules a close task that
-        // outlives the panel by 0.4s and can land the state machine on
-        // `.activity` with nothing to show it in.
-        lastMonitoredInside = false
+        // view model's hover intent has to be forgotten without reporting a
+        // hover-out — see that method's doc comment. Reporting one schedules
+        // a close task that outlives the panel by 0.4s and can land the state
+        // machine on `.activity` with nothing to show it in.
         viewModel.resetHoverState()
     }
 
@@ -706,8 +734,8 @@ final class NotchWindowController {
     /// notch for it would be a genuine misfire rather than a helpful assist.
     static func collapsedClickRect(notchRect rect: CGRect) -> CGRect {
         guard rect.width > 0, rect.height > 0 else { return .null }
-        return CGRect(x: rect.minX - hoverSlopX, y: rect.minY,
-                      width: rect.width + hoverSlopX * 2, height: rect.height)
+        return CGRect(x: rect.minX - clickSlopX, y: rect.minY,
+                      width: rect.width + clickSlopX * 2, height: rect.height)
     }
 
     /// Screen-space frame for the collapsed hover trigger. It deliberately
@@ -716,6 +744,18 @@ final class NotchWindowController {
     static func collapsedHoverPanelRect(notchRect rect: CGRect) -> CGRect {
         guard rect.width > 0, rect.height > 0 else { return .null }
         return rect
+    }
+
+    /// Whether the exact companion window is the owner of a collapsed click
+    /// at `point`. The local click monitor still observes events delivered to
+    /// that window, so it must stand down there or the direct view callback
+    /// would toggle the state twice. Side-band clicks stay monitor-owned, and
+    /// a hidden companion falls back to the monitor path entirely.
+    static func collapsedHoverPanelOwnsClick(notchRect rect: CGRect,
+                                             point: CGPoint,
+                                             isVisible: Bool) -> Bool {
+        guard isVisible else { return false }
+        return collapsedHoverPanelRect(notchRect: rect).contains(point)
     }
 
     /// The exact states in which the local collapsed hover trigger is visible.
@@ -838,25 +878,24 @@ final class NotchWindowController {
         guard isPresenting, !isShowingMenu else { return }
         updateMouseCapture(at: location)
         let inside = isHovering(screenPoint: location)
-        guard inside != lastMonitoredInside else { return }
-        lastMonitoredInside = inside
+        // Forward every sampled result. A controller-side cache can be stale
+        // after a monitor is reinstalled or a tracking window is ordered out
+        // while the cursor stays still. The view model owns the authoritative
+        // change-debounce, so it can recover immediately instead of waiting
+        // for the next edge.
         viewModel.hoverChanged(inside: inside)
     }
 
     /// Re-derives hover from wherever the cursor actually is right now,
-    /// bypassing the `lastMonitoredInside` change-debounce. Used after the
-    /// context menu closes: every move made while it was tracking was
-    /// suppressed, so the cached value is meaningless — and the debounce
-    /// would otherwise swallow the one report that matters (cursor now
-    /// outside, cached value already `false`), leaving `NotchViewModel`
-    /// believing a hover that ended is still in progress and the panel
-    /// pinned open indefinitely.
+    /// Used after the context menu closes: every move made while it was
+    /// tracking was suppressed, so the view model's cached value is
+    /// meaningless — and a normal debounced report could swallow the one
+    /// that matters (cursor now outside), leaving the panel pinned open.
     private func refreshHover() {
         guard isPresenting else { return }
         let location = NSEvent.mouseLocation
         updateMouseCapture(at: location)
         let inside = isHovering(screenPoint: location)
-        lastMonitoredInside = inside
         // `resyncHover`, not `hoverChanged`: the view model's own
         // `isHovering` cache is stale by construction here — see that
         // method's doc comment.
@@ -876,15 +915,43 @@ final class NotchWindowController {
     /// receives the click instead of these monitors).
     private func handleMonitoredClick(at location: NSPoint, optionDown: Bool) {
         guard isPresenting, !isShowingMenu,
+              case .collapsed = viewModel.state,
               Self.collapsedClickRect(notchRect: physicalNotchRect).contains(location) else { return }
+        // When the exact companion is visible it receives the event itself
+        // and invokes the direct path below. The local monitor still sees the
+        // same event, so leave it alone to avoid a double toggle. If the
+        // companion is hidden, this monitor remains the fallback owner.
+        guard !Self.collapsedHoverPanelOwnsClick(
+            notchRect: physicalNotchRect,
+            point: location,
+            isVisible: collapsedHoverPanel?.isVisible == true) else { return }
         viewModel.clicked(optionDown: optionDown)
     }
 
-    /// Right-click anywhere on the notch — in any state — pops up the app's
-    /// context menu, matching the chevron's own right-click affordance in the
-    /// menu bar. Uses the same hover geometry as everything else, so the
-    /// collapsed notch is as forgiving a right-click target as it is a hover
-    /// target.
+    /// Direct click path for the exact collapsed trigger window. AppKit can
+    /// deliver this local `mouseDown` even when Flux is not the active app;
+    /// handling it at the view boundary removes the timing gap where a local
+    /// monitor could miss the event. The monitor path still covers the
+    /// forgiving horizontal side band outside this window.
+    private func handleCollapsedHoverPanelClick(at location: NSPoint,
+                                                optionDown: Bool) {
+        guard isPresenting, !isShowingMenu,
+              case .collapsed = viewModel.state,
+              Self.collapsedHoverPanelOwnsClick(
+                  notchRect: physicalNotchRect,
+                  point: location,
+                  // This callback can only come from the visible trigger
+                  // view itself; do not depend on AppKit's `isVisible` bit,
+                  // which can lag by one event during an order-front.
+                  isVisible: true) else { return }
+        viewModel.clicked(optionDown: optionDown)
+    }
+
+    /// Right-click anywhere on the physical notch — in any state — pops up
+    /// the app's context menu, matching the chevron's own right-click
+    /// affordance in the menu bar. It uses the safe horizontal click band,
+    /// not the broader hover-only band, so a right-click below the menu bar
+    /// can never summon Flux over another app.
     ///
     /// Popped on the next runloop turn rather than inline: `NSMenu.popUp`
     /// spins its own modal tracking loop, and starting that from inside an

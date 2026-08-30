@@ -126,6 +126,14 @@ every widget — the items below need a real notched Mac.
       without moving the pointer, opens after the normal hover delay, and
       keeps the app toolbar below the expanded panel clickable while collapsed.
 
+- [ ] **Forgiving hover and click trigger**: with the notch collapsed, rest the
+      pointer slightly to either side of the camera housing or up to about
+      20pt below it. Confirm it opens without a click, including when the
+      pointer was already there before Flux appeared. Then click the physical
+      housing once and confirm it opens exactly once; click the nearby side
+      band and confirm it also opens, while a click farther below still goes
+      to the app underneath.
+
 - [ ] **Overshoot feel on open**: hover (or click, per your trigger setting)
       to open the notch from collapsed and confirm the panel visibly bounces
       slightly past its final size before settling — the Alcove-style

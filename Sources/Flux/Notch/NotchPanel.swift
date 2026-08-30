@@ -393,15 +393,18 @@ extension NotchPanel: NSDraggingDestination {
 /// which is what lets app toolbars under its fixed expanded envelope receive
 /// clicks. This exact-size companion gives AppKit a local tracking target over
 /// the one place where a collapsed hover is useful, even when a global mouse
-/// monitor misses the first move after launch.
+/// monitor misses the first move after launch. It also owns the exact
+/// physical-notch click, while the controller's monitor covers only the
+/// forgiving side band.
 final class NotchHoverPanel: NSPanel {
-    init(onMove: @escaping (NSPoint) -> Void) {
+    init(onMove: @escaping (NSPoint) -> Void,
+         onClick: @escaping (NSPoint, NSEvent.ModifierFlags) -> Void) {
         super.init(contentRect: .zero,
                    styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         OverlayPanel.applyOverlayStyle(to: self, level: .statusBar, ignoresMouseEvents: false)
         acceptsMouseMovedEvents = true
-        contentView = NotchHoverTrackingView(onMove: onMove)
+        contentView = NotchHoverTrackingView(onMove: onMove, onClick: onClick)
     }
 
     @available(*, unavailable)
@@ -425,10 +428,13 @@ final class NotchHoverPanel: NSPanel {
 
 private final class NotchHoverTrackingView: NSView {
     private let onMove: (NSPoint) -> Void
+    private let onClick: (NSPoint, NSEvent.ModifierFlags) -> Void
     private var trackingArea: NSTrackingArea?
 
-    init(onMove: @escaping (NSPoint) -> Void) {
+    init(onMove: @escaping (NSPoint) -> Void,
+         onClick: @escaping (NSPoint, NSEvent.ModifierFlags) -> Void) {
         self.onMove = onMove
+        self.onClick = onClick
         super.init(frame: .zero)
     }
 
@@ -436,6 +442,11 @@ private final class NotchHoverTrackingView: NSView {
     required init?(coder: NSCoder) {
         fatalError("NotchHoverTrackingView does not support NSCoding")
     }
+
+    /// The trigger is a non-activating panel, so AppKit may otherwise discard
+    /// the first click when another app owns key focus. Accept it explicitly;
+    /// the physical housing has no underlying control that should receive it.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -454,6 +465,13 @@ private final class NotchHoverTrackingView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         onMove(NSEvent.mouseLocation)
+    }
+
+    /// Handle the exact physical-notch click at the window boundary. The
+    /// controller suppresses its local monitor for this same rectangle so
+    /// one click produces one toggle.
+    override func mouseDown(with event: NSEvent) {
+        onClick(NSEvent.mouseLocation, event.modifierFlags)
     }
 
     override func mouseExited(with event: NSEvent) {

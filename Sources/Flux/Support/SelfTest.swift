@@ -1021,12 +1021,12 @@ enum SelfTest {
             let hover = NotchWindowController.collapsedHoverRect(notchRect: notch)
             check(hover.contains(CGPoint(x: 300, y: 980)),
                   "Notch hover: a point dead centre on the collapsed notch is inside")
-            check(hover.contains(CGPoint(x: 196, y: 980)),
-                  "Notch hover: a point just LEFT of the physical notch still counts (aim slop)")
-            check(hover.contains(CGPoint(x: 404, y: 980)),
-                  "Notch hover: a point just RIGHT of the physical notch still counts (aim slop)")
-            check(hover.contains(CGPoint(x: 300, y: 958)),
-                  "Notch hover: a point just BELOW the physical notch still counts — the direction users undershoot into")
+            check(hover.contains(CGPoint(x: 177, y: 980)),
+                  "Notch hover: a point 23pt LEFT of the physical notch still counts (forgiving aim slop)")
+            check(hover.contains(CGPoint(x: 423, y: 980)),
+                  "Notch hover: a point 23pt RIGHT of the physical notch still counts (forgiving aim slop)")
+            check(hover.contains(CGPoint(x: 300, y: 944)),
+                  "Notch hover: a point 19pt BELOW the physical notch still counts — the direction users undershoot into")
             check(hover.maxY == notch.maxY,
                   "Notch hover: never extends ABOVE the notch — it's flush with the top of the screen, there is nothing up there")
             check(!hover.contains(CGPoint(x: 300, y: 900)),
@@ -1035,12 +1035,30 @@ enum SelfTest {
                   "Notch hover: the slop is small — a point well into the menu bar beside the notch is still outside")
 
             let click = NotchWindowController.collapsedClickRect(notchRect: notch)
-            check(click.contains(CGPoint(x: 196, y: 980)),
-                  "Notch click: gets the same horizontal aim slop as hover")
+            check(click.contains(CGPoint(x: 185, y: 980)),
+                  "Notch click: a point 15pt LEFT of the physical notch still counts (reliable aim slop)")
+            check(click.contains(CGPoint(x: 415, y: 980)),
+                  "Notch click: a point 15pt RIGHT of the physical notch still counts (reliable aim slop)")
             check(!click.contains(CGPoint(x: 300, y: 958)),
                   "Notch click: does NOT extend below the notch — a click there belongs to the window underneath")
             check(click.height == notch.height && click.minY == notch.minY,
                   "Notch click: vertically it is exactly the notch, so a collapse-transition rect can never widen it")
+
+            // The exact companion window owns clicks over the physical
+            // housing. The local monitor still sees those events, so it must
+            // stand down or the direct view callback would toggle twice. A
+            // monitor remains responsible for the forgiving side band and
+            // for the case where the companion is hidden (for example, a
+            // fullscreen preference that keeps the notch out of that Space).
+            check(NotchWindowController.collapsedHoverPanelOwnsClick(
+                notchRect: notch, point: CGPoint(x: 300, y: 980), isVisible: true),
+                  "Notch click: the visible exact trigger owns its physical-notch click")
+            check(!NotchWindowController.collapsedHoverPanelOwnsClick(
+                notchRect: notch, point: CGPoint(x: 300, y: 980), isVisible: false),
+                  "Notch click: a hidden exact trigger leaves the physical-notch click to the monitor")
+            check(!NotchWindowController.collapsedHoverPanelOwnsClick(
+                notchRect: notch, point: CGPoint(x: 185, y: 980), isVisible: true),
+                  "Notch click: the visible exact trigger does not claim its forgiving side band")
 
             // Codex PR13 finding: the right-click target is the physical
             // notch in EVERY state, never the open shape. The expanded Shelf
