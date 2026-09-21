@@ -576,7 +576,14 @@ final class NotchViewModel: ObservableObject {
         case .collapsed:
             if let activity { transition(to: .activity(activity.id)) }
         case .activity:
-            transition(to: activity.map { .activity($0.id) } ?? .collapsed)
+            let nextState: NotchState = activity.map { .activity($0.id) } ?? .collapsed
+            if nextState == state {
+                // Keep the activity id stable so the wing does not tear down
+                // between battery ticks, but still redraw content-only changes.
+                objectWillChange.send()
+            } else {
+                transition(to: nextState)
+            }
         case .expanded:
             break
         }
