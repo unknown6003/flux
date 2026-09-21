@@ -554,12 +554,22 @@ enum SelfTest {
         check(notchVM.state == .collapsed, "Notch: collapse() returns to collapsed with no activity queued")
         let liveActivity = LiveActivity(kind: .battery, leading: .icon(systemName: "battery.100"),
                                         trailing: .none, duration: nil, priority: 200)
+        var activityViewUpdates = 0
+        let activityViewUpdateCancellable = notchVM.objectWillChange.sink { activityViewUpdates += 1 }
         activities.post(liveActivity)
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         check(notchVM.state == .activity(liveActivity.id), "Notch: a live activity preempts the collapsed state")
+        let redrawsBeforeContentUpdate = activityViewUpdates
+        activities.post(LiveActivity(id: liveActivity.id, kind: .battery,
+                                     leading: .icon(systemName: "battery.100"),
+                                     trailing: .text("19%"), duration: nil, priority: 200))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        check(activityViewUpdates > redrawsBeforeContentUpdate,
+              "Notch: a same-ID activity content change publishes a redraw")
         activities.dismiss(id: liveActivity.id)
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         check(notchVM.state == .collapsed, "Notch: dismissing the only activity returns to collapsed")
+        activityViewUpdateCancellable.cancel()
 
         // An activity never disturbs an already-expanded widget.
         notchVM.expand(.shelf)
