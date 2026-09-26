@@ -32,12 +32,28 @@ final class MenuBarIconManager: ObservableObject {
 
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
+    private let trustProvider: () -> Bool
+    private var cancellables = Set<AnyCancellable>()
+
+    init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+        self.trustProvider = trustProvider
+        observeAppActivation()
+    }
+
+    private func observeAppActivation() {
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.refresh()
+            }
+            .store(in: &cancellables)
+    }
 
     /// Opens the system pane without asking macOS to show a TCC prompt.
     /// Repeated prompts are especially bad here because a stale TCC entry can
     /// make the same request appear on every Settings visit.
     func requestAccess() {
-        guard !AXIsProcessTrusted() else {
+        guard !trustProvider() else {
             refresh()
             return
         }
@@ -59,7 +75,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func refresh() {
-        isTrusted = AXIsProcessTrusted()
+        isTrusted = trustProvider()
         guard isTrusted else {
             icons = []
             elements.removeAll()
