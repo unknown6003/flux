@@ -122,8 +122,8 @@ final class SettingsStore: ObservableObject {
     /// preference. Settings surfaces it so a dead hotkey doesn't fail silently.
     @Published var hotkeyConflict = false
 
-    /// Poll GitHub Releases for a newer Flux on launch and periodically. Purely a
-    /// version check over HTTPS — nothing downloads or installs without a click.
+    /// Poll GitHub Releases for a newer Flux on launch and periodically, then
+    /// download and install a matching DMG in the background when enabled.
     @Published var automaticUpdateChecks: Bool {
         didSet { defaults.set(automaticUpdateChecks, forKey: Keys.automaticUpdateChecks) }
     }

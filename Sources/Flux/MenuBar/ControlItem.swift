@@ -5,15 +5,31 @@ import AppKit
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
 /// - `.divider`  — an invisible expandable spacer. When *collapsed* its width
 ///                 balloons, shoving every item to its left off the visible bar.
+/// - `.spacer`   — macOS 27's bounded width units. They keep the combined
+///                 collapsed span large without tripping the system's cliff.
 ///
 /// This is the whole trick: we never touch other apps' status items, we just
 /// consume horizontal space next to them. No private APIs, no screen capture,
 /// no Accessibility permission — which is exactly why it's stable and cheap.
 @MainActor
 final class ControlItem {
-    enum Role {
+    enum Role: Equatable {
         case chevron
         case divider
+        case spacer
+    }
+
+    /// macOS 27 replaced the per-item bar layout with a single system-managed
+    /// overflow layout. Fresh autosave names are required there because the old
+    /// per-app position keys are no longer consulted.
+    static var usesMacOS27Model: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+    }
+
+    static let macOS27SpacerCount = MenuBarCollapseGeometry.spacerCount
+
+    private static var autosaveSuffix: String {
+        usesMacOS27Model ? ".v27" : ""
     }
 
     /// Width a collapsed divider expands to. Larger than any conceivable menu
@@ -192,10 +208,11 @@ final class ControlItem {
 
     init(role: Role, autosaveName: String) {
         self.role = role
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let item = NSStatusBar.system.statusItem(
+            withLength: role == .spacer ? 0 : NSStatusItem.variableLength)
         // Persist the user's Cmd-drag position across launches so the zones stay
         // where they put them.
-        item.autosaveName = autosaveName
+        item.autosaveName = autosaveName + Self.autosaveSuffix
         // Control items must NOT be removable. The dividers are invisible, so a
         // stray Cmd-drag-off would silently delete one and permanently break
         // hide/reveal with no way for the user to find or restore it. An empty
@@ -203,8 +220,12 @@ final class ControlItem {
         // delete them.
         item.behavior = []
         // Self-heal: force visible in case an older build (which allowed removal)
-        // persisted isVisible=false under this autosaveName.
-        item.isVisible = true
+        // persisted isVisible=false under this autosaveName. macOS 27 spacers are
+        // intentionally hidden until a collapsed span needs them.
+        item.isVisible = role != .spacer
+        if role == .spacer {
+            item.button?.setAccessibilityElement(false)
+        }
         self.statusItem = item
 
         configureButton()
@@ -224,6 +245,9 @@ final class ControlItem {
             // Invisible: no image, empty title. It only exists to take up space.
             button.image = nil
             button.title = ""
+        case .spacer:
+            button.image = nil
+            button.title = ""
         }
     }
 
@@ -237,9 +261,36 @@ final class ControlItem {
     /// not possibly do anything.)
     func setCollapsed(_ collapsed: Bool) {
         guard role == .divider else { return }
-        let target = collapsed ? ControlItem.collapsedWidth : ControlItem.revealedWidth
+        let target: CGFloat
+        if collapsed, Self.usesMacOS27Model {
+            let displays = NSScreen.screens.map {
+                MenuBarCollapseGeometry.Display(
+                    width: $0.frame.width,
+                    statusWidth: $0.auxiliaryTopRightArea?.width)
+            }
+            target = MenuBarCollapseGeometry.unitLength(displays: displays)
+        } else {
+            target = collapsed ? ControlItem.collapsedWidth : ControlItem.revealedWidth
+        }
         guard abs(statusItem.length - target) > 0.5 else { return }
         statusItem.length = target
+    }
+
+    /// Activates one of macOS 27's bounded span units. Hidden spacers keep their
+    /// registration slot but contribute no width while the bar is revealed.
+    func setSpacer(active: Bool, length: CGFloat) {
+        guard role == .spacer else { return }
+        if active {
+            statusItem.length = length
+            statusItem.isVisible = true
+        } else {
+            statusItem.isVisible = false
+            statusItem.length = 0
+        }
+    }
+
+    func setVisible(_ visible: Bool) {
+        statusItem.isVisible = visible
     }
 
     // MARK: Chevron state

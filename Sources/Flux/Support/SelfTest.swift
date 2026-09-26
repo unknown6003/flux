@@ -83,6 +83,10 @@ enum SelfTest {
                   unit: MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]),
                   displays: [notchedDisplay], collapsedUnits: 1) == 1,
               "macOS 27 collapse geometry adds a spacer when one bounded divider is not enough")
+        check(MenuBarCollapseGeometry.activeSpacers(
+                  unit: MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]),
+                  displays: [notchedDisplay], collapsedUnits: 2) == 0,
+              "macOS 27 collapse geometry counts both Flux dividers in the collapsed span")
 
         // --- Default layout: Always-Hidden starts empty so the chevron reveals icons ---
         // The v1 bug seeded the Always-Hidden divider near the clock (position 16), so
@@ -135,7 +139,12 @@ enum SelfTest {
         let arranger = MenuBarArranger()
         let manager = MenuBarManager(settings: settings, arranger: arranger, onOpenSettings: {})
 
-        func isHidden(_ length: CGFloat?) -> Bool { (length ?? 0) > 5_000 }
+        func isHidden(_ length: CGFloat?) -> Bool {
+            guard let length else { return false }
+            return ControlItem.usesMacOS27Model
+                ? length >= MenuBarCollapseGeometry.minimumUnit
+                : length > 5_000
+        }
         func isRevealed(_ length: CGFloat?) -> Bool { (length ?? 99) < 5 }
 
         // Launch state: always collapsed — whatever the user assigned to a hidden zone

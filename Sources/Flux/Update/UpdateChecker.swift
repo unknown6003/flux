@@ -4,15 +4,15 @@ import Combine
 /// A tiny, zero-dependency over-the-air updater built on the GitHub Releases API.
 ///
 /// It polls `releases/latest`, compares the published tag against the running
-/// build, and — only when the user asks — downloads the release DMG and installs
-/// it *in place*: it mounts the image, swaps the new `Flux.app` over the running
-/// bundle, and relaunches, so the app is simply the new version when it comes
-/// back. This is the Sparkle-style handoff without Sparkle — a small detached
+/// build, then downloads and installs a release DMG in the background when
+/// automatic checks are enabled. It mounts the image, swaps the new `Flux.app`
+/// over the running bundle, and relaunches, so the app is simply the new version
+/// when it comes back. This is the Sparkle-style handoff without Sparkle — a small detached
 /// shell helper does the swap after we quit (a running bundle can't overwrite
 /// itself). No privileged helper is used; if the install location isn't writable
 /// (e.g. `/Applications` owned by another admin), it falls back to the old manual
-/// path — dropping the DMG in ~/Downloads and opening it for a drag-install.
-/// The network step is a plain HTTPS GET; nothing installs without a click.
+/// path — dropping the DMG in ~/Downloads for a drag-install. The network step is
+/// a plain HTTPS GET.
 @MainActor
 final class UpdateChecker: ObservableObject {
 
@@ -36,7 +36,7 @@ final class UpdateChecker: ObservableObject {
         case available(Release)
         case downloading
         case installing            // swapping the bundle in place; app will relaunch
-        case readyToInstall(URL)   // fallback: the downloaded DMG, opened for a manual drag-install
+        case readyToInstall(URL)   // fallback: the downloaded DMG for a manual drag-install
         case failed(String)
     }
 
@@ -93,6 +93,14 @@ final class UpdateChecker: ObservableObject {
 
     // MARK: - Checking
 
+    /// Background checks may install only a release that includes the same DMG
+    /// asset the release workflow publishes. Manual checks keep their explicit
+    /// click-to-install behavior.
+    static func shouldAutomaticallyInstall(userInitiated: Bool,
+                                            release: Release) -> Bool {
+        !userInitiated && release.dmgURL != nil
+    }
+
     /// Poll GitHub and compare against the running build. `userInitiated` decides
     /// how loud the result is: a manual check shows "up to date" and surfaces
     /// errors; a background check stays silent unless it finds something newer.
@@ -137,6 +145,11 @@ final class UpdateChecker: ObservableObject {
             if let release, isNewer(release.version, than: currentVersion) {
                 state = .available(release)
                 Log.menuBar.info("Update available: \(release.version) (running \(self.currentVersion))")
+                if Self.shouldAutomaticallyInstall(userInitiated: userInitiated,
+                                                    release: release),
+                   let dmgURL = release.dmgURL {
+                    await runDownload(release, dmgURL: dmgURL, automatic: true)
+                }
             } else if userInitiated {
                 state = .upToDate
             } else if case .available = state {
@@ -193,10 +206,10 @@ final class UpdateChecker: ObservableObject {
         }
         isBusy = true
         state = .downloading
-        Task { await runDownload(release, dmgURL: dmgURL) }
+        Task { await runDownload(release, dmgURL: dmgURL, automatic: false) }
     }
 
-    private func runDownload(_ release: Release, dmgURL: URL) async {
+    private func runDownload(_ release: Release, dmgURL: URL, automatic: Bool) async {
         defer { isBusy = false }
         do {
             var request = URLRequest(url: dmgURL)
@@ -221,7 +234,9 @@ final class UpdateChecker: ObservableObject {
                 Log.menuBar.error("Self-install unavailable (\(error.localizedDescription)); manual fallback")
                 let dest = try moveToDownloads(dmg, version: release.version)
                 state = .readyToInstall(dest)
-                NSWorkspace.shared.open(dest)   // mount the DMG for the user
+                if !automatic {
+                    NSWorkspace.shared.open(dest)   // mount the DMG for the user
+                }
             }
         } catch {
             Log.menuBar.error("Update download failed: \(error.localizedDescription)")

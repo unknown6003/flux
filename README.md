@@ -27,9 +27,9 @@ visible bar. The result:
   Accessibility grant. Calendar and Camera ask only when their widgets are enabled;
   the optional lock-screen overlay uses macOS's lock-screen window space instead of
   screen capture.
-- **Stable across releases** — relies on documented `NSStatusItem` behaviour, not
-  private or capture APIs. Supports **Sonoma (14) and later**, including **Golden
-  Gate (27)**.
+- **Stable across releases** — relies on `NSStatusItem` behaviour, not private or
+  capture APIs. Supports **Sonoma (14) and later**, including **Golden Gate
+  (27)** with a native-overflow compatibility path.
 
 ## The three zones (just like Bartender)
 
@@ -63,6 +63,11 @@ see exactly where to drop each icon:
 
 Click **Done** (or the ✓ that replaces the chevron) to apply. Flux remembers the
 arrangement across launches.
+
+On **macOS 27**, Apple changed how the menu bar stores icon positions. After the
+first update, drag the icons you want Flux to manage to the left of the Flux
+divider once. The hide toggle then moves those icons into macOS's native overflow
+area. Older saved positions cannot be read by third-party apps on macOS 27.
 
 ## Features (MVP)
 

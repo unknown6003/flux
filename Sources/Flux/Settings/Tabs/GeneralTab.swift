@@ -153,7 +153,7 @@ private struct NotchHotkeyRow: View {
 
 /// The OTA surface: a status line that reflects `UpdateChecker.state`, the
 /// primary action for that state (check / download / re-open the installer), and
-/// an auto-check toggle. When an update is found it's presented in a prominent
+/// an automatic-install toggle. When an update is found it's presented in a prominent
 /// amber banner so it doesn't get lost among the settings.
 private struct SoftwareUpdateCard: View {
     @EnvironmentObject private var settings: SettingsStore
@@ -165,8 +165,8 @@ private struct SoftwareUpdateCard: View {
                 content
                 Rectangle().fill(Theme.hairlineColor).frame(height: 1)
                 HStack(spacing: 12) {
-                    RowText(title: "Automatically check for updates",
-                            subtitle: "Quietly look for a newer Flux on GitHub.")
+                    RowText(title: "Automatically install updates",
+                            subtitle: "Download and install newer Flux releases in the background.")
                     Spacer(minLength: 12)
                     Toggle("", isOn: $settings.automaticUpdateChecks)
                         .labelsHidden().toggleStyle(.switch).tint(Theme.accentColor)
@@ -200,7 +200,7 @@ private struct SoftwareUpdateCard: View {
         case .readyToInstall(let url):
             VStack(alignment: .leading, spacing: 10) {
                 statusLine("checkmark.circle.fill", Theme.accentColor,
-                           "Downloaded — drag Flux to Applications in the window that opened.")
+                           "Downloaded. Move Flux to Applications to finish.")
                 Button { NSWorkspace.shared.open(url) } label: {
                     Label("Open Installer Again", systemImage: "externaldrive")
                 }

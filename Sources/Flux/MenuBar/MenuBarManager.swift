@@ -16,6 +16,7 @@ final class MenuBarManager {
     private let onOpenSettings: () -> Void
 
     private let chevron: ControlItem
+    private let spacerItems: [ControlItem]
     private let hiddenDivider: ControlItem
     private var alwaysHiddenDivider: ControlItem?
 
@@ -57,14 +58,21 @@ final class MenuBarManager {
         // of every real icon, so nothing starts hidden and every zone is reachable
         // (see `ControlItem.assignDefaultPositionsIfUnset`) — for any item the user
         // hasn't positioned themselves.
-        ControlItem.sanitizePersistedPositions(autosaveNames: ControlItem.allAutosaveNames)
-        ControlItem.migrateLayoutIfNeeded(autosaveNames: ControlItem.allAutosaveNames)
-        ControlItem.assignDefaultPositionsIfUnset()
+        if !ControlItem.usesMacOS27Model {
+            ControlItem.sanitizePersistedPositions(autosaveNames: ControlItem.allAutosaveNames)
+            ControlItem.migrateLayoutIfNeeded(autosaveNames: ControlItem.allAutosaveNames)
+            ControlItem.assignDefaultPositionsIfUnset()
+        }
 
-        // Created right-to-left so creation order matches visual order on first launch:
-        // the chevron is the rightmost of Flux's three items, dividers to its left.
-        // (The user's own icons sit right of all three — that's the Shown zone.)
+        // Created right-to-left so creation order matches visual order on first launch.
+        // macOS 27 puts fresh names at the left edge, so the bounded spacers must be
+        // registered between the chevron and the hidden divider in the same pass.
         self.chevron = ControlItem(role: .chevron, autosaveName: "flux.chevron")
+        self.spacerItems = ControlItem.usesMacOS27Model
+            ? (0..<ControlItem.macOS27SpacerCount).map {
+                ControlItem(role: .spacer, autosaveName: "flux.spacer.\($0)")
+            }
+            : []
         self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden")
 
         wireChevron()
@@ -93,6 +101,18 @@ final class MenuBarManager {
     }
 
     private func configureAlwaysHiddenSection() {
+        if ControlItem.usesMacOS27Model {
+            if alwaysHiddenDivider == nil {
+                alwaysHiddenDivider = ControlItem(role: .divider,
+                                                  autosaveName: "flux.divider.alwaysHidden")
+            }
+            alwaysHiddenDivider?.setVisible(settings.showAlwaysHiddenSection)
+            if !settings.showAlwaysHiddenSection {
+                revealAlwaysHidden = false
+            }
+            return
+        }
+
         if settings.showAlwaysHiddenSection {
             if alwaysHiddenDivider == nil {
                 alwaysHiddenDivider = ControlItem(role: .divider,
@@ -154,7 +174,10 @@ final class MenuBarManager {
         // missing entirely — until the user next toggled the chevron.
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.scheduleOverflowRefresh() }
+            .sink { [weak self] _ in
+                guard let self, !self.arranger.isArranging else { return }
+                self.applyState()
+            }
             .store(in: &cancellables)
     }
 
@@ -227,10 +250,14 @@ final class MenuBarManager {
         guard !arranger.isArranging else { return }
 
         let showHidden = revealHidden || revealAlwaysHidden
-        let showAlwaysHidden = revealAlwaysHidden
+        let showAlwaysHidden = revealAlwaysHidden && settings.showAlwaysHiddenSection
+        let hiddenCollapsed = !showHidden
+        let alwaysHiddenCollapsed = settings.showAlwaysHiddenSection && !showAlwaysHidden
 
-        hiddenDivider.setCollapsed(!showHidden)
-        alwaysHiddenDivider?.setCollapsed(!showAlwaysHidden)
+        hiddenDivider.setCollapsed(hiddenCollapsed)
+        alwaysHiddenDivider?.setCollapsed(alwaysHiddenCollapsed)
+        applyMacOS27SpacerGeometry(hiddenCollapsed: hiddenCollapsed,
+                                   alwaysHiddenCollapsed: alwaysHiddenCollapsed)
         chevron.setChevron(revealed: showHidden)
 
         updateOutsideClickMonitor(active: showHidden)
@@ -239,6 +266,28 @@ final class MenuBarManager {
         // (macOS posts no notification), re-measure whether the revealed icons clip
         // behind the notch. Collapsing back here clears the glow.
         scheduleOverflowRefresh()
+    }
+
+    /// macOS 27 drops a single oversized status item instead of using it as a
+    /// spacer. Keep each divider below that cliff and add only enough zero-width
+    /// registration slots to cover the widest attached display.
+    private func applyMacOS27SpacerGeometry(hiddenCollapsed: Bool,
+                                            alwaysHiddenCollapsed: Bool) {
+        guard ControlItem.usesMacOS27Model else { return }
+
+        let displays = NSScreen.screens.map {
+            MenuBarCollapseGeometry.Display(
+                width: $0.frame.width,
+                statusWidth: $0.auxiliaryTopRightArea?.width)
+        }
+        let unit = MenuBarCollapseGeometry.unitLength(displays: displays)
+        let collapsedUnits = (hiddenCollapsed ? 1 : 0)
+            + (alwaysHiddenCollapsed ? 1 : 0)
+        let active = MenuBarCollapseGeometry.activeSpacers(
+            unit: unit, displays: displays, collapsedUnits: collapsedUnits)
+        for (index, spacer) in spacerItems.enumerated() {
+            spacer.setSpacer(active: index < active, length: unit)
+        }
     }
 
     /// Re-measure overflow once the bar has settled after a reveal/collapse. Normal
@@ -321,7 +370,10 @@ final class MenuBarManager {
             revealHidden = true
             revealAlwaysHidden = true
             hiddenDivider.setArrangingMarker(true, zone: .hidden)
-            alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
+            if hasAlways {
+                alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
+            }
+            applyMacOS27SpacerGeometry(hiddenCollapsed: false, alwaysHiddenCollapsed: false)
 
         case .shownHidden:
             revealHidden = true
@@ -331,6 +383,8 @@ final class MenuBarManager {
             // freeing their width for the Shown ↔ Hidden edge.
             alwaysHiddenDivider?.setArrangingMarker(false)
             alwaysHiddenDivider?.setCollapsed(true)
+            applyMacOS27SpacerGeometry(hiddenCollapsed: false,
+                                       alwaysHiddenCollapsed: hasAlways)
 
         case .hiddenAlwaysHidden:
             revealHidden = true
@@ -341,6 +395,7 @@ final class MenuBarManager {
             hiddenDivider.setArrangingMarker(false)
             hiddenDivider.setCollapsed(false)
             alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
+            applyMacOS27SpacerGeometry(hiddenCollapsed: false, alwaysHiddenCollapsed: false)
         }
 
         // Reclaim the chevron's ~30pt whenever the Always-Hidden edge is on the bar
@@ -663,7 +718,7 @@ final class MenuBarManager {
             revealAlwaysHidden: revealAlwaysHidden,
             hiddenDividerLength: hiddenDivider.statusItem.length,
             alwaysHiddenDividerLength: alwaysHiddenDivider?.statusItem.length,
-            alwaysHiddenSectionPresent: alwaysHiddenDivider != nil,
+            alwaysHiddenSectionPresent: settings.showAlwaysHiddenSection && alwaysHiddenDivider != nil,
             chevronRevealed: chevron.isRevealed,
             isArranging: arranger.isArranging,
             hiddenMarkerShown: hiddenDivider.isArranging,
