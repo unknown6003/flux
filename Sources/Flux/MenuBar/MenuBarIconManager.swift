@@ -115,7 +115,7 @@ final class MenuBarIconManager: ObservableObject {
         var target = CGPoint(x: targetX, y: icon.frame.minY)
         let positionResult: AXError
         if let value = AXValueCreate(.cgPoint, &target) {
-            positionResult = AXUIElementSetAttributeValue(element, kAXPositionAttribute, value)
+            positionResult = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
         } else {
             positionResult = .failure
         }
@@ -167,11 +167,12 @@ final class MenuBarIconManager: ObservableObject {
         return (value as? [AXUIElement]) ?? []
     }
 
-    private func elementAttribute(_ element: AXUIElement, _ key: CFString) -> AXUIElement? {
-        attribute(element, key) as? AXUIElement
+    private func elementAttribute(_ element: AXUIElement, _ key: String) -> AXUIElement? {
+        guard let value = attribute(element, key) else { return nil }
+        return value as! AXUIElement
     }
 
-    private func stringAttribute(_ element: AXUIElement, _ key: CFString) -> String? {
+    private func stringAttribute(_ element: AXUIElement, _ key: String) -> String? {
         attribute(element, key) as? String
     }
 
@@ -185,9 +186,9 @@ final class MenuBarIconManager: ObservableObject {
         return CGRect(origin: point, size: dimensions)
     }
 
-    private func attribute(_ element: AXUIElement, _ key: CFString) -> CFTypeRef? {
+    private func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, key, &value) == .success else { return nil }
+        guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else { return nil }
         return value
     }
 }
