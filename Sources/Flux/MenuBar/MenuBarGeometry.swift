@@ -127,3 +127,43 @@ extension NSScreen {
         screens.first { $0.hasNotch && $0.displayID.map { CGDisplayIsBuiltin($0) != 0 } == true }
     }
 }
+
+/// Bounded status-item spans used while Flux hides icons on macOS 27.
+/// macOS 27 drops an oversized status item instead of using it as a spacer, so
+/// several smaller native items provide the same total span without crossing
+/// that system limit.
+enum MenuBarCollapseGeometry {
+    struct Display: Equatable {
+        let width: CGFloat
+        let statusWidth: CGFloat
+
+        init(width: CGFloat, statusWidth: CGFloat? = nil) {
+            self.width = width
+            self.statusWidth = statusWidth ?? width
+        }
+    }
+
+    static let minimumUnit: CGFloat = 200
+    static let cliffMargin: CGFloat = 64
+    static let notchedCliffFactor: CGFloat = 0.75
+    static let spacerCount = 6
+
+    static func cliff(of display: Display) -> CGFloat {
+        display.statusWidth < display.width
+            ? display.statusWidth * notchedCliffFactor
+            : display.width / 2
+    }
+
+    static func unitLength(displays: [Display]) -> CGFloat {
+        guard let lowest = displays.map(cliff(of:)).min() else { return minimumUnit }
+        return max(minimumUnit, (lowest - cliffMargin).rounded(.down))
+    }
+
+    static func activeSpacers(unit: CGFloat,
+                              displays: [Display],
+                              collapsedUnits: Int = 1) -> Int {
+        guard unit > 0, let widest = displays.map(\.statusWidth).max() else { return 0 }
+        let needed = Int((widest / unit).rounded(.up)) - collapsedUnits
+        return min(max(needed, 0), spacerCount)
+    }
+}

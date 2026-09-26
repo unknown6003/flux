@@ -53,8 +53,8 @@ enum SelfTest {
         divider.setCollapsed(true)
         let collapsed = divider.statusItem.length
         if ControlItem.usesMacOS27Model {
-            check(collapsed >= 240 && collapsed <= 800,
-                  "macOS 27 uses one bounded drawer boundary (\(Int(collapsed))pt)")
+            check(collapsed >= MenuBarCollapseGeometry.minimumUnit && collapsed < 5_000,
+                  "macOS 27 uses a bounded collapse unit (\(Int(collapsed))pt)")
         } else {
             check(collapsed > 5_000,
                   "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
@@ -74,6 +74,22 @@ enum SelfTest {
 
         chevron.removeFromStatusBar()
         divider.removeFromStatusBar()
+
+        let notchedDisplay = MenuBarCollapseGeometry.Display(width: 1_512,
+                                                              statusWidth: 663.5)
+        let collapseUnit = MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay])
+        check(collapseUnit < 520,
+              "macOS 27 collapse geometry stays below the notched display cliff")
+        check(MenuBarCollapseGeometry.activeSpacers(
+                  unit: collapseUnit,
+                  displays: [notchedDisplay],
+                  collapsedUnits: 1) == 1,
+              "macOS 27 adds a spacer when one bounded divider is not enough")
+        check(MenuBarCollapseGeometry.activeSpacers(
+                  unit: collapseUnit,
+                  displays: [notchedDisplay],
+                  collapsedUnits: 2) == 0,
+              "macOS 27 counts both Flux dividers in the collapsed span")
 
         // --- Default layout: both drawer boundaries start left of real icons ---
         let layoutSuiteName = "flux.selftest.layout"

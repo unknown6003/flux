@@ -10,6 +10,7 @@ final class MenuBarManager {
     private let onOpenSettings: () -> Void
 
     private let chevron: ControlItem
+    private let spacerItems: [ControlItem]
     private let hiddenDivider: ControlItem
     private let alwaysHiddenDivider: ControlItem
 
@@ -40,6 +41,11 @@ final class MenuBarManager {
         }
 
         self.chevron = ControlItem(role: .chevron, autosaveName: "flux.chevron")
+        self.spacerItems = ControlItem.usesMacOS27Model
+            ? (0..<ControlItem.macOS27SpacerCount).map {
+                ControlItem(role: .spacer, autosaveName: "flux.spacer.\($0)")
+            }
+            : []
         self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden")
         self.alwaysHiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.alwaysHidden")
 
@@ -147,8 +153,12 @@ final class MenuBarManager {
         alwaysHiddenDivider.setVisible(settings.showAlwaysHiddenSection)
         let showHidden = revealHidden || revealAlwaysHidden
         let showAlwaysHidden = revealAlwaysHidden && settings.showAlwaysHiddenSection
-        hiddenDivider.setCollapsed(!showHidden)
-        alwaysHiddenDivider.setCollapsed(!showAlwaysHidden)
+        let hiddenCollapsed = !showHidden
+        let alwaysHiddenCollapsed = settings.showAlwaysHiddenSection && !showAlwaysHidden
+        hiddenDivider.setCollapsed(hiddenCollapsed)
+        alwaysHiddenDivider.setCollapsed(alwaysHiddenCollapsed)
+        applyMacOS27SpacerGeometry(hiddenCollapsed: hiddenCollapsed,
+                                   alwaysHiddenCollapsed: alwaysHiddenCollapsed)
         chevron.setChevron(revealed: isAnyRevealed)
         updateOutsideClickMonitor(active: isAnyRevealed && !managingIcons)
         scheduleOverflowRefresh()
@@ -159,6 +169,24 @@ final class MenuBarManager {
         let work = DispatchWorkItem { [weak self] in self?.refreshOverflow() }
         overflowRefreshWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func applyMacOS27SpacerGeometry(hiddenCollapsed: Bool,
+                                            alwaysHiddenCollapsed: Bool) {
+        guard ControlItem.usesMacOS27Model else { return }
+        let displays = NSScreen.screens.map {
+            MenuBarCollapseGeometry.Display(
+                width: $0.frame.width,
+                statusWidth: $0.auxiliaryTopRightArea?.width)
+        }
+        let unit = MenuBarCollapseGeometry.unitLength(displays: displays)
+        let collapsedUnits = (hiddenCollapsed ? 1 : 0)
+            + (alwaysHiddenCollapsed ? 1 : 0)
+        let active = MenuBarCollapseGeometry.activeSpacers(
+            unit: unit, displays: displays, collapsedUnits: collapsedUnits)
+        for (index, spacer) in spacerItems.enumerated() {
+            spacer.setSpacer(active: index < active, length: unit)
+        }
     }
 
     // MARK: Notch overflow
