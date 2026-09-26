@@ -177,8 +177,10 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func frame(of element: AXUIElement) -> CGRect? {
-        guard let position = attribute(element, kAXPositionAttribute) as? AXValue,
-              let size = attribute(element, kAXSizeAttribute) as? AXValue else { return nil }
+        guard let positionValue = attribute(element, kAXPositionAttribute),
+              let sizeValue = attribute(element, kAXSizeAttribute) else { return nil }
+        let position = positionValue as! AXValue
+        let size = sizeValue as! AXValue
         var point = CGPoint.zero
         var dimensions = CGSize.zero
         guard AXValueGetValue(position, .cgPoint, &point),
