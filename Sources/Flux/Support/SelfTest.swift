@@ -52,8 +52,13 @@ enum SelfTest {
 
         divider.setCollapsed(true)
         let collapsed = divider.statusItem.length
-        check(collapsed > 5_000,
-              "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
+        if ControlItem.usesMacOS27Model {
+            check(collapsed >= MenuBarCollapseGeometry.minimumUnit && collapsed < 5_000,
+                  "macOS 27 uses a bounded collapse unit (\(Int(collapsed))pt) instead of the discarded 10,000pt spacer")
+        } else {
+            check(collapsed > 5_000,
+                  "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
+        }
 
         divider.setCollapsed(false)
         let revealed = divider.statusItem.length
@@ -69,6 +74,15 @@ enum SelfTest {
 
         chevron.removeFromStatusBar()
         divider.removeFromStatusBar()
+
+        let notchedDisplay = MenuBarCollapseGeometry.Display(width: 1_512,
+                                                              statusWidth: 663.5)
+        check(MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]) < 520,
+              "macOS 27 collapse geometry stays below the notched display cliff")
+        check(MenuBarCollapseGeometry.activeSpacers(
+                  unit: MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]),
+                  displays: [notchedDisplay], collapsedUnits: 1) == 1,
+              "macOS 27 collapse geometry adds a spacer when one bounded divider is not enough")
 
         // --- Default layout: Always-Hidden starts empty so the chevron reveals icons ---
         // The v1 bug seeded the Always-Hidden divider near the clock (position 16), so
@@ -324,6 +338,23 @@ enum SelfTest {
         check(!updater.isNewer("0.1.0", than: "0.1.1"), "Update: an older version is not newer")
         check(!updater.isNewer("0.1.1", than: "0.2.0"), "Update: the running build isn't behind a lower tag")
         check(UpdateChecker.normalize("v0.1.1") == "0.1.1", "Update: a 'v' prefix is stripped from tags")
+        let releasePage = URL(string: "https://example.com/flux-release")!
+        let releaseDMG = URL(string: "https://example.com/Flux.dmg")!
+        let releaseWithDMG = UpdateChecker.Release(
+            version: "0.2.0", name: "Flux 0.2.0", notes: "",
+            pageURL: releasePage, dmgURL: releaseDMG)
+        let releaseWithoutDMG = UpdateChecker.Release(
+            version: "0.2.0", name: "Flux 0.2.0", notes: "",
+            pageURL: releasePage, dmgURL: nil)
+        check(UpdateChecker.shouldAutomaticallyInstall(userInitiated: false,
+                                                        release: releaseWithDMG),
+              "Update: a background release with a DMG starts automatic installation")
+        check(!UpdateChecker.shouldAutomaticallyInstall(userInitiated: true,
+                                                         release: releaseWithDMG),
+              "Update: a manual check still waits for the user's install click")
+        check(!UpdateChecker.shouldAutomaticallyInstall(userInitiated: false,
+                                                         release: releaseWithoutDMG),
+              "Update: a release without a DMG stays available for manual follow-up")
 
         // --- Notch: NotchWidgetRegistry ordering, enable filtering, wrap-around ---
         let registry = NotchWidgetRegistry()
