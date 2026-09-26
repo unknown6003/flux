@@ -10,7 +10,7 @@ struct LiveActivity: Identifiable, Equatable {
     /// new activity of a kind already queued replaces the old one instead of
     /// stacking (e.g. a fresh battery-percent tick supersedes the stale one).
     enum Kind: Equatable {
-        case battery, bluetoothDevice, timer, shelfDrop, menuBarOverflow, nowPlaying, calendarEvent
+        case battery, bluetoothDevice, timer, shelfDrop, menuBarOverflow, nowPlaying, calendarEvent, soundHUD
     }
 
     /// What to draw in a wing. Deliberately data-only (no SwiftUI types) so
@@ -21,6 +21,7 @@ struct LiveActivity: Identifiable, Equatable {
         case text(String)
         case iconText(systemName: String, text: String)
         case gauge(Double, systemName: String)
+        case soundGauge(Double, systemName: String)
         case artwork
     }
 
@@ -88,7 +89,7 @@ struct LiveActivity: Identifiable, Equatable {
         switch content {
         case .text(let value): return value
         case .iconText(_, let value): return value
-        case .none, .icon, .gauge, .artwork: return nil
+        case .none, .icon, .gauge, .soundGauge, .artwork: return nil
         }
     }
 }

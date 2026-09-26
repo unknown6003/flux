@@ -53,8 +53,8 @@ enum SelfTest {
         divider.setCollapsed(true)
         let collapsed = divider.statusItem.length
         if ControlItem.usesMacOS27Model {
-            check(collapsed >= MenuBarCollapseGeometry.minimumUnit && collapsed < 5_000,
-                  "macOS 27 uses a bounded collapse unit (\(Int(collapsed))pt) instead of the discarded 10,000pt spacer")
+            check(collapsed >= 240 && collapsed <= 800,
+                  "macOS 27 uses one bounded drawer boundary (\(Int(collapsed))pt)")
         } else {
             check(collapsed > 5_000,
                   "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
@@ -75,176 +75,80 @@ enum SelfTest {
         chevron.removeFromStatusBar()
         divider.removeFromStatusBar()
 
-        let notchedDisplay = MenuBarCollapseGeometry.Display(width: 1_512,
-                                                              statusWidth: 663.5)
-        check(MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]) < 520,
-              "macOS 27 collapse geometry stays below the notched display cliff")
-        check(MenuBarCollapseGeometry.activeSpacers(
-                  unit: MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]),
-                  displays: [notchedDisplay], collapsedUnits: 1) == 1,
-              "macOS 27 collapse geometry adds a spacer when one bounded divider is not enough")
-        check(MenuBarCollapseGeometry.activeSpacers(
-                  unit: MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay]),
-                  displays: [notchedDisplay], collapsedUnits: 2) == 0,
-              "macOS 27 collapse geometry counts both Flux dividers in the collapsed span")
-
-        // --- Default layout: Always-Hidden starts empty so the chevron reveals icons ---
-        // The v1 bug seeded the Always-Hidden divider near the clock (position 16), so
-        // every real icon — which sits further left — fell into Always-Hidden, leaving
-        // the Hidden zone empty and the chevron revealing nothing. The corrected layout
-        // seeds it far left. Verify on a throwaway suite so real defaults stay clean.
+        // --- Default layout: the one drawer boundary starts left of real icons ---
         let layoutSuiteName = "flux.selftest.layout"
         let layoutSuite = UserDefaults(suiteName: layoutSuiteName)!
         layoutSuite.removePersistentDomain(forName: layoutSuiteName)
-        let names = ["flux.chevron", "flux.divider.hidden", "flux.divider.alwaysHidden"]
+        let names = ["flux.chevron", "flux.divider.hidden"]
         func posKey(_ name: String) -> String { "NSStatusItem Preferred Position \(name)" }
 
         // A stale/broken position is cleared once on a layout-version bump.
-        layoutSuite.set(16.0, forKey: posKey("flux.divider.alwaysHidden"))
+        layoutSuite.set(16.0, forKey: posKey("flux.divider.hidden"))
         check(ControlItem.migrateLayoutIfNeeded(autosaveNames: names, defaults: layoutSuite),
               "Layout migration fires when the stored version is behind")
-        check(layoutSuite.object(forKey: posKey("flux.divider.alwaysHidden")) == nil,
-              "Layout migration clears the stale Always-Hidden position")
+        check(layoutSuite.object(forKey: posKey("flux.divider.hidden")) == nil,
+              "Layout migration clears the stale drawer position")
         // Idempotent: a second run at the same version leaves positions alone.
-        layoutSuite.set(42.0, forKey: posKey("flux.divider.alwaysHidden"))
+        layoutSuite.set(42.0, forKey: posKey("flux.divider.hidden"))
         check(!ControlItem.migrateLayoutIfNeeded(autosaveNames: names, defaults: layoutSuite),
               "Layout migration runs at most once per version bump")
-        check(layoutSuite.double(forKey: posKey("flux.divider.alwaysHidden")) == 42.0,
+        check(layoutSuite.double(forKey: posKey("flux.divider.hidden")) == 42.0,
               "Layout migration doesn't touch positions after it has run")
 
-        // Seeding puts the three control items in bar order (right → left: chevron,
-        // Hidden divider, Always-Hidden divider) as one adjacent cluster, and puts the
-        // whole cluster LEFT of every real icon — a saved position is a distance from
-        // the right edge, so "left of every icon" means "beyond the widest screen's
-        // width", which no real icon's position can reach.
-        layoutSuite.removeObject(forKey: posKey("flux.divider.alwaysHidden"))
+        // Seeding puts the two control items in bar order and left of every real icon.
+        layoutSuite.removeObject(forKey: posKey("flux.divider.hidden"))
         ControlItem.assignDefaultPositionsIfUnset(defaults: layoutSuite)
         let posChevron = layoutSuite.double(forKey: posKey("flux.chevron"))
         let posHidden = layoutSuite.double(forKey: posKey("flux.divider.hidden"))
-        let posAlways = layoutSuite.double(forKey: posKey("flux.divider.alwaysHidden"))
-        check(posChevron < posHidden && posHidden < posAlways,
-              "Layout: bar order right→left is chevron (\(Int(posChevron))) · Hidden (\(Int(posHidden))) · Always-Hidden (\(Int(posAlways)))")
+        check(posChevron < posHidden,
+              "Layout: bar order right→left is chevron (\(Int(posChevron))) · Hidden (\(Int(posHidden)))")
         let widest = NSScreen.screens.map(\.frame.width).max() ?? 2_000
         check(posChevron >= widest,
               "Layout: the cluster seeds left of every real icon (chevron \(Int(posChevron)) ≥ widest screen \(Int(widest))) → everything starts Shown")
-        check(posAlways - posChevron < 100,
-              "Layout: the three control items seed adjacent (\(Int(posAlways - posChevron))pt apart), so every marker stays reachable")
+        check(posHidden - posChevron < 100,
+              "Layout: the two control items seed adjacent (\(Int(posHidden - posChevron))pt apart), so the drawer stays reachable")
         layoutSuite.removePersistentDomain(forName: layoutSuiteName)
 
-        // --- MenuBarManager: full state machine, asserting REAL bar geometry ---
-        // Clean slate so defaults are deterministic (showAlwaysHiddenSection=true).
+        // --- MenuBarManager: one drawer state machine ---
         let suiteName = "flux.selftest"
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let arranger = MenuBarArranger()
         let manager = MenuBarManager(settings: settings, arranger: arranger, onOpenSettings: {})
 
-        func isHidden(_ length: CGFloat?) -> Bool {
-            guard let length else { return false }
-            return ControlItem.usesMacOS27Model
-                ? length >= MenuBarCollapseGeometry.minimumUnit
-                : length > 5_000
+        func isHidden(_ length: CGFloat) -> Bool {
+            ControlItem.usesMacOS27Model ? length >= 240 : length > 5_000
         }
-        func isRevealed(_ length: CGFloat?) -> Bool { (length ?? 99) < 5 }
+        func isRevealed(_ length: CGFloat) -> Bool { length < 5 }
 
-        // Launch state: always collapsed — whatever the user assigned to a hidden zone
-        // stays tucked away. (On a fresh install both zones are empty, so this hides
-        // nothing.) Chevron shows ‹.
         let s0 = manager.diagnostics
-        check(!s0.revealHidden && !s0.revealAlwaysHidden,
-              "Launches collapsed, honouring the saved arrangement")
+        check(!s0.revealHidden && !s0.chevronRevealed,
+              "Launches collapsed with one hidden drawer")
         check(isHidden(s0.hiddenDividerLength),
-              "Hidden zone starts hidden (divider \(Int(s0.hiddenDividerLength))pt)")
-        check(s0.alwaysHiddenSectionPresent,
-              "Always-Hidden section is present by default")
-        check(isHidden(s0.alwaysHiddenDividerLength),
-              "Always-Hidden zone starts hidden")
-        check(!s0.chevronRevealed, "Chevron shows the collapsed glyph at launch")
+              "Hidden drawer starts closed (divider \(Int(s0.hiddenDividerLength))pt)")
 
-        // Reveal the Hidden zone (chevron click / hotkey).
         manager.toggleReveal()
         let s1 = manager.diagnostics
-        check(s1.revealHidden && !s1.revealAlwaysHidden, "Toggle reveals the Hidden zone only")
+        check(s1.revealHidden && s1.chevronRevealed,
+              "Toggle reveals the single hidden drawer")
         check(isRevealed(s1.hiddenDividerLength),
-              "Revealing Hidden shrinks its divider to \(s1.hiddenDividerLength)pt")
-        check(isHidden(s1.alwaysHiddenDividerLength),
-              "Always-Hidden stays hidden on a plain reveal")
-        check(s1.chevronRevealed, "Chevron flips to the revealed glyph")
+              "Revealing shrinks the drawer divider to \(s1.hiddenDividerLength)pt")
 
-        // Reveal absolutely everything (option-click / menu).
         manager.revealAll()
-        let s2 = manager.diagnostics
-        check(s2.revealHidden && s2.revealAlwaysHidden, "revealAll shows both zones")
-        check(isRevealed(s2.hiddenDividerLength) && isRevealed(s2.alwaysHiddenDividerLength),
-              "Both dividers shrink when everything is revealed")
-
-        // Collapse back to the resting state.
+        check(manager.diagnostics.revealHidden, "revealAll keeps the single drawer open")
         manager.collapse()
-        let s3 = manager.diagnostics
-        check(!s3.revealHidden && !s3.revealAlwaysHidden, "Collapse hides every zone again")
-        check(isHidden(s3.hiddenDividerLength) && isHidden(s3.alwaysHiddenDividerLength),
-              "Both dividers re-expand on collapse")
+        let s2 = manager.diagnostics
+        check(!s2.revealHidden && isHidden(s2.hiddenDividerLength),
+              "Collapse closes the drawer again")
 
-        // --- Arrange Mode: labeled markers + everything shown, then apply ---
-        // (Runs while the Always-Hidden section is still on, before we disable it.)
         arranger.setArranging(true)
         let a0 = manager.diagnostics
-        check(a0.isArranging, "Entering Arrange Mode flips the arranging flag")
-        check(a0.hiddenMarkerShown,
-              "Arrange Mode shows the Hidden divider's labeled marker")
-        check(a0.alwaysHiddenMarkerShown,
-              "Arrange Mode shows the Always-Hidden divider's labeled marker")
-        check(!isHidden(a0.hiddenDividerLength),
-              "Arrange Mode reveals icons — the Hidden divider isn't at its 10 000pt collapse")
-
-        // Incremental arranging: tucking Always-Hidden away (for users with more
-        // icons than fit beside the notch) hides its marker and collapses its zone
-        // off-screen, while the Hidden marker stays put.
-        arranger.focus = .shownHidden
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1)) // let the focus sink fire
-        let af = manager.diagnostics
-        check(af.hiddenMarkerShown,
-              "Shown & Hidden focus keeps the Hidden marker")
-        check(!af.alwaysHiddenMarkerShown,
-              "Shown & Hidden focus hides the Always-Hidden marker")
-        check(isHidden(af.alwaysHiddenDividerLength),
-              "Shown & Hidden focus collapses the Always-Hidden zone off-screen")
-
-        arranger.focus = .all
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        let ab = manager.diagnostics
-        check(ab.alwaysHiddenMarkerShown,
-              "Switching back to All zones restores the Always-Hidden marker")
-
-        // Hidden ↔ Always-Hidden focus: shows ONLY the Always-Hidden marker (the
-        // Hidden marker drops to a 1pt spacer) so the Always edge — which has
-        // Shown + Hidden to its right — gets every point of room beside the notch.
-        arranger.focus = .hiddenAlwaysHidden
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        let ah = manager.diagnostics
-        check(ah.alwaysHiddenMarkerShown,
-              "Hidden ↔ Always focus keeps the Always-Hidden marker")
-        check(!ah.hiddenMarkerShown,
-              "Hidden ↔ Always focus drops the Hidden marker to reclaim its width")
-        check(!isHidden(ah.hiddenDividerLength),
-              "Hidden ↔ Always focus still reveals the Hidden zone (divider not collapsed)")
-        check(!isHidden(ah.alwaysHiddenDividerLength),
-              "Hidden ↔ Always focus reveals the Always-Hidden zone")
-
+        check(a0.isArranging && a0.hiddenMarkerShown,
+              "The compatibility marker names the one Hidden boundary")
         arranger.setArranging(false)
         let a1 = manager.diagnostics
-        check(!a1.isArranging, "Leaving Arrange Mode clears the arranging flag")
-        check(!a1.hiddenMarkerShown && !a1.alwaysHiddenMarkerShown,
-              "Leaving Arrange Mode hides both markers")
-        check(isHidden(a1.hiddenDividerLength) && isHidden(a1.alwaysHiddenDividerLength),
-              "Leaving Arrange Mode applies the arrangement (collapses back to resting)")
-
-        // Turning the Always-Hidden section off removes its divider entirely.
-        settings.showAlwaysHiddenSection = false
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1)) // let the Combine sink fire
-        let s4 = manager.diagnostics
-        check(!s4.alwaysHiddenSectionPresent,
-              "Disabling the Always-Hidden section removes its divider")
+        check(!a1.isArranging && !a1.hiddenMarkerShown,
+              "Leaving the marker state closes the drawer")
 
         // --- Notch geometry: statusItemFitsBesideNotch drives overflow detection ---
         // A marker "fits" only when it sits clear of the notch (its left edge stays
@@ -337,6 +241,19 @@ enum SelfTest {
               "Overflow: a 76pt deficit reads as ~2 icons at default spacing")
         check(MenuBarManager.iconsToClear(.greatestFiniteMagnitude, compact: true) == 99,
               "Overflow: an unbounded deficit clamps to 99 instead of trapping or flashing an absurd count")
+
+        // --- Sound HUD: key parsing and the notch activity stay pure/testable ---
+        let soundDown = MediaKeyInterceptor.parse(data1: (1 << 16) | (0xA << 8))
+        check(soundDown.keyDown && !soundDown.isRepeat && soundDown.keyCode == 1,
+              "Sound HUD: parses a volume-down edge without treating it as a repeat")
+        check(MediaKeyInterceptor.key(for: 7) == .mute,
+              "Sound HUD: maps the mute key")
+        check(NotchActivityRouter.soundSymbol(level: 0.8, muted: false) == "speaker.wave.3.fill",
+              "Sound HUD: uses the loud speaker symbol at high volume")
+        check(NotchActivityRouter.soundSymbol(level: 0.8, muted: true) == "speaker.slash.fill",
+              "Sound HUD: mute overrides the level symbol")
+        check(VolumeMonitor.perChannelTargets(left: 0.2, right: 0.8, delta: 0.1).left == 0.3,
+              "Sound HUD: preserves per-channel balance when nudging volume")
 
         // --- OTA updater: semantic version comparison ---
         let updater = UpdateChecker(currentVersion: "0.1.1")

@@ -1,13 +1,7 @@
 import AppKit
 import Combine
 
-/// Owns Flux's control items and the reveal/collapse state machine.
-///
-/// State is two booleans:
-///   • `revealHidden`        — the Hidden section is showing
-///   • `revealAlwaysHidden`  — the Always-Hidden section is showing (implies the
-///                             Hidden section is showing too, since it sits to
-///                             the left of the Hidden divider)
+/// Owns Flux's two status items and the single hidden drawer boundary.
 @MainActor
 final class MenuBarManager {
     private let settings: SettingsStore
@@ -16,12 +10,8 @@ final class MenuBarManager {
     private let onOpenSettings: () -> Void
 
     private let chevron: ControlItem
-    private let spacerItems: [ControlItem]
     private let hiddenDivider: ControlItem
-    private var alwaysHiddenDivider: ControlItem?
-
     private var revealHidden = false
-    private var revealAlwaysHidden = false
 
     private var rehideTimer: Timer?
     private var outsideClickMonitor: Any?
@@ -29,17 +19,6 @@ final class MenuBarManager {
     private var overflowRefreshWork: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
-    /// How close the leftmost arrange marker may sit to the notch's right edge
-    /// before we treat the bar as full. A couple of points — just enough to
-    /// absorb rounding in the reported window frames, not a whole icon slot.
-    ///
-    /// Deliberately the same number as `NSScreen.statusItemFitsBesideNotch`'s
-    /// own `slack` default, since the two answer the same question about the
-    /// same geometry; they're kept as separate constants only because that
-    /// one is a general-purpose defaulted parameter. (The doc comment here
-    /// used to describe "one whole inter-icon gap … 16 pt", which this value
-    /// has never been — an invitation to "correct" it upward and start
-    /// warning a full icon early.)
     private static let overflowSlack: CGFloat = 2
 
     init(settings: SettingsStore,
@@ -51,45 +30,20 @@ final class MenuBarManager {
         self.timerService = timerService
         self.onOpenSettings = onOpenSettings
 
-        // Before creating any status items: (1) drop any off-screen-corrupt saved
-        // positions so a polluted layout can't strand the chevron off-screen, (2)
-        // migrate installs from an older seeded layout so a corrected default takes
-        // hold once, then (3) seed the default layout — the whole control cluster left
-        // of every real icon, so nothing starts hidden and every zone is reachable
-        // (see `ControlItem.assignDefaultPositionsIfUnset`) — for any item the user
-        // hasn't positioned themselves.
         if !ControlItem.usesMacOS27Model {
             ControlItem.sanitizePersistedPositions(autosaveNames: ControlItem.allAutosaveNames)
             ControlItem.migrateLayoutIfNeeded(autosaveNames: ControlItem.allAutosaveNames)
             ControlItem.assignDefaultPositionsIfUnset()
         }
 
-        // Created right-to-left so creation order matches visual order on first launch.
-        // macOS 27 puts fresh names at the left edge, so the bounded spacers must be
-        // registered between the chevron and the hidden divider in the same pass.
         self.chevron = ControlItem(role: .chevron, autosaveName: "flux.chevron")
-        self.spacerItems = ControlItem.usesMacOS27Model
-            ? (0..<ControlItem.macOS27SpacerCount).map {
-                ControlItem(role: .spacer, autosaveName: "flux.spacer.\($0)")
-            }
-            : []
         self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden")
 
         wireChevron()
-        configureAlwaysHiddenSection()
         observeSettings()
-
-        // Arrange Mode can be toggled from the Settings window or the menu; route
-        // both through the engine so it owns the real menu-bar side effects.
         arranger.onChange = { [weak self] on in self?.applyArrangeMode(on) }
-
-        // Start collapsed: whatever the user assigned to Hidden / Always-Hidden is
-        // tucked away. On a fresh install both zones are empty (the seeded layout puts
-        // every existing icon in Shown), so this collapses nothing — it only bites once
-        // the user has actually moved an icon into a hidden zone, which is exactly when
-        // they want it honoured.
         applyState()
-        Log.menuBar.info("MenuBarManager initialised (alwaysHidden=\(self.settings.showAlwaysHiddenSection))")
+        Log.menuBar.info("MenuBarManager initialised with one hidden drawer")
     }
 
     // MARK: Setup
@@ -100,118 +54,24 @@ final class MenuBarManager {
         chevron.setStyle(settings.iconStyle)
     }
 
-    private func configureAlwaysHiddenSection() {
-        if ControlItem.usesMacOS27Model {
-            if alwaysHiddenDivider == nil {
-                alwaysHiddenDivider = ControlItem(role: .divider,
-                                                  autosaveName: "flux.divider.alwaysHidden")
-            }
-            alwaysHiddenDivider?.setVisible(settings.showAlwaysHiddenSection)
-            if !settings.showAlwaysHiddenSection {
-                revealAlwaysHidden = false
-            }
-            return
-        }
-
-        if settings.showAlwaysHiddenSection {
-            if alwaysHiddenDivider == nil {
-                alwaysHiddenDivider = ControlItem(role: .divider,
-                                                  autosaveName: "flux.divider.alwaysHidden")
-            }
-        } else {
-            alwaysHiddenDivider?.removeFromStatusBar()
-            alwaysHiddenDivider = nil
-            revealAlwaysHidden = false
-        }
-    }
-
     private func observeSettings() {
-        settings.$showAlwaysHiddenSection
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.configureAlwaysHiddenSection()
-                // While arranging, re-apply the focus so a newly created (or removed)
-                // Always-Hidden divider joins the arrange layout instead of the
-                // normal collapsed geometry.
-                if self.arranger.isArranging {
-                    self.applyArrangeFocus()
-                    self.refreshOverflow()
-                } else {
-                    self.applyState()
-                }
-            }
-            .store(in: &cancellables)
-
-        // Incremental arranging: when the user changes which zones are revealed,
-        // re-lay the markers and re-check whether it now fits beside the notch.
-        arranger.$focus
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, self.arranger.isArranging else { return }
-                self.applyArrangeFocus()
-                self.refreshOverflow()
-            }
-            .store(in: &cancellables)
-
         settings.$iconStyle
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak self] style in
-                self?.chevron.setStyle(style)
-            }
+            .sink { [weak self] style in self?.chevron.setStyle(style) }
             .store(in: &cancellables)
 
-        // Whether icons are clipped behind the notch is a fact about a
-        // specific screen's geometry, and connecting/disconnecting a display
-        // (or changing its resolution) changes both which screen hosts the
-        // menu bar and how much room is beside the notch. Nothing here
-        // watched for that: `refreshOverflow()` only ran on reveal/collapse
-        // and the arrange-mode poll, so the "N icons behind the notch"
-        // warning kept reporting the previous display's answer — or stayed
-        // missing entirely — until the user next toggled the chevron.
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, !self.arranger.isArranging else { return }
-                self.applyState()
-            }
+            .sink { [weak self] _ in self?.applyState() }
             .store(in: &cancellables)
     }
 
-    // MARK: State machine
+    // MARK: Reveal state
 
-    private var isAnyRevealed: Bool { revealHidden || revealAlwaysHidden }
+    private var isAnyRevealed: Bool { revealHidden }
 
     private func handleToggle() {
-        // In Arrange Mode the chevron is a "Done" button — a left-click finishes.
-        if arranger.isArranging {
-            arranger.setArranging(false)
-            return
-        }
-
-        let optionDown = NSApp.currentEvent?.modifierFlags.contains(.option) == true
-
-        if optionDown, settings.showAlwaysHiddenSection {
-            // Option-click reveals absolutely everything.
-            revealHidden = true
-            revealAlwaysHidden = true
-        } else if isAnyRevealed {
-            revealHidden = false
-            revealAlwaysHidden = false
-        } else {
-            revealHidden = true
-            revealAlwaysHidden = false
-        }
-        applyState()
-        scheduleAutoRehideIfNeeded()
-    }
-
-    /// Public entry point for the hotkey and menu.
-    func toggleReveal() {
-        // The hotkey shouldn't reveal/hide mid-arrange — treat it as "Done".
         if arranger.isArranging {
             arranger.setArranging(false)
             return
@@ -220,7 +80,18 @@ final class MenuBarManager {
             collapse()
         } else {
             revealHidden = true
-            revealAlwaysHidden = false
+            applyState()
+            scheduleAutoRehideIfNeeded()
+        }
+    }
+
+    func toggleReveal() {
+        if arranger.isArranging {
+            arranger.setArranging(false)
+        } else if isAnyRevealed {
+            collapse()
+        } else {
+            revealHidden = true
             applyState()
             scheduleAutoRehideIfNeeded()
         }
@@ -228,79 +99,36 @@ final class MenuBarManager {
 
     func collapse() {
         revealHidden = false
-        revealAlwaysHidden = false
         applyState()
     }
 
-    /// Reveal every section, including Always-Hidden. Entry point for the menu,
-    /// the option-click path, and the self-test.
+    func beginIconManagement() {
+        revealHidden = true
+        hiddenDivider.setCollapsed(false)
+        chevron.setChevron(revealed: true)
+    }
+
+    func endIconManagement() {
+        revealHidden = false
+        applyState()
+    }
+
+    /// Kept as a small compatibility entry point for the hotkey/menu self-test.
+    /// There is only one drawer now, so "all" means the same as "hidden".
     func revealAll() {
         revealHidden = true
-        revealAlwaysHidden = settings.showAlwaysHiddenSection
         applyState()
         scheduleAutoRehideIfNeeded()
     }
 
-    /// (No `animated:` parameter: `NSStatusItem.length` isn't reliably
-    /// animatable — see `ControlItem.setCollapsed` — so nothing downstream
-    /// of here ever had an animation to opt into.)
     private func applyState() {
-        // Arrange Mode owns the bar geometry (labeled markers, everything shown);
-        // don't let a stray settings change collapse a marker mid-arrange.
         guard !arranger.isArranging else { return }
-
-        let showHidden = revealHidden || revealAlwaysHidden
-        let showAlwaysHidden = revealAlwaysHidden && settings.showAlwaysHiddenSection
-        let hiddenCollapsed = !showHidden
-        let alwaysHiddenCollapsed = settings.showAlwaysHiddenSection && !showAlwaysHidden
-
-        hiddenDivider.setCollapsed(hiddenCollapsed)
-        alwaysHiddenDivider?.setCollapsed(alwaysHiddenCollapsed)
-        applyMacOS27SpacerGeometry(hiddenCollapsed: hiddenCollapsed,
-                                   alwaysHiddenCollapsed: alwaysHiddenCollapsed)
-        chevron.setChevron(revealed: showHidden)
-
-        updateOutsideClickMonitor(active: showHidden)
-
-        // Track the notch highlight across normal reveals too: after the bar reflows
-        // (macOS posts no notification), re-measure whether the revealed icons clip
-        // behind the notch. Collapsing back here clears the glow.
+        hiddenDivider.setCollapsed(!revealHidden)
+        chevron.setChevron(revealed: revealHidden)
+        updateOutsideClickMonitor(active: revealHidden)
         scheduleOverflowRefresh()
     }
 
-    /// macOS 27 drops a single oversized status item instead of using it as a
-    /// spacer. Keep each divider below that cliff and add only enough zero-width
-    /// registration slots to cover the widest attached display.
-    private func applyMacOS27SpacerGeometry(hiddenCollapsed: Bool,
-                                            alwaysHiddenCollapsed: Bool) {
-        guard ControlItem.usesMacOS27Model else { return }
-
-        let displays = NSScreen.screens.map {
-            MenuBarCollapseGeometry.Display(
-                width: $0.frame.width,
-                statusWidth: $0.auxiliaryTopRightArea?.width)
-        }
-        let unit = MenuBarCollapseGeometry.unitLength(displays: displays)
-        let collapsedUnits = (hiddenCollapsed ? 1 : 0)
-            + (alwaysHiddenCollapsed ? 1 : 0)
-        let active = MenuBarCollapseGeometry.activeSpacers(
-            unit: unit, displays: displays, collapsedUnits: collapsedUnits)
-        for (index, spacer) in spacerItems.enumerated() {
-            spacer.setSpacer(active: index < active, length: unit)
-        }
-    }
-
-    /// Re-measure overflow once the bar has settled after a reveal/collapse. Normal
-    /// reveals are discrete events, so a single delayed check is enough — no need for
-    /// the continuous poll the drag-heavy arrange flow uses.
-    ///
-    /// Coalesced: each call cancels the previous pending check. A rapid chevron
-    /// burst would otherwise leave several checks in flight, and one scheduled by an
-    /// *earlier* toggle can fire milliseconds after a *later* reveal — while the bar
-    /// is still mid-reflow and the divider's window still reports its ballooned
-    /// collapsed frame — flashing a garbage "N behind the notch" count. Keeping only
-    /// the newest check guarantees the measurement runs a full settle-delay after
-    /// the most recent state change.
     private func scheduleOverflowRefresh() {
         overflowRefreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -311,106 +139,31 @@ final class MenuBarManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    // MARK: Arrange Mode
+    // MARK: Legacy live-bar marker bridge
 
-    /// Enter or leave **Arrange Menu Bar** mode. On entry every icon is revealed
-    /// and each divider shows a labeled marker so the user can ⌘-drag icons into
-    /// the right zone; auto-rehide and the outside-click monitor are suspended so
-    /// the bar stays put while they drag. On exit the markers disappear and the
-    /// new arrangement takes effect (collapse back to the resting state).
-    ///
-    /// Called only via `arranger.onChange`, so `arranger.isArranging` already
-    /// reflects `entering` by the time we run.
+    /// The Settings drawer is the normal management path. This small bridge keeps
+    /// the old overflow activity safe if a stale activity or external caller enters
+    /// the transient marker state during an upgrade.
     private func applyArrangeMode(_ entering: Bool) {
         if entering {
             rehideTimer?.invalidate()
             rehideTimer = nil
             updateOutsideClickMonitor(active: false)
-
+            revealHidden = true
             chevron.setArranging(true)
-            applyArrangeFocus()
+            hiddenDivider.setArrangingMarker(true, zone: .hidden)
             startOverflowMonitor()
-            Log.menuBar.info("Entered Arrange Mode")
         } else {
             stopOverflowMonitor()
             chevron.setArranging(false)
             hiddenDivider.setArrangingMarker(false)
-            alwaysHiddenDivider?.setArrangingMarker(false)
-
-            // Apply the new arrangement: collapse back to the resting state.
             revealHidden = false
-            revealAlwaysHidden = false
             applyState()
-            Log.menuBar.info("Exited Arrange Mode")
         }
-    }
-
-    /// Reveal the zones — and show the compact markers — that the current arrange
-    /// focus calls for. Each focus collapses the zone that isn't involved and shows
-    /// a single marker for the edge being sorted, so the fewest icons compete for
-    /// the scarce space to the right of the notch:
-    ///
-    /// - `.all` — reveal Shown │ Hidden │ Always-Hidden; both ◀ markers.
-    /// - `.shownHidden` — reveal Shown │ Hidden; ◀Hidden marker; balloon the
-    ///   Always-Hidden divider so that zone's icons are pushed off-screen.
-    /// - `.hiddenAlwaysHidden` — reveal Shown │ Hidden │ Always-Hidden but show only
-    ///   the ◀Always marker (the ◀Hidden divider drops to a 1pt spacer), reclaiming
-    ///   the Hidden marker's width for the Always-Hidden edge.
-    ///
-    /// Each divider names the zone to its left, so the right-to-left order
-    /// (Shown │ Hidden │ Always-Hidden) reads straight off the bar. Shown owns no
-    /// divider — it's simply the area to the right of ◀ Hidden.
-    private func applyArrangeFocus() {
-        // With no Always-Hidden section there's only one edge to sort.
-        let hasAlways = settings.showAlwaysHiddenSection && alwaysHiddenDivider != nil
-        let focus: MenuBarArranger.Focus = hasAlways ? arranger.focus : .shownHidden
-
-        switch focus {
-        case .all:
-            revealHidden = true
-            revealAlwaysHidden = true
-            hiddenDivider.setArrangingMarker(true, zone: .hidden)
-            if hasAlways {
-                alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
-            }
-            applyMacOS27SpacerGeometry(hiddenCollapsed: false, alwaysHiddenCollapsed: false)
-
-        case .shownHidden:
-            revealHidden = true
-            revealAlwaysHidden = false
-            hiddenDivider.setArrangingMarker(true, zone: .hidden)
-            // Balloon the Always-Hidden divider so its icons are pushed off-screen,
-            // freeing their width for the Shown ↔ Hidden edge.
-            alwaysHiddenDivider?.setArrangingMarker(false)
-            alwaysHiddenDivider?.setCollapsed(true)
-            applyMacOS27SpacerGeometry(hiddenCollapsed: false,
-                                       alwaysHiddenCollapsed: hasAlways)
-
-        case .hiddenAlwaysHidden:
-            revealHidden = true
-            revealAlwaysHidden = true
-            // Drop the Hidden marker to a 1pt spacer — Hidden still shows, but its
-            // marker's width is reclaimed for the Always-Hidden edge, which needs
-            // every point (Shown + Hidden already sit to its right).
-            hiddenDivider.setArrangingMarker(false)
-            hiddenDivider.setCollapsed(false)
-            alwaysHiddenDivider?.setArrangingMarker(true, zone: .alwaysHidden)
-            applyMacOS27SpacerGeometry(hiddenCollapsed: false, alwaysHiddenCollapsed: false)
-        }
-
-        // Reclaim the chevron's ~30pt whenever the Always-Hidden edge is on the bar
-        // (.all / .hiddenAlwaysHidden). That edge is furthest from the clock and
-        // first to fall behind the notch, so trimming right-side width pulls its
-        // marker back into view. Shown ↔ Hidden already fits, so keep the chevron.
-        chevron.setArrangeCollapsed(revealAlwaysHidden)
     }
 
     // MARK: Notch overflow
 
-    /// While arranging, poll the live bar and publish whether Flux's revealed items
-    /// still fit beside the notch. Menu-bar item frames shift as the user ⌘-drags
-    /// icons and macOS posts no notification for it, so a light poll (only while
-    /// arranging, a transient mode) keeps the warning honest.
     private func startOverflowMonitor() {
         refreshOverflow()
         overflowTimer?.invalidate()
@@ -424,91 +177,37 @@ final class MenuBarManager {
         overflowTimer = nil
     }
 
-    /// Whether the leftmost thing the user is currently trying to *see* could be
-    /// clipped behind the notch: while arranging (a revealed edge marker), or during
-    /// a normal reveal (revealed icons spill past it). When nothing is revealed the
-    /// hidden zones sit behind the notch *by design*, so there's nothing to warn about.
-    private var shouldMonitorOverflow: Bool { arranger.isArranging || isAnyRevealed }
+    private var shouldMonitorOverflow: Bool { arranger.isArranging || revealHidden }
 
     private func refreshOverflow() {
         guard shouldMonitorOverflow else {
             arranger.setOverflow(arrange: false, notch: false, iconCount: 0)
             return
         }
-        // A `nil` deficit means the marker's window frame was stale (caught
-        // mid-reflow after a quick toggle). Publishing it would flash a bogus
-        // count, so keep the previous state and re-measure once the bar settles.
-        // While arranging the repeating monitor re-measures on its own.
         guard let deficit = computeOverflowDeficit() else {
             if !arranger.isArranging { scheduleOverflowRefresh() }
             return
         }
         let over = deficit > 0
-        let count = Self.iconsToClear(deficit, compact: MenuBarSpacing.isCompact)
-        // The drawer's arrange coaching only makes sense while arranging; the notch
-        // glow applies to both. So a normal-reveal overflow lights the notch without
-        // surfacing the (focus-specific) drawer warning.
-        arranger.setOverflow(arrange: arranger.isArranging && over, notch: over, iconCount: count)
+        arranger.setOverflow(arrange: arranger.isArranging && over,
+                             notch: over,
+                             iconCount: Self.iconsToClear(deficit, compact: MenuBarSpacing.isCompact))
     }
 
-    /// How far (in points) the leftmost revealed marker sits *left* of where it would
-    /// clear the notch — `0` when it already fits, `nil` when no trustworthy sample
-    /// could be taken. Items fill the bar from the clock leftward, so the leftmost
-    /// marker crosses into the notch exactly when the revealed zones run out of room
-    /// beside it; the shortfall is how much width must move off this edge before it
-    /// comes back into view.
-    ///
-    /// A collapsed divider hides its neighbours by ballooning to ~10,000pt, and
-    /// right after a quick toggle the item's window can still report that stale
-    /// geometry. A frame wider than the screen can only be the balloon — measuring
-    /// it would place the marker thousands of points off-screen and inflate the
-    /// icon estimate to an absurd figure — so report "no sample" instead.
     private func computeOverflowDeficit() -> CGFloat? {
         guard let screen = menuBarScreen() else { return 0 }
-        guard let frame = leftmostOverflowMarker()?.statusItem.button?.window?.frame else { return 0 }
-        guard frame.width <= screen.frame.width else { return nil }       // stale collapsed frame mid-reflow
-        guard frame.width >= 1 else { return .greatestFiniteMagnitude }   // couldn't place — deeply overflowed
+        guard let frame = hiddenDivider.statusItem.button?.window?.frame else { return 0 }
+        guard frame.width <= screen.frame.width else { return nil }
+        guard frame.width >= 1 else { return .greatestFiniteMagnitude }
         return max(0, (screen.statusItemRegion.minX + Self.overflowSlack) - frame.minX)
     }
 
-    /// Convert an overflow shortfall in points into an icon count for the cascade
-    /// coaching. Each menu-bar icon occupies roughly one slot's width plus spacing;
-    /// compact spacing tightens that, so fewer moves are needed per point. This is
-    /// an estimate — it only needs to be in the right ballpark to say "about N", so
-    /// it's capped at 99: a real bar never has that many icons behind the notch, and
-    /// an unbounded deficit (the "couldn't place" sentinel) must not reach the
-    /// `Int` conversion, which traps on huge doubles. Static so the self-test can
-    /// pin down the clamp without a live engine.
     static func iconsToClear(_ deficit: CGFloat, compact: Bool) -> Int {
         guard deficit > 0 else { return 0 }
         let perIcon: CGFloat = compact ? 28 : 38
         return max(1, Int(min(deficit / perIcon, 99).rounded(.up)))
     }
 
-    /// The leftmost marker Flux is showing under the current focus — the one that
-    /// hits the notch first. `.shownHidden` shows only ◀Hidden; `.all` and
-    /// `.hiddenAlwaysHidden` both show ◀Always as their leftmost marker.
-    private func leftmostArrangeMarker() -> ControlItem {
-        if settings.showAlwaysHiddenSection, arranger.focus != .shownHidden, let ah = alwaysHiddenDivider {
-            return ah
-        }
-        return hiddenDivider
-    }
-
-    /// The leftmost item whose clipping means "the user can't see what they wanted".
-    /// While arranging that's the focus's leftmost marker; during a normal reveal
-    /// it's the leftmost *revealed* divider — the boundary the revealed icons sit
-    /// left of, so if it's behind the notch those icons are clipped. Returns `nil`
-    /// when nothing relevant is revealed (collapsed zones hide by design).
-    private func leftmostOverflowMarker() -> ControlItem? {
-        if arranger.isArranging { return leftmostArrangeMarker() }
-        if revealAlwaysHidden, let ah = alwaysHiddenDivider { return ah }
-        if revealHidden { return hiddenDivider }
-        return nil
-    }
-
-    /// The screen whose menu bar currently hosts Flux's items — found from the
-    /// chevron's own window so notch geometry is read from the right display.
     private func menuBarScreen() -> NSScreen? {
         if let window = chevron.statusItem.button?.window {
             let mid = NSPoint(x: window.frame.midX, y: window.frame.midY)
@@ -517,45 +216,31 @@ final class MenuBarManager {
         return NSScreen.main
     }
 
-    // MARK: Auto-rehide
+    /// The x boundary used by `MenuBarIconManager` to split Shown and Hidden.
+    var drawerBoundaryX: CGFloat? {
+        hiddenDivider.statusItem.button?.window?.frame.maxX
+            ?? chevron.statusItem.button?.window?.frame.minX
+    }
+
+    // MARK: Auto-hide
 
     private func scheduleAutoRehideIfNeeded() {
         rehideTimer?.invalidate()
         rehideTimer = nil
-        guard !arranger.isArranging else { return }
-        // No `autoRehideDelay > 0` clause: the slider's range starts at 2 and
-        // `autoRehide` is the on/off control, so zero was unreachable and the
-        // branch was dead.
-        guard settings.autoRehide, isAnyRevealed else { return }
-
-        rehideTimer = Timer.scheduledTimer(withTimeInterval: settings.autoRehideDelay,
-                                           repeats: false) { [weak self] _ in
+        guard !arranger.isArranging, settings.autoRehide, revealHidden else { return }
+        rehideTimer = Timer.scheduledTimer(withTimeInterval: settings.autoRehideDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.collapse() }
         }
     }
 
-    /// While items are revealed, a click in the *content area* (below the menu
-    /// bar) re-hides them, matching Bartender's behaviour. A click **on the menu
-    /// bar itself keeps the reveal open** — the user is interacting with a
-    /// just-revealed item, and re-hiding it out from under the click is exactly
-    /// the bug this avoids; instead we give it a fresh auto-rehide window so it
-    /// collapses only once they're done. Uses a global monitor (passive — it does
-    /// not consume the click) so the click still reaches its target.
     private func updateOutsideClickMonitor(active: Bool) {
         if active, outsideClickMonitor == nil {
-            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
-                matching: [.leftMouseDown, .rightMouseDown]
-            ) { [weak self] _ in
-                // Capture the location synchronously — the cursor may move before
-                // the hop to the main actor below.
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
                 let location = NSEvent.mouseLocation
                 Task { @MainActor in
                     guard let self else { return }
-                    if self.clickIsInMenuBar(location) {
-                        self.scheduleAutoRehideIfNeeded()
-                    } else {
-                        self.collapse()
-                    }
+                    if self.clickIsInMenuBar(location) { self.scheduleAutoRehideIfNeeded() }
+                    else { self.collapse() }
                 }
             }
         } else if !active, let monitor = outsideClickMonitor {
@@ -564,66 +249,34 @@ final class MenuBarManager {
         }
     }
 
-    /// Whether a screen-coordinate point falls within the menu-bar strip at the
-    /// top of whichever screen contains it. `NSScreen.frame.maxY` is the top edge;
-    /// `visibleFrame.maxY` sits just below the menu bar, so their difference is the
-    /// menu-bar height (correct on notched Macs too). Falls back to the status-bar
-    /// thickness if a screen reports no inset.
     private func clickIsInMenuBar(_ location: NSPoint) -> Bool {
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(location) })
-            ?? NSScreen.main else { return false }
-        let menuBarHeight = max(screen.frame.maxY - screen.visibleFrame.maxY,
-                                NSStatusBar.system.thickness)
-        return location.y >= screen.frame.maxY - menuBarHeight
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(location) }) ?? NSScreen.main else { return false }
+        let height = max(screen.frame.maxY - screen.visibleFrame.maxY, NSStatusBar.system.thickness)
+        return location.y >= screen.frame.maxY - height
     }
 
     // MARK: Menu
 
-    /// Set by the wiring agent to the version string of a newer release, when
-    /// `UpdateChecker` has found one — `nil` otherwise.
-    ///
-    /// The 6-hourly background check does its job and sets `.available`, but
-    /// nothing observed that outside the Settings window, so unless the user
-    /// happened to open Settings they never learned an update existed. This
-    /// is the cheapest honest surface for it: one extra item, at the top of
-    /// the menu they already use, only when there's actually something to say.
     var pendingUpdateVersion: (() -> String?)?
-
-    /// Opens Settings on a specific tab. Separate from `onOpenSettings`
-    /// because that one deliberately preserves whichever tab the user last
-    /// had open — right for a generic "Flux Settings…", wrong for the update
-    /// signpost, which is only useful if it lands on General where the
-    /// download/install controls actually are.
     var onOpenSettingsTab: ((SettingsTab) -> Void)?
 
-    /// Builds the menu used by both the menu-bar chevron and the collapsed
-    /// notch. Keeping one builder prevents the two right-click paths from
-    /// drifting apart again.
     func makeMenu() -> NSMenu {
         let menu = NSMenu(title: "Flux")
         menu.autoenablesItems = false
 
         if let version = pendingUpdateVersion?() {
             let item = makeItem("Update to \(version)…", #selector(menuOpenUpdateSettings))
-            // The actual download/install lives in Settings › General; this
-            // is a signpost, not a second install path to keep in sync.
             item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
             menu.addItem(item)
             menu.addItem(.separator())
         }
 
         if arranger.isArranging {
-            // Mid-arrange the reveal/hide actions don't apply — offer only "Done".
-            menu.addItem(makeItem("Done Arranging", #selector(menuToggleArrange)))
+            menu.addItem(makeItem("Done", #selector(menuToggleArrange)))
         } else {
-            let toggleTitle = isAnyRevealed ? "Hide Menu Bar Items" : "Reveal Hidden Items"
-            menu.addItem(makeItem(toggleTitle, #selector(menuToggle)))
-
-            if settings.showAlwaysHiddenSection {
-                menu.addItem(makeItem("Reveal Always-Hidden Items", #selector(menuRevealAll)))
-            }
+            menu.addItem(makeItem(isAnyRevealed ? "Hide Menu Bar Items" : "Reveal Hidden Items", #selector(menuToggle)))
             menu.addItem(.separator())
-            menu.addItem(makeItem("Arrange Menu Bar Items…", #selector(menuToggleArrange)))
+            menu.addItem(makeItem("Manage Menu Bar Icons…", #selector(menuOpenMenuBarSettings)))
         }
         if timerService != nil {
             menu.addItem(.separator())
@@ -633,19 +286,13 @@ final class MenuBarManager {
         menu.addItem(makeItem("Flux Settings…", #selector(menuOpenSettings), key: ","))
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit Flux", #selector(menuQuit), key: "q"))
-
         return menu
     }
 
     private func showMenu() {
         let menu = makeMenu()
-
-        // Pop the menu directly under the chevron. Using popUp(positioning:…)
-        // avoids assigning statusItem.menu, which would otherwise suppress the
-        // left-click toggle action.
         if let button = chevron.statusItem.button {
-            let origin = NSPoint(x: 0, y: button.bounds.height + 4)
-            menu.popUp(positioning: nil, at: origin, in: button)
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
         }
     }
 
@@ -653,13 +300,11 @@ final class MenuBarManager {
         let item = NSMenuItem(title: "Start Timer", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "Start Timer")
         submenu.autoenablesItems = false
-
         for minutes in TimerActivity.presetMinutes {
             let timerItem = makeItem("\(minutes) minutes", #selector(menuStartTimer(_:)))
             timerItem.representedObject = NSNumber(value: minutes)
             submenu.addItem(timerItem)
         }
-
         if timerService?.timers.isEmpty == false {
             submenu.addItem(.separator())
             submenu.addItem(makeItem("Stop All Timers", #selector(menuStopAllTimers)))
@@ -675,10 +320,8 @@ final class MenuBarManager {
     }
 
     @objc private func menuToggle() { toggleReveal() }
-
-    @objc private func menuRevealAll() { revealAll() }
-
-    @objc private func menuToggleArrange() { arranger.toggle() }
+    @objc private func menuToggleArrange() { arranger.setArranging(false) }
+    @objc private func menuOpenMenuBarSettings() { onOpenSettingsTab?(.menuBar) ?? onOpenSettings() }
 
     @objc private func menuStartTimer(_ sender: NSMenuItem) {
         guard let minutes = (sender.representedObject as? NSNumber)?.intValue,
@@ -689,61 +332,38 @@ final class MenuBarManager {
 
     @objc private func menuStopAllTimers() {
         guard let timerService else { return }
-        for timer in timerService.timers {
-            timerService.cancel(timer.id)
-        }
+        for timer in timerService.timers { timerService.cancel(timer.id) }
     }
 
     // MARK: Diagnostics
 
-    /// A snapshot of the engine's live geometry. Used by `--selftest` to assert the
-    /// hide/reveal state machine end-to-end, and available for future in-app
-    /// diagnostics. Reads the *actual* `NSStatusItem.length` values, so it verifies
-    /// the real bar state — not just the internal booleans.
     struct Diagnostics: Equatable {
         var revealHidden: Bool
-        var revealAlwaysHidden: Bool
         var hiddenDividerLength: CGFloat
-        var alwaysHiddenDividerLength: CGFloat?
-        var alwaysHiddenSectionPresent: Bool
         var chevronRevealed: Bool
         var isArranging: Bool
         var hiddenMarkerShown: Bool
-        var alwaysHiddenMarkerShown: Bool
     }
 
     var diagnostics: Diagnostics {
-        Diagnostics(
-            revealHidden: revealHidden,
-            revealAlwaysHidden: revealAlwaysHidden,
-            hiddenDividerLength: hiddenDivider.statusItem.length,
-            alwaysHiddenDividerLength: alwaysHiddenDivider?.statusItem.length,
-            alwaysHiddenSectionPresent: settings.showAlwaysHiddenSection && alwaysHiddenDivider != nil,
-            chevronRevealed: chevron.isRevealed,
-            isArranging: arranger.isArranging,
-            hiddenMarkerShown: hiddenDivider.isArranging,
-            alwaysHiddenMarkerShown: alwaysHiddenDivider?.isArranging ?? false
-        )
+        Diagnostics(revealHidden: revealHidden,
+                    hiddenDividerLength: hiddenDivider.statusItem.length,
+                    chevronRevealed: chevron.isRevealed,
+                    isArranging: arranger.isArranging,
+                    hiddenMarkerShown: hiddenDivider.isArranging)
     }
 
     @objc private func menuOpenSettings() { onOpenSettings() }
 
-    /// Falls back to the generic path if nothing wired the tab-specific one —
-    /// a stale General tab still beats doing nothing.
     @objc private func menuOpenUpdateSettings() {
-        if let onOpenSettingsTab {
-            onOpenSettingsTab(.general)
-        } else {
-            onOpenSettings()
-        }
+        if let onOpenSettingsTab { onOpenSettingsTab(.general) } else { onOpenSettings() }
     }
 
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
     deinit {
-        if let monitor = outsideClickMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
+        if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor) }
         overflowTimer?.invalidate()
+        overflowRefreshWork?.cancel()
     }
 }

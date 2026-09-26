@@ -17,6 +17,7 @@ enum SettingsRenderer {
         let view = SettingsView(initialTab: tab)
             .environmentObject(SettingsStore())
             .environmentObject(MenuBarArranger())
+            .environmentObject(MenuBarIconManager())
             .environmentObject(UpdateChecker())
             .environmentObject(NowPlayingService())
             .environmentObject(PermissionCenter())

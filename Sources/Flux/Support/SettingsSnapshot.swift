@@ -20,11 +20,13 @@ enum SettingsSnapshot {
         // Optionally capture the live Arrange-Mode panel (⌘ callout + zone legend),
         // and its notch-overflow warning state.
         let arranger = MenuBarArranger()
+        let iconManager = MenuBarIconManager()
         if arranging { arranger.setArranging(true) }
         if arranging && overflow { arranger.setOverflow(arrange: true, notch: true, iconCount: 4) }
         let root = SettingsView(initialTab: tab)
             .environmentObject(store)
             .environmentObject(arranger)
+            .environmentObject(iconManager)
             .environmentObject(UpdateChecker())
             .environmentObject(NowPlayingService())
             .environmentObject(PermissionCenter())

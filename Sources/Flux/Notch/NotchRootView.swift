@@ -627,6 +627,14 @@ struct NotchRootView: View {
                 .animation(.easeOut(duration: 0.15), value: clamped)
             }
             .foregroundStyle(NotchDesign.primaryColor)
+        case .soundGauge(let value, let systemName):
+            HStack(spacing: 5) {
+                Image(systemName: systemName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 12)
+                SoundVisualizer(level: value)
+            }
+            .foregroundStyle(NotchDesign.primaryColor)
         case .artwork:
             if let image = artworkProvider?() {
                 Image(nsImage: image)
@@ -639,5 +647,25 @@ struct NotchRootView: View {
                     .foregroundStyle(NotchDesign.primaryColor.opacity(0.9))
             }
         }
+    }
+}
+
+private struct SoundVisualizer: View {
+    let level: Double
+
+    var body: some View {
+        let clamped = CGFloat(min(max(level, 0), 1))
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<5, id: \.self) { index in
+                let amplitude = max(CGFloat(0.2), min(CGFloat(1), clamped * 1.35 - CGFloat(index) * 0.12))
+                Capsule()
+                    .fill(NotchDesign.primaryColor.opacity(0.35 + amplitude * 0.65))
+                    .frame(width: 2.5, height: 3 + amplitude * 10)
+                    .animation(.spring(response: 0.22, dampingFraction: 0.8)
+                        .delay(Double(index) * 0.012), value: clamped)
+            }
+        }
+        .frame(width: 25, height: 15)
+        .accessibilityHidden(true)
     }
 }

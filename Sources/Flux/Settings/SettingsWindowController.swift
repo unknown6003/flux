@@ -10,6 +10,7 @@ import Combine
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let settings: SettingsStore
     private let arranger: MenuBarArranger
+    private let iconManager: MenuBarIconManager
     private let updater: UpdateChecker
     private let nowPlaying: NowPlayingService
     private let permissions: PermissionCenter
@@ -27,11 +28,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// entry points can open the requested sidebar section.
     private var currentTab: SettingsTab = .general
 
-    init(settings: SettingsStore, arranger: MenuBarArranger, updater: UpdateChecker,
+    init(settings: SettingsStore, arranger: MenuBarArranger, iconManager: MenuBarIconManager, updater: UpdateChecker,
          nowPlaying: NowPlayingService, permissions: PermissionCenter,
          crashReporter: CrashReporter, clipboardMonitor: ClipboardMonitor) {
         self.settings = settings
         self.arranger = arranger
+        self.iconManager = iconManager
         self.updater = updater
         self.nowPlaying = nowPlaying
         self.permissions = permissions
@@ -75,6 +77,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // reachable at all when this commit's sibling added `.miniaturizable`
         // and a ⌘M item, so this arrived with it.
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        if currentTab == .menuBar { iconManager.beginIconManagement() }
         window?.makeKeyAndOrderFront(nil)
         onVisibilityChanged?(true)
     }
@@ -130,6 +133,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         })
         .environmentObject(settings)
         .environmentObject(arranger)
+        .environmentObject(iconManager)
         .environmentObject(updater)
         .environmentObject(nowPlaying)
         .environmentObject(permissions)
@@ -197,6 +201,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         onVisibilityChanged?(false)
+        iconManager.endIconManagement()
         // Deferred a runloop turn: dropping to `.accessory` synchronously
         // from inside `windowWillClose` pulls the Dock tile and menu bar out
         // from under a window AppKit is still in the middle of closing.

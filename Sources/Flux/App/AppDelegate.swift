@@ -5,6 +5,7 @@ import Combine
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = SettingsStore.shared
     private let arranger = MenuBarArranger()
+    private let menuBarIcons = MenuBarIconManager()
     private let updater = UpdateChecker()
     /// Notices that the last run died without a clean shutdown, and remembers
     /// what the notch/camera were doing at the time — see `CrashReporter`'s
@@ -88,13 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         presentation: notchWindow.$isPresenting.eraseToAnyPublisher())
 
     private lazy var settingsWindow = SettingsWindowController(
-        settings: settings, arranger: arranger, updater: updater,
+        settings: settings, arranger: arranger, iconManager: menuBarIcons, updater: updater,
         nowPlaying: nowPlayingService, permissions: permissionCenter,
         crashReporter: crashReporter, clipboardMonitor: clipboardMonitor)
-    private lazy var arrangeHint = ArrangeHintWindowController(
-        arranger: arranger,
-        showAlwaysHidden: { [settings] in settings.showAlwaysHiddenSection }
-    )
     // Glows the notch when icons are clipped behind it; clicking opens the drawer.
     // Only used when the notch panel itself is disabled — see
     // `configureNotchOverflowCoexistence`.
@@ -102,7 +99,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var cancellables = Set<AnyCancellable>()
     private let duoCalendarBoundaryTask = DeadlineTask()
-    private var settingsVisible = false
     /// See the `$launchAtLogin` sink — guards its own write-back from
     /// re-entering it.
     private var isReconcilingLaunchAtLogin = false
@@ -118,6 +114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  timerService: timerService) { [weak self] in
             self?.openSettings()
         }
+        menuBarIcons.boundaryXProvider = { [weak self] in self?.menuBar?.drawerBoundaryX }
+        menuBarIcons.beginProvider = { [weak self] in self?.menuBar?.beginIconManagement() }
+        menuBarIcons.endProvider = { [weak self] in self?.menuBar?.endIconManagement() }
+        menuBarIcons.requestAccess()
+        DispatchQueue.main.async { [weak self] in self?.menuBarIcons.refresh() }
         // Lets a background-found update surface somewhere the user actually
         // looks — see `MenuBarManager.pendingUpdateVersion`.
         menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
@@ -144,13 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let outcome = self?.shelfStore.add(urls: urls) else { return .declined }
             return .init(accepted: outcome.accepted, ready: outcome.added.count)
         }
-        // A tap on the overflow indicator's wings should open Arrange Mode,
-        // same as the legacy `NotchHighlightWindowController` glow's
-        // `onActivate` — not toggle the notch panel itself, which is what a
-        // plain `viewModel.clicked()` would otherwise do for every activity.
-        notchWindow.onActivityTap = { [arranger] kind in
+        // A tap on the overflow indicator opens the real icon drawer in Settings.
+        notchWindow.onActivityTap = { [weak self] kind in
             guard kind == .menuBarOverflow else { return false }
-            arranger.setArranging(true)
+            self?.settingsWindow.show(tab: .menuBar)
             return true
         }
         // Right-clicking the notch should feel like right-clicking the
@@ -287,32 +285,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Track the Settings window so we can suppress the floating hint while
         // it's open — Settings already shows the same arrange guidance.
         settingsWindow.onVisibilityChanged = { [weak self] visible in
-            self?.settingsVisible = visible
-            self?.refreshArrangeHint()
             self?.crashReporter.update { $0.settingsOpen = visible }
         }
 
         // Float the "how to arrange" hint next to the menu bar whenever Arrange
         // Mode is on, from wherever it was toggled (menu or Settings).
-        arranger.$isArranging
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshArrangeHint() }
-            .store(in: &cancellables)
-
         observeNotchSettings()
     }
 
     /// The floating arrange hint is redundant while Settings is open — that
     /// window already spells out the same gesture — so only float it when
     /// arranging *and* Settings is closed.
-    private func refreshArrangeHint() {
-        if arranger.isArranging && !settingsVisible {
-            arrangeHint.show()
-        } else {
-            arrangeHint.hide()
-        }
-    }
-
     /// Install (or tear down) the global hotkey to match the current preferences, and
     /// push the *actual* outcome back into settings: macOS hands a chord to whichever
     /// app claimed it first, so a registration can legitimately fail. Surfacing that as
@@ -606,7 +589,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if notchHighlight == nil {
             notchHighlight = NotchHighlightWindowController(
                 arranger: arranger,
-                onActivate: { [arranger] in arranger.setArranging(true) }
+                onActivate: { [weak self] in self?.settingsWindow.show(tab: .menuBar) }
             )
         }
     }

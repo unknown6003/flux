@@ -3,20 +3,16 @@ import AppKit
 /// A single status item owned by Flux. Two roles:
 ///
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
-/// - `.divider`  — an invisible expandable spacer. When *collapsed* its width
-///                 balloons, shoving every item to its left off the visible bar.
-/// - `.spacer`   — macOS 27's bounded width units. They keep the combined
-///                 collapsed span large without tripping the system's cliff.
+/// - `.divider`  — the one hidden drawer boundary. When *collapsed* its width
+///                 expands and pushes hidden items into macOS's overflow area.
 ///
-/// This is the whole trick: we never touch other apps' status items, we just
-/// consume horizontal space next to them. No private APIs, no screen capture,
-/// no Accessibility permission — which is exactly why it's stable and cheap.
+/// Flux also uses Accessibility in `MenuBarIconManager` to let the user place
+/// real status items from Settings instead of trying to drag a crowded bar.
 @MainActor
 final class ControlItem {
     enum Role: Equatable {
         case chevron
         case divider
-        case spacer
     }
 
     /// macOS 27 replaced the per-item bar layout with a single system-managed
@@ -25,8 +21,6 @@ final class ControlItem {
     static var usesMacOS27Model: Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
-
-    static let macOS27SpacerCount = MenuBarCollapseGeometry.spacerCount
 
     private static var autosaveSuffix: String {
         usesMacOS27Model ? ".v27" : ""
@@ -55,7 +49,6 @@ final class ControlItem {
     static let allAutosaveNames = [
         "flux.chevron",
         "flux.divider.hidden",
-        "flux.divider.alwaysHidden",
     ]
 
     /// UserDefaults key macOS uses to persist a status item's Cmd-drag position.
@@ -113,30 +106,18 @@ final class ControlItem {
     /// marker and, on an increase, clears the saved positions once so the corrected
     /// defaults take hold.
     ///
-    /// - v1: both dividers seeded near the clock. Every real icon sat *left* of the
-    ///       Always-Hidden divider, so the whole bar was trapped in Always-Hidden and a
-    ///       chevron click revealed nothing.
-    /// - v2: Always-Hidden divider seeded far left, so its zone started empty and icons
-    ///       defaulted into the chevron-toggled Hidden zone. This traded one bug for
-    ///       three: the Always-Hidden divider sat *past every icon at the edge of the
-    ///       bar* — on a notched Mac that's behind the notch — so nothing could be
-    ///       dragged into Always-Hidden (it was permanently empty, and option-click
-    ///       revealed nothing), and the chevron, pinned rightmost against the clock,
-    ///       left no room for a Shown zone at all.
-    /// - v3: the whole control cluster seeds **left of every real icon**, in bar order.
-    ///       Nothing is hidden on a fresh install and every zone is reachable — see
-    ///       `assignDefaultPositionsIfUnset`.
-    private static let layoutVersion = 3
+    /// - v4: remove the second divider. The drawer has one hidden boundary.
+    private static let layoutVersion = 4
     private static let layoutVersionKey = "flux.layoutVersion"
 
     /// Seed the default layout the first time (or after a reset). Read **right → left**
     /// along the bar, a saved position is a distance-from-the-right-edge in points, so a
     /// *lower* value sits further right:
     ///
-    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…] [alwaysHiddenDivider] [Always…]`
+    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…]`
     ///
-    /// Two properties fall out of seeding the three control items as one tight cluster
-    /// to the **left of every real icon** (all three get a position at or beyond the
+    /// Two properties fall out of seeding the two control items as one tight cluster
+    /// to the **left of every real icon** (both get a position at or beyond the
     /// widest screen's width, which no real icon can exceed):
     ///
     /// 1. **Nothing hides on a fresh install.** Every existing icon lands to the *right*
@@ -147,7 +128,7 @@ final class ControlItem {
     ///    than parked at the screen edge, so the markers the user must drag across are
     ///    on-screen and clear of the notch.
     ///
-    /// The chevron is the rightmost of the three, which is what makes a **Shown** zone
+    /// The chevron is the rightmost of the two, which is what makes a **Shown** zone
     /// possible at all: anything the user drags to the *right* of the chevron is right of
     /// the Hidden divider too, so it stays visible permanently. (Seeding the chevron at
     /// position 0 — hard against the clock, as v1/v2 did — left literally nowhere for a
@@ -157,13 +138,12 @@ final class ControlItem {
     /// arrangement is always preserved. Run after `sanitizePersistedPositions` /
     /// `migrateLayoutIfNeeded` and before the items are created.
     static func assignDefaultPositionsIfUnset(defaults: UserDefaults = .standard) {
-        // One slot apart, so the three stay adjacent and in order with no room for a
+        // One slot apart, so the two stay adjacent and in order with no room for a
         // stray icon to land between them on the initial seed.
         let base = farLeftPosition
         let layout: [(name: String, position: Double)] = [
-            ("flux.chevron", base),                            // rightmost of the three
+            ("flux.chevron", base),                            // rightmost of the two
             ("flux.divider.hidden", base + 8),                 // its left; Shown lies right of here
-            ("flux.divider.alwaysHidden", base + 16),          // furthest left
         ]
         for item in layout where defaults.object(forKey: positionKey(item.name)) == nil {
             defaults.set(item.position, forKey: positionKey(item.name))
@@ -209,7 +189,7 @@ final class ControlItem {
     init(role: Role, autosaveName: String) {
         self.role = role
         let item = NSStatusBar.system.statusItem(
-            withLength: role == .spacer ? 0 : NSStatusItem.variableLength)
+            withLength: NSStatusItem.variableLength)
         // Persist the user's Cmd-drag position across launches so the zones stay
         // where they put them.
         item.autosaveName = autosaveName + Self.autosaveSuffix
@@ -219,13 +199,8 @@ final class ControlItem {
         // behavior still lets Cmd-drag *reposition* the items — it just can't
         // delete them.
         item.behavior = []
-        // Self-heal: force visible in case an older build (which allowed removal)
-        // persisted isVisible=false under this autosaveName. macOS 27 spacers are
-        // intentionally hidden until a collapsed span needs them.
-        item.isVisible = role != .spacer
-        if role == .spacer {
-            item.button?.setAccessibilityElement(false)
-        }
+        // Self-heal: force visible in case an older build persisted isVisible=false.
+        item.isVisible = true
         self.statusItem = item
 
         configureButton()
@@ -245,9 +220,6 @@ final class ControlItem {
             // Invisible: no image, empty title. It only exists to take up space.
             button.image = nil
             button.title = ""
-        case .spacer:
-            button.image = nil
-            button.title = ""
         }
     }
 
@@ -263,30 +235,17 @@ final class ControlItem {
         guard role == .divider else { return }
         let target: CGFloat
         if collapsed, Self.usesMacOS27Model {
-            let displays = NSScreen.screens.map {
-                MenuBarCollapseGeometry.Display(
-                    width: $0.frame.width,
-                    statusWidth: $0.auxiliaryTopRightArea?.width)
-            }
-            target = MenuBarCollapseGeometry.unitLength(displays: displays)
+            let width = NSScreen.main?.auxiliaryTopRightArea?.width
+                ?? NSScreen.main?.frame.width
+                ?? 1_200
+            // macOS 27 drops a huge status item. One bounded drawer boundary is
+            // enough now that real icons are moved from the Flux UI.
+            target = min(max((width * 0.7).rounded(.down), 240), 800)
         } else {
             target = collapsed ? ControlItem.collapsedWidth : ControlItem.revealedWidth
         }
         guard abs(statusItem.length - target) > 0.5 else { return }
         statusItem.length = target
-    }
-
-    /// Activates one of macOS 27's bounded span units. Hidden spacers keep their
-    /// registration slot but contribute no width while the bar is revealed.
-    func setSpacer(active: Bool, length: CGFloat) {
-        guard role == .spacer else { return }
-        if active {
-            statusItem.length = length
-            statusItem.isVisible = true
-        } else {
-            statusItem.isVisible = false
-            statusItem.length = 0
-        }
     }
 
     func setVisible(_ visible: Bool) {
@@ -318,22 +277,9 @@ final class ControlItem {
         redrawChevron()
     }
 
-    /// Chevron only. Collapse the chevron to zero width while arranging so its
-    /// ~30pt is reclaimed for a tight edge — the Always-Hidden marker sits furthest
-    /// from the clock and is the first to slip behind the notch, so every point of
-    /// right-side width pulls it back toward the visible region. The floating hint's
-    /// **Done** button stands in while the chevron is collapsed.
-    func setArrangeCollapsed(_ collapsed: Bool) {
-        guard role == .chevron else { return }
-        statusItem.length = collapsed ? 0 : NSStatusItem.variableLength
-    }
-
     /// Divider only. In Arrange Mode a divider stops being invisible and shows a
-    /// labeled marker naming the **zone that lies to its left** — the zone an icon
-    /// joins when you ⌘-drag it past the marker (leftward). Each marker is a solid
-    /// pill in its zone's colour, so the right-to-left order reads straight off the
-    /// bar: `[✓] Shown  ◀Hidden  Hidden  ◀Always Hidden  Always-Hidden`. Passing
-    /// `on: false` restores the invisible state.
+    /// labeled marker naming the zone that lies to its left. Passing `on: false`
+    /// restores the invisible state.
     func setArrangingMarker(_ on: Bool, zone: MenuBarSection? = nil) {
         guard role == .divider, let button = statusItem.button else { return }
         isArranging = on
@@ -361,11 +307,8 @@ final class ControlItem {
         }
     }
 
-    /// Draws a solid rounded tag in the zone's colour with a left arrow and the
-    /// zone's short tag (`◀ Always`) — "everything to the left of here is <zone>".
-    /// Deliberately compact: on notched Macs the width this marker occupies is
-    /// width the user's real icons can't use, so a slimmer tag keeps more zones
-    /// on-screen. The full zone name lives in the tooltip and the hint legend.
+    /// Draws a solid rounded tag in the zone's colour with a left arrow —
+    /// "everything to the left of here is <zone>".
     /// Non-template so the colour survives.
     private static func markerImage(zone: MenuBarSection) -> NSImage {
         let font = NSFont.systemFont(ofSize: 10, weight: .bold)

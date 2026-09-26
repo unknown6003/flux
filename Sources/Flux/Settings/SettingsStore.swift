@@ -33,7 +33,6 @@ final class SettingsStore: ObservableObject {
         defaults.register(defaults: Self.factoryDefaults)
 
         self.launchAtLogin = defaults.bool(forKey: Keys.launchAtLogin)
-        self.showAlwaysHiddenSection = defaults.bool(forKey: Keys.showAlwaysHiddenSection)
         self.autoRehide = defaults.bool(forKey: Keys.autoRehide)
         self.autoRehideDelay = defaults.double(forKey: Keys.autoRehideDelay)
         self.enableHotkey = defaults.bool(forKey: Keys.enableHotkey)
@@ -71,6 +70,7 @@ final class SettingsStore: ObservableObject {
         self.notchClipboardEnabled = defaults.bool(forKey: Keys.notchClipboardEnabled)
         self.notchClipboardPersistenceEnabled = defaults.bool(forKey: Keys.notchClipboardPersistenceEnabled)
         self.notchActivityTimerEnabled = defaults.bool(forKey: Keys.notchActivityTimerEnabled)
+        self.notchSoundHUDEnabled = defaults.bool(forKey: Keys.notchSoundHUDEnabled)
         self.notchLockScreenExperimentEnabled = defaults.bool(forKey: Keys.notchLockScreenExperimentEnabled)
         self.notchLockScreenNowPlayingEnabled = defaults.bool(forKey: Keys.notchLockScreenNowPlayingEnabled)
         self.notchLockScreenActivitiesEnabled = defaults.bool(forKey: Keys.notchLockScreenActivitiesEnabled)
@@ -85,10 +85,6 @@ final class SettingsStore: ObservableObject {
 
     @Published var launchAtLogin: Bool {
         didSet { defaults.set(launchAtLogin, forKey: Keys.launchAtLogin) }
-    }
-
-    @Published var showAlwaysHiddenSection: Bool {
-        didSet { defaults.set(showAlwaysHiddenSection, forKey: Keys.showAlwaysHiddenSection) }
     }
 
     // MARK: Behaviour
@@ -289,6 +285,12 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchActivityTimerEnabled, forKey: Keys.notchActivityTimerEnabled) }
     }
 
+    /// Shows volume and mute changes in the notch and replaces Apple's volume bezel
+    /// when Accessibility control is available.
+    @Published var notchSoundHUDEnabled: Bool {
+        didSet { defaults.set(notchSoundHUDEnabled, forKey: Keys.notchSoundHUDEnabled) }
+    }
+
     /// EXPERIMENTAL — master on/off for `LockScreenPresenter`'s notch
     /// silhouette on the macOS lock screen. Defaults to `false`: this rides
     /// on undocumented lock-screen notification names and drawing above the
@@ -346,7 +348,6 @@ final class SettingsStore: ObservableObject {
 
     private static let factoryDefaults: [String: Any] = [
         Keys.launchAtLogin: false,
-        Keys.showAlwaysHiddenSection: true,
         Keys.autoRehide: true,
         Keys.autoRehideDelay: 8.0,
         Keys.enableHotkey: true,
@@ -376,6 +377,7 @@ final class SettingsStore: ObservableObject {
         Keys.notchClipboardEnabled: false,
         Keys.notchClipboardPersistenceEnabled: true,
         Keys.notchActivityTimerEnabled: true,
+        Keys.notchSoundHUDEnabled: true,
         Keys.notchLockScreenExperimentEnabled: false,
         Keys.notchLockScreenNowPlayingEnabled: true,
         Keys.notchLockScreenActivitiesEnabled: true,
@@ -386,7 +388,6 @@ final class SettingsStore: ObservableObject {
 
     private enum Keys {
         static let launchAtLogin = "flux.launchAtLogin"
-        static let showAlwaysHiddenSection = "flux.showAlwaysHiddenSection"
         static let autoRehide = "flux.autoRehide"
         static let autoRehideDelay = "flux.autoRehideDelay"
         static let enableHotkey = "flux.enableHotkey"
@@ -412,6 +413,7 @@ final class SettingsStore: ObservableObject {
         static let notchClipboardEnabled = "flux.notch.clipboard.enabled"
         static let notchClipboardPersistenceEnabled = "flux.notch.clipboard.persistence.enabled"
         static let notchActivityTimerEnabled = "flux.notch.activities.timer"
+        static let notchSoundHUDEnabled = "flux.notch.activities.soundHUD"
         static let notchLockScreenExperimentEnabled = "flux.notch.lockScreenExperiment"
         static let notchLockScreenNowPlayingEnabled = "flux.notch.lockScreen.nowPlaying"
         static let notchLockScreenActivitiesEnabled = "flux.notch.lockScreen.activities"

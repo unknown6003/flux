@@ -34,6 +34,8 @@ final class NotchActivityRouter {
     private let arranger: MenuBarArranger
     private let power: PowerMonitor
     private let bluetooth: DeviceMonitor
+    private let volume: VolumeMonitor
+    private let mediaKeys: MediaKeyInterceptor
     /// Shared with `CalendarWidget` — unlike `power`/`bluetooth` (whose only
     /// consumer is this router), this instance is also the Calendar widget's
     /// own data source, so it's injected rather than default-constructed
@@ -100,6 +102,8 @@ final class NotchActivityRouter {
          timers: TimerService,
          power: PowerMonitor? = nil,
          bluetooth: DeviceMonitor? = nil,
+         volume: VolumeMonitor? = nil,
+         mediaKeys: MediaKeyInterceptor? = nil,
          startsMonitors: Bool = true,
          presentation: AnyPublisher<Bool, Never> = Just(true).eraseToAnyPublisher()) {
         self.activities = activities
@@ -111,12 +115,16 @@ final class NotchActivityRouter {
         self.timers = timers
         self.power = power ?? PowerMonitor()
         self.bluetooth = bluetooth ?? DeviceMonitor()
+        self.volume = volume ?? VolumeMonitor()
+        self.mediaKeys = mediaKeys ?? MediaKeyInterceptor()
         self.startsMonitors = startsMonitors
 
         observePower()
         observeBluetooth()
         observeOverflow()
         observeOverflowGating()
+        observeVolume()
+        observeSoundGating()
         observeCalendar()
         observeTimers()
         observeMonitorGating()
@@ -445,6 +453,82 @@ final class NotchActivityRouter {
         }
     }
 
+    // MARK: - Volume and ringer HUD
+
+    private func observeVolume() {
+        volume.events
+            .sink { [weak self] event in self?.handleVolumeEvent(event) }
+            .store(in: &cancellables)
+
+        mediaKeys.events
+            .sink { [weak self] event in self?.handleSoundKey(event) }
+            .store(in: &cancellables)
+    }
+
+    private func handleVolumeEvent(_ event: VolumeEvent) {
+        guard settings.notchSoundHUDEnabled else { return }
+        if case let .volumeChanged(level, muted) = event {
+            activities.post(Self.soundActivity(level: level, muted: muted))
+        }
+    }
+
+    private func handleSoundKey(_ event: SoundKeyEvent) {
+        guard case let .key(key, _, fine) = event else { return }
+        switch key {
+        case .volumeUp:
+            volume.adjustVolume(by: fine ? 1 / 64 : 1 / 16)
+        case .volumeDown:
+            volume.adjustVolume(by: fine ? -1 / 64 : -1 / 16)
+        case .mute:
+            volume.toggleMute()
+        }
+        if let current = volume.current {
+            activities.post(Self.soundActivity(level: current.level, muted: current.muted))
+        }
+    }
+
+    static func soundActivity(level: Float, muted: Bool) -> LiveActivity {
+        LiveActivity(kind: .soundHUD,
+                     leading: .icon(systemName: soundSymbol(level: level, muted: muted)),
+                     trailing: .soundGauge(Double(level), systemName: soundSymbol(level: level, muted: muted)),
+                     duration: 1.5,
+                     priority: 300)
+    }
+
+    static func soundSymbol(level: Float, muted: Bool) -> String {
+        if muted { return "speaker.slash.fill" }
+        switch level {
+        case ..<0.01: return "speaker.fill"
+        case ..<0.34: return "speaker.wave.1.fill"
+        case ..<0.67: return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
+        }
+    }
+
+    private func observeSoundGating() {
+        settings.$notchEnabled
+            .combineLatest(settings.$notchSoundHUDEnabled)
+            .dropFirst()
+            .sink { [weak self] notchEnabled, soundEnabled in
+                self?.applySoundState(notchEnabled: notchEnabled, soundEnabled: soundEnabled)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func applySoundState(notchEnabled: Bool? = nil, soundEnabled: Bool? = nil) {
+        guard startsMonitors else { return }
+        let active = (notchEnabled ?? settings.notchEnabled) && isPresenting
+        guard active && (soundEnabled ?? settings.notchSoundHUDEnabled) else {
+            volume.stop()
+            mediaKeys.stop()
+            activities.dismiss(kind: .soundHUD)
+            return
+        }
+        volume.start()
+        mediaKeys.volumeControllable = { [weak self] in self?.volume.hasVolumeControl ?? false }
+        _ = mediaKeys.start()
+    }
+
     /// Mirrors the pre-M3 `AppDelegate.configureNotchOverflowCoexistence`'s
     /// `else` branch on disable: disabling the notch panel leaves no wing
     /// left to show the overflow warning in, so its live activity (if any) is
@@ -619,6 +703,7 @@ final class NotchActivityRouter {
                 guard let self else { return }
                 self.isPresenting = value
                 self.applyMonitorState()
+                self.applySoundState()
                 self.recomputeCalendarActivity()
                 self.recomputeTimerActivity()
             }
@@ -672,6 +757,7 @@ final class NotchActivityRouter {
                                    duoSettingOn: Bool? = nil) {
         guard startsMonitors else { return }
         let notchOn = (notchEnabled ?? settings.notchEnabled) && isPresenting
+        applySoundState(notchEnabled: notchEnabled)
 
         if notchOn && (batteryEnabled ?? settings.notchActivityBatteryEnabled) {
             power.start()

@@ -275,6 +275,10 @@ struct NotchTab: View {
             ToggleRow(title: "Timer live display",
                       subtitle: "Show a live countdown wing while a timer is running, and an alert when it finishes.",
                       isOn: $settings.notchActivityTimerEnabled)
+            RowDivider()
+            ToggleRow(title: "Volume & ringer visualizer",
+                      subtitle: "Show volume and mute changes in the notch and replace Apple's volume bezel.",
+                      isOn: $settings.notchSoundHUDEnabled)
         }
     }
 

@@ -317,7 +317,7 @@ struct LockScreenMediaControlsView: View {
 
     private static func iconName(from content: LiveActivity.Content) -> String? {
         switch content {
-        case .icon(let name), .iconText(let name, _), .gauge(_, let name):
+        case .icon(let name), .iconText(let name, _), .gauge(_, let name), .soundGauge(_, let name):
             return name
         case .none, .text, .artwork:
             return nil
