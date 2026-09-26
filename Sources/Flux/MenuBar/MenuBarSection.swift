@@ -33,7 +33,7 @@ enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .shown: return "Always visible in the menu bar"
         case .hidden: return "Revealed when you click the Flux chevron"
-        case .alwaysHidden: return "Revealed only with Option-click"
+        case .alwaysHidden: return "Managed in Settings and never revealed by the drawer"
         }
     }
 

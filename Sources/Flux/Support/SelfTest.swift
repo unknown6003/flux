@@ -158,13 +158,13 @@ enum SelfTest {
         check(isHidden(s1.alwaysHiddenDividerLength),
               "Normal reveal keeps Always Hidden closed")
 
-        manager.revealAll()
+        manager.beginIconManagement()
         let sAll = manager.diagnostics
-        check(sAll.revealHidden && sAll.revealAlwaysHidden,
-              "revealAll opens both drawer sections")
+        check(sAll.managingIcons && sAll.revealHidden && sAll.revealAlwaysHidden,
+              "Settings management opens both sections in the single drawer")
         check(isRevealed(sAll.hiddenDividerLength) && isRevealed(sAll.alwaysHiddenDividerLength),
-              "revealAll shrinks both drawer dividers")
-        manager.collapse()
+              "Settings management opens both section boundaries")
+        manager.endIconManagement()
         let s2 = manager.diagnostics
         check(!s2.revealHidden && !s2.revealAlwaysHidden
                 && isHidden(s2.hiddenDividerLength)
@@ -184,6 +184,14 @@ enum SelfTest {
               "Icon manager classifies the Always Hidden section")
         check(MenuBarIconManager.insertionX(for: .alwaysHidden, iconWidth: 20, boundaries: boundaries) == 168,
               "Icon manager inserts Always Hidden icons left of its boundary")
+        check(MenuBarIconManager.isVisible(.shown, revealHidden: false, revealAlwaysHidden: false),
+              "Icon visibility keeps Shown items visible")
+        check(MenuBarIconManager.isVisible(.hidden, revealHidden: true, revealAlwaysHidden: false),
+              "Icon visibility reveals Hidden items when the drawer is open")
+        check(!MenuBarIconManager.isVisible(.hidden, revealHidden: false, revealAlwaysHidden: false),
+              "Icon visibility hides Hidden items when the drawer is closed")
+        check(!MenuBarIconManager.isVisible(.alwaysHidden, revealHidden: true, revealAlwaysHidden: false),
+              "Icon visibility keeps Always Hidden items out of the single drawer")
 
         // --- Notch geometry: statusItemFitsBesideNotch drives overflow detection ---
         // A marker "fits" only when it sits clear of the notch (its left edge stays

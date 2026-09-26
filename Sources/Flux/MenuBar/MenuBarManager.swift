@@ -25,6 +25,8 @@ final class MenuBarManager {
 
     private static let overflowSlack: CGFloat = 2
 
+    var onDrawerStateChanged: ((Bool, Bool) -> Void)?
+
     init(settings: SettingsStore,
          arranger: MenuBarArranger,
          timerService: TimerService? = nil,
@@ -92,17 +94,12 @@ final class MenuBarManager {
     private var isAnyRevealed: Bool { revealHidden || revealAlwaysHidden }
 
     private func handleToggle() {
-        let optionDown = NSApp.currentEvent?.modifierFlags.contains(.option) == true
-        if optionDown && settings.showAlwaysHiddenSection {
-            revealHidden = true
-            revealAlwaysHidden = true
-        } else if isAnyRevealed {
+        if isAnyRevealed {
             collapse()
             return
-        } else {
-            revealHidden = true
-            revealAlwaysHidden = false
         }
+        revealHidden = true
+        revealAlwaysHidden = false
         applyState()
         scheduleAutoRehideIfNeeded()
     }
@@ -142,13 +139,6 @@ final class MenuBarManager {
         collapse()
     }
 
-    func revealAll() {
-        revealHidden = true
-        revealAlwaysHidden = settings.showAlwaysHiddenSection
-        applyState()
-        scheduleAutoRehideIfNeeded()
-    }
-
     private func applyState() {
         alwaysHiddenDivider.setVisible(settings.showAlwaysHiddenSection)
         let showHidden = revealHidden || revealAlwaysHidden
@@ -161,7 +151,14 @@ final class MenuBarManager {
                                    alwaysHiddenCollapsed: alwaysHiddenCollapsed)
         chevron.setChevron(revealed: isAnyRevealed)
         updateOutsideClickMonitor(active: isAnyRevealed && !managingIcons)
+        onDrawerStateChanged?(showHidden, showAlwaysHidden)
         scheduleOverflowRefresh()
+    }
+
+    func notifyDrawerState() {
+        let showHidden = revealHidden || revealAlwaysHidden
+        let showAlwaysHidden = revealAlwaysHidden && settings.showAlwaysHiddenSection
+        onDrawerStateChanged?(showHidden, showAlwaysHidden)
     }
 
     private func scheduleOverflowRefresh() {

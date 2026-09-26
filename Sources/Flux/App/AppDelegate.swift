@@ -102,8 +102,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// See the `$launchAtLogin` sink — guards its own write-back from
     /// re-entering it.
     private var isReconcilingLaunchAtLogin = false
+    private var hasStartedApplication = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let otherInstances = runningFluxInstances()
+        if otherInstances.contains(where: shouldYieldToRunningInstance) {
+            NSApp.terminate(nil)
+            return
+        }
+        otherInstances.forEach { $0.terminate() }
+
+        let start = { [weak self] in self?.startApplication() }
+        if otherInstances.isEmpty {
+            start()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { start() }
+        }
+    }
+
+    private func runningFluxInstances() -> [NSRunningApplication] {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != pid }
+    }
+
+    private func shouldYieldToRunningInstance(_ application: NSRunningApplication) -> Bool {
+        guard let bundleURL = application.bundleURL,
+              let version = Bundle(url: bundleURL)?.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return false
+        }
+        return updater.isNewer(version, than: AppInfo.version)
+    }
+
+    private func startApplication() {
+        guard !hasStartedApplication else { return }
+        hasStartedApplication = true
         Log.menuBar.info("Flux launching")
 
         // First thing: reading the previous session has to happen before
@@ -119,6 +154,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menuBarIcons.beginProvider = { [weak self] in self?.menuBar?.beginIconManagement() }
         menuBarIcons.endProvider = { [weak self] in self?.menuBar?.endIconManagement() }
+        menuBar?.onDrawerStateChanged = { [weak self] revealHidden, revealAlwaysHidden in
+            self?.menuBarIcons.applyDrawerVisibility(
+                revealHidden: revealHidden,
+                revealAlwaysHidden: revealAlwaysHidden)
+        }
+        menuBar?.notifyDrawerState()
         // Lets a background-found update surface somewhere the user actually
         // looks — see `MenuBarManager.pendingUpdateVersion`.
         menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
