@@ -71,10 +71,15 @@ if [ -n "$MRA_FRAMEWORK" ]; then
   cp "$VENDOR_MRA/bin/mediaremote-adapter.pl" "$CONTENTS/Resources/mediaremote-adapter.pl"
 fi
 
-echo "▶ Ad-hoc signing…"
-# Ad-hoc signing gives the bundle a stable code identity so Login Items and TCC
-# permissions persist across launches. A real Developer ID cert would replace
-# the "-" for notarised distribution.
+SIGNING_IDENTITY="${CODESIGN_IDENTITY:--}"
+if [ "$SIGNING_IDENTITY" = "-" ]; then
+  echo "▶ Ad-hoc signing…"
+  # Ad-hoc signing permits local launch but does not keep TCC grants attached
+  # to changed builds. Use CODESIGN_IDENTITY with a Developer ID certificate
+  # for a release that keeps permissions across updates.
+else
+  echo "▶ Signing with $SIGNING_IDENTITY…"
+fi
 #
 # Signed inside-out and WITHOUT --deep: the framework is a nested bundle that
 # must carry its own valid signature before the outer app is signed, or a
@@ -84,9 +89,9 @@ echo "▶ Ad-hoc signing…"
 # was, so if the framework failed to build (and isn't bundled) this step is
 # unaffected either way.
 if [ -d "$CONTENTS/Frameworks/MediaRemoteAdapter.framework" ]; then
-  codesign --force --sign - "$CONTENTS/Frameworks/MediaRemoteAdapter.framework"
+  codesign --force --sign "$SIGNING_IDENTITY" "$CONTENTS/Frameworks/MediaRemoteAdapter.framework"
 fi
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+codesign --force --sign "$SIGNING_IDENTITY" --identifier "$BUNDLE_ID" "$APP"
 
 echo "✓ Built $APP"
 codesign --verify --verbose=1 "$APP" 2>&1 | sed 's/^/  /' || true

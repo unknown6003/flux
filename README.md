@@ -151,8 +151,9 @@ area. Older saved positions cannot be read by third-party apps on macOS 27.
 
 ## Privacy and permissions
 
-**Calendar and Camera are the only TCC permissions Flux currently requests.**
-Both are opt-in and behind their own explicit **Grant Access**
+**Calendar and Camera are the only TCC permissions Flux requests through an OS
+prompt.** Menu-bar icon management uses Accessibility only after you enable
+Flux in System Settings. Calendar and Camera are opt-in and behind their own explicit **Grant Access**
 button in Settings → Notch; the permission-gated widget shows its own
 "access needed" state until you ask for it. Everything else in the app
 (menu-bar hiding, the notch panel, widget cycling, Now Playing,
@@ -181,8 +182,8 @@ drag **Flux** into **Applications**. On first launch, right-click the app → **
 
 **A note on permissions:** Flux is ad-hoc signed rather than notarized with a paid
 Developer ID, which means macOS can — and sometimes does — treat an update as a new,
-untrusted binary and quietly drop a previously granted TCC permission (Calendar
-or Camera). If a permission-gated widget suddenly shows its
+untrusted binary and quietly drop a previously granted permission (Accessibility,
+Calendar, or Camera). If a permission-gated widget suddenly shows its
 "access needed" state after updating Flux, that's why — Settings → Notch shows the
 live grant/denied status for each permission and a button to re-request it or jump
 straight to the right System Settings pane.
