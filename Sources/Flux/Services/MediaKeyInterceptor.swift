@@ -27,8 +27,9 @@ final class MediaKeyInterceptor {
     @discardableResult
     func start() -> Bool {
         guard eventTap == nil else { return true }
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(options) else { return false }
+        // Permission prompts belong to the explicit Settings action. Starting the
+        // sound HUD must never nag on launch or every time the notch appears.
+        guard AXIsProcessTrusted() else { return false }
         let mask: CGEventMask = 1 << 14
         let context = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
@@ -81,7 +82,8 @@ final class MediaKeyInterceptor {
         }
         if parsed.keyDown {
             let fine = event.flags.contains(.maskShift) && event.flags.contains(.maskAlternate)
-            events.send(.key(key, isRepeat: parsed.isRepeat, fine: fine))
+            let soundEvent = SoundKeyEvent.key(key, isRepeat: parsed.isRepeat, fine: fine)
+            Task { @MainActor [weak self] in self?.events.send(soundEvent) }
         }
         return nil
     }

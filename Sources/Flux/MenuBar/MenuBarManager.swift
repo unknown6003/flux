@@ -1,7 +1,7 @@
 import AppKit
 import Combine
 
-/// Owns Flux's two status items and the single hidden drawer boundary.
+/// Owns Flux's controls and the three-zone drawer state machine.
 @MainActor
 final class MenuBarManager {
     private let settings: SettingsStore
@@ -10,12 +10,16 @@ final class MenuBarManager {
     private let onOpenSettings: () -> Void
 
     private let chevron: ControlItem
+    private let spacerItems: [ControlItem]
     private let hiddenDivider: ControlItem
+    private let alwaysHiddenDivider: ControlItem
+
     private var revealHidden = false
+    private var revealAlwaysHidden = false
+    private var managingIcons = false
 
     private var rehideTimer: Timer?
     private var outsideClickMonitor: Any?
-    private var overflowTimer: Timer?
     private var overflowRefreshWork: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
 
@@ -37,13 +41,18 @@ final class MenuBarManager {
         }
 
         self.chevron = ControlItem(role: .chevron, autosaveName: "flux.chevron")
+        self.spacerItems = ControlItem.usesMacOS27Model
+            ? (0..<ControlItem.macOS27SpacerCount).map {
+                ControlItem(role: .spacer, autosaveName: "flux.spacer.\($0)")
+            }
+            : []
         self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden")
+        self.alwaysHiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.alwaysHidden")
 
         wireChevron()
         observeSettings()
-        arranger.onChange = { [weak self] on in self?.applyArrangeMode(on) }
         applyState()
-        Log.menuBar.info("MenuBarManager initialised with one hidden drawer")
+        Log.menuBar.info("MenuBarManager initialised with the three-zone drawer")
     }
 
     // MARK: Setup
@@ -55,6 +64,17 @@ final class MenuBarManager {
     }
 
     private func observeSettings() {
+        settings.$showAlwaysHiddenSection
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                if !enabled { self.revealAlwaysHidden = false }
+                self.alwaysHiddenDivider.setVisible(enabled)
+                self.applyState()
+            }
+            .store(in: &cancellables)
+
         settings.$iconStyle
             .dropFirst()
             .receive(on: RunLoop.main)
@@ -69,134 +89,124 @@ final class MenuBarManager {
 
     // MARK: Reveal state
 
-    private var isAnyRevealed: Bool { revealHidden }
+    private var isAnyRevealed: Bool { revealHidden || revealAlwaysHidden }
 
     private func handleToggle() {
-        if arranger.isArranging {
-            arranger.setArranging(false)
+        let optionDown = NSApp.currentEvent?.modifierFlags.contains(.option) == true
+        if optionDown && settings.showAlwaysHiddenSection {
+            revealHidden = true
+            revealAlwaysHidden = true
+        } else if isAnyRevealed {
+            collapse()
             return
+        } else {
+            revealHidden = true
+            revealAlwaysHidden = false
         }
+        applyState()
+        scheduleAutoRehideIfNeeded()
+    }
+
+    /// Public entry point for the hotkey and menu.
+    func toggleReveal() {
         if isAnyRevealed {
             collapse()
         } else {
             revealHidden = true
-            applyState()
-            scheduleAutoRehideIfNeeded()
-        }
-    }
-
-    func toggleReveal() {
-        if arranger.isArranging {
-            arranger.setArranging(false)
-        } else if isAnyRevealed {
-            collapse()
-        } else {
-            revealHidden = true
+            revealAlwaysHidden = false
             applyState()
             scheduleAutoRehideIfNeeded()
         }
     }
 
     func collapse() {
+        rehideTimer?.invalidate()
+        rehideTimer = nil
         revealHidden = false
+        revealAlwaysHidden = false
         applyState()
     }
 
+    /// Keep every zone open while the Settings drawer reads the real bar.
     func beginIconManagement() {
+        rehideTimer?.invalidate()
+        rehideTimer = nil
+        managingIcons = true
         revealHidden = true
-        hiddenDivider.setCollapsed(false)
-        chevron.setChevron(revealed: true)
+        revealAlwaysHidden = settings.showAlwaysHiddenSection
+        applyState()
     }
 
     func endIconManagement() {
-        revealHidden = false
-        applyState()
+        managingIcons = false
+        collapse()
     }
 
-    /// Kept as a small compatibility entry point for the hotkey/menu self-test.
-    /// There is only one drawer now, so "all" means the same as "hidden".
     func revealAll() {
         revealHidden = true
+        revealAlwaysHidden = settings.showAlwaysHiddenSection
         applyState()
         scheduleAutoRehideIfNeeded()
     }
 
     private func applyState() {
-        guard !arranger.isArranging else { return }
-        hiddenDivider.setCollapsed(!revealHidden)
-        chevron.setChevron(revealed: revealHidden)
-        updateOutsideClickMonitor(active: revealHidden)
+        alwaysHiddenDivider.setVisible(settings.showAlwaysHiddenSection)
+        let showHidden = revealHidden || revealAlwaysHidden
+        let showAlwaysHidden = revealAlwaysHidden && settings.showAlwaysHiddenSection
+        let hiddenCollapsed = !showHidden
+        let alwaysHiddenCollapsed = settings.showAlwaysHiddenSection && !showAlwaysHidden
+        hiddenDivider.setCollapsed(hiddenCollapsed)
+        alwaysHiddenDivider.setCollapsed(alwaysHiddenCollapsed)
+        applyMacOS27SpacerGeometry(hiddenCollapsed: hiddenCollapsed,
+                                   alwaysHiddenCollapsed: alwaysHiddenCollapsed)
+        chevron.setChevron(revealed: isAnyRevealed)
+        updateOutsideClickMonitor(active: isAnyRevealed && !managingIcons)
         scheduleOverflowRefresh()
     }
 
     private func scheduleOverflowRefresh() {
         overflowRefreshWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.arranger.isArranging else { return }
-            self.refreshOverflow()
-        }
+        let work = DispatchWorkItem { [weak self] in self?.refreshOverflow() }
         overflowRefreshWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    // MARK: Legacy live-bar marker bridge
-
-    /// The Settings drawer is the normal management path. This small bridge keeps
-    /// the old overflow activity safe if a stale activity or external caller enters
-    /// the transient marker state during an upgrade.
-    private func applyArrangeMode(_ entering: Bool) {
-        if entering {
-            rehideTimer?.invalidate()
-            rehideTimer = nil
-            updateOutsideClickMonitor(active: false)
-            revealHidden = true
-            chevron.setArranging(true)
-            hiddenDivider.setArrangingMarker(true, zone: .hidden)
-            startOverflowMonitor()
-        } else {
-            stopOverflowMonitor()
-            chevron.setArranging(false)
-            hiddenDivider.setArrangingMarker(false)
-            revealHidden = false
-            applyState()
+    private func applyMacOS27SpacerGeometry(hiddenCollapsed: Bool,
+                                            alwaysHiddenCollapsed: Bool) {
+        guard ControlItem.usesMacOS27Model else { return }
+        let displays = NSScreen.screens.map {
+            MenuBarCollapseGeometry.Display(
+                width: $0.frame.width,
+                statusWidth: $0.auxiliaryTopRightArea?.width)
+        }
+        let unit = MenuBarCollapseGeometry.unitLength(displays: displays)
+        let collapsedUnits = (hiddenCollapsed ? 1 : 0)
+            + (alwaysHiddenCollapsed ? 1 : 0)
+        let active = MenuBarCollapseGeometry.activeSpacers(
+            unit: unit, displays: displays, collapsedUnits: collapsedUnits)
+        for (index, spacer) in spacerItems.enumerated() {
+            spacer.setSpacer(active: index < active, length: unit)
         }
     }
 
     // MARK: Notch overflow
 
-    private func startOverflowMonitor() {
-        refreshOverflow()
-        overflowTimer?.invalidate()
-        overflowTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshOverflow() }
-        }
-    }
-
-    private func stopOverflowMonitor() {
-        overflowTimer?.invalidate()
-        overflowTimer = nil
-    }
-
-    private var shouldMonitorOverflow: Bool { arranger.isArranging || revealHidden }
-
     private func refreshOverflow() {
-        guard shouldMonitorOverflow else {
+        guard isAnyRevealed else {
             arranger.setOverflow(arrange: false, notch: false, iconCount: 0)
             return
         }
-        guard let deficit = computeOverflowDeficit() else {
-            if !arranger.isArranging { scheduleOverflowRefresh() }
-            return
-        }
+        guard let deficit = computeOverflowDeficit() else { return }
         let over = deficit > 0
-        arranger.setOverflow(arrange: arranger.isArranging && over,
+        arranger.setOverflow(arrange: false,
                              notch: over,
                              iconCount: Self.iconsToClear(deficit, compact: MenuBarSpacing.isCompact))
     }
 
     private func computeOverflowDeficit() -> CGFloat? {
         guard let screen = menuBarScreen() else { return 0 }
-        guard let frame = hiddenDivider.statusItem.button?.window?.frame else { return 0 }
+        let boundary = revealAlwaysHidden ? alwaysHiddenDivider : hiddenDivider
+        guard let frame = boundary.statusItem.button?.window?.frame else { return nil }
         guard frame.width <= screen.frame.width else { return nil }
         guard frame.width >= 1 else { return .greatestFiniteMagnitude }
         return max(0, (screen.statusItemRegion.minX + Self.overflowSlack) - frame.minX)
@@ -216,10 +226,12 @@ final class MenuBarManager {
         return NSScreen.main
     }
 
-    /// The x boundary used by `MenuBarIconManager` to split Shown and Hidden.
-    var drawerBoundaryX: CGFloat? {
-        hiddenDivider.statusItem.button?.window?.frame.maxX
-            ?? chevron.statusItem.button?.window?.frame.minX
+    /// Boundaries used by the Settings drawer to classify and move real icons.
+    var drawerBoundaries: (hidden: CGFloat?, alwaysHidden: CGFloat?) {
+        (hidden: hiddenDivider.statusItem.button?.window?.frame.maxX,
+         alwaysHidden: settings.showAlwaysHiddenSection
+            ? alwaysHiddenDivider.statusItem.button?.window?.frame.maxX
+            : nil)
     }
 
     // MARK: Auto-hide
@@ -227,7 +239,7 @@ final class MenuBarManager {
     private func scheduleAutoRehideIfNeeded() {
         rehideTimer?.invalidate()
         rehideTimer = nil
-        guard !arranger.isArranging, settings.autoRehide, revealHidden else { return }
+        guard !managingIcons, settings.autoRehide, isAnyRevealed else { return }
         rehideTimer = Timer.scheduledTimer(withTimeInterval: settings.autoRehideDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.collapse() }
         }
@@ -271,13 +283,9 @@ final class MenuBarManager {
             menu.addItem(.separator())
         }
 
-        if arranger.isArranging {
-            menu.addItem(makeItem("Done", #selector(menuToggleArrange)))
-        } else {
-            menu.addItem(makeItem(isAnyRevealed ? "Hide Menu Bar Items" : "Reveal Hidden Items", #selector(menuToggle)))
-            menu.addItem(.separator())
-            menu.addItem(makeItem("Manage Menu Bar Icons…", #selector(menuOpenMenuBarSettings)))
-        }
+        menu.addItem(makeItem(isAnyRevealed ? "Hide Menu Bar Items" : "Reveal Hidden Items", #selector(menuToggle)))
+        menu.addItem(.separator())
+        menu.addItem(makeItem("Manage Menu Bar Icons…", #selector(menuOpenMenuBarSettings)))
         if timerService != nil {
             menu.addItem(.separator())
             menu.addItem(makeTimerMenuItem())
@@ -320,7 +328,6 @@ final class MenuBarManager {
     }
 
     @objc private func menuToggle() { toggleReveal() }
-    @objc private func menuToggleArrange() { arranger.setArranging(false) }
     @objc private func menuOpenMenuBarSettings() { onOpenSettingsTab?(.menuBar) ?? onOpenSettings() }
 
     @objc private func menuStartTimer(_ sender: NSMenuItem) {
@@ -339,18 +346,20 @@ final class MenuBarManager {
 
     struct Diagnostics: Equatable {
         var revealHidden: Bool
+        var revealAlwaysHidden: Bool
         var hiddenDividerLength: CGFloat
+        var alwaysHiddenDividerLength: CGFloat
         var chevronRevealed: Bool
-        var isArranging: Bool
-        var hiddenMarkerShown: Bool
+        var managingIcons: Bool
     }
 
     var diagnostics: Diagnostics {
         Diagnostics(revealHidden: revealHidden,
+                    revealAlwaysHidden: revealAlwaysHidden,
                     hiddenDividerLength: hiddenDivider.statusItem.length,
+                    alwaysHiddenDividerLength: alwaysHiddenDivider.statusItem.length,
                     chevronRevealed: chevron.isRevealed,
-                    isArranging: arranger.isArranging,
-                    hiddenMarkerShown: hiddenDivider.isArranging)
+                    managingIcons: managingIcons)
     }
 
     @objc private func menuOpenSettings() { onOpenSettings() }
@@ -363,7 +372,6 @@ final class MenuBarManager {
 
     deinit {
         if let monitor = outsideClickMonitor { NSEvent.removeMonitor(monitor) }
-        overflowTimer?.invalidate()
         overflowRefreshWork?.cancel()
     }
 }

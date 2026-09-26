@@ -1,10 +1,11 @@
 import AppKit
 
-/// A single status item owned by Flux. Two roles:
+/// A single status item owned by Flux. Three roles:
 ///
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
-/// - `.divider`  — the one hidden drawer boundary. When *collapsed* its width
-///                 expands and pushes hidden items into macOS's overflow area.
+/// - `.divider`  — a hidden drawer boundary. When *collapsed* its width
+///                 expands and pushes items to its left into macOS's overflow area.
+/// - `.spacer`   — a bounded macOS 27 span used with the drawer boundaries.
 ///
 /// Flux also uses Accessibility in `MenuBarIconManager` to let the user place
 /// real status items from Settings instead of trying to drag a crowded bar.
@@ -13,6 +14,7 @@ final class ControlItem {
     enum Role: Equatable {
         case chevron
         case divider
+        case spacer
     }
 
     /// macOS 27 replaced the per-item bar layout with a single system-managed
@@ -21,6 +23,8 @@ final class ControlItem {
     static var usesMacOS27Model: Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
+
+    static let macOS27SpacerCount = MenuBarCollapseGeometry.spacerCount
 
     private static var autosaveSuffix: String {
         usesMacOS27Model ? ".v27" : ""
@@ -49,6 +53,7 @@ final class ControlItem {
     static let allAutosaveNames = [
         "flux.chevron",
         "flux.divider.hidden",
+        "flux.divider.alwaysHidden",
     ]
 
     /// UserDefaults key macOS uses to persist a status item's Cmd-drag position.
@@ -106,15 +111,15 @@ final class ControlItem {
     /// marker and, on an increase, clears the saved positions once so the corrected
     /// defaults take hold.
     ///
-    /// - v4: remove the second divider. The drawer has one hidden boundary.
-    private static let layoutVersion = 4
+    /// - v5: restore the Always Hidden boundary for the three-section drawer.
+    private static let layoutVersion = 5
     private static let layoutVersionKey = "flux.layoutVersion"
 
     /// Seed the default layout the first time (or after a reset). Read **right → left**
     /// along the bar, a saved position is a distance-from-the-right-edge in points, so a
     /// *lower* value sits further right:
     ///
-    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…]`
+    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…] [alwaysDivider] [Always Hidden…]`
     ///
     /// Two properties fall out of seeding the two control items as one tight cluster
     /// to the **left of every real icon** (both get a position at or beyond the
@@ -138,12 +143,13 @@ final class ControlItem {
     /// arrangement is always preserved. Run after `sanitizePersistedPositions` /
     /// `migrateLayoutIfNeeded` and before the items are created.
     static func assignDefaultPositionsIfUnset(defaults: UserDefaults = .standard) {
-        // One slot apart, so the two stay adjacent and in order with no room for a
+        // One slot apart, so the three stay adjacent and in order with no room for a
         // stray icon to land between them on the initial seed.
         let base = farLeftPosition
         let layout: [(name: String, position: Double)] = [
             ("flux.chevron", base),                            // rightmost of the two
             ("flux.divider.hidden", base + 8),                 // its left; Shown lies right of here
+            ("flux.divider.alwaysHidden", base + 16),           // furthest left; Always Hidden lies left of here
         ]
         for item in layout where defaults.object(forKey: positionKey(item.name)) == nil {
             defaults.set(item.position, forKey: positionKey(item.name))
@@ -189,7 +195,7 @@ final class ControlItem {
     init(role: Role, autosaveName: String) {
         self.role = role
         let item = NSStatusBar.system.statusItem(
-            withLength: NSStatusItem.variableLength)
+            withLength: role == .spacer ? 0 : NSStatusItem.variableLength)
         // Persist the user's Cmd-drag position across launches so the zones stay
         // where they put them.
         item.autosaveName = autosaveName + Self.autosaveSuffix
@@ -200,7 +206,10 @@ final class ControlItem {
         // delete them.
         item.behavior = []
         // Self-heal: force visible in case an older build persisted isVisible=false.
-        item.isVisible = true
+        item.isVisible = role != .spacer
+        if role == .spacer {
+            item.button?.setAccessibilityElement(false)
+        }
         self.statusItem = item
 
         configureButton()
@@ -220,6 +229,9 @@ final class ControlItem {
             // Invisible: no image, empty title. It only exists to take up space.
             button.image = nil
             button.title = ""
+        case .spacer:
+            button.image = nil
+            button.title = ""
         }
     }
 
@@ -235,17 +247,29 @@ final class ControlItem {
         guard role == .divider else { return }
         let target: CGFloat
         if collapsed, Self.usesMacOS27Model {
-            let width = NSScreen.main?.auxiliaryTopRightArea?.width
-                ?? NSScreen.main?.frame.width
-                ?? 1_200
-            // macOS 27 drops a huge status item. One bounded drawer boundary is
-            // enough now that real icons are moved from the Flux UI.
-            target = min(max((width * 0.7).rounded(.down), 240), 800)
+            let displays = NSScreen.screens.map {
+                MenuBarCollapseGeometry.Display(
+                    width: $0.frame.width,
+                    statusWidth: $0.auxiliaryTopRightArea?.width)
+            }
+            target = MenuBarCollapseGeometry.unitLength(displays: displays)
         } else {
             target = collapsed ? ControlItem.collapsedWidth : ControlItem.revealedWidth
         }
         guard abs(statusItem.length - target) > 0.5 else { return }
         statusItem.length = target
+    }
+
+    /// Activate one bounded span while a drawer boundary is collapsed.
+    func setSpacer(active: Bool, length: CGFloat) {
+        guard role == .spacer else { return }
+        if active {
+            statusItem.length = length
+            statusItem.isVisible = true
+        } else {
+            statusItem.isVisible = false
+            statusItem.length = 0
+        }
     }
 
     func setVisible(_ visible: Bool) {

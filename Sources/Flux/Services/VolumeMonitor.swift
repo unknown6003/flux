@@ -1,5 +1,6 @@
 import Combine
 import CoreAudio
+import AudioToolbox
 
 enum VolumeEvent: Equatable {
     case volumeChanged(level: Float, muted: Bool)
@@ -158,7 +159,7 @@ final class VolumeMonitor {
     }
 
     private nonisolated static var volumeAddress: AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+        AudioObjectPropertyAddress(mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
                                    mScope: outputScope,
                                    mElement: kAudioObjectPropertyElementMain)
     }

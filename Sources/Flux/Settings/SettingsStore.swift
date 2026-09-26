@@ -33,6 +33,7 @@ final class SettingsStore: ObservableObject {
         defaults.register(defaults: Self.factoryDefaults)
 
         self.launchAtLogin = defaults.bool(forKey: Keys.launchAtLogin)
+        self.showAlwaysHiddenSection = defaults.bool(forKey: Keys.showAlwaysHiddenSection)
         self.autoRehide = defaults.bool(forKey: Keys.autoRehide)
         self.autoRehideDelay = defaults.double(forKey: Keys.autoRehideDelay)
         self.enableHotkey = defaults.bool(forKey: Keys.enableHotkey)
@@ -88,6 +89,10 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: Behaviour
+
+    @Published var showAlwaysHiddenSection: Bool {
+        didSet { defaults.set(showAlwaysHiddenSection, forKey: Keys.showAlwaysHiddenSection) }
+    }
 
     @Published var autoRehide: Bool {
         didSet { defaults.set(autoRehide, forKey: Keys.autoRehide) }
@@ -348,6 +353,7 @@ final class SettingsStore: ObservableObject {
 
     private static let factoryDefaults: [String: Any] = [
         Keys.launchAtLogin: false,
+        Keys.showAlwaysHiddenSection: true,
         Keys.autoRehide: true,
         Keys.autoRehideDelay: 8.0,
         Keys.enableHotkey: true,
@@ -388,6 +394,7 @@ final class SettingsStore: ObservableObject {
 
     private enum Keys {
         static let launchAtLogin = "flux.launchAtLogin"
+        static let showAlwaysHiddenSection = "flux.showAlwaysHiddenSection"
         static let autoRehide = "flux.autoRehide"
         static let autoRehideDelay = "flux.autoRehideDelay"
         static let enableHotkey = "flux.enableHotkey"
