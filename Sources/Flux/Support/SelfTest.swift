@@ -193,6 +193,20 @@ enum SelfTest {
         check(!MenuBarIconManager.isVisible(.alwaysHidden, revealHidden: true, revealAlwaysHidden: false),
               "Icon visibility keeps Always Hidden items out of the single drawer")
 
+        // Accessibility trust can change while Flux is open, after the user
+        // returns from System Settings. The icon manager must refresh that
+        // state on app activation instead of leaving the access card stuck.
+        var accessibilityTrusted = false
+        let accessManager = MenuBarIconManager { accessibilityTrusted }
+        accessManager.refresh()
+        check(!accessManager.isTrusted,
+              "Accessibility: starts untrusted in the settings test")
+        accessibilityTrusted = true
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification,
+                                        object: nil)
+        check(accessManager.isTrusted,
+              "Accessibility: re-checks trust when Flux becomes active")
+
         // --- Notch geometry: statusItemFitsBesideNotch drives overflow detection ---
         // A marker "fits" only when it sits clear of the notch (its left edge stays
         // right of the usable region's left edge). This is the exact predicate the
