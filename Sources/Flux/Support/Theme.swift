@@ -129,6 +129,7 @@ enum Theme {
         switch section {
         case .shown:        return rgb(0xC98A18)   // amber gold — the visible zone
         case .hidden:       return rgb(0xC15A22)   // burnt orange — the drawer
+        case .alwaysHidden: return rgb(0x8E3F32)   // rust — the second drawer edge
         }
     }
 

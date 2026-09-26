@@ -3,8 +3,8 @@ import AppKit
 /// A single status item owned by Flux. Two roles:
 ///
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
-/// - `.divider`  — the one hidden drawer boundary. When *collapsed* its width
-///                 expands and pushes hidden items into macOS's overflow area.
+    /// - `.divider`  — a hidden drawer boundary. When *collapsed* its width
+    ///                 expands and pushes items to its left into macOS's overflow area.
 ///
 /// Flux also uses Accessibility in `MenuBarIconManager` to let the user place
 /// real status items from Settings instead of trying to drag a crowded bar.
@@ -49,6 +49,7 @@ final class ControlItem {
     static let allAutosaveNames = [
         "flux.chevron",
         "flux.divider.hidden",
+        "flux.divider.alwaysHidden",
     ]
 
     /// UserDefaults key macOS uses to persist a status item's Cmd-drag position.
@@ -106,15 +107,15 @@ final class ControlItem {
     /// marker and, on an increase, clears the saved positions once so the corrected
     /// defaults take hold.
     ///
-    /// - v4: remove the second divider. The drawer has one hidden boundary.
-    private static let layoutVersion = 4
+    /// - v5: restore the Always Hidden boundary for the three-section drawer.
+    private static let layoutVersion = 5
     private static let layoutVersionKey = "flux.layoutVersion"
 
     /// Seed the default layout the first time (or after a reset). Read **right → left**
     /// along the bar, a saved position is a distance-from-the-right-edge in points, so a
     /// *lower* value sits further right:
     ///
-    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…]`
+    ///   `[clock] [Shown…] [chevron] [hiddenDivider] [Hidden…] [alwaysDivider] [Always Hidden…]`
     ///
     /// Two properties fall out of seeding the two control items as one tight cluster
     /// to the **left of every real icon** (both get a position at or beyond the
@@ -138,12 +139,13 @@ final class ControlItem {
     /// arrangement is always preserved. Run after `sanitizePersistedPositions` /
     /// `migrateLayoutIfNeeded` and before the items are created.
     static func assignDefaultPositionsIfUnset(defaults: UserDefaults = .standard) {
-        // One slot apart, so the two stay adjacent and in order with no room for a
+        // One slot apart, so the three stay adjacent and in order with no room for a
         // stray icon to land between them on the initial seed.
         let base = farLeftPosition
         let layout: [(name: String, position: Double)] = [
             ("flux.chevron", base),                            // rightmost of the two
             ("flux.divider.hidden", base + 8),                 // its left; Shown lies right of here
+            ("flux.divider.alwaysHidden", base + 16),           // furthest left; Always Hidden lies left of here
         ]
         for item in layout where defaults.object(forKey: positionKey(item.name)) == nil {
             defaults.set(item.position, forKey: positionKey(item.name))

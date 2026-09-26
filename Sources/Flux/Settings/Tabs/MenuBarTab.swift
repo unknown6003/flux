@@ -1,14 +1,14 @@
 import SwiftUI
 import AppKit
 
-/// Menu-bar behavior and the single Flux drawer used to manage real icons.
+/// Menu-bar behavior and the drawer used to manage real icons.
 struct MenuBarTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var iconManager: MenuBarIconManager
 
     var body: some View {
         VStack(spacing: 18) {
-            MenuBarPreview()
+            MenuBarPreview(showAlwaysHidden: settings.showAlwaysHiddenSection)
                 .padding(.horizontal, 4)
             drawerCard
             behaviorCard
@@ -16,6 +16,7 @@ struct MenuBarTab: View {
         }
         .padding(20)
         .onAppear { iconManager.beginIconManagement() }
+        .onDisappear { iconManager.endIconManagement() }
     }
 
     private var drawerCard: some View {
@@ -26,8 +27,12 @@ struct MenuBarTab: View {
 
     private var behaviorCard: some View {
         FluxCard(title: "Behavior") {
+            ToggleRow(title: "Always-Hidden section",
+                      subtitle: "Option-click the Flux chevron to reveal it.",
+                      isOn: $settings.showAlwaysHiddenSection)
+            RowDivider()
             ToggleRow(title: "Compact menu-bar spacing",
-                      subtitle: "Tightens the gap around every icon so more fit beside the notch. Full effect after your next login.",
+                      subtitle: "Tightens the gap around every icon. Full effect after your next login.",
                       isOn: $settings.compactMenuBarSpacing)
             RowDivider()
             ToggleRow(title: "Auto re-hide",
@@ -44,7 +49,7 @@ struct MenuBarTab: View {
         FluxCard(title: "Appearance") {
             VStack(alignment: .leading, spacing: 10) {
                 RowText(title: "Menu bar icon",
-                        subtitle: "The glyph Flux shows in the menu bar.")
+                        subtitle: "The glyph Flux shows in your menu bar.")
                 Picker("", selection: $settings.iconStyle) {
                     ForEach(MenuBarIconStyle.allCases) { style in
                         Text(style.displayName).tag(style)
@@ -66,19 +71,18 @@ private struct MenuBarDrawer: View {
         VStack(alignment: .leading, spacing: 12) {
             if !iconManager.isTrusted {
                 accessRow
-            } else if iconManager.icons.isEmpty {
-                RowText(title: "No menu-bar icons found",
-                        subtitle: "Open a few menu-bar apps, then refresh this drawer.")
-                    .padding(.vertical, 11)
-                    .padding(.horizontal, 14)
             } else {
-                Text("Choose what stays visible and what goes into the drawer.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.textSecondaryColor)
-                    .fixedSize(horizontal: false, vertical: true)
-                iconSection(.shown)
-                RowDivider()
-                iconSection(.hidden)
+                RowText(title: "Manage icons here",
+                        subtitle: "Use Move to… and the arrows below. You do not need to drag icons in the tiny menu bar.")
+                if let errorMessage = iconManager.errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                ForEach(MenuBarSection.allCases) { section in
+                    iconSection(section)
+                    if section != .alwaysHidden { RowDivider() }
+                }
                 Button {
                     iconManager.refresh()
                 } label: {
@@ -95,7 +99,7 @@ private struct MenuBarDrawer: View {
     private var accessRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             RowText(title: "Allow icon management",
-                    subtitle: "Flux uses Accessibility to read and move menu-bar icons from this drawer.")
+                    subtitle: "Flux uses Accessibility to read and move menu-bar icons from this drawer. Flux will not ask again after access is granted.")
             Button("Allow Access") {
                 iconManager.requestAccess()
             }
@@ -118,16 +122,29 @@ private struct MenuBarDrawer: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.textSecondaryColor)
             }
+            Text(section.subtitle)
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondaryColor)
+                .padding(.leading, 15)
             if items.isEmpty {
-                Text(section == .shown ? "No icons are visible." : "No hidden icons.")
+                Text(emptyText(for: section))
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondaryColor)
                     .padding(.leading, 15)
+                    .padding(.top, 2)
             } else {
                 ForEach(items) { icon in
                     MenuBarIconRow(icon: icon)
                 }
             }
+        }
+    }
+
+    private func emptyText(for section: MenuBarSection) -> String {
+        switch section {
+        case .shown: return "No icons are visible."
+        case .hidden: return "No hidden icons."
+        case .alwaysHidden: return "No always-hidden icons."
         }
     }
 }
@@ -137,11 +154,11 @@ private struct MenuBarIconRow: View {
     let icon: MenuBarIconManager.Icon
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 7) {
             Image(systemName: icon.section.symbolName)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.textSecondaryColor)
-                .frame(width: 18)
+                .frame(width: 17)
             VStack(alignment: .leading, spacing: 1) {
                 Text(icon.title)
                     .foregroundStyle(Theme.textPrimaryColor)
@@ -153,32 +170,59 @@ private struct MenuBarIconRow: View {
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
             if icon.isMovable {
                 Button {
-                    iconManager.setSection(icon.section == .shown ? .hidden : .shown, for: icon)
+                    iconManager.move(icon, toward: .towardDrawer)
                 } label: {
-                    Image(systemName: icon.section == .shown ? "arrow.down.to.line" : "arrow.up.to.line")
-                        .frame(width: 24, height: 20)
+                    Image(systemName: "chevron.left")
+                        .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Theme.accentInkColor)
-                .accessibilityLabel(icon.section == .shown ? "Hide \(icon.title)" : "Show \(icon.title)")
-            } else {
-                Text("System")
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textSecondaryColor)
+                .disabled(!iconManager.canMove(icon, toward: .towardDrawer))
+                .accessibilityLabel("Move \(icon.title) toward the drawer")
+
+                Button {
+                    iconManager.move(icon, toward: .towardClock)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .disabled(!iconManager.canMove(icon, toward: .towardClock))
+                .accessibilityLabel("Move \(icon.title) toward the clock")
+
+                Menu {
+                    ForEach(MenuBarSection.allCases) { section in
+                        Button {
+                            iconManager.move(icon, to: section)
+                        } label: {
+                            Label(section.displayName, systemImage: section.symbolName)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .frame(width: 24, height: 22)
+                }
+                .menuStyle(.borderlessButton)
+                .accessibilityLabel("Move \(icon.title) to another section")
             }
         }
-        .padding(.vertical, 6)
+        .foregroundStyle(Theme.accentInkColor)
+        .padding(.vertical, 5)
     }
 }
 
 private struct MenuBarPreview: View {
+    let showAlwaysHidden: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
+            HStack(spacing: 7) {
+                if showAlwaysHidden {
+                    zone(count: 2, tint: Theme.zoneColor(.alwaysHidden))
+                    boundary
+                }
                 zone(count: 3, tint: Theme.zoneColor(.hidden))
                 Image(systemName: "chevron.left")
                     .font(.system(size: 11, weight: .semibold))
@@ -188,6 +232,7 @@ private struct MenuBarPreview: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.textSecondaryColor)
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(
@@ -200,10 +245,17 @@ private struct MenuBarPreview: View {
             HStack(spacing: 14) {
                 legend(.shown)
                 legend(.hidden)
+                if showAlwaysHidden { legend(.alwaysHidden) }
             }
             .font(.caption2)
             .foregroundStyle(Theme.textSecondaryColor)
         }
+    }
+
+    private var boundary: some View {
+        Rectangle()
+            .fill(Theme.zoneColor(.alwaysHidden))
+            .frame(width: 1, height: 17)
     }
 
     private func zone(count: Int, tint: Color) -> some View {

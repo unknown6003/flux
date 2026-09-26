@@ -2,10 +2,16 @@ import AppKit
 import ApplicationServices
 import Combine
 
-/// Reads the real SystemUIServer menu-bar items and lets the Settings drawer move
-/// them across Flux's one shown/hidden boundary.
+/// Reads real menu-bar items and lets Settings assign their section and order.
 @MainActor
 final class MenuBarIconManager: ObservableObject {
+    typealias Boundaries = (hidden: CGFloat?, alwaysHidden: CGFloat?)
+
+    enum MoveDirection {
+        case towardDrawer
+        case towardClock
+    }
+
     struct Icon: Identifiable, Equatable {
         let id: String
         let title: String
@@ -19,14 +25,19 @@ final class MenuBarIconManager: ObservableObject {
     @Published private(set) var isTrusted = false
     @Published private(set) var errorMessage: String?
 
-    /// AppDelegate supplies the live Flux boundary after the status items exist.
-    var boundaryXProvider: () -> CGFloat? = { nil }
+    /// AppDelegate supplies the live boundaries after the status items exist.
+    var boundaryProvider: () -> Boundaries = { (nil, nil) }
     var beginProvider: () -> Void = {}
     var endProvider: () -> Void = {}
 
     private var elements: [String: AXUIElement] = [:]
 
+    /// Called only by the explicit Access button. Normal refreshes never prompt.
     func requestAccess() {
+        guard !AXIsProcessTrusted() else {
+            refresh()
+            return
+        }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         isTrusted = AXIsProcessTrustedWithOptions(options)
         if isTrusted { refresh() }
@@ -35,6 +46,7 @@ final class MenuBarIconManager: ObservableObject {
     func beginIconManagement() {
         beginProvider()
         refresh()
+        refreshAfterLayout(settles: true)
     }
 
     func endIconManagement() {
@@ -67,7 +79,7 @@ final class MenuBarIconManager: ObservableObject {
             return
         }
 
-        let boundary = boundaryXProvider()
+        let boundaries = boundaryProvider()
         var next: [Icon] = []
         var nextElements: [String: AXUIElement] = [:]
         for (index, element) in children(of: menuBar).enumerated() {
@@ -82,50 +94,145 @@ final class MenuBarIconManager: ObservableObject {
             let id = identifier ?? "\(title)|\(source ?? "")|\(index)"
             guard !isFluxItem(identifier: identifier, title: title, source: source) else { continue }
 
-            let section: MenuBarSection
-            if let boundary, frame.midX < boundary {
-                section = .hidden
-            } else {
-                section = .shown
-            }
-            let icon = Icon(id: id,
-                            title: title,
-                            source: source,
-                            section: section,
-                            isMovable: true,
-                            frame: frame)
-            next.append(icon)
+            next.append(Icon(id: id,
+                             title: title,
+                             source: source,
+                             section: Self.section(for: frame, boundaries: boundaries),
+                             isMovable: true,
+                             frame: frame))
             nextElements[id] = element
         }
 
-        icons = next
+        icons = next.sorted { $0.frame.minX < $1.frame.minX }
         elements = nextElements
         errorMessage = nil
     }
 
+    func move(_ icon: Icon, to section: MenuBarSection) {
+        guard icon.isMovable,
+              let targetX = Self.insertionX(for: section,
+                                             iconWidth: icon.frame.width,
+                                             boundaries: boundaryProvider()) else {
+            return
+        }
+        move(icon, toX: targetX, expectedSection: section)
+    }
+
+    func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool {
+        guard icon.isMovable else { return false }
+        let siblings = icons
+            .filter { $0.section == icon.section }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        guard let index = siblings.firstIndex(where: { $0.id == icon.id }) else { return false }
+        switch direction {
+        case .towardDrawer:
+            return index > siblings.startIndex
+        case .towardClock:
+            return index < siblings.index(before: siblings.endIndex)
+        }
+    }
+
+    /// Moves an icon one place within its current section. The drawer UI owns
+    /// order, so the user never has to Cmd-drag a crowded menu bar.
+    func move(_ icon: Icon, toward direction: MoveDirection) {
+        guard canMove(icon, toward: direction) else { return }
+        let siblings = icons
+            .filter { $0.section == icon.section }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        guard let index = siblings.firstIndex(where: { $0.id == icon.id }) else { return }
+        let neighbor: Icon
+        switch direction {
+        case .towardDrawer:
+            neighbor = siblings[siblings.index(before: index)]
+            move(icon, toX: neighbor.frame.minX - icon.frame.width - 4, expectedSection: icon.section)
+        case .towardClock:
+            neighbor = siblings[siblings.index(after: index)]
+            move(icon, toX: neighbor.frame.maxX + 4, expectedSection: icon.section)
+        }
+    }
+
+    // Kept for callers from older settings views during an update.
     func setSection(_ section: MenuBarSection, for icon: Icon) {
-        guard let element = elements[icon.id], let boundary = boundaryXProvider() else {
+        move(icon, to: section)
+    }
+
+    static func section(for frame: CGRect, boundaries: Boundaries) -> MenuBarSection {
+        if let alwaysHidden = boundaries.alwaysHidden, frame.midX < alwaysHidden {
+            return .alwaysHidden
+        }
+        if let hidden = boundaries.hidden, frame.midX < hidden {
+            return .hidden
+        }
+        return .shown
+    }
+
+    static func insertionX(for section: MenuBarSection,
+                           iconWidth: CGFloat,
+                           boundaries: Boundaries,
+                           gap: CGFloat = 12) -> CGFloat? {
+        switch section {
+        case .shown:
+            return boundaries.hidden.map { $0 + gap }
+        case .hidden:
+            if let alwaysHidden = boundaries.alwaysHidden { return alwaysHidden + gap }
+            return boundaries.hidden.map { $0 - iconWidth - gap }
+        case .alwaysHidden:
+            return boundaries.alwaysHidden.map { $0 - iconWidth - gap }
+        }
+    }
+
+    private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
+        guard let element = elements[icon.id] else {
             refresh()
             return
         }
 
-        let targetX = section == .hidden
-            ? boundary - icon.frame.width - 12
-            : boundary + 12
-        var target = CGPoint(x: targetX, y: icon.frame.minY)
-        let positionResult: AXError
-        if let value = AXValueCreate(.cgPoint, &target) {
-            positionResult = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
-        } else {
-            positionResult = .failure
+        let target = CGPoint(x: targetX, y: icon.frame.minY)
+        let usedAccessibility = setPosition(target, on: element)
+        if !usedAccessibility {
+            drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
+                                          y: icon.frame.midY))
         }
+        verifyMove(icon: icon,
+                   expectedSection: expectedSection,
+                   target: target,
+                   retryWithDrag: usedAccessibility)
+    }
 
-        if positionResult != .success {
-            drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY))
+    private func setPosition(_ point: CGPoint, on element: AXUIElement) -> Bool {
+        var point = point
+        guard let value = AXValueCreate(.cgPoint, &point) else { return false }
+        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
+    }
+
+    private func verifyMove(icon: Icon,
+                            expectedSection: MenuBarSection,
+                            target: CGPoint,
+                            retryWithDrag: Bool) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            guard let self else { return }
+            self.refresh()
+            guard let current = self.icons.first(where: { $0.id == icon.id }) else { return }
+            guard current.section != expectedSection else { return }
+            guard retryWithDrag else {
+                self.errorMessage = "macOS did not move \(icon.title). Try again."
+                return
+            }
+            self.drag(icon.frame, to: CGPoint(x: target.x + icon.frame.width / 2,
+                                               y: icon.frame.midY))
+            self.verifyMove(icon: icon,
+                            expectedSection: expectedSection,
+                            target: target,
+                            retryWithDrag: false)
         }
+    }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.refresh()
+    private func refreshAfterLayout(settles: Bool) {
+        let delays: [TimeInterval] = settles ? [0.15, 0.5] : [0]
+        for delay in delays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.refresh()
+            }
         }
     }
 

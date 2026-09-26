@@ -1,9 +1,10 @@
 import Foundation
 
-/// The two places an icon can live in Flux.
+/// The three places an icon can live in Flux.
 enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
     case shown
     case hidden
+    case alwaysHidden
 
     var id: String { rawValue }
 
@@ -11,6 +12,7 @@ enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .shown: return "Shown"
         case .hidden: return "Hidden"
+        case .alwaysHidden: return "Always Hidden"
         }
     }
 
@@ -23,6 +25,7 @@ enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .shown: return "Shown"
         case .hidden: return "Hidden"
+        case .alwaysHidden: return "Always"
         }
     }
 
@@ -30,6 +33,7 @@ enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .shown: return "Always visible in the menu bar"
         case .hidden: return "Revealed when you click the Flux chevron"
+        case .alwaysHidden: return "Revealed only with Option-click"
         }
     }
 
@@ -37,6 +41,7 @@ enum MenuBarSection: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .shown: return "eye"
         case .hidden: return "eye.slash"
+        case .alwaysHidden: return "eye.slash.fill"
         }
     }
 }

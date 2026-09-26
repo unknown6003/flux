@@ -489,7 +489,7 @@ final class NotchActivityRouter {
 
     static func soundActivity(level: Float, muted: Bool) -> LiveActivity {
         LiveActivity(kind: .soundHUD,
-                     leading: .icon(systemName: soundSymbol(level: level, muted: muted)),
+                     leading: .none,
                      trailing: .soundGauge(Double(level), systemName: soundSymbol(level: level, muted: muted)),
                      duration: 1.5,
                      priority: 300)

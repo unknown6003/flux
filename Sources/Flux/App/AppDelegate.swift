@@ -114,11 +114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  timerService: timerService) { [weak self] in
             self?.openSettings()
         }
-        menuBarIcons.boundaryXProvider = { [weak self] in self?.menuBar?.drawerBoundaryX }
+        menuBarIcons.boundaryProvider = { [weak self] in
+            self?.menuBar?.drawerBoundaries ?? (hidden: nil, alwaysHidden: nil)
+        }
         menuBarIcons.beginProvider = { [weak self] in self?.menuBar?.beginIconManagement() }
         menuBarIcons.endProvider = { [weak self] in self?.menuBar?.endIconManagement() }
-        menuBarIcons.requestAccess()
-        DispatchQueue.main.async { [weak self] in self?.menuBarIcons.refresh() }
         // Lets a background-found update surface somewhere the user actually
         // looks — see `MenuBarManager.pendingUpdateVersion`.
         menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
