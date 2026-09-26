@@ -4,9 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Flux",
     platforms: [
-        // Sonoma (14) is the floor so Flux covers the latest three releases —
-        // Sonoma 14, Sequoia 15, Tahoe 26 — and stays forward-compatible with
-        // the upcoming Golden Gate (27).
+        // Keep Sonoma (14) as the minimum and test the current macOS release in CI.
         .macOS(.v14)
     ],
     targets: [

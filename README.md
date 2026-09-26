@@ -28,8 +28,8 @@ visible bar. The result:
   the optional lock-screen overlay uses macOS's lock-screen window space instead of
   screen capture.
 - **Stable across releases** — relies on documented `NSStatusItem` behaviour, not
-  private or capture APIs. Targets **Sonoma (14), Sequoia (15), Tahoe (26)** and is
-  forward-compatible with the upcoming **Golden Gate (27)**.
+  private or capture APIs. Supports **Sonoma (14) and later**, including **Golden
+  Gate (27)**.
 
 ## The three zones (just like Bartender)
 
@@ -184,7 +184,7 @@ straight to the right System Settings pane.
 
 ## Build & run
 
-Requires Xcode 15+ (built and tested on Xcode 26 / Swift 6.3, macOS 26).
+Requires Xcode 15+. CI builds on macOS 27 with Xcode 27.
 
 ```bash
 # Build the signed .app bundle → build/Flux.app

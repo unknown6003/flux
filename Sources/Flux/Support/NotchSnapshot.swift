@@ -307,11 +307,11 @@ enum NotchSnapshot {
         let activities = LiveActivityCenter()
         if hasActivity {
             activities.post(LiveActivity(
-                kind: .battery,
-                leading: .icon(systemName: "battery.25"),
-                trailing: .text("18%"),
+                kind: .timer,
+                leading: .icon(systemName: "timer"),
+                trailing: .text("2 min"),
                 duration: nil,
-                priority: 200))
+                priority: 110))
         }
 
         let content = LockScreenContentView(

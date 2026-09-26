@@ -2454,6 +2454,17 @@ enum SelfTest {
                                                 hasActivityCaption: true, allowActivities: false) == [],
               "LockScreenPillLogic: Now Playing and the activity both disallowed → no widgets")
 
+        let lockScreenBattery = LiveActivity(kind: .battery,
+                                             leading: .icon(systemName: "battery.25"),
+                                             trailing: .text("20%"), duration: nil, priority: 200)
+        let lockScreenTimer = LiveActivity(kind: .timer,
+                                           leading: .icon(systemName: "timer"),
+                                           trailing: .text("2 min"), duration: nil, priority: 110)
+        check(!LockScreenPillLogic.hasVisibleActivity(lockScreenBattery),
+              "LockScreenPillLogic: battery activity is hidden on the lock screen")
+        check(LockScreenPillLogic.hasVisibleActivity(lockScreenTimer),
+              "LockScreenPillLogic: non-battery activity remains visible on the lock screen")
+
         // M15: the interactive card has its own pure gate. A missing track
         // must never leave a transparent but mouse-sensitive panel behind,
         // while a live track remains available whenever the lock-screen Now

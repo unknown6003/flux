@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
     timeout-minutes: 30
     steps:
       # Pinned to an immutable commit SHA — see the note in codeql.yml. It

@@ -63,8 +63,8 @@ enum LockScreenWidgetPositionLogic {
 /// enabled).
 ///
 /// M15 (Alcove lock-screen parity): keeps a LIVE `LockScreenContentView` —
-/// the notch silhouette, a material Now Playing card, and the current live
-/// activity's caption —
+/// the notch silhouette, a material Now Playing card, and the current
+/// non-battery activity's caption —
 /// visible on the macOS lock screen between `screenIsLocked`/
 /// `screenIsUnlocked` distributed notifications. The Now Playing card is
 /// interactive through a separate, card-sized panel; the base surface remains
@@ -385,7 +385,7 @@ final class LockScreenPresenter {
             .store(in: &cancellables)
 
         // Activities are live on the lock screen too. Reconcile the centered
-        // widget when a battery/timer/calendar caption appears or expires;
+        // widget when a non-battery activity caption appears or expires;
         // otherwise the old pill could remain in a separate panel until the
         // next lock transition.
         activities.$current
@@ -756,7 +756,7 @@ final class LockScreenPresenter {
         let nowPlayingAllowed = allowNowPlaying ?? settings.notchLockScreenNowPlayingEnabled
         let activitiesAllowed = allowActivities ?? settings.notchLockScreenActivitiesEnabled
         let hasState = hasNowPlaying ?? (nowPlaying.state != nil)
-        let hasActivityCaption = activities.current?.captionText != nil
+        let hasActivityCaption = LockScreenPillLogic.hasVisibleActivity(activities.current)
 
         guard isPresentingOnLockScreen,
               LockScreenMediaControlLogic.shouldShowWidget(

@@ -26,6 +26,11 @@ enum LockScreenPillKind: Equatable {
 }
 
 enum LockScreenPillLogic {
+    static func hasVisibleActivity(_ activity: LiveActivity?) -> Bool {
+        guard let activity else { return false }
+        return activity.kind != .battery && activity.captionText != nil
+    }
+
     static func visiblePills(hasNowPlaying: Bool, allowNowPlaying: Bool,
                               hasActivityCaption: Bool, allowActivities: Bool) -> [LockScreenPillKind] {
         var pills: [LockScreenPillKind] = []
@@ -110,7 +115,7 @@ struct LockScreenMediaControlsView: View {
         let pills = LockScreenPillLogic.visiblePills(
             hasNowPlaying: nowPlaying.state != nil,
             allowNowPlaying: allowNowPlaying,
-            hasActivityCaption: activities.current?.captionText != nil,
+            hasActivityCaption: LockScreenPillLogic.hasVisibleActivity(activities.current),
             allowActivities: allowActivities)
         let hasAuxiliaryContent = pills.contains(.activity)
         let size = LockScreenPillMetrics.widgetSize(hasMedia: hasMedia,
@@ -236,7 +241,9 @@ struct LockScreenMediaControlsView: View {
                 case .nowPlaying:
                     EmptyView()
                 case .activity:
-                    if let current = activities.current, let caption = current.captionText {
+                    if let current = activities.current,
+                       LockScreenPillLogic.hasVisibleActivity(current),
+                       let caption = current.captionText {
                         LockScreenActivityPill(systemName: Self.iconName(from: current.leading),
                                                 caption: caption)
                     }
