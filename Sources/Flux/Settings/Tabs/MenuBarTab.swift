@@ -28,7 +28,7 @@ struct MenuBarTab: View {
     private var behaviorCard: some View {
         FluxCard(title: "Behavior") {
             ToggleRow(title: "Always-Hidden section",
-                      subtitle: "Option-click the Flux chevron to reveal it.",
+                      subtitle: "Keep this section available in the Settings drawer.",
                       isOn: $settings.showAlwaysHiddenSection)
             RowDivider()
             ToggleRow(title: "Compact menu-bar spacing",
@@ -99,8 +99,8 @@ private struct MenuBarDrawer: View {
     private var accessRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             RowText(title: "Allow icon management",
-                    subtitle: "Flux uses Accessibility to read and move menu-bar icons from this drawer. Flux will not ask again after access is granted.")
-            Button("Allow Access") {
+                    subtitle: "Flux uses Accessibility to read and move menu-bar icons. It opens System Settings instead of showing a prompt.")
+            Button("Open Accessibility Settings") {
                 iconManager.requestAccess()
             }
             .buttonStyle(.fluxProminent)

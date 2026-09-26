@@ -31,21 +31,26 @@ final class MenuBarIconManager: ObservableObject {
     var endProvider: () -> Void = {}
 
     private var elements: [String: AXUIElement] = [:]
+    private var assignedSections: [String: MenuBarSection] = [:]
 
-    /// Called only by the explicit Access button. Normal refreshes never prompt.
+    /// Opens the system pane without asking macOS to show a TCC prompt.
+    /// Repeated prompts are especially bad here because a stale TCC entry can
+    /// make the same request appear on every Settings visit.
     func requestAccess() {
         guard !AXIsProcessTrusted() else {
             refresh()
             return
         }
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        isTrusted = AXIsProcessTrustedWithOptions(options)
-        if isTrusted { refresh() }
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func beginIconManagement() {
         beginProvider()
         refresh()
+        applyDrawerVisibility(revealHidden: true,
+                              revealAlwaysHidden: true,
+                              refreshBeforeApplying: false)
         refreshAfterLayout(settles: true)
     }
 
@@ -94,10 +99,12 @@ final class MenuBarIconManager: ObservableObject {
             let id = identifier ?? "\(title)|\(source ?? "")|\(index)"
             guard !isFluxItem(identifier: identifier, title: title, source: source) else { continue }
 
+            let section = assignedSections[id]
+                ?? Self.section(for: frame, boundaries: boundaries)
             next.append(Icon(id: id,
                              title: title,
                              source: source,
-                             section: Self.section(for: frame, boundaries: boundaries),
+                             section: section,
                              isMovable: true,
                              frame: frame))
             nextElements[id] = element
@@ -115,6 +122,7 @@ final class MenuBarIconManager: ObservableObject {
                                              boundaries: boundaryProvider()) else {
             return
         }
+        assignedSections[icon.id] = section
         move(icon, toX: targetX, expectedSection: section)
     }
 
@@ -154,6 +162,33 @@ final class MenuBarIconManager: ObservableObject {
     // Kept for callers from older settings views during an update.
     func setSection(_ section: MenuBarSection, for icon: Icon) {
         move(icon, to: section)
+    }
+
+    /// Applies the single drawer's visibility to real menu-bar items. The native
+    /// divider remains as a fallback for systems that do not expose a writable
+    /// hidden attribute, but macOS versions that do support it no longer depend
+    /// on overflow geometry to hide an icon.
+    func applyDrawerVisibility(revealHidden: Bool,
+                               revealAlwaysHidden: Bool,
+                               refreshBeforeApplying: Bool = true) {
+        if refreshBeforeApplying, icons.isEmpty { refresh() }
+        for icon in icons {
+            guard let element = elements[icon.id] else { continue }
+            let visible = Self.isVisible(icon.section,
+                                         revealHidden: revealHidden,
+                                         revealAlwaysHidden: revealAlwaysHidden)
+            setHidden(!visible, on: element)
+        }
+    }
+
+    static func isVisible(_ section: MenuBarSection,
+                          revealHidden: Bool,
+                          revealAlwaysHidden: Bool) -> Bool {
+        switch section {
+        case .shown: return true
+        case .hidden: return revealHidden
+        case .alwaysHidden: return revealAlwaysHidden
+        }
     }
 
     static func section(for frame: CGRect, boundaries: Boundaries) -> MenuBarSection {
@@ -205,6 +240,17 @@ final class MenuBarIconManager: ObservableObject {
         return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
     }
 
+    private func setHidden(_ hidden: Bool, on element: AXUIElement) {
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element,
+                                              kAXHiddenAttribute as CFString,
+                                              &settable) == .success,
+              settable.boolValue else { return }
+        _ = AXUIElementSetAttributeValue(element,
+                                          kAXHiddenAttribute as CFString,
+                                          NSNumber(value: hidden))
+    }
+
     private func verifyMove(icon: Icon,
                             expectedSection: MenuBarSection,
                             target: CGPoint,
@@ -213,7 +259,9 @@ final class MenuBarIconManager: ObservableObject {
             guard let self else { return }
             self.refresh()
             guard let current = self.icons.first(where: { $0.id == icon.id }) else { return }
-            guard current.section != expectedSection else { return }
+            let actualSection = Self.section(for: current.frame,
+                                             boundaries: self.boundaryProvider())
+            guard actualSection != expectedSection else { return }
             guard retryWithDrag else {
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
                 return

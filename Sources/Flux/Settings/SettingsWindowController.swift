@@ -77,7 +77,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // reachable at all when this commit's sibling added `.miniaturizable`
         // and a ⌘M item, so this arrived with it.
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
-        if currentTab == .menuBar { iconManager.beginIconManagement() }
         window?.makeKeyAndOrderFront(nil)
         onVisibilityChanged?(true)
     }
