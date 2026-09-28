@@ -5,7 +5,6 @@ import AppKit
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
 /// - `.divider`  — a hidden drawer boundary. When *collapsed* its width
 ///                 expands and pushes items to its left into macOS's overflow area.
-/// - `.spacer`   — a bounded macOS 27 span used with the drawer boundaries.
 ///
 /// Flux also uses Accessibility in `MenuBarIconManager` to let the user place
 /// real status items from Settings instead of trying to drag a crowded bar.
@@ -14,7 +13,6 @@ final class ControlItem {
     enum Role: Equatable {
         case chevron
         case divider
-        case spacer
     }
 
     /// macOS 27 replaced the per-item bar layout with a single system-managed
@@ -23,8 +21,6 @@ final class ControlItem {
     static var usesMacOS27Model: Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
-
-    static let macOS27SpacerCount = MenuBarCollapseGeometry.spacerCount
 
     private static var autosaveSuffix: String {
         usesMacOS27Model ? ".v27" : ""
@@ -194,8 +190,7 @@ final class ControlItem {
 
     init(role: Role, autosaveName: String) {
         self.role = role
-        let item = NSStatusBar.system.statusItem(
-            withLength: role == .spacer ? 0 : NSStatusItem.variableLength)
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Persist the user's Cmd-drag position across launches so the zones stay
         // where they put them.
         item.autosaveName = autosaveName + Self.autosaveSuffix
@@ -206,10 +201,7 @@ final class ControlItem {
         // delete them.
         item.behavior = []
         // Self-heal: force visible in case an older build persisted isVisible=false.
-        item.isVisible = role != .spacer
-        if role == .spacer {
-            item.button?.setAccessibilityElement(false)
-        }
+        item.isVisible = true
         self.statusItem = item
 
         configureButton()
@@ -229,9 +221,6 @@ final class ControlItem {
             // Invisible: no image, empty title. It only exists to take up space.
             button.image = nil
             button.title = ""
-        case .spacer:
-            button.image = nil
-            button.title = ""
         }
     }
 
@@ -246,30 +235,10 @@ final class ControlItem {
     func setCollapsed(_ collapsed: Bool) {
         guard role == .divider else { return }
         let target: CGFloat
-        if collapsed, Self.usesMacOS27Model {
-            let displays = NSScreen.screens.map {
-                MenuBarCollapseGeometry.Display(
-                    width: $0.frame.width,
-                    statusWidth: $0.auxiliaryTopRightArea?.width)
-            }
-            target = MenuBarCollapseGeometry.unitLength(displays: displays)
-        } else {
-            target = collapsed ? ControlItem.collapsedWidth : ControlItem.revealedWidth
-        }
+        target = collapsed && !Self.usesMacOS27Model
+            ? ControlItem.collapsedWidth : ControlItem.revealedWidth
         guard abs(statusItem.length - target) > 0.5 else { return }
         statusItem.length = target
-    }
-
-    /// Activate one bounded span while a drawer boundary is collapsed.
-    func setSpacer(active: Bool, length: CGFloat) {
-        guard role == .spacer else { return }
-        if active {
-            statusItem.length = length
-            statusItem.isVisible = true
-        } else {
-            statusItem.isVisible = false
-            statusItem.length = 0
-        }
     }
 
     func setVisible(_ visible: Bool) {

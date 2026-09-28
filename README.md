@@ -14,22 +14,20 @@
 
 ## Why Flux
 
-Most menu-bar managers feel buggy because they continuously **capture and redraw the
-menu bar** with ScreenCaptureKit. That approach burns CPU/GPU, needs Screen Recording
-permission, and breaks on every macOS update.
+Flux does not capture and redraw the menu bar with ScreenCaptureKit. On macOS
+14–26 it uses expandable status items. On macOS 27 it asks MenuBarAgent to
+hide the third-party apps placed left of the Flux chevron.
 
-Flux takes the opposite approach. It plants its own invisible, expandable status
-items as **section dividers** and collapses them to push other apps' icons off the
-visible bar. The result:
+The result:
 
 - **~0% CPU at idle** — it only reacts to clicks, nothing polls or redraws.
-- **Minimal permissions** — the core menu-bar manager needs no Screen Recording or
-  Accessibility grant. Calendar and Camera ask only when their widgets are enabled;
+- **Minimal permissions** — hiding on macOS 27 needs Accessibility. Earlier
+  versions need no permission for the drawer. Calendar and Camera ask only when their widgets are enabled;
   the optional lock-screen overlay uses macOS's lock-screen window space instead of
   screen capture.
-- **Stable across releases** — relies on `NSStatusItem` behaviour, not private or
-  capture APIs. Supports **Sonoma (14) and later**, including **Golden Gate
-  (27)** with a native-overflow compatibility path.
+- **macOS 14 and later** — macOS 27 uses a private MenuBarAgent interface. If
+  Apple changes it, Flux will need an update. Apple system icons stay under
+  macOS control.
 
 ## The three zones (just like Bartender)
 
@@ -64,10 +62,10 @@ see exactly where to drop each icon:
 Click **Done** (or the ✓ that replaces the chevron) to apply. Flux remembers the
 arrangement across launches.
 
-On **macOS 27**, Apple changed how the menu bar stores icon positions. After the
-first update, drag the icons you want Flux to manage to the left of the Flux
-divider once. The hide toggle then moves those icons into macOS's native overflow
-area. Older saved positions cannot be read by third-party apps on macOS 27.
+On **macOS 27**, grant Flux Accessibility access, then move third-party icons
+left of the Flux chevron in Settings → Menu Bar. The hide toggle hides their
+owning apps' menu bar items. If one app has icons on both sides of the chevron,
+Flux keeps that app visible. Apple system icons remain under macOS control.
 
 ## Features (MVP)
 

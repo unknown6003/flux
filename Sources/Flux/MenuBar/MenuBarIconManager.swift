@@ -27,12 +27,14 @@ final class MenuBarIconManager: ObservableObject {
 
     /// AppDelegate supplies the live boundaries after the status items exist.
     var boundaryProvider: () -> Boundaries = { (nil, nil) }
+    var chevronBoundaryProvider: () -> CGFloat? = { nil }
     var beginProvider: () -> Void = {}
     var endProvider: () -> Void = {}
 
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
     private let trustProvider: () -> Bool
+    private lazy var macOS27Hider = MacOS27Hider()
     private var cancellables = Set<AnyCancellable>()
 
     init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
@@ -45,6 +47,7 @@ final class MenuBarIconManager: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.refresh()
+                if ControlItem.usesMacOS27Model { self.macOS27Hider.retry() }
             }
             .store(in: &cancellables)
     }
@@ -80,6 +83,11 @@ final class MenuBarIconManager: ObservableObject {
             icons = []
             elements.removeAll()
             errorMessage = "Allow Accessibility access to manage menu-bar icons."
+            return
+        }
+
+        if ControlItem.usesMacOS27Model {
+            refreshMacOS27()
             return
         }
 
@@ -126,6 +134,37 @@ final class MenuBarIconManager: ObservableObject {
             nextElements[id] = element
         }
 
+        icons = next.sorted { $0.frame.minX < $1.frame.minX }
+        elements = nextElements
+        errorMessage = nil
+    }
+
+    /// MenuBarAgent owns the drawn bar on macOS 27, but each app exposes its
+    /// own status items through AXExtrasMenuBar.
+    private func refreshMacOS27() {
+        let boundaries = boundaryProvider()
+        var next: [Icon] = []
+        var nextElements: [String: AXUIElement] = [:]
+        for app in NSWorkspace.shared.runningApplications {
+            guard let bundleID = app.bundleIdentifier,
+                  !bundleID.hasPrefix("com.apple."),
+                  bundleID != Bundle.main.bundleIdentifier else { continue }
+            let owner = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(owner, 0.2)
+            guard let bar = elementAttribute(owner, kAXExtrasMenuBarAttribute) else { continue }
+            for (index, element) in children(of: bar).enumerated() {
+                guard let frame = frame(of: element) else { continue }
+                let title = stringAttribute(element, kAXTitleAttribute)
+                    ?? stringAttribute(element, kAXDescriptionAttribute)
+                    ?? app.localizedName ?? bundleID
+                let id = "\(bundleID)|\(index)"
+                let section = assignedSections[id]
+                    ?? Self.section(for: frame, boundaries: boundaries)
+                next.append(Icon(id: id, title: title, source: app.localizedName,
+                                 section: section, isMovable: true, frame: frame))
+                nextElements[id] = element
+            }
+        }
         icons = next.sorted { $0.frame.minX < $1.frame.minX }
         elements = nextElements
         errorMessage = nil
@@ -180,13 +219,18 @@ final class MenuBarIconManager: ObservableObject {
         move(icon, to: section)
     }
 
-    /// Applies the single drawer's visibility to real menu-bar items. The native
-    /// divider remains as a fallback for systems that do not expose a writable
-    /// hidden attribute, but macOS versions that do support it no longer depend
-    /// on overflow geometry to hide an icon.
+    /// Applies the drawer's visibility. macOS 27 needs MenuBarAgent's app-level
+    /// restriction; older systems keep the divider geometry.
     func applyDrawerVisibility(revealHidden: Bool,
                                revealAlwaysHidden: Bool,
                                refreshBeforeApplying: Bool = true) {
+        if ControlItem.usesMacOS27Model {
+            macOS27Hider.apply(revealHidden: revealHidden,
+                               revealAlwaysHidden: revealAlwaysHidden,
+                               chevronX: chevronBoundaryProvider(),
+                               alwaysX: boundaryProvider().alwaysHidden)
+            return
+        }
         if refreshBeforeApplying, icons.isEmpty { refresh() }
         for icon in icons {
             guard let element = elements[icon.id] else { continue }
@@ -279,6 +323,8 @@ final class MenuBarIconManager: ObservableObject {
                                              boundaries: self.boundaryProvider())
             guard actualSection != expectedSection else { return }
             guard retryWithDrag else {
+                self.assignedSections.removeValue(forKey: icon.id)
+                self.refresh()
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
                 return
             }

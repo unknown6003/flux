@@ -74,6 +74,11 @@ private struct MenuBarDrawer: View {
             } else {
                 RowText(title: "Manage icons here",
                         subtitle: "Use Move to… and the arrows below. You do not need to drag icons in the tiny menu bar.")
+                if ControlItem.usesMacOS27Model {
+                    Text("macOS 27 lets Flux hide third-party apps. Apple system icons stay in the menu bar.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondaryColor)
+                }
                 if let errorMessage = iconManager.errorMessage {
                     Text(errorMessage)
                         .font(.caption)
