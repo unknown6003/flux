@@ -148,6 +148,7 @@ final class MenuBarIconManager: ObservableObject {
         for app in NSWorkspace.shared.runningApplications {
             guard let bundleID = app.bundleIdentifier,
                   !bundleID.hasPrefix("com.apple."),
+                  app.activationPolicy != .prohibited,
                   bundleID != Bundle.main.bundleIdentifier else { continue }
             let owner = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(owner, 0.2)
@@ -167,7 +168,8 @@ final class MenuBarIconManager: ObservableObject {
         }
         icons = next.sorted { $0.frame.minX < $1.frame.minX }
         elements = nextElements
-        errorMessage = nil
+        errorMessage = macOS27Hider.isAvailable ? nil
+            : "Hiding is unavailable on this macOS build. Flux needs an update."
     }
 
     func move(_ icon: Icon, to section: MenuBarSection) {
@@ -227,8 +229,8 @@ final class MenuBarIconManager: ObservableObject {
         if ControlItem.usesMacOS27Model {
             macOS27Hider.apply(revealHidden: revealHidden,
                                revealAlwaysHidden: revealAlwaysHidden,
-                               chevronX: chevronBoundaryProvider(),
-                               alwaysX: boundaryProvider().alwaysHidden)
+                               chevronX: { [weak self] in self?.chevronBoundaryProvider() },
+                               alwaysX: { [weak self] in self?.boundaryProvider().alwaysHidden })
             return
         }
         if refreshBeforeApplying, icons.isEmpty { refresh() }

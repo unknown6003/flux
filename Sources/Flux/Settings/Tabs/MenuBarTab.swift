@@ -104,7 +104,9 @@ private struct MenuBarDrawer: View {
     private var accessRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             RowText(title: "Allow icon management",
-                    subtitle: "Flux uses Accessibility to read and move menu-bar icons. It opens System Settings instead of showing a prompt.")
+                    subtitle: ControlItem.usesMacOS27Model
+                        ? "Flux needs Accessibility to hide and move menu-bar icons on macOS 27."
+                        : "Flux uses Accessibility to read and move menu-bar icons. It opens System Settings instead of showing a prompt.")
             Button("Open Accessibility Settings") {
                 iconManager.requestAccess()
             }

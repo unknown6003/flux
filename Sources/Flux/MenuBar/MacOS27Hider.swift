@@ -89,8 +89,8 @@ final class MacOS27Hider {
     private var alwaysHidden = Set<String>()
     private var revealHidden = false
     private var revealAlwaysHidden = false
-    private var chevronX: CGFloat?
-    private var alwaysX: CGFloat?
+    private var chevronX: () -> CGFloat? = { nil }
+    private var alwaysX: () -> CGFloat? = { nil }
     private var generation = 0
     private var overClock = false
     private var mouseMonitor: Any?
@@ -102,11 +102,13 @@ final class MacOS27Hider {
         for name in [NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
             appObservers.append(center.addObserver(forName: name, object: nil, queue: .main) {
-                [weak self] _ in self?.reconcile()
+                [weak self] _ in
+                Task { @MainActor in self?.reconcile() }
             })
         }
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) {
-            [weak self] _ in self?.updateClockHover()
+            [weak self] _ in
+            Task { @MainActor in self?.updateClockHover() }
         }
     }
 
@@ -121,8 +123,27 @@ final class MacOS27Hider {
         })
     }
 
+    private static func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success
+        else { return nil }
+        return value
+    }
+
+    private static func element(_ owner: AXUIElement, _ name: String) -> AXUIElement? {
+        guard let value = attribute(owner, name),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return value as! AXUIElement
+    }
+
+    private static func value(_ owner: AXUIElement, _ name: String) -> AXValue? {
+        guard let value = attribute(owner, name),
+              CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        return value as! AXValue
+    }
+
     func apply(revealHidden: Bool, revealAlwaysHidden: Bool,
-               chevronX: CGFloat?, alwaysX: CGFloat?) {
+               chevronX: @escaping () -> CGFloat?, alwaysX: @escaping () -> CGFloat?) {
         self.revealHidden = revealHidden
         self.revealAlwaysHidden = revealAlwaysHidden
         self.chevronX = chevronX
@@ -135,13 +156,20 @@ final class MacOS27Hider {
         let current = generation
         // Release before scanning: otherwise the hidden apps have no AX items.
         assessment.release()
+        scanAfterLayout(generation: current, attempts: 0)
+    }
+
+    private func scanAfterLayout(generation: Int, attempts: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self, self.generation == current else { return }
-            guard self.assessment.isAvailable, AXIsProcessTrusted(),
-                  let chevronX = self.chevronX else { return }
+            guard let self, self.generation == generation else { return }
+            guard self.assessment.isAvailable, AXIsProcessTrusted() else { return }
+            guard let chevronX = self.chevronX() else {
+                if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
+                return
+            }
             let positions = Self.scanPositions()
             self.hidden = Self.hiddenBundleIDs(positions, leftOf: chevronX)
-            self.alwaysHidden = Self.hiddenBundleIDs(positions, leftOf: self.alwaysX)
+            self.alwaysHidden = Self.hiddenBundleIDs(positions, leftOf: self.alwaysX())
             self.reconcile()
         }
     }
@@ -179,19 +207,11 @@ final class MacOS27Hider {
         DispatchQueue.concurrentPerform(iterations: apps.count) { index in
             let app = AXUIElementCreateApplication(apps[index].pid)
             AXUIElementSetMessagingTimeout(app, 0.2)
-            var barValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(app, kAXExtrasMenuBarAttribute as CFString,
-                                                &barValue) == .success,
-                  let bar = barValue as? AXUIElement else { return }
-            var childrenValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString,
-                                                &childrenValue) == .success,
-                  let children = childrenValue as? [AXUIElement] else { return }
+            guard let bar = element(app, kAXExtrasMenuBarAttribute),
+                  let children = attribute(bar, kAXChildrenAttribute) as? [AXUIElement]
+            else { return }
             for child in children {
-                var positionValue: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(child, kAXPositionAttribute as CFString,
-                                                    &positionValue) == .success,
-                      let value = positionValue as? AXValue else { continue }
+                guard let value = value(child, kAXPositionAttribute) else { continue }
                 var point = CGPoint.zero
                 guard AXValueGetValue(value, .cgPoint, &point) else { continue }
                 lock.lock()
@@ -222,32 +242,17 @@ final class MacOS27Hider {
             withBundleIdentifier: "com.apple.MenuBarAgent").first else { return nil }
         let app = AXUIElementCreateApplication(agent.processIdentifier)
         AXUIElementSetMessagingTimeout(app, 0.2)
-        var barValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXExtrasMenuBarAttribute as CFString,
-                                            &barValue) == .success,
-              let bar = barValue as? AXUIElement else { return nil }
-        var groupsValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(bar, kAXChildrenAttribute as CFString,
-                                            &groupsValue) == .success,
-              let groups = groupsValue as? [AXUIElement] else { return nil }
+        guard let bar = Self.element(app, kAXExtrasMenuBarAttribute),
+              let groups = Self.attribute(bar, kAXChildrenAttribute) as? [AXUIElement]
+        else { return nil }
         for group in groups {
-            var childrenValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(group, kAXChildrenAttribute as CFString,
-                                                &childrenValue) == .success,
-                  let children = childrenValue as? [AXUIElement] else { continue }
+            guard let children = Self.attribute(group, kAXChildrenAttribute) as? [AXUIElement]
+            else { continue }
             for child in children {
-                var idValue: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(child, kAXIdentifierAttribute as CFString,
-                                                    &idValue) == .success,
-                      idValue as? String == "com.apple.menuextra.clock" else { continue }
-                var positionValue: CFTypeRef?
-                var sizeValue: CFTypeRef?
-                guard AXUIElementCopyAttributeValue(child, kAXPositionAttribute as CFString,
-                                                    &positionValue) == .success,
-                      AXUIElementCopyAttributeValue(child, kAXSizeAttribute as CFString,
-                                                    &sizeValue) == .success,
-                      let position = positionValue as? AXValue,
-                      let size = sizeValue as? AXValue else { return nil }
+                guard Self.attribute(child, kAXIdentifierAttribute) as? String
+                        == "com.apple.menuextra.clock",
+                      let position = Self.value(child, kAXPositionAttribute),
+                      let size = Self.value(child, kAXSizeAttribute) else { continue }
                 var origin = CGPoint.zero
                 var dimensions = CGSize.zero
                 guard AXValueGetValue(position, .cgPoint, &origin),
