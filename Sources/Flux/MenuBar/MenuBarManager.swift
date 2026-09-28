@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Combine
 
 /// Owns Flux's controls and the three-zone drawer state machine.
@@ -253,6 +254,14 @@ final class MenuBarManager {
             let item = makeItem("Update to \(version)…", #selector(menuOpenUpdateSettings))
             item.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)
             menu.addItem(item)
+            menu.addItem(.separator())
+        }
+
+        if ControlItem.usesMacOS27Model && !AXIsProcessTrusted() {
+            let warning = NSMenuItem(title: "Allow Accessibility to hide icons on macOS 27",
+                                     action: nil, keyEquivalent: "")
+            warning.isEnabled = false
+            menu.addItem(warning)
             menu.addItem(.separator())
         }
 

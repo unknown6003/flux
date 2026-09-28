@@ -18,6 +18,7 @@ private final class MenuBarAssessment {
     private let classes: (assertion: NSObject.Type, configuration: NSObject.Type)?
     private var active: (assertion: MenuBarAssessmentAssertion, allowed: [String])?
     private var pending: MenuBarAssessmentAssertion?
+    var onStatus: ((String?) -> Void)?
 
     init() {
         guard dlopen("/System/Library/PrivateFrameworks/MenuBarClientCore.framework/MenuBarClientCore",
@@ -44,7 +45,10 @@ private final class MenuBarAssessment {
         let systemItems = (0..<64).map { NSNumber(value: $0) } as NSArray
         guard let configuration = allocated?
             .perform(Self.configurationSelector, with: systemItems,
-                     with: bundleIDs as NSArray)?.takeRetainedValue() else { return }
+                     with: bundleIDs as NSArray)?.takeRetainedValue() else {
+            onStatus?("MenuBarAgent could not set up hiding.")
+            return
+        }
 
         pending?.invalidate()
         let assertion = unsafeBitCast(classes.assertion.init(),
@@ -57,9 +61,11 @@ private final class MenuBarAssessment {
                 if let error {
                     assertion.invalidate()
                     Log.menuBar.error("macOS 27 hiding failed: \(error.localizedDescription, privacy: .public)")
+                    self.onStatus?("MenuBarAgent refused hiding: \(error.localizedDescription)")
                 } else {
                     self.active?.assertion.invalidate()
                     self.active = (assertion, bundleIDs)
+                    self.onStatus?(nil)
                 }
             }
         }
@@ -85,6 +91,9 @@ final class MacOS27Hider {
     ]
 
     private let assessment = MenuBarAssessment()
+    var onStatus: ((String?) -> Void)? {
+        didSet { assessment.onStatus = onStatus }
+    }
     private var hidden = Set<String>()
     private var alwaysHidden = Set<String>()
     private var revealHidden = false
@@ -229,7 +238,10 @@ final class MacOS27Hider {
         let inMenuBar = NSScreen.screens.contains {
             $0.frame.contains(point) && point.y >= $0.frame.maxY - $0.menuBarThickness
         }
-        let next = inMenuBar && clockFrame()?.contains(point) == true
+        let nearClock = NSScreen.screens.contains {
+            $0.frame.contains(point) && point.x >= $0.frame.maxX - 180
+        }
+        let next = inMenuBar && (clockFrame()?.contains(point) ?? nearClock)
         guard next != overClock else { return }
         overClock = next
         reconcile()

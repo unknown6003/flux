@@ -34,7 +34,11 @@ final class MenuBarIconManager: ObservableObject {
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
     private let trustProvider: () -> Bool
-    private lazy var macOS27Hider = MacOS27Hider()
+    private lazy var macOS27Hider: MacOS27Hider = {
+        let hider = MacOS27Hider()
+        hider.onStatus = { [weak self] message in self?.errorMessage = message }
+        return hider
+    }()
     private var cancellables = Set<AnyCancellable>()
 
     init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {

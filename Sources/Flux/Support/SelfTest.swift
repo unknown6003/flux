@@ -83,6 +83,10 @@ enum SelfTest {
               "macOS 27 hides only apps whose every item is left of the chevron")
         check(MacOS27Hider.hiddenBundleIDs(positions, leftOf: nil).isEmpty,
               "macOS 27 keeps all apps visible when the boundary is unavailable")
+        if ControlItem.usesMacOS27Model {
+            check(MacOS27Hider().isAvailable,
+                  "macOS 27 exposes the MenuBarAgent visibility interface")
+        }
 
         // --- Default layout: both drawer boundaries start left of real icons ---
         let layoutSuiteName = "flux.selftest.layout"

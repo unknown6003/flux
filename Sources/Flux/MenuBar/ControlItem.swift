@@ -3,8 +3,8 @@ import AppKit
 /// A single status item owned by Flux. Three roles:
 ///
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
-/// - `.divider`  — a hidden drawer boundary. When *collapsed* its width
-///                 expands and pushes items to its left into macOS's overflow area.
+/// - `.divider`  — a hidden drawer boundary. On macOS 14–26 its collapsed
+///                 width pushes items to its left off the menu bar.
 ///
 /// Flux also uses Accessibility in `MenuBarIconManager` to let the user place
 /// real status items from Settings instead of trying to drag a crowded bar.
@@ -226,8 +226,9 @@ final class ControlItem {
 
     // MARK: Divider geometry
 
-    /// Collapse (hide left-neighbours) or reveal them. `NSStatusItem.length` is
-    /// set directly: it isn't reliably animatable, and an instant change is both
+    /// On macOS 14–26, collapse or reveal the items left of this divider.
+    /// macOS 27 keeps it narrow and hides through MenuBarAgent instead.
+    /// `NSStatusItem.length` is set directly: it isn't reliably animatable, and an instant change is both
     /// snappier and more robust than fighting the animator proxy.
     /// (No `animated:` parameter: an earlier signature took one and never
     /// read it, so five call sites were threading through a value that could
