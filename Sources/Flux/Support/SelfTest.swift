@@ -53,8 +53,8 @@ enum SelfTest {
         divider.setCollapsed(true)
         let collapsed = divider.statusItem.length
         if ControlItem.usesMacOS27Model {
-            check(collapsed >= MenuBarCollapseGeometry.minimumUnit && collapsed < 5_000,
-                  "macOS 27 uses a bounded collapse unit (\(Int(collapsed))pt)")
+            check(collapsed < 5,
+                  "macOS 27 leaves the divider narrow instead of creating system overflow")
         } else {
             check(collapsed > 5_000,
                   "Collapsing expands the divider to \(Int(collapsed))pt → pushes neighbours off-screen")
@@ -75,21 +75,18 @@ enum SelfTest {
         chevron.removeFromStatusBar()
         divider.removeFromStatusBar()
 
-        let notchedDisplay = MenuBarCollapseGeometry.Display(width: 1_512,
-                                                              statusWidth: 663.5)
-        let collapseUnit = MenuBarCollapseGeometry.unitLength(displays: [notchedDisplay])
-        check(collapseUnit < 520,
-              "macOS 27 collapse geometry stays below the notched display cliff")
-        check(MenuBarCollapseGeometry.activeSpacers(
-                  unit: collapseUnit,
-                  displays: [notchedDisplay],
-                  collapsedUnits: 1) == 1,
-              "macOS 27 adds a spacer when one bounded divider is not enough")
-        check(MenuBarCollapseGeometry.activeSpacers(
-                  unit: collapseUnit,
-                  displays: [notchedDisplay],
-                  collapsedUnits: 2) == 0,
-              "macOS 27 counts both Flux dividers in the collapsed span")
+        let positions: [(bundleID: String, x: CGFloat)] = [
+            ("hidden.app", 100), ("mixed.app", 150), ("mixed.app", 420),
+            ("shown.app", 500),
+        ]
+        check(MacOS27Hider.hiddenBundleIDs(positions, leftOf: 300) == ["hidden.app"],
+              "macOS 27 hides only apps whose every item is left of the chevron")
+        check(MacOS27Hider.hiddenBundleIDs(positions, leftOf: nil).isEmpty,
+              "macOS 27 keeps all apps visible when the boundary is unavailable")
+        if ControlItem.usesMacOS27Model {
+            check(MacOS27Hider().isAvailable,
+                  "macOS 27 exposes the MenuBarAgent visibility interface")
+        }
 
         // --- Default layout: both drawer boundaries start left of real icons ---
         let layoutSuiteName = "flux.selftest.layout"
@@ -137,7 +134,7 @@ enum SelfTest {
         let manager = MenuBarManager(settings: settings, arranger: arranger, onOpenSettings: {})
 
         func isHidden(_ length: CGFloat) -> Bool {
-            ControlItem.usesMacOS27Model ? length >= 240 : length > 5_000
+            ControlItem.usesMacOS27Model ? length < 5 : length > 5_000
         }
         func isRevealed(_ length: CGFloat) -> Bool { length < 5 }
 

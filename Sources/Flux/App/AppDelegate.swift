@@ -150,7 +150,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openSettings()
         }
         menuBarIcons.boundaryProvider = { [weak self] in
-            self?.menuBar?.drawerBoundaries ?? (hidden: nil, alwaysHidden: nil)
+            guard let menuBar = self?.menuBar else { return (hidden: nil, alwaysHidden: nil) }
+            let boundaries = menuBar.drawerBoundaries
+            return (hidden: ControlItem.usesMacOS27Model
+                        ? menuBar.chevronBoundary : boundaries.hidden,
+                    alwaysHidden: boundaries.alwaysHidden)
+        }
+        menuBarIcons.chevronBoundaryProvider = { [weak self] in
+            self?.menuBar?.chevronBoundary
         }
         menuBarIcons.beginProvider = { [weak self] in self?.menuBar?.beginIconManagement() }
         menuBarIcons.endProvider = { [weak self] in self?.menuBar?.endIconManagement() }
