@@ -91,9 +91,8 @@ final class MacOS27Hider {
     ]
 
     private let assessment = MenuBarAssessment()
-    var onStatus: ((String?) -> Void)? {
-        didSet { assessment.onStatus = onStatus }
-    }
+    var onStatus: ((String?) -> Void)?
+    private(set) var latestError: String?
     private var hidden = Set<String>()
     private var alwaysHidden = Set<String>()
     private var revealHidden = false
@@ -107,6 +106,10 @@ final class MacOS27Hider {
     private var clockFrameCache: (frame: CGRect, date: Date)?
 
     init() {
+        assessment.onStatus = { [weak self] message in
+            self?.latestError = message
+            self?.onStatus?(message)
+        }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {

@@ -172,7 +172,7 @@ final class MenuBarIconManager: ObservableObject {
         }
         icons = next.sorted { $0.frame.minX < $1.frame.minX }
         elements = nextElements
-        errorMessage = macOS27Hider.isAvailable ? nil
+        errorMessage = macOS27Hider.isAvailable ? macOS27Hider.latestError
             : "Hiding is unavailable on this macOS build. Flux needs an update."
     }
 

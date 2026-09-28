@@ -1,6 +1,6 @@
 import AppKit
 
-/// A single status item owned by Flux. Three roles:
+/// A single status item owned by Flux. Two roles:
 ///
 /// - `.chevron`  — the visible toggle the user clicks. Stays a fixed small width.
 /// - `.divider`  — a hidden drawer boundary. On macOS 14–26 its collapsed
