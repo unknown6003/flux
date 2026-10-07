@@ -30,6 +30,9 @@ if sys.platform != "darwin":
 root = Path(__file__).resolve().parents[1]
 probe = r'''
 
+@_silgen_name("FluxProbeCreateDisplay")
+func createProbeDisplay() -> UInt32
+
 private extension MacOS27Hider {
     var probeClockFrame: CGRect? { clockFrame() }
 }
@@ -38,6 +41,14 @@ private extension MacOS27Hider {
 func probe() {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+    if CommandLine.arguments.contains("--dual-display") {
+        let id = createProbeDisplay()
+        guard id != 0 else {
+            print("FAIL: the hosted desktop could not create a second display")
+            exit(1)
+        }
+        print("Virtual display: \(id) bounds=\(CGDisplayBounds(id))")
+    }
     let item = NSStatusBar.system.statusItem(withLength: 28)
     item.autosaveName = "flux.visibility-probe"
     let image = NSImage(size: NSSize(width: 20, height: 16), flipped: false) { bounds in
@@ -66,7 +77,19 @@ func probe() {
         guard AXUIElementCopyAttributeValue(bar as! AXUIElement,
                                             kAXChildrenAttribute as CFString,
                                             &children) == .success else { return nil }
-        return (children as? [AXUIElement])?.count
+        guard let items = children as? [AXUIElement] else { return nil }
+        for child in items {
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(child, kAXPositionAttribute as CFString,
+                                             &value) == .success, let value,
+                CFGetTypeID(value) == AXValueGetTypeID() {
+                var point = CGPoint.zero
+                if AXValueGetValue(value as! AXValue, .cgPoint, &point) {
+                    print("Probe AX position: \(point)")
+                }
+            }
+        }
+        return items.count
     }
     func snapshot(_ state: String) -> Int {
         let n = count()
@@ -191,6 +214,11 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     temporary = Path(directory)
     source = temporary / "main.swift"
     source.write_text((root / "Sources/Flux/MenuBar/MacOS27Hider.swift").read_text() + probe)
+    display_object = temporary / "display.o"
+    status = run(["clang", "-fobjc-arc", "-c", str(root / "Scripts/probe_display.m"),
+                  "-o", str(display_object)], 60)
+    if status:
+        raise SystemExit(status)
     bundle = temporary / "FluxMenuBarProbe.app"
     contents = bundle / "Contents"
     binary = contents / "MacOS/FluxMenuBarProbe"
@@ -206,6 +234,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     status = run(["swiftc", "-swift-version", "5", str(source),
                   str(root / "Sources/Flux/Support/Log.swift"),
                   str(root / "Sources/Flux/MenuBar/MenuBarGeometry.swift"),
+                  str(display_object),
                   "-o", str(binary)], 120)
     if status:
         raise SystemExit(status)
@@ -219,7 +248,8 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     try:
         output = root / "build/menu-bar-probe"
         output.mkdir(parents=True, exist_ok=True)
-        raise SystemExit(run([str(binary), str(output)], 35))
+        arguments = ["--dual-display"] if "--dual-display" in sys.argv else []
+        raise SystemExit(run([str(binary), str(output)] + arguments, 35))
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)

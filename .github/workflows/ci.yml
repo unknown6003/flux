@@ -41,7 +41,7 @@ jobs:
 
       - name: Probe menu bar visibility
         if: ${{ inputs.menu_bar_probe }}
-        run: python3 Scripts/probe_menu_bar.py
+        run: python3 Scripts/probe_menu_bar.py --dual-display
 
       - name: Upload menu bar probe images
         if: ${{ always() && inputs.menu_bar_probe }}
