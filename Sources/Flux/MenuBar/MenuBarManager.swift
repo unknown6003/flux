@@ -9,6 +9,7 @@ final class MenuBarManager {
     private let arranger: MenuBarArranger
     private let timerService: TimerService?
     private let onOpenSettings: () -> Void
+    private let accessibilityTrusted: () -> Bool
 
     private let chevron: ControlItem
     private let hiddenDivider: ControlItem
@@ -30,11 +31,13 @@ final class MenuBarManager {
     init(settings: SettingsStore,
          arranger: MenuBarArranger,
          timerService: TimerService? = nil,
+         accessibilityTrusted: @escaping () -> Bool = { AXIsProcessTrusted() },
          onOpenSettings: @escaping () -> Void) {
         self.settings = settings
         self.arranger = arranger
         self.timerService = timerService
         self.onOpenSettings = onOpenSettings
+        self.accessibilityTrusted = accessibilityTrusted
 
         if !ControlItem.usesMacOS27Model {
             ControlItem.sanitizePersistedPositions(autosaveNames: ControlItem.allAutosaveNames)
@@ -89,18 +92,16 @@ final class MenuBarManager {
     private var isAnyRevealed: Bool { revealHidden || revealAlwaysHidden }
 
     private func handleToggle() {
-        if isAnyRevealed {
-            collapse()
-            return
-        }
-        revealHidden = true
-        revealAlwaysHidden = false
-        applyState()
-        scheduleAutoRehideIfNeeded()
+        toggleReveal()
     }
 
     /// Public entry point for the hotkey and menu.
     func toggleReveal() {
+        guard !ControlItem.usesMacOS27Model || accessibilityTrusted() else {
+            if let onOpenSettingsTab { onOpenSettingsTab(.menuBar) }
+            else { onOpenSettings() }
+            return
+        }
         if isAnyRevealed {
             collapse()
         } else {

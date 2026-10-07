@@ -39,6 +39,10 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: Probe access across changed signed builds
+        if: ${{ inputs.menu_bar_probe }}
+        run: python3 Scripts/probe_signing.py
+
       - name: Probe menu bar visibility
         if: ${{ inputs.menu_bar_probe }}
         run: python3 Scripts/probe_menu_bar.py --dual-display

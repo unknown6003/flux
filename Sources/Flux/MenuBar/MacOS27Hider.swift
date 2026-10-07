@@ -37,6 +37,7 @@ private final class MenuBarAssessment {
 
     var isAvailable: Bool { classes != nil }
     var allowed: [String]? { active?.allowed }
+    var isRestricting: Bool { active != nil || pending != nil }
 
     func restrict(to bundleIDs: [String]) {
         guard let classes, bundleIDs != allowed else { return }
@@ -132,7 +133,6 @@ final class MacOS27Hider {
             if let self, !self.revealHidden && !self.revealAlwaysHidden {
                 self.lastCollapsedRequest = message ?? "macOS accepted the hide request."
             }
-            Log.menuBar.info("[DEBUG-flux-hide-status] \(message ?? "accepted", privacy: .public)")
         }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
@@ -190,29 +190,37 @@ final class MacOS27Hider {
     func retry() {
         generation += 1
         let current = generation
+        let needsLayout = assessment.isRestricting
         // Release before scanning: otherwise the hidden apps have no AX items.
         assessment.release()
-        scanAfterLayout(generation: current, attempts: 0)
+        scanAfterLayout(generation: current, attempts: 0, delay: needsLayout ? 0.35 : 0)
     }
 
-    private func scanAfterLayout(generation: Int, attempts: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+    private func scanAfterLayout(generation: Int, attempts: Int, delay: TimeInterval = 0.35) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.generation == generation else { return }
             guard self.assessment.isAvailable, AXIsProcessTrusted() else {
+                let message = self.assessment.isAvailable
+                    ? "Allow Accessibility access to hide menu-bar icons."
+                    : "This macOS build does not provide the menu-bar hiding interface."
+                self.latestError = message
+                self.onStatus?(message)
                 if !self.revealHidden && !self.revealAlwaysHidden {
                     self.lastCollapsedScan = "Stopped before reading icon positions. Interface=\(self.assessment.isAvailable), access=\(AXIsProcessTrusted())"
                 }
-                Log.menuBar.info("[DEBUG-flux-hide-stop] \(self.diagnostics, privacy: .public)")
                 return
             }
             guard let chevronX = self.chevronX() else {
                 if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
                 else if !self.revealHidden && !self.revealAlwaysHidden {
                     self.lastCollapsedScan = "Flux could not read its arrow position after six attempts."
-                    Log.menuBar.info("[DEBUG-flux-hide-stop] \(self.diagnostics, privacy: .public)")
+                    self.latestError = self.lastCollapsedScan
+                    self.onStatus?(self.latestError)
                 }
                 return
             }
+            self.latestError = nil
+            self.onStatus?(nil)
             let scan = Self.scanPositions()
             let positions = scan.positions
             self.hidden = Self.hiddenBundleIDs(positions, leftOf: chevronX)
@@ -227,7 +235,6 @@ final class MacOS27Hider {
                 """
             }
             self.reconcile()
-            Log.menuBar.info("[DEBUG-flux-hide] \(self.diagnostics, privacy: .public)")
         }
     }
 

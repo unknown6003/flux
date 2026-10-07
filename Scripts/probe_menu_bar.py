@@ -2,6 +2,7 @@
 """Run Flux's macOS 27 visibility bridge against a temporary status item."""
 
 import os
+from contextlib import ExitStack
 from pathlib import Path
 import plistlib
 import signal
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from probe_tcc import flux_accessibility_grant
 
 
 def run(command, seconds):
@@ -350,11 +352,13 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         output.mkdir(parents=True, exist_ok=True)
         arguments = [arg for arg in sys.argv[1:] if arg in ("--dual-display", "--app-click")]
         installed_flux = None
+        privacy = ExitStack()
         try:
             if "--app-click" in arguments:
-                installed_flux = Path("/Applications/Flux.app")
-                if installed_flux.exists():
+                destination = Path("/Applications/Flux.app")
+                if destination.exists():
                     raise SystemExit("FAIL: the probe will not replace an existing Flux install")
+                installed_flux = destination
                 status = run(["sudo", "-n", "ditto", str(root / "build/Flux.app"),
                               str(installed_flux)], 30)
                 if status:
@@ -364,6 +368,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                               str(installed_flux)], 20)
                 if status:
                     raise SystemExit(status)
+                privacy.enter_context(flux_accessibility_grant())
                 (output / "Flux.pid").unlink(missing_ok=True)
                 status = run(["/usr/bin/open", "-n", "-g", str(installed_flux)], 20)
                 if status:
@@ -383,6 +388,11 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                     pass
                 run(["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
                      "--predicate", 'process == "Flux" AND subsystem == "com.flux.menubar"'], 30)
+            privacy.close()
+            if installed_flux is not None:
+                run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+                     "LaunchServices.framework/Support/lsregister", "-u", str(installed_flux)], 20)
+                run(["sudo", "-n", "rm", "-rf", str(installed_flux)], 20)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
