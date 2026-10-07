@@ -96,6 +96,11 @@ private struct MenuBarDrawer: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentInkColor)
             }
+            Button("Copy menu bar report") {
+                iconManager.copyMenuBarReport()
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accentInkColor)
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 14)

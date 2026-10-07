@@ -81,6 +81,13 @@ final class MenuBarIconManager: ObservableObject {
         endProvider()
     }
 
+    func copyMenuBarReport() {
+        let report = ControlItem.usesMacOS27Model ? macOS27Hider.diagnostics
+            : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())\nThe macOS 27 hiding path is not active."
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+    }
+
     func refresh() {
         isTrusted = trustProvider()
         guard isTrusted else {

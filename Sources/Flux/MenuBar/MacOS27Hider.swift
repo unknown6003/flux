@@ -104,11 +104,35 @@ final class MacOS27Hider {
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
     private var clockFrameCache: (frame: CGRect, date: Date)?
+    private var lastCollapsedScan = "No collapsed scan has run."
+    private var lastCollapsedRequest = "No collapsed hide request has run."
+
+    var diagnostics: String {
+        let registered = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.flux.menubar")
+        return """
+        macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
+        Flux: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
+        Accessibility: \(AXIsProcessTrusted())
+        Hiding interface: \(assessment.isAvailable)
+        Install matches registered app: \(registered?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL)
+        Current reveal: hidden=\(revealHidden), always=\(revealAlwaysHidden)
+        Clock bypass: \(overClock)
+        Active hide request: \(assessment.allowed != nil)
+        Last error: \(latestError ?? "none")
+        Last collapsed request: \(lastCollapsedRequest)
+        Last collapsed scan:
+        \(lastCollapsedScan)
+        """
+    }
 
     init() {
         assessment.onStatus = { [weak self] message in
             self?.latestError = message
             self?.onStatus?(message)
+            if let self, !self.revealHidden && !self.revealAlwaysHidden {
+                self.lastCollapsedRequest = message ?? "macOS accepted the hide request."
+            }
+            Log.menuBar.info("[DEBUG-flux-hide-status] \(message ?? "accepted", privacy: .public)")
         }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
@@ -174,15 +198,34 @@ final class MacOS27Hider {
     private func scanAfterLayout(generation: Int, attempts: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self, self.generation == generation else { return }
-            guard self.assessment.isAvailable, AXIsProcessTrusted() else { return }
-            guard let chevronX = self.chevronX() else {
-                if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
+            guard self.assessment.isAvailable, AXIsProcessTrusted() else {
+                if !self.revealHidden && !self.revealAlwaysHidden {
+                    self.lastCollapsedScan = "Stopped before reading icon positions. Interface=\(self.assessment.isAvailable), access=\(AXIsProcessTrusted())"
+                }
                 return
             }
-            let positions = Self.scanPositions()
+            guard let chevronX = self.chevronX() else {
+                if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
+                else if !self.revealHidden && !self.revealAlwaysHidden {
+                    self.lastCollapsedScan = "Flux could not read its arrow position after six attempts."
+                }
+                return
+            }
+            let scan = Self.scanPositions()
+            let positions = scan.positions
             self.hidden = Self.hiddenBundleIDs(positions, leftOf: chevronX)
             self.alwaysHidden = Self.hiddenBundleIDs(positions, leftOf: self.alwaysX())
+            if !self.revealHidden && !self.revealAlwaysHidden {
+                self.lastCollapsedScan = """
+                Arrow x: \(chevronX)
+                Icon positions: \(positions.count)
+                Hidden app IDs: \(self.hidden.sorted().joined(separator: ", "))
+                Positions: \(positions.map { "\($0.bundleID)=\($0.x)" }.sorted().joined(separator: ", "))
+                AX replies: \(scan.replies.sorted().joined(separator: "; "))
+                """
+            }
             self.reconcile()
+            Log.menuBar.info("[DEBUG-flux-hide] \(self.diagnostics, privacy: .public)")
         }
     }
 
@@ -194,18 +237,24 @@ final class MacOS27Hider {
         let excluded = revealAlwaysHidden ? Set<String>()
             : (revealHidden ? alwaysHidden : hidden)
         guard !excluded.isEmpty else {
+            if !revealHidden && !revealAlwaysHidden {
+                lastCollapsedRequest = "No apps were found to hide."
+            }
             assessment.release()
             return
         }
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         let allowed = running.subtracting(excluded)
             .union(Self.alwaysAllowed).sorted()
+        if !revealHidden && !revealAlwaysHidden {
+            lastCollapsedRequest = "Requested hiding \(excluded.count) apps."
+        }
         assessment.restrict(to: allowed)
     }
 
     /// Each app owns its AXExtrasMenuBar on macOS 27. One app can expose more
     /// than one icon; an icon in Shown keeps that whole app on the allow list.
-    private static func scanPositions() -> [(bundleID: String, x: CGFloat)] {
+    private static func scanPositions() -> (positions: [(bundleID: String, x: CGFloat)], replies: [String]) {
         let apps = NSWorkspace.shared.runningApplications.compactMap { app
             -> (pid: pid_t, id: String)? in
             guard let id = app.bundleIdentifier,
@@ -216,22 +265,35 @@ final class MacOS27Hider {
         }
         let lock = NSLock()
         var result: [(bundleID: String, x: CGFloat)] = []
+        var replies: [String] = []
         DispatchQueue.concurrentPerform(iterations: apps.count) { index in
+            func read(_ owner: AXUIElement, _ name: String) -> CFTypeRef? {
+                var value: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(owner, name as CFString, &value)
+                if status != .success {
+                    lock.lock()
+                    replies.append("\(apps[index].id) \(name)=\(status.rawValue)")
+                    lock.unlock()
+                }
+                return status == .success ? value : nil
+            }
             let app = AXUIElementCreateApplication(apps[index].pid)
             AXUIElementSetMessagingTimeout(app, 0.2)
-            guard let bar = element(app, kAXExtrasMenuBarAttribute),
-                  let children = attribute(bar, kAXChildrenAttribute) as? [AXUIElement]
+            guard let barValue = read(app, kAXExtrasMenuBarAttribute),
+                  CFGetTypeID(barValue) == AXUIElementGetTypeID(),
+                  let children = read(barValue as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]
             else { return }
             for child in children {
-                guard let value = value(child, kAXPositionAttribute) else { continue }
+                guard let position = read(child, kAXPositionAttribute),
+                      CFGetTypeID(position) == AXValueGetTypeID() else { continue }
                 var point = CGPoint.zero
-                guard AXValueGetValue(value, .cgPoint, &point) else { continue }
+                guard AXValueGetValue(position as! AXValue, .cgPoint, &point) else { continue }
                 lock.lock()
                 result.append((apps[index].id, point.x))
                 lock.unlock()
             }
         }
-        return result
+        return (result, replies)
     }
 
     // Assessment mode also blocks Notification Center. Lift the rule while
