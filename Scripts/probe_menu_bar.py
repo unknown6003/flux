@@ -130,7 +130,9 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
             "LSUIElement": True,
         }, output)
     status = run(["swiftc", "-swift-version", "5", str(source),
-                  str(root / "Sources/Flux/Support/Log.swift"), "-o", str(binary)], 120)
+                  str(root / "Sources/Flux/Support/Log.swift"),
+                  str(root / "Sources/Flux/MenuBar/MenuBarGeometry.swift"),
+                  "-o", str(binary)], 120)
     if status:
         raise SystemExit(status)
     status = run(["codesign", "--force", "--sign", "-", str(bundle)], 20)
