@@ -17,14 +17,17 @@ def run(command, seconds):
     process = subprocess.Popen(command, start_new_session=True)
     try:
         return process.wait(timeout=seconds)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
+    except BaseException as error:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
-        raise SystemExit(f"FAIL: deadline reached for {command[0]}")
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise SystemExit(f"FAIL: deadline reached for {command[0]}") from error
+        raise
 
 
 def stop_flux():
@@ -77,6 +80,11 @@ def use_hidden_section(privacy):
 
 if sys.platform != "darwin":
     raise SystemExit("FAIL: this probe needs a macOS 27 desktop")
+
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
+
+signal.signal(signal.SIGTERM, interrupted)
 
 root = Path(__file__).resolve().parents[1]
 if "--app-click" in sys.argv and os.environ.get("GITHUB_ACTIONS") != "true":
@@ -333,17 +341,23 @@ func probe() {
                 apply(false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     let collapsed = snapshot("HiderCollapsed")
+                    // A second toggle must retain the first toggle's layout wait.
                     apply(true)
+                    apply(false)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        let expanded = snapshot("HiderExpanded")
-                        NSStatusBar.system.removeStatusItem(item)
-                        guard collapsed == 0, expanded > 0 else {
-                            print("FAIL: Flux's full position scan and toggle did not hide and show the icon")
-                            print("Hider error: \(hider.latestError ?? "none")")
-                            exit(1)
+                        let rapidCollapsed = snapshot("RapidCollapsed")
+                        apply(true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                            let expanded = snapshot("HiderExpanded")
+                            NSStatusBar.system.removeStatusItem(item)
+                            guard collapsed == 0, rapidCollapsed == 0, expanded > 0 else {
+                                print("FAIL: Flux's full position scan and toggles did not hide and show the icon")
+                                print("Hider error: \(hider.latestError ?? "none")")
+                                exit(1)
+                            }
+                            print("PASS: Flux's full position scan, rapid toggles and reveal hid and showed the icon")
+                            exit(0)
                         }
-                        print("PASS: Flux's full position scan and toggle hid and showed the icon")
-                        exit(0)
                     }
                 }
             }

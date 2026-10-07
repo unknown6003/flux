@@ -101,6 +101,7 @@ final class MacOS27Hider {
     private var chevronX: () -> CGFloat? = { nil }
     private var alwaysX: () -> CGFloat? = { nil }
     private var generation = 0
+    private var layoutReadyAt: TimeInterval = 0
     private var overClock = false
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
@@ -190,15 +191,27 @@ final class MacOS27Hider {
     func retry() {
         generation += 1
         let current = generation
-        let needsLayout = assessment.isRestricting
         // Release before scanning: otherwise the hidden apps have no AX items.
+        releaseAssessment()
+        let delay = max(0, layoutReadyAt - ProcessInfo.processInfo.systemUptime)
+        scanAfterLayout(generation: current, attempts: 0, delay: delay)
+    }
+
+    private func releaseAssessment() {
+        if assessment.isRestricting {
+            layoutReadyAt = ProcessInfo.processInfo.systemUptime + 0.35
+        }
         assessment.release()
-        scanAfterLayout(generation: current, attempts: 0, delay: needsLayout ? 0.35 : 0)
     }
 
     private func scanAfterLayout(generation: Int, attempts: Int, delay: TimeInterval = 0.35) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.generation == generation else { return }
+            let remaining = self.layoutReadyAt - ProcessInfo.processInfo.systemUptime
+            if remaining > 0 {
+                self.scanAfterLayout(generation: generation, attempts: attempts, delay: remaining)
+                return
+            }
             guard self.assessment.isAvailable, AXIsProcessTrusted() else {
                 let message = self.assessment.isAvailable
                     ? "Allow Accessibility access to hide menu-bar icons."
@@ -240,7 +253,7 @@ final class MacOS27Hider {
 
     private func reconcile() {
         guard assessment.isAvailable, AXIsProcessTrusted(), !overClock else {
-            assessment.release()
+            releaseAssessment()
             return
         }
         let excluded = revealAlwaysHidden ? Set<String>()
@@ -249,7 +262,7 @@ final class MacOS27Hider {
             if !revealHidden && !revealAlwaysHidden {
                 lastCollapsedRequest = "No apps were found to hide."
             }
-            assessment.release()
+            releaseAssessment()
             return
         }
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))

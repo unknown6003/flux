@@ -111,9 +111,6 @@ def clean(directory, owner):
     check_owned(marker)
     if json.loads(marker.read_text()) != owner:
         raise SigningError("Refusing cleanup of another signing run")
-    known = {MARKER, KEYCHAIN, ARCHIVE}
-    if any(path.name not in known for path in directory.iterdir()):
-        raise SigningError("Refusing cleanup of unknown signing files")
     for path in directory.iterdir():
         check_owned(path)
     archive = directory / ARCHIVE
@@ -123,6 +120,18 @@ def clean(directory, owner):
         run("Delete private signing keychain", [SECURITY, "delete-keychain", str(keychain)])
         if keychain.exists():
             raise SigningError("The private signing keychain was not deleted")
+    # Apple's AtomicFile names its lock from the first four SHA-1 bytes of
+    # the keychain basename. Deletion normally removes this exact file.
+    lock_name = ".fl" + hashlib.sha1(KEYCHAIN.encode()).hexdigest()[:8].upper()
+    known = {MARKER, lock_name}
+    remaining = list(directory.iterdir())
+    unknown = sorted(path.name for path in remaining if path.name not in known)
+    if unknown:
+        raise SigningError("Refusing cleanup of unknown signing files: "
+                           + json.dumps(unknown, ensure_ascii=True))
+    for path in remaining:
+        check_owned(path)
+    (directory / lock_name).unlink(missing_ok=True)
     marker.unlink()
     directory.rmdir()
 

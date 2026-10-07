@@ -135,12 +135,16 @@ enum SelfTest {
         var accessSettingsOpened = false
         let manager = MenuBarManager(settings: settings, arranger: arranger,
                                      accessibilityTrusted: { drawerAccess }, onOpenSettings: {})
-        manager.onOpenSettingsTab = { tab in accessSettingsOpened = tab == .menuBar }
+        manager.onOpenSettingsTab = { [weak manager] tab in
+            accessSettingsOpened = tab == .menuBar
+            manager?.beginIconManagement()
+        }
 
         manager.toggleReveal()
         let withoutAccess = manager.diagnostics
         if ControlItem.usesMacOS27Model {
-            check(accessSettingsOpened && !withoutAccess.revealHidden && !withoutAccess.chevronRevealed,
+            check(accessSettingsOpened && !withoutAccess.managingIcons
+                    && !withoutAccess.revealHidden && !withoutAccess.chevronRevealed,
                   "Missing access opens Menu Bar settings and keeps the arrow collapsed")
         } else {
             check(withoutAccess.revealHidden && !accessSettingsOpened,

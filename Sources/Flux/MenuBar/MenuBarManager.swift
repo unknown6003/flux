@@ -122,6 +122,7 @@ final class MenuBarManager {
 
     /// Keep every zone open while the Settings drawer reads the real bar.
     func beginIconManagement() {
+        guard !ControlItem.usesMacOS27Model || accessibilityTrusted() else { return }
         rehideTimer?.invalidate()
         rehideTimer = nil
         managingIcons = true

@@ -82,7 +82,7 @@ if [ "$SIGNING_IDENTITY" = "-" ]; then
   # to changed builds. Reuse a certificate identity to keep permissions
   # across updates.
 else
-  echo "▶ Signing with $SIGNING_IDENTITY…"
+  echo "▶ Signing with ${SIGNING_IDENTITY}…"
 fi
 #
 # Signed inside-out and WITHOUT --deep: the framework is a nested bundle that

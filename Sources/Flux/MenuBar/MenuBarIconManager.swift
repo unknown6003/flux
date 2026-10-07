@@ -69,6 +69,10 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func beginIconManagement() {
+        guard !ControlItem.usesMacOS27Model || trustProvider() else {
+            refresh()
+            return
+        }
         beginProvider()
         refresh()
         applyDrawerVisibility(revealHidden: true,
