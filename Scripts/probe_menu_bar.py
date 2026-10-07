@@ -133,6 +133,7 @@ func probe() {
                 }
                 print("PASS: the real probe icon disappeared and returned")
                 let hider = MacOS27Hider()
+                @MainActor
                 func apply(_ revealed: Bool) {
                     hider.apply(revealHidden: revealed, revealAlwaysHidden: revealed,
                                 chevronX: { item.button?.window?.frame.maxX },
