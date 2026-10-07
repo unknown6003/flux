@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def run(command, seconds):
@@ -49,6 +50,8 @@ func probe() {
         while Date() < deadline {
             if let flux = NSRunningApplication.runningApplications(
                 withBundleIdentifier: "com.flux.menubar").first {
+                try? String(flux.processIdentifier).write(
+                    toFile: CommandLine.arguments[1] + "/Flux.pid", atomically: true, encoding: .utf8)
                 let owner = AXUIElementCreateApplication(flux.processIdentifier)
                 AXUIElementSetMessagingTimeout(owner, 0.2)
                 var bar: CFTypeRef?
@@ -346,7 +349,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         output = root / "build/menu-bar-probe"
         output.mkdir(parents=True, exist_ok=True)
         arguments = [arg for arg in sys.argv[1:] if arg in ("--dual-display", "--app-click")]
-        flux = None
+        installed_flux = None
         try:
             if "--app-click" in arguments:
                 installed_flux = Path("/Applications/Flux.app")
@@ -361,21 +364,23 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                               str(installed_flux)], 20)
                 if status:
                     raise SystemExit(status)
-                log = (output / "Flux.log").open("w")
-                flux = subprocess.Popen([str(installed_flux / "Contents/MacOS/Flux")],
-                                        stdout=log, stderr=log, start_new_session=True)
+                (output / "Flux.pid").unlink(missing_ok=True)
+                status = run(["/usr/bin/open", "-n", "-g", str(installed_flux)], 20)
+                if status:
+                    raise SystemExit(status)
             raise SystemExit(run([str(binary), str(output)] + arguments, 35))
         finally:
-            if flux is not None:
-                print(f"Flux process exit before cleanup: {flux.poll()}", flush=True)
-                if flux.poll() is None:
-                    os.killpg(flux.pid, signal.SIGTERM)
+            pid_file = output / "Flux.pid"
+            if installed_flux is not None and pid_file.exists():
+                pid = int(pid_file.read_text())
                 try:
-                    flux.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(flux.pid, signal.SIGKILL)
-                    flux.wait(timeout=5)
-                log.close()
+                    os.kill(pid, signal.SIGTERM)
+                    for _ in range(10):
+                        time.sleep(0.5)
+                        os.kill(pid, 0)
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 run(["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
                      "--predicate", 'process == "Flux" AND subsystem == "com.flux.menubar"'], 30)
     finally:
