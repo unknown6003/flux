@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Flux.app — a self-contained, ad-hoc-signed menu bar agent.
+# Builds Flux.app with the selected signing identity.
 #
 #   ./Scripts/build_app.sh [debug|release]
 #
@@ -72,13 +72,17 @@ if [ -n "$MRA_FRAMEWORK" ]; then
 fi
 
 SIGNING_IDENTITY="${CODESIGN_IDENTITY:--}"
+SIGNING_ARGS=(--force --sign "$SIGNING_IDENTITY")
+if [ -n "${CODESIGN_KEYCHAIN:-}" ]; then
+  SIGNING_ARGS+=(--keychain "$CODESIGN_KEYCHAIN")
+fi
 if [ "$SIGNING_IDENTITY" = "-" ]; then
   echo "▶ Ad-hoc signing…"
   # Ad-hoc signing permits local launch but does not keep TCC grants attached
-  # to changed builds. Use CODESIGN_IDENTITY with a Developer ID certificate
-  # for a release that keeps permissions across updates.
+  # to changed builds. Reuse a certificate identity to keep permissions
+  # across updates.
 else
-  echo "▶ Signing with $SIGNING_IDENTITY…"
+  echo "▶ Signing with ${SIGNING_IDENTITY}…"
 fi
 #
 # Signed inside-out and WITHOUT --deep: the framework is a nested bundle that
@@ -89,9 +93,10 @@ fi
 # was, so if the framework failed to build (and isn't bundled) this step is
 # unaffected either way.
 if [ -d "$CONTENTS/Frameworks/MediaRemoteAdapter.framework" ]; then
-  codesign --force --sign "$SIGNING_IDENTITY" "$CONTENTS/Frameworks/MediaRemoteAdapter.framework"
+  codesign "${SIGNING_ARGS[@]}" "$CONTENTS/Frameworks/MediaRemoteAdapter.framework"
+  codesign --verify --strict --verbose=1 "$CONTENTS/Frameworks/MediaRemoteAdapter.framework"
 fi
-codesign --force --sign "$SIGNING_IDENTITY" --identifier "$BUNDLE_ID" "$APP"
+codesign "${SIGNING_ARGS[@]}" --identifier "$BUNDLE_ID" "$APP"
+codesign --verify --strict --verbose=1 "$APP" 2>&1 | sed 's/^/  /'
 
 echo "✓ Built $APP"
-codesign --verify --verbose=1 "$APP" 2>&1 | sed 's/^/  /' || true

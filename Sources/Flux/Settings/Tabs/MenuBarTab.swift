@@ -8,8 +8,10 @@ struct MenuBarTab: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            MenuBarPreview(showAlwaysHidden: settings.showAlwaysHiddenSection)
-                .padding(.horizontal, 4)
+            if iconManager.isTrusted {
+                MenuBarPreview(showAlwaysHidden: settings.showAlwaysHiddenSection)
+                    .padding(.horizontal, 4)
+            }
             drawerCard
             behaviorCard
             appearanceCard
@@ -96,6 +98,11 @@ private struct MenuBarDrawer: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentInkColor)
             }
+            Button("Copy menu bar report") {
+                iconManager.copyMenuBarReport()
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accentInkColor)
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
@@ -107,6 +114,9 @@ private struct MenuBarDrawer: View {
                     subtitle: ControlItem.usesMacOS27Model
                         ? "Flux needs Accessibility to hide and move menu-bar icons on macOS 27."
                         : "Flux uses Accessibility to read and move menu-bar icons. It opens System Settings instead of showing a prompt.")
+            Text("If Flux is already on, quit Flux and remove its old entry with the minus button. Add \(Bundle.main.bundleURL.path) with the plus button and turn it on.")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondaryColor)
             Button("Open Accessibility Settings") {
                 iconManager.requestAccess()
             }

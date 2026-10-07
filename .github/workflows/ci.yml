@@ -10,6 +10,11 @@ on:
     branches: [main, 'notch-**']
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      menu_bar_probe:
+        description: Run the live macOS 27 visibility probe before building
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -34,11 +39,53 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: Import release signing identity
+        env:
+          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
+          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
+        run: python3 Scripts/import_signing.py
+
+      - name: Probe access across changed signed builds
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 Scripts/probe_signing.py
+
+      - name: Probe menu bar visibility
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 Scripts/probe_menu_bar.py --dual-display
+
+      - name: Upload menu bar probe images
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: menu-bar-probe
+          path: build/menu-bar-probe/
+          if-no-files-found: warn
+
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
 
       - name: Self-test
         run: ./build/Flux.app/Contents/MacOS/Flux --selftest
+
+      - name: Upload check build
+        if: ${{ inputs.menu_bar_probe }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: check-build
+          path: build/Flux.dmg
+          if-no-files-found: error
+
+      - name: Probe real Flux arrow clicks
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 Scripts/probe_menu_bar.py --app-click
+
+      - name: Upload Flux arrow probe images
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: flux-arrow-probe
+          path: build/menu-bar-probe/
+          if-no-files-found: warn
 
       - name: Render notch snapshots
         run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots all
@@ -83,3 +130,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" build/Flux.dmg \
             --title "Flux $VERSION" \
             --generate-notes
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: python3 Scripts/import_signing.py --cleanup

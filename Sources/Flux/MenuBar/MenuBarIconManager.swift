@@ -69,6 +69,10 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func beginIconManagement() {
+        guard !ControlItem.usesMacOS27Model || trustProvider() else {
+            refresh()
+            return
+        }
         beginProvider()
         refresh()
         applyDrawerVisibility(revealHidden: true,
@@ -79,6 +83,13 @@ final class MenuBarIconManager: ObservableObject {
 
     func endIconManagement() {
         endProvider()
+    }
+
+    func copyMenuBarReport() {
+        let report = ControlItem.usesMacOS27Model ? macOS27Hider.diagnostics
+            : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())\nThe macOS 27 hiding path is not active."
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
     }
 
     func refresh() {
