@@ -169,7 +169,7 @@ func probe() {
     @MainActor
     func begin(attempt: Int) {
         let before = snapshot("Before")
-        guard before > 0 else {
+        guard before > 0 || CommandLine.arguments.contains("--app-click") else {
             guard attempt < 10 else {
                 print("FAIL: the probe icon never became visible")
                 exit(1)
@@ -343,6 +343,11 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         flux = None
         try:
             if "--app-click" in arguments:
+                status = run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+                              "LaunchServices.framework/Support/lsregister", "-f",
+                              str(root / "build/Flux.app")], 20)
+                if status:
+                    raise SystemExit(status)
                 log = (output / "Flux.log").open("w")
                 flux = subprocess.Popen([str(root / "build/Flux.app/Contents/MacOS/Flux")],
                                         stdout=log, stderr=log, start_new_session=True)
