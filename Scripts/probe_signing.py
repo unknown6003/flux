@@ -168,7 +168,7 @@ def stop_owned_app(app_path):
                 os.kill(pid, signal.SIGKILL)
 
 
-def build_app(work, marker, bundle_id, swiftc):
+def build_app(work, marker, bundle_id, swiftc, sdk):
     source = work / f"main-{marker}.swift"
     source.write_text(GUI_SOURCE.replace("BUILD_MARKER", marker))
     app = work / f"build-{marker}/FluxSigningProbe.app"
@@ -185,7 +185,7 @@ def build_app(work, marker, bundle_id, swiftc):
         "NSHighResolutionCapable": True,
     }
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-    run([swiftc, str(source), "-o", str(binary)], seconds=120)
+    run([swiftc, "-sdk", sdk, str(source), "-o", str(binary)], seconds=120)
     return app
 
 
@@ -269,12 +269,13 @@ def main():
                  "-s", "-k", password, str(keychain)], seconds=30)
             swiftc = run(["/usr/bin/xcrun", "--find", "swiftc"], seconds=30).stdout.strip()
             clang = run(["/usr/bin/xcrun", "--find", "clang"], seconds=30).stdout.strip()
+            sdk = run(["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], seconds=30).stdout.strip()
             requirement_source = work / "requirement.m"
             requirement_source.write_text(REQUIREMENT_SOURCE)
             requirement_tool = work / "requirement"
-            run([clang, "-fobjc-arc", str(requirement_source), "-framework", "Foundation",
+            run([clang, "-isysroot", sdk, "-fobjc-arc", str(requirement_source), "-framework", "Foundation",
                  "-framework", "Security", "-o", str(requirement_tool)], seconds=60)
-            apps = {marker: build_app(work, marker, bundle_id, swiftc) for marker in ("A", "B", "C")}
+            apps = {marker: build_app(work, marker, bundle_id, swiftc, sdk) for marker in ("A", "B", "C")}
             for marker, candidate in apps.items():
                 command = ["/usr/bin/codesign", "--force", "--timestamp=none", "--sign"]
                 command += ["-"] if marker == "C" else [identity, "--keychain", str(keychain)]

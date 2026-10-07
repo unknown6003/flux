@@ -27,6 +27,36 @@ def run(command, seconds):
         raise SystemExit(f"FAIL: deadline reached for {command[0]}")
 
 
+def stop_flux():
+    executable = "/Applications/Flux.app/Contents/MacOS/Flux"
+    listing = subprocess.run(["/bin/ps", "-axo", "pid=,comm="],
+                             capture_output=True, text=True, timeout=10, check=True)
+    for line in listing.stdout.splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if len(fields) != 2 or fields[1] != executable:
+            continue
+        pid = int(fields[0])
+        try:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(10):
+                time.sleep(0.5)
+                os.kill(pid, 0)
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def uninstall_flux():
+    register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/" \
+        "LaunchServices.framework/Support/lsregister"
+    try:
+        if run([register, "-u", "/Applications/Flux.app"], 20):
+            raise RuntimeError("FAIL: could not unregister the CI Flux install")
+    finally:
+        if run(["sudo", "-n", "rm", "-rf", "/Applications/Flux.app"], 20):
+            raise RuntimeError("FAIL: could not remove the CI Flux install")
+
+
 if sys.platform != "darwin":
     raise SystemExit("FAIL: this probe needs a macOS 27 desktop")
 
@@ -351,48 +381,28 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         output = root / "build/menu-bar-probe"
         output.mkdir(parents=True, exist_ok=True)
         arguments = [arg for arg in sys.argv[1:] if arg in ("--dual-display", "--app-click")]
-        installed_flux = None
-        privacy = ExitStack()
-        try:
+        with ExitStack() as privacy:
             if "--app-click" in arguments:
                 destination = Path("/Applications/Flux.app")
                 if destination.exists():
                     raise SystemExit("FAIL: the probe will not replace an existing Flux install")
-                installed_flux = destination
+                privacy.callback(uninstall_flux)
                 status = run(["sudo", "-n", "ditto", str(root / "build/Flux.app"),
-                              str(installed_flux)], 30)
+                              str(destination)], 30)
                 if status:
                     raise SystemExit(status)
                 status = run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
                               "LaunchServices.framework/Support/lsregister", "-f",
-                              str(installed_flux)], 20)
+                              str(destination)], 20)
                 if status:
                     raise SystemExit(status)
                 privacy.enter_context(flux_accessibility_grant())
+                privacy.callback(stop_flux)
                 (output / "Flux.pid").unlink(missing_ok=True)
-                status = run(["/usr/bin/open", "-n", "-g", str(installed_flux)], 20)
+                status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
                     raise SystemExit(status)
             raise SystemExit(run([str(binary), str(output)] + arguments, 35))
-        finally:
-            pid_file = output / "Flux.pid"
-            if installed_flux is not None and pid_file.exists():
-                pid = int(pid_file.read_text())
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    for _ in range(10):
-                        time.sleep(0.5)
-                        os.kill(pid, 0)
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                run(["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
-                     "--predicate", 'process == "Flux" AND subsystem == "com.flux.menubar"'], 30)
-            privacy.close()
-            if installed_flux is not None:
-                run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
-                     "LaunchServices.framework/Support/lsregister", "-u", str(installed_flux)], 20)
-                run(["sudo", "-n", "rm", "-rf", str(installed_flux)], 20)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
