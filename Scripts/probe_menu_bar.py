@@ -41,6 +41,32 @@ private extension MacOS27Hider {
 func probe() {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+    if CommandLine.arguments.contains("--app-click") {
+        let deadline = Date().addingTimeInterval(8)
+        var ready = false
+        while Date() < deadline {
+            if let flux = NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.flux.menubar").first {
+                let owner = AXUIElementCreateApplication(flux.processIdentifier)
+                AXUIElementSetMessagingTimeout(owner, 0.2)
+                var bar: CFTypeRef?
+                var children: CFTypeRef?
+                if AXUIElementCopyAttributeValue(owner, kAXExtrasMenuBarAttribute as CFString,
+                                               &bar) == .success, let bar,
+                    AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString,
+                                                   &children) == .success,
+                    let items = children as? [AXUIElement], items.count >= 2 {
+                    ready = true
+                    break
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard ready else {
+            print("FAIL: Flux did not become ready within 8 seconds")
+            exit(1)
+        }
+    }
     if CommandLine.arguments.contains("--dual-display") {
         let id = createProbeDisplay()
         guard id != 0 else {
@@ -153,6 +179,71 @@ func probe() {
             }
             return
         }
+        if CommandLine.arguments.contains("--app-click") {
+            guard let flux = NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.flux.menubar").first else {
+                print("FAIL: the built Flux app is not running")
+                exit(1)
+            }
+            let owner = AXUIElementCreateApplication(flux.processIdentifier)
+            var bar: CFTypeRef?
+            var children: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(owner, kAXExtrasMenuBarAttribute as CFString,
+                                               &bar) == .success, let bar,
+                AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString,
+                                               &children) == .success,
+                let items = children as? [AXUIElement] else {
+                print("FAIL: the built app's controls are unavailable")
+                exit(1)
+            }
+            var chevron: CGRect?
+            for child in items {
+                var position: CFTypeRef?
+                var size: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(child, kAXPositionAttribute as CFString,
+                                                   &position) == .success, let position,
+                    AXUIElementCopyAttributeValue(child, kAXSizeAttribute as CFString,
+                                                   &size) == .success, let size else { continue }
+                var origin = CGPoint.zero
+                var dimensions = CGSize.zero
+                guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+                    AXValueGetValue(size as! AXValue, .cgSize, &dimensions) else { continue }
+                let frame = CGRect(origin: origin, size: dimensions)
+                print("Flux control: \(frame)")
+                if dimensions.width >= 20 { chevron = frame }
+            }
+            guard let chevron, let fixture = item.button?.window?.frame,
+                fixture.maxX <= chevron.minX else {
+                print("FAIL: the fixture is not to the left of Flux's arrow")
+                exit(1)
+            }
+            func click() {
+                let point = CGPoint(x: chevron.midX, y: chevron.midY)
+                for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+                    CGEvent(mouseEventSource: nil, mouseType: type,
+                            mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+                }
+            }
+            click()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let firstExpanded = snapshot("AppExpanded")
+                click()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    let collapsed = snapshot("AppCollapsed")
+                    click()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        let expanded = snapshot("AppExpandedAgain")
+                        guard firstExpanded > 0, collapsed == 0, expanded > 0 else {
+                            print("FAIL: clicks on the real Flux arrow did not hide and show the icon")
+                            exit(1)
+                        }
+                        print("PASS: clicks on the real Flux arrow hid and showed the icon")
+                        exit(0)
+                    }
+                }
+            }
+            return
+        }
         let allowed = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
             .subtracting(["com.flux.visibility-probe"]).sorted()
         assessment.restrict(to: allowed)
@@ -248,8 +339,24 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     try:
         output = root / "build/menu-bar-probe"
         output.mkdir(parents=True, exist_ok=True)
-        arguments = ["--dual-display"] if "--dual-display" in sys.argv else []
-        raise SystemExit(run([str(binary), str(output)] + arguments, 35))
+        arguments = [arg for arg in sys.argv[1:] if arg in ("--dual-display", "--app-click")]
+        flux = None
+        try:
+            if "--app-click" in arguments:
+                log = (output / "Flux.log").open("w")
+                flux = subprocess.Popen([str(root / "build/Flux.app/Contents/MacOS/Flux")],
+                                        stdout=log, stderr=log, start_new_session=True)
+            raise SystemExit(run([str(binary), str(output)] + arguments, 35))
+        finally:
+            if flux is not None:
+                if flux.poll() is None:
+                    os.killpg(flux.pid, signal.SIGTERM)
+                try:
+                    flux.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(flux.pid, signal.SIGKILL)
+                    flux.wait(timeout=5)
+                log.close()
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)

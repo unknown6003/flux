@@ -57,6 +57,18 @@ jobs:
       - name: Self-test
         run: ./build/Flux.app/Contents/MacOS/Flux --selftest
 
+      - name: Probe real Flux arrow clicks
+        if: ${{ inputs.menu_bar_probe }}
+        run: python3 Scripts/probe_menu_bar.py --app-click
+
+      - name: Upload Flux arrow probe images
+        if: ${{ always() && inputs.menu_bar_probe }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: flux-arrow-probe
+          path: build/menu-bar-probe/
+          if-no-files-found: warn
+
       - name: Render notch snapshots
         run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots all
 
