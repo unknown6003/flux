@@ -28,6 +28,8 @@ if sys.platform != "darwin":
     raise SystemExit("FAIL: this probe needs a macOS 27 desktop")
 
 root = Path(__file__).resolve().parents[1]
+if "--app-click" in sys.argv and os.environ.get("GITHUB_ACTIONS") != "true":
+    raise SystemExit("FAIL: the install-and-click probe is only for a disposable CI desktop")
 probe = r'''
 
 @_silgen_name("FluxProbeCreateDisplay")
@@ -348,6 +350,8 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         try:
             if "--app-click" in arguments:
                 installed_flux = Path("/Applications/Flux.app")
+                if installed_flux.exists():
+                    raise SystemExit("FAIL: the probe will not replace an existing Flux install")
                 status = run(["sudo", "-n", "ditto", str(root / "build/Flux.app"),
                               str(installed_flux)], 30)
                 if status:
@@ -364,8 +368,6 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         finally:
             if flux is not None:
                 print(f"Flux process exit before cleanup: {flux.poll()}", flush=True)
-                run(["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
-                     "--predicate", 'process == "Flux" AND subsystem == "com.flux.menubar"'], 30)
                 if flux.poll() is None:
                     os.killpg(flux.pid, signal.SIGTERM)
                 try:
@@ -374,6 +376,8 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                     os.killpg(flux.pid, signal.SIGKILL)
                     flux.wait(timeout=5)
                 log.close()
+                run(["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
+                     "--predicate", 'process == "Flux" AND subsystem == "com.flux.menubar"'], 30)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
