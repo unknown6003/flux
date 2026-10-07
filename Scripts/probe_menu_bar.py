@@ -57,6 +57,24 @@ def uninstall_flux():
             raise RuntimeError("FAIL: could not remove the CI Flux install")
 
 
+def use_hidden_section(privacy):
+    # A newly created status item lands left of every Flux control. Disable the
+    # Always Hidden divider only in this disposable test so it lands in Hidden.
+    domain, key = "com.flux.menubar", "flux.showAlwaysHiddenSection"
+    previous = subprocess.run(["/usr/bin/defaults", "read", domain, key],
+                              capture_output=True, text=True, timeout=10)
+    if previous.returncode == 0:
+        value = previous.stdout.strip()
+        if value not in ("0", "1"):
+            raise RuntimeError("FAIL: unexpected saved Always Hidden setting")
+        restore = ["/usr/bin/defaults", "write", domain, key, "-bool", value]
+    else:
+        restore = ["/usr/bin/defaults", "delete", domain, key]
+    privacy.callback(run, restore, 10)
+    if run(["/usr/bin/defaults", "write", domain, key, "-bool", "false"], 10):
+        raise RuntimeError("FAIL: could not prepare the Hidden test section")
+
+
 if sys.platform != "darwin":
     raise SystemExit("FAIL: this probe needs a macOS 27 desktop")
 
@@ -386,6 +404,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                 destination = Path("/Applications/Flux.app")
                 if destination.exists():
                     raise SystemExit("FAIL: the probe will not replace an existing Flux install")
+                use_hidden_section(privacy)
                 privacy.callback(uninstall_flux)
                 status = run(["sudo", "-n", "ditto", str(root / "build/Flux.app"),
                               str(destination)], 30)

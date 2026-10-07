@@ -176,15 +176,18 @@ breaking the rest of the app when access isn't there.
 
 Grab the latest **`Flux.dmg`** from the [Releases](../../releases) page, open it, and
 drag **Flux** into **Applications**. On first launch, right-click the app → **Open**
-(it's ad-hoc signed, not notarized). A **‹** chevron appears near your clock.
+(it is not notarized). A **‹** chevron appears near your clock.
 
-**A note on permissions:** Flux is ad-hoc signed rather than notarized with a paid
-Developer ID, which means macOS can — and sometimes does — treat an update as a new,
-untrusted binary and quietly drop a previously granted permission (Accessibility,
-Calendar, or Camera). If a permission-gated widget suddenly shows its
-"access needed" state after updating Flux, that's why — Settings → Notch shows the
-live grant/denied status for each permission and a button to re-request it or jump
-straight to the right System Settings pane.
+Releases from 0.21.25 use one saved signing certificate. This keeps the app's
+identity stable across updates. The certificate is self-signed, so it does not
+provide Apple's Gatekeeper trust or notarization.
+
+The first update from an older ad-hoc build needs a fresh Accessibility grant.
+Quit Flux. In System Settings → Privacy & Security → Accessibility, remove the
+old Flux entry, add the installed Flux.app, and turn it on. Then open Flux.
+Menu Bar settings must show real app names. If it still shows Open Accessibility
+Settings, macOS has not granted access to that copy. The arrow opens these
+settings when access is missing.
 
 ## Build & run
 
@@ -209,6 +212,19 @@ swift build && swift run
 
 The debug executable cannot register Launch at login; use the bundled app for
 that setting so macOS does not launch a bare process through Terminal.
+
+### Release signing
+
+CI imports the saved PKCS#12 identity from the `FLUX_SIGNING_P12` and
+`FLUX_SIGNING_PASSWORD` repository secrets. The first value is base64. Its
+certificate must match the public `Resources/FluxSigning.pem`. Keep the same
+private key and certificate for later releases. A new identity needs a new
+user grant.
+
+Tag builds fail if the identity is absent or wrong. Local builds can use
+`CODESIGN_IDENTITY` and `CODESIGN_KEYCHAIN`; without an identity, they use ad-hoc
+signing. The CI tests changed signed GUI builds with one Accessibility grant
+and checks real Flux arrow clicks before publishing a release.
 
 ### Developer / CI helpers
 

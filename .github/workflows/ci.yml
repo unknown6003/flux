@@ -39,16 +39,22 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: Import release signing identity
+        env:
+          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
+          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
+        run: python3 Scripts/import_signing.py
+
       - name: Probe access across changed signed builds
-        if: ${{ inputs.menu_bar_probe }}
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
         run: python3 Scripts/probe_signing.py
 
       - name: Probe menu bar visibility
-        if: ${{ inputs.menu_bar_probe }}
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
         run: python3 Scripts/probe_menu_bar.py --dual-display
 
       - name: Upload menu bar probe images
-        if: ${{ always() && inputs.menu_bar_probe }}
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: menu-bar-probe
@@ -70,11 +76,11 @@ jobs:
           if-no-files-found: error
 
       - name: Probe real Flux arrow clicks
-        if: ${{ inputs.menu_bar_probe }}
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
         run: python3 Scripts/probe_menu_bar.py --app-click
 
       - name: Upload Flux arrow probe images
-        if: ${{ always() && inputs.menu_bar_probe }}
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: flux-arrow-probe
@@ -124,3 +130,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" build/Flux.dmg \
             --title "Flux $VERSION" \
             --generate-notes
+
+      - name: Remove temporary signing keychain
+        if: always()
+        run: python3 Scripts/import_signing.py --cleanup
