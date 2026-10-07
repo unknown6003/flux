@@ -10,6 +10,11 @@ on:
     branches: [main, 'notch-**']
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      menu_bar_probe:
+        description: Run the live macOS 27 visibility probe before building
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -33,6 +38,10 @@ jobs:
 
       - name: Swift version
         run: swift --version
+
+      - name: Probe menu bar visibility
+        if: ${{ inputs.menu_bar_probe }}
+        run: python3 Scripts/probe_menu_bar.py
 
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
