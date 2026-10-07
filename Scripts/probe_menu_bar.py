@@ -30,6 +30,10 @@ if sys.platform != "darwin":
 root = Path(__file__).resolve().parents[1]
 probe = r'''
 
+private extension MacOS27Hider {
+    var probeClockFrame: CGRect? { clockFrame() }
+}
+
 @MainActor
 func probe() {
     let app = NSApplication.shared
@@ -45,6 +49,7 @@ func probe() {
     let assessment = MenuBarAssessment()
     print("OS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("Screens: \(NSScreen.screens.count)")
+    print("Screen bounds: \(NSScreen.screens.map(\.frame))")
     print("Accessibility trusted: \(AXIsProcessTrusted())")
     print("Assessment interface: \(assessment.isAvailable)")
     guard ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27,
@@ -144,6 +149,8 @@ func probe() {
                 }
                 print("PASS: the real probe icon disappeared and returned")
                 let hider = MacOS27Hider()
+                print("Clock bounds: \(String(describing: hider.probeClockFrame))")
+                print("Pointer: \(NSEvent.mouseLocation)")
                 @MainActor
                 func apply(_ revealed: Bool) {
                     hider.apply(revealHidden: revealed, revealAlwaysHidden: revealed,
