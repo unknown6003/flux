@@ -43,6 +43,14 @@ jobs:
         if: ${{ inputs.menu_bar_probe }}
         run: python3 Scripts/probe_menu_bar.py
 
+      - name: Upload menu bar probe images
+        if: ${{ always() && inputs.menu_bar_probe }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: menu-bar-probe
+          path: build/menu-bar-probe/
+          if-no-files-found: warn
+
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
 

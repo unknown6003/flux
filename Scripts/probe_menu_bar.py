@@ -36,7 +36,12 @@ func probe() {
     app.setActivationPolicy(.accessory)
     let item = NSStatusBar.system.statusItem(withLength: 28)
     item.autosaveName = "flux.visibility-probe"
-    item.button?.title = "FP"
+    let image = NSImage(size: NSSize(width: 20, height: 16), flipped: false) { bounds in
+        NSColor(calibratedRed: 1, green: 0, blue: 0.7, alpha: 1).setFill()
+        bounds.fill()
+        return true
+    }
+    item.button?.image = image
     let assessment = MenuBarAssessment()
     print("OS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("Screens: \(NSScreen.screens.count)")
@@ -58,9 +63,38 @@ func probe() {
                                             &children) == .success else { return nil }
         return (children as? [AXUIElement])?.count
     }
-    func snapshot(_ state: String) -> Int? {
+    func snapshot(_ state: String) -> Int {
         let n = count()
         print("\(state): own AX items=\(n.map(String.init) ?? "unavailable") window=\(String(describing: item.button?.window?.frame))")
+        let output = CommandLine.arguments[1]
+        let screenshot = output + "/" + state + ".png"
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", screenshot]
+        do {
+            try capture.run()
+            capture.waitUntilExit()
+        } catch {
+            print("FAIL: screen capture could not start: \(error)")
+            exit(1)
+        }
+        guard capture.terminationStatus == 0,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: screenshot)),
+              let bitmap = NSBitmapImageRep(data: data) else {
+            print("FAIL: this desktop does not allow screen capture")
+            exit(1)
+        }
+        var pixels = 0
+        for y in 0..<min(100, bitmap.pixelsHigh) {
+            for x in 0..<bitmap.pixelsWide {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                if color.redComponent > 0.8 && color.greenComponent < 0.2
+                    && color.blueComponent > 0.45 && color.blueComponent < 0.9 {
+                    pixels += 1
+                }
+            }
+        }
+        print("\(state): marker pixels=\(pixels)")
         let positions = CFPreferencesCopyValue("TrailingItemPreferredPositions" as CFString,
                                               "com.apple.MenuBarAgent" as CFString,
                                               kCFPreferencesCurrentUser,
@@ -69,7 +103,7 @@ func probe() {
             where key.contains("com.flux.visibility-probe") {
             print("Probe order: \(key)=\(value)")
         }
-        return n
+        return pixels
     }
     assessment.onStatus = { error in
         if let error {
@@ -94,8 +128,8 @@ func probe() {
                     print("FAIL: the hide request did not complete")
                     exit(1)
                 }
-                guard let before, before > 0, hidden == 0, restored == before else {
-                    print("FAIL: AX did not prove that the probe icon disappeared and returned")
+                guard before > 0, hidden == 0, restored > 0 else {
+                    print("FAIL: the probe icon did not disappear and return on screen")
                     exit(1)
                 }
                 print("PASS: the real probe icon disappeared and returned")
@@ -143,7 +177,9 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     if status:
         raise SystemExit(status)
     try:
-        raise SystemExit(run([str(binary)], 20))
+        output = root / "build/menu-bar-probe"
+        output.mkdir(parents=True, exist_ok=True)
+        raise SystemExit(run([str(binary), str(output)], 20))
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
