@@ -119,6 +119,10 @@ func probe() {
     }
     func snapshot(_ state: String) -> Int {
         let n = count()
+        if let flux = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.flux.menubar").first {
+            print("Flux process: \(flux.processIdentifier) path=\(String(describing: flux.bundleURL)) registered=\(String(describing: NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.flux.menubar")))")
+        }
         print("\(state): own AX items=\(n.map(String.init) ?? "unavailable") window=\(String(describing: item.button?.window?.frame))")
         let output = CommandLine.arguments[1]
         let screenshot = output + "/" + state + ".png"
@@ -343,17 +347,25 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         flux = None
         try:
             if "--app-click" in arguments:
+                installed_flux = Path("/Applications/Flux.app")
+                status = run(["sudo", "-n", "ditto", str(root / "build/Flux.app"),
+                              str(installed_flux)], 30)
+                if status:
+                    raise SystemExit(status)
                 status = run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
                               "LaunchServices.framework/Support/lsregister", "-f",
-                              str(root / "build/Flux.app")], 20)
+                              str(installed_flux)], 20)
                 if status:
                     raise SystemExit(status)
                 log = (output / "Flux.log").open("w")
-                flux = subprocess.Popen([str(root / "build/Flux.app/Contents/MacOS/Flux")],
+                flux = subprocess.Popen([str(installed_flux / "Contents/MacOS/Flux")],
                                         stdout=log, stderr=log, start_new_session=True)
             raise SystemExit(run([str(binary), str(output)] + arguments, 35))
         finally:
             if flux is not None:
+                print(f"Flux process exit before cleanup: {flux.poll()}", flush=True)
+                run(["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
+                     "--predicate", 'process == "Flux" AND subsystem == "com.flux.menubar"'], 30)
                 if flux.poll() is None:
                     os.killpg(flux.pid, signal.SIGTERM)
                 try:
