@@ -112,8 +112,19 @@ func probe() {
             exit(1)
         }
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+    @MainActor
+    func begin(attempt: Int) {
         let before = snapshot("Before")
+        guard before > 0 else {
+            guard attempt < 10 else {
+                print("FAIL: the probe icon never became visible")
+                exit(1)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                begin(attempt: attempt + 1)
+            }
+            return
+        }
         let allowed = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
             .subtracting(["com.flux.visibility-probe"]).sorted()
         assessment.restrict(to: allowed)
@@ -158,7 +169,8 @@ func probe() {
             }
         }
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { begin(attempt: 0) }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
         assessment.release()
         print("FAIL: the hide/show probe reached its deadline")
         exit(1)
@@ -200,7 +212,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     try:
         output = root / "build/menu-bar-probe"
         output.mkdir(parents=True, exist_ok=True)
-        raise SystemExit(run([str(binary), str(output)], 30))
+        raise SystemExit(run([str(binary), str(output)], 35))
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
