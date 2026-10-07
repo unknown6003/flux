@@ -202,12 +202,14 @@ final class MacOS27Hider {
                 if !self.revealHidden && !self.revealAlwaysHidden {
                     self.lastCollapsedScan = "Stopped before reading icon positions. Interface=\(self.assessment.isAvailable), access=\(AXIsProcessTrusted())"
                 }
+                Log.menuBar.info("[DEBUG-flux-hide-stop] \(self.diagnostics, privacy: .public)")
                 return
             }
             guard let chevronX = self.chevronX() else {
                 if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
                 else if !self.revealHidden && !self.revealAlwaysHidden {
                     self.lastCollapsedScan = "Flux could not read its arrow position after six attempts."
+                    Log.menuBar.info("[DEBUG-flux-hide-stop] \(self.diagnostics, privacy: .public)")
                 }
                 return
             }
