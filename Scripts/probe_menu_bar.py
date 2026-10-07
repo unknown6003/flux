@@ -88,7 +88,7 @@ func probe() {
         for y in 0..<min(100, bitmap.pixelsHigh) {
             for x in 0..<bitmap.pixelsWide {
                 guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                if color.redComponent > 0.8 && color.greenComponent < 0.2
+                if color.redComponent > 0.8 && color.greenComponent < 0.35
                     && color.blueComponent > 0.45 && color.blueComponent < 0.9 {
                     pixels += 1
                 }
@@ -123,7 +123,6 @@ func probe() {
             assessment.release()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 let restored = snapshot("Restored")
-                NSStatusBar.system.removeStatusItem(item)
                 guard activated else {
                     print("FAIL: the hide request did not complete")
                     exit(1)
@@ -133,11 +132,32 @@ func probe() {
                     exit(1)
                 }
                 print("PASS: the real probe icon disappeared and returned")
-                exit(0)
+                let hider = MacOS27Hider()
+                func apply(_ revealed: Bool) {
+                    hider.apply(revealHidden: revealed, revealAlwaysHidden: revealed,
+                                chevronX: { item.button?.window?.frame.maxX },
+                                alwaysX: { nil })
+                }
+                apply(false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    let collapsed = snapshot("HiderCollapsed")
+                    apply(true)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        let expanded = snapshot("HiderExpanded")
+                        NSStatusBar.system.removeStatusItem(item)
+                        guard collapsed == 0, expanded > 0 else {
+                            print("FAIL: Flux's full position scan and toggle did not hide and show the icon")
+                            print("Hider error: \(hider.latestError ?? "none")")
+                            exit(1)
+                        }
+                        print("PASS: Flux's full position scan and toggle hid and showed the icon")
+                        exit(0)
+                    }
+                }
             }
         }
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
         assessment.release()
         print("FAIL: the hide/show probe reached its deadline")
         exit(1)
@@ -179,7 +199,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
     try:
         output = root / "build/menu-bar-probe"
         output.mkdir(parents=True, exist_ok=True)
-        raise SystemExit(run([str(binary), str(output)], 20))
+        raise SystemExit(run([str(binary), str(output)], 30))
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
