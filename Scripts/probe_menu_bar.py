@@ -305,7 +305,33 @@ func probe() {
                             exit(1)
                         }
                         print("PASS: clicks on the real Flux arrow hid and showed the icon")
-                        exit(0)
+                        @MainActor
+                        func repeatClicks(cycle: Int, revealed: Bool) {
+                            guard !flux.isTerminated,
+                                  NSRunningApplication.runningApplications(
+                                    withBundleIdentifier: "com.flux.menubar").contains(where: {
+                                        $0.processIdentifier == flux.processIdentifier
+                                    }) else {
+                                print("FAIL: Flux ended during repeated hide/reveal clicks")
+                                exit(1)
+                            }
+                            click()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                let pixels = snapshot("AppCycle\(cycle)-\(revealed ? "revealed" : "hidden")")
+                                guard !flux.isTerminated,
+                                      revealed ? pixels > 0 : pixels == 0 else {
+                                    print("FAIL: hide/reveal cycle \(cycle) failed or Flux ended")
+                                    exit(1)
+                                }
+                                if cycle == 12 && revealed {
+                                    print("PASS: the same Flux process survived 12 hide/reveal cycles")
+                                    exit(0)
+                                }
+                                repeatClicks(cycle: revealed ? cycle + 1 : cycle,
+                                             revealed: !revealed)
+                            }
+                        }
+                        repeatClicks(cycle: 1, revealed: false)
                     }
                 }
             }
@@ -364,7 +390,7 @@ func probe() {
         }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { begin(attempt: 0) }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 90) {
         assessment.release()
         print("FAIL: the hide/show probe reached its deadline")
         exit(1)
@@ -435,7 +461,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                 status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
                     raise SystemExit(status)
-            raise SystemExit(run([str(binary), str(output)] + arguments, 35))
+            raise SystemExit(run([str(binary), str(output)] + arguments, 100))
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)
