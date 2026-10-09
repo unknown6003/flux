@@ -475,13 +475,26 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                               str(destination)], 20)
                 if status:
                     raise SystemExit(status)
-                privacy.enter_context(flux_accessibility_grant())
+                grant = privacy.enter_context(ExitStack())
+                baseline = grant.enter_context(flux_accessibility_grant())
+                auth_index = baseline["columns"].index("auth_value")
+                if any(row[auth_index] == 2 for row in baseline["rows"]):
+                    raise SystemExit("FAIL: the saved-layout probe needs an initially untrusted Flux install")
                 privacy.callback(stop_flux)
                 (output / "Flux.pid").unlink(missing_ok=True)
                 status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
                     raise SystemExit(status)
-            raise SystemExit(run([str(binary), str(output)] + arguments, 100))
+            status = run([str(binary), str(output)] + arguments, 100)
+            if status == 0 and "--app-click" in arguments:
+                stop_flux()
+                grant.close()
+                status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
+                if status:
+                    raise SystemExit(status)
+                print("CI: testing the saved layout with the real Flux AX grant removed", flush=True)
+                status = run([str(binary), str(output)] + arguments, 100)
+            raise SystemExit(status)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)

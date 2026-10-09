@@ -41,6 +41,10 @@ final class MenuBarIconManager: ObservableObject {
     }()
     private var cancellables = Set<AnyCancellable>()
 
+    var canHideWithoutAccess: Bool {
+        ControlItem.usesMacOS27Model && macOS27Hider.isAvailable && macOS27Hider.hasSavedLayout
+    }
+
     init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
         self.trustProvider = trustProvider
         observeAppActivation()

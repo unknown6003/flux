@@ -93,6 +93,9 @@ final class MacOS27Hider {
 
     private let assessment = MenuBarAssessment()
     private let trustProvider: () -> Bool
+    private let defaults: UserDefaults
+    private static let layoutKey = "flux.macOS27IconLayout"
+    private(set) var hasSavedLayout = false
     var onStatus: ((String?) -> Void)?
     private(set) var latestError: String?
     private var hidden = Set<String>()
@@ -117,6 +120,7 @@ final class MacOS27Hider {
         Flux: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
         Accessibility: \(trustProvider())
         Hiding interface: \(assessment.isAvailable)
+        Saved icon layout: \(hasSavedLayout)
         Install matches registered app: \(registered?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL)
         Current reveal: hidden=\(revealHidden), always=\(revealAlwaysHidden)
         Clock bypass: \(overClock)
@@ -128,8 +132,17 @@ final class MacOS27Hider {
         """
     }
 
-    init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+    init(defaults: UserDefaults = .standard,
+         trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
         self.trustProvider = trustProvider
+        self.defaults = defaults
+        if let layout = defaults.dictionary(forKey: Self.layoutKey),
+           let hidden = layout["hidden"] as? [String],
+           let alwaysHidden = layout["alwaysHidden"] as? [String] {
+            self.hidden = Set(hidden.filter { !Self.alwaysAllowed.contains($0) && !$0.hasPrefix("com.apple.") })
+            self.alwaysHidden = Set(alwaysHidden).intersection(self.hidden)
+            hasSavedLayout = true
+        }
         assessment.onStatus = { [weak self] message in
             self?.latestError = message
             self?.onStatus?(message)
@@ -214,15 +227,22 @@ final class MacOS27Hider {
                 self.scanAfterLayout(generation: generation, attempts: attempts, delay: remaining)
                 return
             }
-            guard self.assessment.isAvailable, self.trustProvider() else {
-                let message = self.assessment.isAvailable
-                    ? "Allow Accessibility access to hide menu-bar icons."
-                    : "This macOS build does not provide the menu-bar hiding interface."
+            guard self.assessment.isAvailable else {
+                let message = "This macOS build does not provide the menu-bar hiding interface."
+                self.latestError = message
+                self.onStatus?(message)
+                return
+            }
+            guard self.trustProvider() else {
+                let message = self.hasSavedLayout
+                    ? "Using the saved icon layout. Allow Accessibility to change it."
+                    : "Allow Accessibility once to save your menu-bar icon layout."
                 self.latestError = message
                 self.onStatus?(message)
                 if !self.revealHidden && !self.revealAlwaysHidden {
-                    self.lastCollapsedScan = "Stopped before reading icon positions. Interface=\(self.assessment.isAvailable), access=\(self.trustProvider())"
+                    self.lastCollapsedScan = "Accessibility is off. Saved layout=\(self.hasSavedLayout)."
                 }
+                self.reconcile()
                 return
             }
             guard let chevronX = self.chevronX() else {
@@ -238,8 +258,17 @@ final class MacOS27Hider {
             self.onStatus?(nil)
             let scan = Self.scanPositions()
             let positions = scan.positions
-            self.hidden = Self.hiddenBundleIDs(positions, leftOf: chevronX)
-            self.alwaysHidden = Self.hiddenBundleIDs(positions, leftOf: self.alwaysX())
+            if !positions.isEmpty {
+                let readIDs = Set(positions.map(\.bundleID))
+                self.hidden = self.hidden.subtracting(readIDs)
+                    .union(Self.hiddenBundleIDs(positions, leftOf: chevronX))
+                self.alwaysHidden = self.alwaysHidden.subtracting(readIDs)
+                    .union(Self.hiddenBundleIDs(positions, leftOf: self.alwaysX()))
+                    .intersection(self.hidden)
+                self.defaults.set(["hidden": self.hidden.sorted(),
+                                   "alwaysHidden": self.alwaysHidden.sorted()], forKey: Self.layoutKey)
+                self.hasSavedLayout = true
+            }
             if !self.revealHidden && !self.revealAlwaysHidden {
                 self.lastCollapsedScan = """
                 Arrow x: \(chevronX)
@@ -254,7 +283,7 @@ final class MacOS27Hider {
     }
 
     private func reconcile() {
-        guard assessment.isAvailable, trustProvider(), !overClock else {
+        guard assessment.isAvailable, hasSavedLayout, !overClock else {
             releaseAssessment()
             return
         }

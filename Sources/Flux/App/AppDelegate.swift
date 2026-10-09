@@ -149,6 +149,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  timerService: timerService) { [weak self] in
             self?.openSettings()
         }
+        menuBar?.canHideWithoutAccess = { [weak self] in
+            self?.menuBarIcons.canHideWithoutAccess ?? false
+        }
         menuBarIcons.boundaryProvider = { [weak self] in
             guard let menuBar = self?.menuBar else { return (hidden: nil, alwaysHidden: nil) }
             let boundaries = menuBar.drawerBoundaries

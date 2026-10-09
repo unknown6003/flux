@@ -147,7 +147,7 @@ def accessibility_grant(bundle_id, csreq=None):
         snapshot = _worker("snapshot", {"client": bundle_id})
         _worker("grant", {"client": bundle_id, "snapshot": snapshot, "csreq": _pack(csreq)})
         print(f"CI: temporary AX grant installed for {bundle_id}", flush=True)
-        yield
+        yield snapshot
     finally:
         try:
             if snapshot is not None:

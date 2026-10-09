@@ -27,6 +27,7 @@ final class MenuBarManager {
     private static let overflowSlack: CGFloat = 2
 
     var onDrawerStateChanged: ((Bool, Bool) -> Void)?
+    var canHideWithoutAccess: () -> Bool = { false }
 
     init(settings: SettingsStore,
          arranger: MenuBarArranger,
@@ -97,7 +98,7 @@ final class MenuBarManager {
 
     /// Public entry point for the hotkey and menu.
     func toggleReveal() {
-        guard !ControlItem.usesMacOS27Model || accessibilityTrusted() else {
+        guard !ControlItem.usesMacOS27Model || accessibilityTrusted() || canHideWithoutAccess() else {
             if let onOpenSettingsTab { onOpenSettingsTab(.menuBar) }
             else { onOpenSettings() }
             return
@@ -260,7 +261,9 @@ final class MenuBarManager {
         }
 
         if ControlItem.usesMacOS27Model && !AXIsProcessTrusted() {
-            let warning = NSMenuItem(title: "Allow Accessibility to hide icons on macOS 27",
+            let warning = NSMenuItem(title: canHideWithoutAccess()
+                                     ? "Using saved icon layout. Allow Accessibility to change it."
+                                     : "Allow Accessibility once to save your icon layout",
                                      action: nil, keyEquivalent: "")
             warning.isEnabled = false
             menu.addItem(warning)
