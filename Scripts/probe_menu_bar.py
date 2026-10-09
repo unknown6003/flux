@@ -494,6 +494,15 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                     raise SystemExit(status)
                 print("CI: testing the saved layout with the real Flux AX grant removed", flush=True)
                 status = run([str(binary), str(output)] + arguments, 100)
+                if status == 0:
+                    pid = int((output / "Flux.pid").read_text())
+                    report = subprocess.run(
+                        ["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
+                         "--predicate", f'processID == {pid} AND eventMessage == "Using saved icon layout without Accessibility access"'],
+                        capture_output=True, text=True, timeout=20, check=True)
+                    if "Using saved icon layout without Accessibility access" not in report.stdout:
+                        raise RuntimeError("FAIL: the real Flux app did not confirm its Accessibility grant was absent")
+                    print("PASS: real Flux reported lost access while its saved icons still hid and revealed", flush=True)
             raise SystemExit(status)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"

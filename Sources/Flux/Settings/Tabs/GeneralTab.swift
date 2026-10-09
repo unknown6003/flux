@@ -335,8 +335,7 @@ private struct CrashNoticeCard: View {
         if session.breadcrumb.cameraRunning {
             parts.append("and the camera was running")
         }
-        parts.append(". Force Quit or logout can also leave this notice. Copy the report to check that run.")
-        return parts.joined(separator: " ")
+        return parts.joined(separator: " ") + ". Force Quit or logout can also leave this notice. Copy the report to check that run."
     }
 
     private func copyReport() {

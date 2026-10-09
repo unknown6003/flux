@@ -239,6 +239,9 @@ final class MacOS27Hider {
                     : "Allow Accessibility once to save your menu-bar icon layout."
                 self.latestError = message
                 self.onStatus?(message)
+                if self.hasSavedLayout {
+                    Log.menuBar.info("Using saved icon layout without Accessibility access")
+                }
                 if !self.revealHidden && !self.revealAlwaysHidden {
                     self.lastCollapsedScan = "Accessibility is off. Saved layout=\(self.hasSavedLayout)."
                 }
