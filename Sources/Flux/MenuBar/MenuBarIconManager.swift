@@ -28,6 +28,7 @@ final class MenuBarIconManager: ObservableObject {
     /// AppDelegate supplies the live boundaries after the status items exist.
     var boundaryProvider: () -> Boundaries = { (nil, nil) }
     var chevronBoundaryProvider: () -> CGFloat? = { nil }
+    var alwaysHiddenEnabledProvider: () -> Bool = { true }
     var beginProvider: () -> Void = {}
     var endProvider: () -> Void = {}
 
@@ -248,6 +249,7 @@ final class MenuBarIconManager: ObservableObject {
         if ControlItem.usesMacOS27Model {
             macOS27Hider.apply(revealHidden: revealHidden,
                                revealAlwaysHidden: revealAlwaysHidden,
+                               alwaysHiddenEnabled: alwaysHiddenEnabledProvider(),
                                chevronX: { [weak self] in self?.chevronBoundaryProvider() },
                                alwaysX: { [weak self] in self?.boundaryProvider().alwaysHidden })
             return

@@ -102,6 +102,7 @@ final class MacOS27Hider {
     private var alwaysHidden = Set<String>()
     private var revealHidden = false
     private var revealAlwaysHidden = false
+    private var alwaysHiddenEnabled = true
     private var chevronX: () -> CGFloat? = { nil }
     private var alwaysX: () -> CGFloat? = { nil }
     private var generation = 0
@@ -195,9 +196,11 @@ final class MacOS27Hider {
     }
 
     func apply(revealHidden: Bool, revealAlwaysHidden: Bool,
+               alwaysHiddenEnabled: Bool = true,
                chevronX: @escaping () -> CGFloat?, alwaysX: @escaping () -> CGFloat?) {
         self.revealHidden = revealHidden
         self.revealAlwaysHidden = revealAlwaysHidden
+        self.alwaysHiddenEnabled = alwaysHiddenEnabled
         self.chevronX = chevronX
         self.alwaysX = alwaysX
         retry()
@@ -265,9 +268,9 @@ final class MacOS27Hider {
                 let readIDs = Set(positions.map(\.bundleID))
                 self.hidden = self.hidden.subtracting(readIDs)
                     .union(Self.hiddenBundleIDs(positions, leftOf: chevronX))
-                self.alwaysHidden = self.alwaysHidden.subtracting(readIDs)
+                self.alwaysHidden = self.alwaysHiddenEnabled ? self.alwaysHidden.subtracting(readIDs)
                     .union(Self.hiddenBundleIDs(positions, leftOf: self.alwaysX()))
-                    .intersection(self.hidden)
+                    .intersection(self.hidden) : []
                 self.defaults.set(["hidden": self.hidden.sorted(),
                                    "alwaysHidden": self.alwaysHidden.sorted()], forKey: Self.layoutKey)
                 self.hasSavedLayout = true
@@ -291,7 +294,7 @@ final class MacOS27Hider {
             return
         }
         let excluded = revealAlwaysHidden ? Set<String>()
-            : (revealHidden ? alwaysHidden : hidden)
+            : (revealHidden ? (alwaysHiddenEnabled ? alwaysHidden : []) : hidden)
         guard !excluded.isEmpty else {
             if !revealHidden && !revealAlwaysHidden {
                 lastCollapsedRequest = "No apps were found to hide."

@@ -162,6 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarIcons.chevronBoundaryProvider = { [weak self] in
             self?.menuBar?.chevronBoundary
         }
+        menuBarIcons.alwaysHiddenEnabledProvider = { [weak self] in
+            self?.settings.showAlwaysHiddenSection ?? false
+        }
         menuBarIcons.beginProvider = { [weak self] in self?.menuBar?.beginIconManagement() }
         menuBarIcons.endProvider = { [weak self] in self?.menuBar?.endIconManagement() }
         menuBar?.onDrawerStateChanged = { [weak self] revealHidden, revealAlwaysHidden in

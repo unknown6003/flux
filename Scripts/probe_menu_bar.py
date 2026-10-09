@@ -394,13 +394,35 @@ func probe() {
                                 apply(true)
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                                     let restored = snapshot("LostAccessRevealed")
-                                    NSStatusBar.system.removeStatusItem(item)
                                     guard restored > 0 else {
                                         print("FAIL: a saved icon could not be revealed without Accessibility access")
                                         exit(1)
                                     }
                                     print("PASS: known icons still hide and reveal after Accessibility access is lost")
-                                    exit(0)
+                                    access = true
+                                    hider.apply(revealHidden: false, revealAlwaysHidden: false,
+                                                chevronX: { item.button?.window?.frame.maxX },
+                                                alwaysX: { item.button?.window?.frame.maxX })
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                        guard snapshot("AlwaysHiddenSeed") == 0 else {
+                                            print("FAIL: the Always Hidden fixture did not hide")
+                                            exit(1)
+                                        }
+                                        access = false
+                                        hider.apply(revealHidden: true, revealAlwaysHidden: false,
+                                                    alwaysHiddenEnabled: false,
+                                                    chevronX: { item.button?.window?.frame.maxX },
+                                                    alwaysX: { nil })
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                            guard snapshot("AlwaysHiddenDisabled") > 0 else {
+                                                print("FAIL: disabling Always Hidden did not reveal its saved icon")
+                                                exit(1)
+                                            }
+                                            NSStatusBar.system.removeStatusItem(item)
+                                            print("PASS: disabling Always Hidden reveals saved icons without access")
+                                            exit(0)
+                                        }
+                                    }
                                 }
                             }
                         }
