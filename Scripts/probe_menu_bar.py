@@ -355,7 +355,8 @@ func probe() {
                     exit(1)
                 }
                 print("PASS: the real probe icon disappeared and returned")
-                let hider = MacOS27Hider()
+                var access = AXIsProcessTrusted()
+                let hider = MacOS27Hider(trustProvider: { access })
                 print("Clock bounds: \(String(describing: hider.probeClockFrame))")
                 print("Pointer: \(NSEvent.mouseLocation)")
                 @MainActor
@@ -375,14 +376,33 @@ func probe() {
                         apply(true)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                             let expanded = snapshot("HiderExpanded")
-                            NSStatusBar.system.removeStatusItem(item)
                             guard collapsed == 0, rapidCollapsed == 0, expanded > 0 else {
                                 print("FAIL: Flux's full position scan and toggles did not hide and show the icon")
                                 print("Hider error: \(hider.latestError ?? "none")")
                                 exit(1)
                             }
                             print("PASS: Flux's full position scan, rapid toggles and reveal hid and showed the icon")
-                            exit(0)
+                            access = false
+                            apply(false)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                let lostAccess = snapshot("LostAccessCollapsed")
+                                guard lostAccess == 0 else {
+                                    print("FAIL: losing Accessibility access stopped hiding a known icon")
+                                    print(hider.diagnostics)
+                                    exit(1)
+                                }
+                                apply(true)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    let restored = snapshot("LostAccessRevealed")
+                                    NSStatusBar.system.removeStatusItem(item)
+                                    guard restored > 0 else {
+                                        print("FAIL: a saved icon could not be revealed without Accessibility access")
+                                        exit(1)
+                                    }
+                                    print("PASS: known icons still hide and reveal after Accessibility access is lost")
+                                    exit(0)
+                                }
+                            }
                         }
                     }
                 }

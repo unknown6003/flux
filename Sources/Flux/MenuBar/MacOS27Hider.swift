@@ -92,6 +92,7 @@ final class MacOS27Hider {
     ]
 
     private let assessment = MenuBarAssessment()
+    private let trustProvider: () -> Bool
     var onStatus: ((String?) -> Void)?
     private(set) var latestError: String?
     private var hidden = Set<String>()
@@ -114,7 +115,7 @@ final class MacOS27Hider {
         return """
         macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
         Flux: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
-        Accessibility: \(AXIsProcessTrusted())
+        Accessibility: \(trustProvider())
         Hiding interface: \(assessment.isAvailable)
         Install matches registered app: \(registered?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL)
         Current reveal: hidden=\(revealHidden), always=\(revealAlwaysHidden)
@@ -127,7 +128,8 @@ final class MacOS27Hider {
         """
     }
 
-    init() {
+    init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+        self.trustProvider = trustProvider
         assessment.onStatus = { [weak self] message in
             self?.latestError = message
             self?.onStatus?(message)
@@ -212,14 +214,14 @@ final class MacOS27Hider {
                 self.scanAfterLayout(generation: generation, attempts: attempts, delay: remaining)
                 return
             }
-            guard self.assessment.isAvailable, AXIsProcessTrusted() else {
+            guard self.assessment.isAvailable, self.trustProvider() else {
                 let message = self.assessment.isAvailable
                     ? "Allow Accessibility access to hide menu-bar icons."
                     : "This macOS build does not provide the menu-bar hiding interface."
                 self.latestError = message
                 self.onStatus?(message)
                 if !self.revealHidden && !self.revealAlwaysHidden {
-                    self.lastCollapsedScan = "Stopped before reading icon positions. Interface=\(self.assessment.isAvailable), access=\(AXIsProcessTrusted())"
+                    self.lastCollapsedScan = "Stopped before reading icon positions. Interface=\(self.assessment.isAvailable), access=\(self.trustProvider())"
                 }
                 return
             }
@@ -252,7 +254,7 @@ final class MacOS27Hider {
     }
 
     private func reconcile() {
-        guard assessment.isAvailable, AXIsProcessTrusted(), !overClock else {
+        guard assessment.isAvailable, trustProvider(), !overClock else {
             releaseAssessment()
             return
         }
