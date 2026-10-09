@@ -299,7 +299,7 @@ private struct CrashNoticeCard: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(Theme.warningColor)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Flux quit unexpectedly")
+                            Text("A previous Flux session did not close cleanly")
                                 .font(.body)
                                 .foregroundStyle(Theme.textPrimaryColor)
                             // Deliberately hedged: this detects an unclean
@@ -330,13 +330,12 @@ private struct CrashNoticeCard: View {
     }
 
     private func detail(_ session: CrashReporter.Session) -> String {
-        var parts = ["Last run ended without shutting down."]
+        var parts = ["This notice is from the previous run. Flux is running now."]
         parts.append("The notch was \(session.breadcrumb.notchState)")
         if session.breadcrumb.cameraRunning {
             parts.append("and the camera was running")
         }
-        parts.append("— copy the report and send it along so this can be traced.")
-        return parts.joined(separator: " ")
+        return parts.joined(separator: " ") + ". Force Quit or logout can also leave this notice. Copy the report to check that run."
     }
 
     private func copyReport() {

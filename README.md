@@ -21,7 +21,8 @@ hide the third-party apps placed left of the Flux chevron.
 The result:
 
 - **~0% CPU at idle** — it only reacts to clicks, nothing polls or redraws.
-- **Minimal permissions** — hiding on macOS 27 needs Accessibility. Earlier
+- **Minimal permissions** — macOS 27 needs Accessibility once to learn your icon
+  layout. Hide and reveal then use the saved layout if access is lost. Earlier
   versions need no permission for the drawer. Calendar and Camera ask only when their widgets are enabled;
   the optional lock-screen overlay uses macOS's lock-screen window space instead of
   screen capture.
@@ -66,6 +67,10 @@ On **macOS 27**, grant Flux Accessibility access, then move third-party icons
 left of the Flux chevron in Settings → Menu Bar. The hide toggle hides their
 owning apps' menu bar items. If one app has icons on both sides of the chevron,
 Flux keeps that app visible. Apple system icons remain under macOS control.
+From 0.21.26, Flux saves the last valid layout. If macOS later denies
+Accessibility access, hide and reveal still work with that layout. Allow access
+to read or move icons again. New apps stay visible until Flux can read their
+positions.
 
 ## Features (MVP)
 
@@ -187,7 +192,10 @@ Quit Flux. In System Settings → Privacy & Security → Accessibility, remove t
 old Flux entry, add the installed Flux.app, and turn it on. Then open Flux.
 Menu Bar settings must show real app names. If it still shows Open Accessibility
 Settings, macOS has not granted access to that copy. The arrow opens these
-settings when access is missing.
+settings when access is missing and Flux has no saved layout. In 0.21.26,
+allow access once after installing so Flux can save the layout. Later access
+loss does not stop hiding the saved icons. Use **Check access again** after
+restoring access to manage the layout.
 
 ## Build & run
 

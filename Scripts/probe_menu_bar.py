@@ -305,7 +305,33 @@ func probe() {
                             exit(1)
                         }
                         print("PASS: clicks on the real Flux arrow hid and showed the icon")
-                        exit(0)
+                        @MainActor
+                        func repeatClicks(cycle: Int, revealed: Bool) {
+                            guard !flux.isTerminated,
+                                  NSRunningApplication.runningApplications(
+                                    withBundleIdentifier: "com.flux.menubar").contains(where: {
+                                        $0.processIdentifier == flux.processIdentifier
+                                    }) else {
+                                print("FAIL: Flux ended during repeated hide/reveal clicks")
+                                exit(1)
+                            }
+                            click()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                let pixels = snapshot("AppCycle\(cycle)-\(revealed ? "revealed" : "hidden")")
+                                guard !flux.isTerminated,
+                                      revealed ? pixels > 0 : pixels == 0 else {
+                                    print("FAIL: hide/reveal cycle \(cycle) failed or Flux ended")
+                                    exit(1)
+                                }
+                                if cycle == 12 && revealed {
+                                    print("PASS: the same Flux process survived 12 hide/reveal cycles")
+                                    exit(0)
+                                }
+                                repeatClicks(cycle: revealed ? cycle + 1 : cycle,
+                                             revealed: !revealed)
+                            }
+                        }
+                        repeatClicks(cycle: 1, revealed: false)
                     }
                 }
             }
@@ -329,7 +355,8 @@ func probe() {
                     exit(1)
                 }
                 print("PASS: the real probe icon disappeared and returned")
-                let hider = MacOS27Hider()
+                var access = AXIsProcessTrusted()
+                let hider = MacOS27Hider(trustProvider: { access })
                 print("Clock bounds: \(String(describing: hider.probeClockFrame))")
                 print("Pointer: \(NSEvent.mouseLocation)")
                 @MainActor
@@ -349,14 +376,55 @@ func probe() {
                         apply(true)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                             let expanded = snapshot("HiderExpanded")
-                            NSStatusBar.system.removeStatusItem(item)
                             guard collapsed == 0, rapidCollapsed == 0, expanded > 0 else {
                                 print("FAIL: Flux's full position scan and toggles did not hide and show the icon")
                                 print("Hider error: \(hider.latestError ?? "none")")
                                 exit(1)
                             }
                             print("PASS: Flux's full position scan, rapid toggles and reveal hid and showed the icon")
-                            exit(0)
+                            access = false
+                            apply(false)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                let lostAccess = snapshot("LostAccessCollapsed")
+                                guard lostAccess == 0 else {
+                                    print("FAIL: losing Accessibility access stopped hiding a known icon")
+                                    print(hider.diagnostics)
+                                    exit(1)
+                                }
+                                apply(true)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                    let restored = snapshot("LostAccessRevealed")
+                                    guard restored > 0 else {
+                                        print("FAIL: a saved icon could not be revealed without Accessibility access")
+                                        exit(1)
+                                    }
+                                    print("PASS: known icons still hide and reveal after Accessibility access is lost")
+                                    access = true
+                                    hider.apply(revealHidden: false, revealAlwaysHidden: false,
+                                                chevronX: { item.button?.window?.frame.maxX },
+                                                alwaysX: { item.button?.window?.frame.maxX })
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                        guard snapshot("AlwaysHiddenSeed") == 0 else {
+                                            print("FAIL: the Always Hidden fixture did not hide")
+                                            exit(1)
+                                        }
+                                        access = false
+                                        hider.apply(revealHidden: true, revealAlwaysHidden: false,
+                                                    alwaysHiddenEnabled: false,
+                                                    chevronX: { item.button?.window?.frame.maxX },
+                                                    alwaysX: { nil })
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                            guard snapshot("AlwaysHiddenDisabled") > 0 else {
+                                                print("FAIL: disabling Always Hidden did not reveal its saved icon")
+                                                exit(1)
+                                            }
+                                            NSStatusBar.system.removeStatusItem(item)
+                                            print("PASS: disabling Always Hidden reveals saved icons without access")
+                                            exit(0)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -364,7 +432,7 @@ func probe() {
         }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { begin(attempt: 0) }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 25) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 90) {
         assessment.release()
         print("FAIL: the hide/show probe reached its deadline")
         exit(1)
@@ -429,13 +497,35 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                               str(destination)], 20)
                 if status:
                     raise SystemExit(status)
-                privacy.enter_context(flux_accessibility_grant())
+                grant = privacy.enter_context(ExitStack())
+                baseline = grant.enter_context(flux_accessibility_grant())
+                auth_index = baseline["columns"].index("auth_value")
+                if any(row[auth_index] == 2 for row in baseline["rows"]):
+                    raise SystemExit("FAIL: the saved-layout probe needs an initially untrusted Flux install")
                 privacy.callback(stop_flux)
                 (output / "Flux.pid").unlink(missing_ok=True)
                 status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
                     raise SystemExit(status)
-            raise SystemExit(run([str(binary), str(output)] + arguments, 35))
+            status = run([str(binary), str(output)] + arguments, 100)
+            if status == 0 and "--app-click" in arguments:
+                stop_flux()
+                grant.close()
+                status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
+                if status:
+                    raise SystemExit(status)
+                print("CI: testing the saved layout with the real Flux AX grant removed", flush=True)
+                status = run([str(binary), str(output)] + arguments, 100)
+                if status == 0:
+                    pid = int((output / "Flux.pid").read_text())
+                    report = subprocess.run(
+                        ["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
+                         "--predicate", f'processID == {pid} AND eventMessage == "Using saved icon layout without Accessibility access"'],
+                        capture_output=True, text=True, timeout=20, check=True)
+                    if "Using saved icon layout without Accessibility access" not in report.stdout:
+                        raise RuntimeError("FAIL: the real Flux app did not confirm its Accessibility grant was absent")
+                    print("PASS: real Flux reported lost access while its saved icons still hid and revealed", flush=True)
+            raise SystemExit(status)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
              "LaunchServices.framework/Support/lsregister", "-u", str(bundle)], 20)

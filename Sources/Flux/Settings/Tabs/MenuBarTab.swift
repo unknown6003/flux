@@ -112,7 +112,9 @@ private struct MenuBarDrawer: View {
         VStack(alignment: .leading, spacing: 10) {
             RowText(title: "Allow icon management",
                     subtitle: ControlItem.usesMacOS27Model
-                        ? "Flux needs Accessibility to hide and move menu-bar icons on macOS 27."
+                        ? (iconManager.canHideWithoutAccess
+                            ? "Hide and reveal still work with your saved layout. Allow Accessibility to read or move icons."
+                            : "Allow Accessibility once so Flux can save your icon layout. Hide and reveal can then work without this access.")
                         : "Flux uses Accessibility to read and move menu-bar icons. It opens System Settings instead of showing a prompt.")
             Text("If Flux is already on, quit Flux and remove its old entry with the minus button. Add \(Bundle.main.bundleURL.path) with the plus button and turn it on.")
                 .font(.caption)
@@ -121,6 +123,9 @@ private struct MenuBarDrawer: View {
                 iconManager.requestAccess()
             }
             .buttonStyle(.fluxProminent)
+            Button("Check access again") { iconManager.beginIconManagement() }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accentInkColor)
         }
     }
 

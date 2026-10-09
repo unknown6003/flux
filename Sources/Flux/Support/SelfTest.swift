@@ -151,6 +151,33 @@ enum SelfTest {
                   "Legacy hiding works without Accessibility access")
             manager.collapse()
         }
+        if ControlItem.usesMacOS27Model {
+            accessSettingsOpened = false
+            manager.canHideWithoutAccess = { true }
+            manager.toggleReveal()
+            check(manager.diagnostics.revealHidden && !accessSettingsOpened,
+                  "A saved layout keeps the arrow working when Accessibility is lost")
+            manager.beginIconManagement()
+            check(!manager.diagnostics.managingIcons,
+                  "A saved layout does not allow icon management without Accessibility")
+            manager.toggleReveal()
+            check(!manager.diagnostics.revealHidden && !accessSettingsOpened,
+                  "Saved icons collapse without opening access settings")
+            manager.canHideWithoutAccess = { false }
+
+            let cacheName = "flux.selftest.saved-layout"
+            let cache = UserDefaults(suiteName: cacheName)!
+            cache.removePersistentDomain(forName: cacheName)
+            check(!MacOS27Hider(defaults: cache, trustProvider: { false }).hasSavedLayout,
+                  "A fresh install requires one valid icon scan before using a saved layout")
+            cache.set(["hidden": ["hidden.app"]], forKey: "flux.macOS27IconLayout")
+            check(!MacOS27Hider(defaults: cache, trustProvider: { false }).hasSavedLayout,
+                  "An incomplete saved layout does not enable hiding")
+            cache.set(["hidden": ["hidden.app"], "alwaysHidden": []], forKey: "flux.macOS27IconLayout")
+            check(MacOS27Hider(defaults: cache, trustProvider: { false }).hasSavedLayout,
+                  "A new hider loads the saved layout without Accessibility access")
+            cache.removePersistentDomain(forName: cacheName)
+        }
         drawerAccess = true
 
         func isHidden(_ length: CGFloat) -> Bool {
