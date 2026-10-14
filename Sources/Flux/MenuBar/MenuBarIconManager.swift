@@ -293,7 +293,12 @@ final class MenuBarIconManager: ObservableObject {
         case .shown:
             return boundaries.hidden.map { $0 + gap }
         case .hidden:
-            if let alwaysHidden = boundaries.alwaysHidden { return alwaysHidden + gap }
+            if let alwaysHidden = boundaries.alwaysHidden, let hidden = boundaries.hidden {
+                guard alwaysHidden < hidden else { return nil }
+                // The drag uses the icon's center. Keep that center between the
+                // boundaries even when macOS 27 leaves only a few points there.
+                return (alwaysHidden + hidden - iconWidth) / 2
+            }
             return boundaries.hidden.map { $0 - iconWidth - gap }
         case .alwaysHidden:
             return boundaries.alwaysHidden.map { $0 - iconWidth - gap }
