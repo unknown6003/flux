@@ -3,16 +3,9 @@ import Combine
 
 /// A tiny, zero-dependency over-the-air updater built on the GitHub Releases API.
 ///
-/// It polls `releases/latest`, compares the published tag against the running
-/// build, then downloads and installs a release DMG in the background when
-/// automatic checks are enabled. It mounts the image, swaps the new `Flux.app`
-/// over the running bundle, and relaunches, so the app is simply the new version
-/// when it comes back. This is the Sparkle-style handoff without Sparkle — a small detached
-/// shell helper does the swap after we quit (a running bundle can't overwrite
-/// itself). No privileged helper is used; if the install location isn't writable
-/// (e.g. `/Applications` owned by another admin), it falls back to the old manual
-/// path — dropping the DMG in ~/Downloads for a drag-install. The network step is
-/// a plain HTTPS GET.
+/// It checks `releases/latest` and prepares the newer app beside the installed
+/// bundle. A detached helper replaces it after Flux quits, then relaunches.
+/// A location that needs admin permission requires a manual install from Downloads.
 @MainActor
 final class UpdateChecker: ObservableObject {
 
@@ -48,7 +41,7 @@ final class UpdateChecker: ObservableObject {
     private let session: URLSession
     private let releaseURL: URL
     private let installURL: URL
-    private let terminate: () -> Void
+    private let terminate: @MainActor () -> Void
     private var isBusy = false
 
     /// Set when a user-initiated check arrives while a background one is
@@ -59,12 +52,14 @@ final class UpdateChecker: ObservableObject {
     private var pendingUserInitiated = false
 
     init(currentVersion: String = AppInfo.version,
-         session: URLSession = .shared,
+         session: URLSession? = nil,
          releaseURL: URL? = nil,
          installURL: URL = Bundle.main.bundleURL,
-         terminate: @escaping () -> Void = { NSApp.terminate(nil) }) {
+         terminate: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }) {
         self.currentVersion = currentVersion
-        self.session = session
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForResource = 180
+        self.session = session ?? URLSession(configuration: configuration)
         self.releaseURL = releaseURL ?? Self.releasesURL
         self.installURL = installURL
         self.terminate = terminate
@@ -125,16 +120,19 @@ final class UpdateChecker: ObservableObject {
             // in-flight check's spinner is honest: the answer the user asked
             // for is genuinely on its way.
             if userInitiated {
-                pendingUserInitiated = true
-                state = .checking
+                switch state {
+                case .downloading, .installing: break
+                default:
+                    pendingUserInitiated = true
+                    state = .checking
+                }
             }
             return
         }
-        // Never interrupt an in-flight download, an install-in-progress, or a
-        // ready-to-install DMG.
+        // Keep active downloads and installs intact. A later background check
+        // can retry a manual fallback if the install location becomes writable.
         switch state {
         case .downloading, .installing: return
-        case .readyToInstall where !userInitiated: return
         default: break
         }
         isBusy = true
@@ -157,7 +155,9 @@ final class UpdateChecker: ObservableObject {
             if let release, isNewer(release.version, than: currentVersion) {
                 state = .available(release)
                 Log.menuBar.info("Update available: \(release.version) (running \(self.currentVersion))")
-                if Self.shouldAutomaticallyInstall(userInitiated: userInitiated,
+                // A manual refresh can show a background result, but must not
+                // cancel the automatic install that started this check.
+                if Self.shouldAutomaticallyInstall(userInitiated: requested,
                                                     release: release),
                    let dmgURL = release.dmgURL {
                     await runDownload(release, dmgURL: dmgURL, automatic: true)
@@ -177,6 +177,7 @@ final class UpdateChecker: ObservableObject {
 
     private func fetchLatest() async throws -> Release? {
         var request = URLRequest(url: releaseURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 15
         // GitHub rejects API requests without a User-Agent (HTTP 403).
         request.setValue("Flux/\(currentVersion) (macOS; +https://github.com/unknown6003/flux)",
@@ -223,6 +224,7 @@ final class UpdateChecker: ObservableObject {
 
     private func runDownload(_ release: Release, dmgURL: URL, automatic: Bool) async {
         defer { isBusy = false }
+        state = .downloading
         do {
             var request = URLRequest(url: dmgURL)
             request.timeoutInterval = 120
@@ -234,16 +236,14 @@ final class UpdateChecker: ObservableObject {
             }
             // The async `download(for:)` temp file is reaped when this returns, so
             // move it to a stable spot we control before mounting/handing off.
-            let dmg = try stageDownload(tempURL, version: release.version)
+            let dmg = try stageDownload(tempURL)
 
             do {
-                try selfInstall(dmgAt: dmg, release: release)
+                try await selfInstall(dmgAt: dmg, release: release)
                 // selfInstall flips state to .installing and schedules the quit;
                 // the detached helper takes over from here.
-            } catch {
-                // Couldn't swap in place (e.g. /Applications needs admin). Fall
-                // back to the tried-and-true manual drag-install.
-                Log.menuBar.error("Self-install unavailable (\(error.localizedDescription)); manual fallback")
+            } catch UpdateInstaller.Failure.notWritable {
+                Log.menuBar.error("Self-install unavailable: install location needs permission")
                 let dest = try moveToDownloads(dmg, version: release.version)
                 state = .readyToInstall(dest)
                 if !automatic {
@@ -258,107 +258,19 @@ final class UpdateChecker: ObservableObject {
 
     // MARK: - In-place install
 
-    /// Mounts the DMG, locates the new app, and hands a detached shell helper the
-    /// job of swapping the bundle and relaunching once we've quit — a running
-    /// bundle can't reliably overwrite its own executable, so the swap must happen
-    /// after termination. Throws (for the manual fallback) if the install location
-    /// isn't writable, the image won't mount, or it holds no `.app`.
-    private func selfInstall(dmgAt dmg: URL, release: Release) throws {
-        let fm = FileManager.default
-        guard fm.isWritableFile(atPath: installURL.deletingLastPathComponent().path) else {
-            throw UpdateError.notWritable
-        }
-
-        let mount = try mountDMG(dmg)
-        guard let newApp = firstApp(in: mount) else {
-            try? detachDMG(mount)
-            throw UpdateError.noAppInDMG
-        }
-
-        try spawnSwapHelper(newApp: newApp, installURL: installURL, mount: mount, dmg: dmg)
+    private func selfInstall(dmgAt dmg: URL, release: Release) async throws {
+        let destination = installURL
+        let version = release.version
+        // Mounting and copying run off the main actor, with process deadlines.
+        try await Task.detached(priority: .utility) {
+            try UpdateInstaller.prepareAndLaunch(dmg: dmg, installURL: destination,
+                                                  version: version)
+        }.value
         state = .installing
         Log.menuBar.info("Installing update \(release.version) → relaunching")
-        // Let SwiftUI paint `.installing`, then quit so the helper can do the swap.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             self.terminate()
         }
-    }
-
-    /// Attaches the image without a Finder window and returns its mount point,
-    /// parsed from `hdiutil`'s plist output.
-    private func mountDMG(_ dmg: URL) throws -> URL {
-        let out = Pipe()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        proc.arguments = ["attach", dmg.path, "-nobrowse", "-noverify", "-noautoopen", "-plist"]
-        proc.standardOutput = out
-        proc.standardError = Pipe()
-        try proc.run()
-        proc.waitUntilExit()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        guard proc.terminationStatus == 0,
-              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
-              let root = plist as? [String: Any],
-              let entities = root["system-entities"] as? [[String: Any]],
-              let mount = entities.compactMap({ $0["mount-point"] as? String }).first else {
-            throw UpdateError.mountFailed
-        }
-        return URL(fileURLWithPath: mount)
-    }
-
-    private func firstApp(in volume: URL) -> URL? {
-        let items = (try? FileManager.default.contentsOfDirectory(
-            at: volume, includingPropertiesForKeys: nil)) ?? []
-        return items.first { $0.pathExtension == "app" }
-    }
-
-    private func detachDMG(_ mount: URL) throws {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        proc.arguments = ["detach", mount.path, "-quiet"]
-        try proc.run()
-        proc.waitUntilExit()
-    }
-
-    /// Writes a one-shot script that waits for us to quit, swaps the bundle
-    /// (keeping a backup to restore on failure), strips the download quarantine,
-    /// unmounts, and relaunches — then spawns it detached so it outlives us.
-    private func spawnSwapHelper(newApp: URL, installURL: URL, mount: URL, dmg: URL) throws {
-        func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let script = """
-        #!/bin/bash
-        NEW=\(q(newApp.path))
-        DEST=\(q(installURL.path))
-        MOUNT=\(q(mount.path))
-        DMG=\(q(dmg.path))
-        PID=\(pid)
-        # Wait (≤10s) for Flux to fully exit before touching its bundle.
-        for _ in $(seq 1 50); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
-        BACKUP="${DEST}.old-$$"
-        rm -rf "$BACKUP"
-        if mv "$DEST" "$BACKUP" 2>/dev/null; then
-          if /usr/bin/ditto "$NEW" "$DEST"; then
-            /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
-            rm -rf "$BACKUP"
-          else
-            rm -rf "$DEST" 2>/dev/null; mv "$BACKUP" "$DEST"   # restore on failure
-          fi
-        fi
-        /usr/bin/hdiutil detach "$MOUNT" -quiet 2>/dev/null || true
-        rm -f "$DMG" 2>/dev/null || true
-        /usr/bin/open "$DEST"
-        rm -f "$0"
-        """
-        let helper = FileManager.default.temporaryDirectory
-            .appendingPathComponent("flux-update-\(pid).sh")
-        try script.write(to: helper, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper.path)
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
-        proc.arguments = [helper.path]
-        try proc.run()   // do NOT wait — it must outlive this process
     }
 
     /// Fallback only: park the DMG in ~/Downloads for a manual drag-install.
@@ -367,22 +279,25 @@ final class UpdateChecker: ObservableObject {
         let fm = FileManager.default
         let downloads = try fm.url(for: .downloadsDirectory, in: .userDomainMask,
                                    appropriateFor: nil, create: true)
-        let dest = downloads.appendingPathComponent("Flux-\(version).dmg")
-        if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: dest) }
+        let name = version.filter { $0.isNumber || $0 == "." || $0 == "-" }
+        var dest = downloads.appendingPathComponent("Flux-\(name).dmg")
+        if fm.fileExists(atPath: dest.path) {
+            dest = downloads.appendingPathComponent("Flux-\(name)-\(UUID().uuidString).dmg")
+        }
         do {
             try fm.moveItem(at: dmg, to: dest)
         } catch {
             try fm.copyItem(at: dmg, to: dest)   // cross-volume safety
+            try? fm.removeItem(at: dmg)
         }
         return dest
     }
 
     /// Move the URLSession download temp file to a stable, app-controlled path so
     /// it survives `runDownload` returning and can be read by the mount subprocess.
-    private func stageDownload(_ temp: URL, version: String) throws -> URL {
+    private func stageDownload(_ temp: URL) throws -> URL {
         let fm = FileManager.default
-        let staged = fm.temporaryDirectory.appendingPathComponent("Flux-\(version).dmg")
-        if fm.fileExists(atPath: staged.path) { try? fm.removeItem(at: staged) }
+        let staged = fm.temporaryDirectory.appendingPathComponent("Flux-update-\(UUID().uuidString).dmg")
         try fm.moveItem(at: temp, to: staged)
         return staged
     }
@@ -420,22 +335,17 @@ final class UpdateChecker: ObservableObject {
     private enum UpdateError: LocalizedError {
         case network
         case http(Int)
-        case notWritable      // install location needs admin → manual fallback
-        case mountFailed      // hdiutil couldn't attach the DMG → manual fallback
-        case noAppInDMG       // mounted image held no .app → manual fallback
         var errorDescription: String? {
             switch self {
             case .network: return "Couldn't reach GitHub."
             case .http(let code): return "GitHub returned HTTP \(code)."
-            case .notWritable: return "Flux's install location isn't writable."
-            case .mountFailed: return "Couldn't mount the update image."
-            case .noAppInDMG: return "The update image didn't contain Flux."
             }
         }
     }
 
     private static func friendly(_ error: Error) -> String {
         if let e = error as? UpdateError, let d = e.errorDescription { return d }
+        if let e = error as? UpdateInstaller.Failure, let d = e.errorDescription { return d }
         if let urlError = error as? URLError {
             switch urlError.code {
             case .notConnectedToInternet, .networkConnectionLost: return "No internet connection."

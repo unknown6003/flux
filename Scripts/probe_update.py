@@ -23,6 +23,46 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def stop_tree(process):
+    snapshot = subprocess.Popen(["ps", "-axo", "pid=,ppid="], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        rows, _ = snapshot.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        os.killpg(snapshot.pid, signal.SIGTERM)
+        try:
+            rows, _ = snapshot.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            os.killpg(snapshot.pid, signal.SIGKILL)
+            rows, _ = snapshot.communicate(timeout=1)
+    parents = [tuple(map(int, row.split())) for row in rows.splitlines() if len(row.split()) == 2]
+    owned = {process.pid}
+    while True:
+        children = {pid for pid, parent in parents if parent in owned}
+        if children <= owned:
+            break
+        owned |= children
+    for pid in owned:
+        for send in [os.killpg, os.kill]:
+            try:
+                send(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    try:
+        output, _ = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        output = ""
+    for pid in owned:
+        for send in [os.killpg, os.kill]:
+            try:
+                send(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    if process.poll() is None:
+        output, _ = process.communicate(timeout=3)
+    return output
+
+
 def run(command, seconds=60, check=True, **kwargs):
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True,
@@ -30,12 +70,7 @@ def run(command, seconds=60, check=True, **kwargs):
     try:
         output, _ = process.communicate(timeout=seconds)
     except BaseException as error:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            output, _ = process.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            output, _ = process.communicate(timeout=3)
+        output = stop_tree(process)
         print(output[-4000:], flush=True)
         if isinstance(error, subprocess.TimeoutExpired):
             raise RuntimeError(f"FAIL: {command[0]} exceeded {seconds}s; stopped its process group") from error
@@ -86,7 +121,7 @@ def shell_probe(reference=None):
         raise RuntimeError("FAIL: no emitted install helper found")
     template = textwrap.dedent(match.group(1))
     failures = []
-    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure"]:
+    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch"]:
         with tempfile.TemporaryDirectory(prefix="flux-swap-probe-") as directory:
             root = Path(directory)
             dest = root / "Flux 'installed.app"
@@ -98,11 +133,17 @@ def shell_probe(reference=None):
             bins = root / "tools"
             bins.mkdir()
             bodies = {
-                "ditto": 'cp -R "$1" "$2"',
+                "ditto": 'if [ "' + case + '" = swap_failure ]; then '
+                         'mkdir -p "$2"; echo partial > "$2/version"; exit 1; fi\n'
+                         'cp -R "$1" "$2"',
                 "xattr": "exit 0",
                 "hdiutil": "exit 0",
                 "open": 'if [ "' + case + '" = relaunch_failure ] && '
                         '[ "$(cat "$1/version")" = 0.21.26 ]; then exit 1; fi\n'
+                        'if [ "' + case + '" = hung_relaunch ] && '
+                        '[ "$(cat "$1/version")" = 0.21.26 ]; then '
+                        'sleep 30 & child=$!; echo "$child" > '
+                        + shlex.quote(str(root / "sleeper.pid")) + '; wait "$child"; fi\n'
                         'cat "$1/version" > ' + shlex.quote(str(root / "relaunched")),
                 "mv": 'if [ "' + case + '" = swap_failure ] && [ "$1" = '
                       + shlex.quote(str(staged)) + ' ]; then exit 1; fi\n'
@@ -129,6 +170,8 @@ def shell_probe(reference=None):
                 script = script.replace(token, shlex.quote(str(value)))
             # Bound the test's process-exit wait, without changing its outcome policy.
             script = script.replace("seq 1 50", "seq 1 5").replace("EXIT_WAIT_SECONDS=10", "EXIT_WAIT_SECONDS=1")
+            if case == "hung_relaunch":
+                script = script.replace("bounded 15", "bounded 1")
             helper = root / "helper.sh"
             helper.write_text(script)
             environment = dict(os.environ, PATH=str(bins) + os.pathsep + os.environ["PATH"])
@@ -137,6 +180,10 @@ def shell_probe(reference=None):
             launched = (root / "relaunched").read_text() if (root / "relaunched").exists() else "none"
             expected = "0.21.26" if case == "success" else "0.21.25"
             good = installed == expected and (launched == expected if case != "parent_alive" else launched == "none")
+            if case == "hung_relaunch" and (root / "sleeper.pid").exists():
+                sleeper = int((root / "sleeper.pid").read_text())
+                state = run(["ps", "-p", str(sleeper), "-o", "stat="], 5, check=False).stdout.strip()
+                good = good and (not state or state.startswith("Z"))
             print(f"{'PASS' if good else 'FAIL'}: helper {case}, installed={installed}, relaunched={launched}, exit={result.returncode}", flush=True)
             if not good:
                 failures.append(case)
@@ -180,7 +227,8 @@ func probe() {
             if case .failed(let message) = updater.state {
                 print("Updater failure: \(message)")
                 if mode == "failure" {
-                    try! "failed safely".write(to: output, atomically: true, encoding: .utf8)
+                    try! "failed safely settings=\(defaults.string(forKey: "keep") ?? "missing")"
+                        .write(to: output, atomically: true, encoding: .utf8)
                     exit(0)
                 }
                 exit(1)
@@ -272,7 +320,8 @@ def mac_probe(reference=None, cases=None):
                 info = {"CFBundleIdentifier": suite, "CFBundleExecutable": "FluxUpdateProbe",
                         "CFBundleName": "FluxUpdateProbe", "CFBundlePackageType": "APPL",
                         "LSUIElement": True, "FluxProbeOutput": str(output),
-                        "FluxProbeSuite": suite, "FluxProbeCase": case, "FluxProbeRelease": endpoint}
+                        "FluxProbeSuite": suite, "FluxProbeCase": case, "FluxProbeRelease": endpoint,
+                        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True}}
                 for app, version in [(dest, "0.21.25"), (candidate, "0.21.26")]:
                     contents = app / "Contents"
                     (contents / "MacOS").mkdir(parents=True)
@@ -299,7 +348,7 @@ def mac_probe(reference=None, cases=None):
                     if case == "failure":
                         assert installed["CFBundleShortVersionString"] == "0.21.25"
                         assert (dest / "Contents/MacOS/FluxUpdateProbe").read_bytes() == initial
-                        assert output.read_text() == "failed safely"
+                        assert output.read_text() == "failed safely settings=unchanged"
                     else:
                         assert installed["CFBundleShortVersionString"] == "0.21.26"
                         assert output.read_text() == "version=0.21.26 settings=unchanged"
