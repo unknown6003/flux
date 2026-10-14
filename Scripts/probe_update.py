@@ -116,15 +116,19 @@ def shell_probe(reference=None):
     installer = ROOT / "Sources/Flux/Update/UpdateInstaller.swift"
     if not reference and installer.exists():
         source = installer.read_text()
+    elif reference and 'let script = """' not in source:
+        source = run(["git", "show", f"{reference}:Sources/Flux/Update/UpdateInstaller.swift"], 20).stdout
     match = re.search(r'let script = """\n(.*?)\n        """', source, re.S)
     if not match:
         raise RuntimeError("FAIL: no emitted install helper found")
     template = textwrap.dedent(match.group(1))
     failures = []
-    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch"]:
+    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch", "accepted_crash", "ready_crash", "alive_unconfirmed"]:
         with tempfile.TemporaryDirectory(prefix="flux-swap-probe-") as directory:
             root = Path(directory)
-            dest = root / "Flux 'installed.app"
+            install_parent = root / "installed"
+            install_parent.mkdir()
+            dest = install_parent / "Flux 'installed.app"
             dest.mkdir()
             (dest / "version").write_text("0.21.25")
             staged = root / "Flux 'staged.app"
@@ -138,18 +142,42 @@ def shell_probe(reference=None):
                          'cp -R "$1" "$2"',
                 "xattr": "exit 0",
                 "hdiutil": "exit 0",
-                "open": 'if [ "' + case + '" = relaunch_failure ] && '
-                        '[ "$(cat "$1/version")" = 0.21.26 ]; then exit 1; fi\n'
-                        'if [ "' + case + '" = hung_relaunch ] && '
-                        '[ "$(cat "$1/version")" = 0.21.26 ]; then '
-                        'sleep 30 & child=$!; echo "$child" > '
-                        + shlex.quote(str(root / "sleeper.pid")) + '; wait "$child"; fi\n'
-                        'cat "$1/version" > ' + shlex.quote(str(root / "relaunched")),
+                "open": 'exit 1',
                 "mv": 'if [ "' + case + '" = swap_failure ] && [ "$1" = '
                       + shlex.quote(str(staged)) + ' ]; then exit 1; fi\n'
                       '/bin/mv "$@"',
             }
-            script = template
+            open_tool = bins / "open"
+            open_tool.write_text("#!" + sys.executable + "\n" + """
+import sys, subprocess, os
+from pathlib import Path
+args = sys.argv[1:]
+dest = Path(args[1] if args[0] == '-n' else args[0])
+version = (dest / 'version').read_text()
+case = CASE
+if version == '0.21.26' and case == 'relaunch_failure': sys.exit(1)
+if version == '0.21.26' and case == 'hung_relaunch':
+    child = subprocess.Popen(['sleep', '30'])
+    Path(SLEEPER).write_text(str(child.pid))
+    child.wait()
+if version == '0.21.26' and case in ('accepted_crash', 'ready_crash') and '--flux-update-receipt' not in args: sys.exit(0)
+if version == '0.21.26' and '--flux-update-receipt' in args:
+    receipt = Path(args[args.index('--flux-update-receipt') + 1])
+    token = args[args.index('--flux-update-token') + 1]
+    if case == 'accepted_crash':
+        receipt.write_text(f'{token}\\n{os.getpid()}\\n{dest}\\nstarted\\n')
+        sys.exit(0)
+    launch = [sys.executable, '-c', 'import time; time.sleep(0.2)'] if case == 'ready_crash' else ['sleep', '30']
+    child = subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    Path(SLEEPER).write_text(str(child.pid))
+    phase = 'started' if case == 'alive_unconfirmed' else 'ready'
+    receipt.write_text(f'{token}\\n{child.pid}\\n{dest}\\n{phase}\\n')
+Path(LAUNCHED).write_text(version)
+""".replace('CASE', repr(case)).replace('SLEEPER', repr(str(root / 'sleeper.pid')))
+                .replace('LAUNCHED', repr(str(root / 'relaunched'))))
+            open_tool.chmod(0o755)
+            bodies.pop("open")
+            script = template.replace("/usr/bin/open", shlex.quote(str(open_tool)))
             for name, body in bodies.items():
                 tool = bins / name
                 tool.write_text("#!/bin/bash\n" + body + "\n")
@@ -164,12 +192,19 @@ def shell_probe(reference=None):
                 r"\(q(dmg.path))": root / "fixture.dmg",
                 r"\(q(ready.path))": root / "ready",
                 r"\(q(backup.path))": root / "backup.app",
+                r"\(q(token))": "11111111-1111-4111-8111-111111111111",
+                r"\(q(receipt.path))": root / "startup",
+                r"\(q(executable.path))": dest / "Contents/MacOS/FluxUpdateProbe",
+                r"\(q(processes.path))": root / "processes",
                 r"\(pid)": os.getpid() if case == "parent_alive" else 2147483647,
             }
             for token, value in replacements.items():
                 script = script.replace(token, shlex.quote(str(value)))
             # Bound the test's process-exit wait, without changing its outcome policy.
             script = script.replace("seq 1 50", "seq 1 5").replace("EXIT_WAIT_SECONDS=10", "EXIT_WAIT_SECONDS=1")
+            script = script.replace("STARTUP_WAIT_SECONDS=20", "STARTUP_WAIT_SECONDS=1").replace("STABILITY_SECONDS=2", "STABILITY_SECONDS=0")
+            if case == "ready_crash":
+                script = script.replace("STABILITY_SECONDS=0", "STABILITY_SECONDS=1").replace("STARTUP_WAIT_SECONDS=1", "STARTUP_WAIT_SECONDS=2")
             if case == "hung_relaunch":
                 script = script.replace("bounded 15", "bounded 1")
             helper = root / "helper.sh"
@@ -178,17 +213,77 @@ def shell_probe(reference=None):
             result = run(["/bin/bash", str(helper)], 20, check=False, env=environment)
             installed = (dest / "version").read_text() if (dest / "version").exists() else "missing"
             launched = (root / "relaunched").read_text() if (root / "relaunched").exists() else "none"
-            expected = "0.21.26" if case == "success" else "0.21.25"
+            expected = "0.21.26" if case in ("success", "alive_unconfirmed") else "0.21.25"
             good = installed == expected and (launched == expected if case != "parent_alive" else launched == "none")
-            if case == "hung_relaunch" and (root / "sleeper.pid").exists():
+            if case == "alive_unconfirmed":
+                backup_version = root / "backup.app/version"
+                good = good and backup_version.exists() and backup_version.read_text() == "0.21.25"
+            if (root / "sleeper.pid").exists():
                 sleeper = int((root / "sleeper.pid").read_text())
                 state = run(["ps", "-p", str(sleeper), "-o", "stat="], 5, check=False).stdout.strip()
-                good = good and (not state or state.startswith("Z"))
+                if case == "hung_relaunch":
+                    good = good and (not state or state.startswith("Z"))
+                else:
+                    if case == "alive_unconfirmed": good = good and bool(state) and not state.startswith("Z")
+                    try: os.kill(sleeper, signal.SIGTERM)
+                    except ProcessLookupError: pass
             print(f"{'PASS' if good else 'FAIL'}: helper {case}, installed={installed}, relaunched={launched}, exit={result.returncode}", flush=True)
             if not good:
                 failures.append(case)
     if failures:
         raise RuntimeError("FAIL: helper cases " + ", ".join(failures))
+
+
+def supervisor_probe(reference=None):
+    source = (run(["git", "show", f"{reference}:Sources/Flux/Update/UpdateInstaller.swift"], 20).stdout
+              if reference else (ROOT / "Sources/Flux/Update/UpdateInstaller.swift").read_text())
+    supervisor = textwrap.dedent(re.search(r'let supervisor = """\n(.*?)\n        """', source, re.S).group(1))
+    with tempfile.TemporaryDirectory(prefix="flux-supervisor-probe-") as directory:
+        root = Path(directory)
+        fixture = root / "hang.sh"
+        fixture.write_text("#!/bin/bash\necho diagnostic-before-timeout\necho $$ > "
+                           + shlex.quote(str(root / "command.pid")) + "\nsleep 30 & child=$!\necho $child > "
+                           + shlex.quote(str(root / "descendant.pid")) + "\nwait $child\n")
+        fixture.chmod(0o755)
+        arguments = ["/bin/bash", "-c", supervisor, "probe"]
+        if "limit=$1" in supervisor:
+            arguments += ["1"]
+        arguments += [str(fixture)]
+        parent = "import subprocess; from pathlib import Path; " \
+                 + "log=open(" + repr(str(root / "output")) + ",'w'); " \
+                 + "child=subprocess.Popen(" + repr(arguments) + ",stdout=log,stderr=log,start_new_session=True); " \
+                 + "Path(" + repr(str(root / "supervisor.pid")) + ").write_text(str(child.pid))"
+        run([sys.executable, "-c", parent], 5)
+        deadline = time.monotonic() + 4
+        while not (root / "descendant.pid").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(2)
+        states = []
+        try:
+            for name in ["supervisor", "command", "descendant"]:
+                pid = int((root / (name + ".pid")).read_text())
+                state = run(["ps", "-p", str(pid), "-o", "stat="], 5, check=False).stdout.strip()
+                states.append(not state or state.startswith("Z"))
+            output = (root / "output").read_text()
+            good = all(states) and "diagnostic-before-timeout" in output and "deadline reached" in output
+            print(f"{'PASS' if good else 'FAIL'}: exact supervisor after caller exit, all descendants stopped={all(states)}", flush=True)
+            print(output[-800:], flush=True)
+            if not good:
+                raise RuntimeError("FAIL: command lost its deadline when its Flux parent exited")
+        finally:
+            for name in ["command", "supervisor", "descendant"]:
+                if (root / (name + ".pid")).exists():
+                    pid = int((root / (name + ".pid")).read_text())
+                    for sender in [os.killpg, os.kill]:
+                        try: sender(pid, signal.SIGTERM)
+                        except ProcessLookupError: pass
+            time.sleep(0.2)
+            for name in ["command", "supervisor", "descendant"]:
+                if (root / (name + ".pid")).exists():
+                    pid = int((root / (name + ".pid")).read_text())
+                    for sender in [os.killpg, os.kill]:
+                        try: sender(pid, signal.SIGKILL)
+                        except ProcessLookupError: pass
 
 
 SWIFT_PROBE = r'''
@@ -203,11 +298,17 @@ func probe() {
     let output = URL(fileURLWithPath: info["FluxProbeOutput"] as! String)
     let suite = info["FluxProbeSuite"] as! String
     let defaults = UserDefaults(suiteName: suite)!
+    UpdateStartup.registerLaunch()
     let version = info["CFBundleShortVersionString"] as! String
     if version == "0.21.26" {
         let result = "version=\(version) settings=\(defaults.string(forKey: "keep") ?? "missing")"
-        try! result.write(to: output, atomically: true, encoding: .utf8)
-        exit(0)
+        UpdateStartup.confirmLaunch()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            try! result.write(to: output, atomically: true, encoding: .utf8)
+            exit(0)
+        }
+        NSApplication.shared.run()
+        return
     }
     defaults.set("unchanged", forKey: "keep")
     let mode = info["FluxProbeCase"] as! String
@@ -215,8 +316,12 @@ func probe() {
     config.timeoutIntervalForResource = 8
     let updater = UpdateChecker(currentVersion: version, session: URLSession(configuration: config),
         releaseURL: URL(string: info["FluxProbeRelease"] as! String)!,
-        installURL: Bundle.main.bundleURL, terminate: { NSApp.terminate(nil) })
+        installURL: Bundle.main.bundleURL,
+        downloadsURL: URL(fileURLWithPath: info["FluxProbeDownloads"] as! String), terminate: { NSApp.terminate(nil) })
     let started = Date()
+    var retries = 0
+    var cachedPath: URL?
+    var lastFallbackCheck: Date?
     Task { @MainActor in
         updater.checkForUpdates(userInitiated: mode == "manual")
         if mode == "overlap" {
@@ -232,6 +337,18 @@ func probe() {
                     exit(0)
                 }
                 exit(1)
+            }
+            if mode == "unwritable", case .readyToInstall(let url) = updater.state,
+               lastFallbackCheck != updater.lastChecked {
+                lastFallbackCheck = updater.lastChecked
+                if let cachedPath, cachedPath != url { print("FAIL: repeated check made another DMG"); exit(1) }
+                cachedPath = url
+                retries += 1
+                if retries == 3 {
+                    try! FileManager.default.setAttributes([.posixPermissions: 0o755],
+                        ofItemAtPath: Bundle.main.bundleURL.deletingLastPathComponent().path)
+                }
+                updater.checkForUpdates(userInitiated: false)
             }
             if mode == "manual", let release = updater.pendingRelease {
                 updater.downloadAndInstall(release)
@@ -261,6 +378,7 @@ def fixture_server(dmg):
 
         def do_GET(self):
             if self.path == "/latest":
+                self.server.checks += 1
                 time.sleep(0.3)
                 payload = {"tag_name": "v0.21.26", "name": "Flux 0.21.26",
                            "html_url": "https://example.invalid/fixture", "draft": False,
@@ -268,6 +386,7 @@ def fixture_server(dmg):
                            "browser_download_url": f"http://127.0.0.1:{self.server.server_port}/Flux.dmg"}]}
                 body = json.dumps(payload).encode()
             elif self.path == "/Flux.dmg":
+                self.server.downloads += 1
                 body = dmg.read_bytes()
             else:
                 self.send_error(404)
@@ -279,10 +398,12 @@ def fixture_server(dmg):
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
+    server.downloads = 0
+    server.checks = 0
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}/latest"
+        yield f"http://127.0.0.1:{server.server_port}/latest", server
     finally:
         server.shutdown()
         server.server_close()
@@ -300,27 +421,36 @@ def mac_probe(reference=None, cases=None):
         content = updater_source(reference)
         source.write_text(baseline_seams(content) if reference else content)
         main = temporary / "main.swift"
-        main.write_text(SWIFT_PROBE)
+        probe_source = SWIFT_PROBE
+        if reference:
+            probe_source = probe_source.replace("    UpdateStartup.registerLaunch()\n", "")
+            probe_source = probe_source.replace("        UpdateStartup.confirmLaunch()\n", "")
+            probe_source = probe_source.replace('        downloadsURL: URL(fileURLWithPath: info["FluxProbeDownloads"] as! String), terminate:', '        terminate:')
+        main.write_text(probe_source)
         binary = temporary / "FluxUpdateProbe"
         sources = [str(source), str(main), str(ROOT / "Sources/Flux/Support/Log.swift")]
         if not reference:
             sources += [str(path) for path in sorted((ROOT / "Sources/Flux/Update").glob("*.swift"))
                         if path.name != "UpdateChecker.swift"]
         run(["swiftc", "-swift-version", "5", *sources, "-o", str(binary)], 120)
-        for case in cases or ["automatic", "overlap", "manual", "failure"]:
+        for case in cases or ["automatic", "overlap", "manual", "failure", "unwritable"]:
             root = temporary / case
             root.mkdir()
             output = root / "result.txt"
             suite = "com.flux.update-probe." + str(uuid.uuid4())
-            dest = root / "Flux 'installed.app"
+            install_parent = root / "installed"
+            install_parent.mkdir()
+            dest = install_parent / "Flux 'installed.app"
             candidate = root / "volume" / "Flux.app"
             dmg = root / "fixture.dmg"
             candidate.parent.mkdir()
-            with fixture_server(dmg) as endpoint:
+            downloads = root / "Downloads"
+            downloads.mkdir()
+            with fixture_server(dmg) as (endpoint, fixture):
                 info = {"CFBundleIdentifier": suite, "CFBundleExecutable": "FluxUpdateProbe",
                         "CFBundleName": "FluxUpdateProbe", "CFBundlePackageType": "APPL",
                         "LSUIElement": True, "FluxProbeOutput": str(output),
-                        "FluxProbeSuite": suite + ".preferences", "FluxProbeCase": case, "FluxProbeRelease": endpoint,
+                        "FluxProbeDownloads": str(downloads), "FluxProbeSuite": suite + ".preferences", "FluxProbeCase": case, "FluxProbeRelease": endpoint,
                         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True}}
                 for app, version in [(dest, "0.21.25"), (candidate, "0.21.26")]:
                     contents = app / "Contents"
@@ -336,6 +466,7 @@ def mac_probe(reference=None, cases=None):
                     run(["/usr/bin/hdiutil", "create", "-srcfolder", str(candidate.parent),
                          "-format", "UDZO", "-volname", "FluxUpdateProbe", str(dmg)], 60)
                 initial = (dest / "Contents/MacOS/FluxUpdateProbe").read_bytes()
+                if case == "unwritable": install_parent.chmod(0o555)
                 try:
                     result = run([str(dest / "Contents/MacOS/FluxUpdateProbe")], 20)
                     print(result.stdout, end="", flush=True)
@@ -353,21 +484,34 @@ def mac_probe(reference=None, cases=None):
                         assert installed["CFBundleShortVersionString"] == "0.21.26"
                         assert output.read_text() == "version=0.21.26 settings=unchanged"
                         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(dest)], 20)
+                    if case == "unwritable":
+                        assert len(list(downloads.glob("*.dmg"))) <= 1, "FAIL: duplicate fallback DMGs"
+                        assert fixture.downloads == 1, "FAIL: repeated checks downloaded the same release again"
+                        assert fixture.checks == 4, "FAIL: did not finish three unwritable checks and one writable retry"
                     print(f"PASS: public updater {case}, {output.read_text()}", flush=True)
                 finally:
+                    install_parent.chmod(0o755)
                     run(["/usr/bin/defaults", "delete", suite + ".preferences"], 10, check=False)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shell-only", action="store_true")
+    parser.add_argument("--supervisor-only", action="store_true")
+    parser.add_argument("--helper-only", action="store_true")
     parser.add_argument("--baseline-ref")
-    parser.add_argument("--case", choices=["automatic", "overlap", "manual", "failure"])
+    parser.add_argument("--case", choices=["automatic", "overlap", "manual", "failure", "unwritable"])
     args = parser.parse_args()
-    if args.shell_only:
+    if args.supervisor_only:
+        supervisor_probe(args.baseline_ref)
+    elif args.helper_only:
+        shell_probe(args.baseline_ref)
+    elif args.shell_only:
+        supervisor_probe(args.baseline_ref)
         shell_probe(args.baseline_ref)
     else:
         mac_probe(args.baseline_ref, [args.case] if args.case else None)
+        supervisor_probe(args.baseline_ref)
         shell_probe(args.baseline_ref)
 
 
