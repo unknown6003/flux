@@ -35,6 +35,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Swift version
         run: swift --version
@@ -42,6 +43,25 @@ jobs:
       - name: Probe sound keys after access recovery
         if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
         run: python3 Scripts/probe_sound.py
+
+      - name: Reproduce the previous automatic update failure
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, 'Scripts')
+          from probe_update import run
+          result = run(['python3', 'Scripts/probe_update.py', '--baseline-ref',
+                        '355d3f1674403b5388180f7087bfca5a27a9493f', '--case', 'overlap'],
+                       seconds=180, check=False)
+          print(result.stdout)
+          assert result.returncode == 1 and 'manual refresh suppressed the background install' in result.stdout
+          print('PASS: the previous updater reproduces the reported manual-update failure')
+          PY
+
+      - name: Probe automatic update and rollback
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        run: python3 Scripts/probe_update.py
 
       - name: Probe Settings icon section moves
         if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
