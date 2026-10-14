@@ -36,7 +36,11 @@ import AppKit
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let item = NSStatusBar.system.statusItem(withLength: 28)
-item.button?.title = "FXP"
+item.button?.title = "FXA"
+item.button?.setAccessibilityTitle("Flux fixture A")
+let second = NSStatusBar.system.statusItem(withLength: 28)
+second.button?.title = "FXB"
+second.button?.setAccessibilityTitle("Flux fixture B")
 DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(1) }
 app.run()
 '''
@@ -66,7 +70,48 @@ func probe() {
     manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
     let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
     func fixture() -> MenuBarIconManager.Icon? {
-        manager.icons.first { $0.id.hasPrefix("com.flux.icon-fixture|") }
+        manager.icons.first { $0.title == "Flux fixture A" }
+    }
+    @MainActor
+    func finish() {
+        manager.endIconManagement()
+        chevron.removeFromStatusBar()
+        hidden.removeFromStatusBar()
+        always.removeFromStatusBar()
+        exit(0)
+    }
+    @MainActor
+    func reorder(prepared: Int = 0) {
+        manager.refresh()
+        let items = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+        guard items.count == 2 else {
+            print("FAIL: the reorder fixture needs two readable icons")
+            exit(1)
+        }
+        if prepared < 2 {
+            manager.move(items[prepared], to: .hidden)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reorder(prepared: prepared + 1) }
+            return
+        }
+        let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
+        let moving = ordered[0]
+        guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }),
+              manager.canMove(moving, toward: .towardClock) else {
+            print("FAIL: the reorder fixture could not enter Hidden")
+            exit(1)
+        }
+        manager.move(moving, toward: .towardClock)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            manager.refresh()
+            let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+                .sorted { $0.frame.minX < $1.frame.minX }
+            guard next.last?.title == moving.title else {
+                print("FAIL: the Settings arrow did not change the real icon order")
+                exit(1)
+            }
+            print("PASS: the Settings arrow changed the real icon order")
+            finish()
+        }
     }
     @MainActor
     func move(index: Int) {
@@ -90,11 +135,7 @@ func probe() {
             print("PASS: Settings moved the real fixture to \(section.rawValue)")
             if index + 1 < sections.count { move(index: index + 1) }
             else {
-                manager.endIconManagement()
-                chevron.removeFromStatusBar()
-                hidden.removeFromStatusBar()
-                always.removeFromStatusBar()
-                exit(0)
+                reorder()
             }
         }
     }
