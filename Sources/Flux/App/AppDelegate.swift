@@ -13,8 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let crashReporter = CrashReporter()
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
-    private var updateTimer: Timer?
-    private var launchUpdateCheck: Task<Void, Never>?
+    private var updateScheduler: AutomaticUpdateScheduler?
 
     // Notch suite: one panel/state-machine controller plus the Now Playing
     // service + widget it hosts for M1, and the File Shelf store + widget
@@ -330,11 +329,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.configureHotkey() }
-            .store(in: &cancellables)
-
-        settings.$automaticUpdateChecks
-            .dropFirst()
-            .sink { [weak self] enabled in self?.configureUpdateChecks(enabled: enabled) }
             .store(in: &cancellables)
 
         // Track the Settings window so we can suppress the floating hint while
@@ -721,25 +715,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// few seconds after launch (so it never delays startup), then every 6 hours.
     /// Turning the preference off cancels the timer. Manual checks from Settings
     /// are independent of this schedule.
-    private func configureUpdateChecks(enabled: Bool? = nil) {
-        launchUpdateCheck?.cancel()
-        launchUpdateCheck = nil
-        updateTimer?.invalidate()
-        updateTimer = nil
-        guard enabled ?? settings.automaticUpdateChecks else { return }
-
-        launchUpdateCheck = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .seconds(4)) }
-            catch { return }
-            guard let self, self.settings.automaticUpdateChecks else { return }
-            self.updater.checkForUpdates(userInitiated: false)
+    private func configureUpdateChecks() {
+        updateScheduler = AutomaticUpdateScheduler(
+            enabled: settings.$automaticUpdateChecks.eraseToAnyPublisher()
+        ) { [weak self] in
+            self?.updater.checkForUpdates(userInitiated: false)
         }
-
-        let timer = Timer(timeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updater.checkForUpdates(userInitiated: false) }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        updateTimer = timer
     }
 
     // MARK: Settings window

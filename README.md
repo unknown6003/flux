@@ -67,10 +67,11 @@ On **macOS 27**, grant Flux Accessibility access, then move third-party icons
 left of the Flux chevron in Settings → Menu Bar. The hide toggle hides their
 owning apps' menu bar items. If one app has icons on both sides of the chevron,
 Flux keeps that app visible. Apple system icons remain under macOS control.
-From 0.21.26, Flux saves the last valid layout. If macOS later denies
-Accessibility access, hide and reveal still work with that layout. Allow access
-to read or move icons again. New apps stay visible until Flux can read their
-positions.
+Flux saves the last valid layout. If macOS later denies Accessibility access,
+hide and reveal still work with that layout. From 0.21.27, Flux checks the
+current grant through a short-lived process of the same signed app when macOS
+retains an old denied result. Access changes can take effect while Flux stays
+open. New apps stay visible until Flux can read their positions.
 
 ## Features (MVP)
 
@@ -173,6 +174,10 @@ them, and denied features continue to show a useful fallback state.
 - **Clipboard history is opt-in and in-memory only** — nothing is captured
   until you turn it on, and nothing it captures is ever written to disk.
 
+The volume visualizer needs Accessibility to intercept sound keys and replace
+Apple's display. If it cannot intercept them, macOS keeps its own display.
+Flux retries after returning from Settings or waking the Mac.
+
 Every grant above is revocable at any time in System Settings, and every gated
 feature degrades gracefully (its own empty/permission state) rather than
 breaking the rest of the app when access isn't there.
@@ -192,10 +197,15 @@ Quit Flux. In System Settings → Privacy & Security → Accessibility, remove t
 old Flux entry, add the installed Flux.app, and turn it on. Then open Flux.
 Menu Bar settings must show real app names. If it still shows Open Accessibility
 Settings, macOS has not granted access to that copy. The arrow opens these
-settings when access is missing and Flux has no saved layout. In 0.21.26,
-allow access once after installing so Flux can save the layout. Later access
-loss does not stop hiding the saved icons. Use **Check access again** after
-restoring access to manage the layout.
+settings when access is missing and Flux has no saved layout. Allow access once
+so Flux can save the layout. Later access loss does not stop hiding saved
+icons. In 0.21.27, **Check access again** reads the current grant even when
+macOS retains an old denied result.
+
+Automatic updates check after launch and every six hours. They prepare the
+new app before quitting, then swap and relaunch it. A failed swap or relaunch
+restores the old app. If the install folder requires admin access, Settings
+offers the downloaded DMG for manual installation.
 
 ## Build & run
 

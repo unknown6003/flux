@@ -47,6 +47,7 @@ enum AccessibilityAccess {
         if process.isRunning {
             // The flag exits before app startup, so this child has no descendants.
             kill(process.processIdentifier, SIGKILL)
+            NSLog("Flux access check reached its deadline; stopped the child process")
             return false
         }
         return process.terminationReason == .exit && process.terminationStatus == 0

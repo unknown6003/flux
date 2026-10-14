@@ -26,6 +26,11 @@ final class MediaKeyInterceptor {
     private var wantsInterception = false
     private var observers: [NSObjectProtocol] = []
 
+    var isActive: Bool {
+        guard let eventTap else { return false }
+        return CGEvent.tapIsEnabled(tap: eventTap)
+    }
+
     init() {
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
