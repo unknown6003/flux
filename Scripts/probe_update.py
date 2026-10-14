@@ -320,7 +320,7 @@ def mac_probe(reference=None, cases=None):
                 info = {"CFBundleIdentifier": suite, "CFBundleExecutable": "FluxUpdateProbe",
                         "CFBundleName": "FluxUpdateProbe", "CFBundlePackageType": "APPL",
                         "LSUIElement": True, "FluxProbeOutput": str(output),
-                        "FluxProbeSuite": suite, "FluxProbeCase": case, "FluxProbeRelease": endpoint,
+                        "FluxProbeSuite": suite + ".preferences", "FluxProbeCase": case, "FluxProbeRelease": endpoint,
                         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True}}
                 for app, version in [(dest, "0.21.25"), (candidate, "0.21.26")]:
                     contents = app / "Contents"
@@ -355,7 +355,7 @@ def mac_probe(reference=None, cases=None):
                         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(dest)], 20)
                     print(f"PASS: public updater {case}, {output.read_text()}", flush=True)
                 finally:
-                    run(["/usr/bin/defaults", "delete", suite], 10, check=False)
+                    run(["/usr/bin/defaults", "delete", suite + ".preferences"], 10, check=False)
 
 
 def main():

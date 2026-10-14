@@ -1548,6 +1548,8 @@ enum SelfTest {
             let testCalendar = CalendarService()
             let testPermissions = PermissionCenter()
             let testTimers = TimerService()
+            let testVolume = VolumeMonitor()
+            routerSettings.notchSoundHUDEnabled = true
             // A plain, headless `NotchViewModel` — the router only reads its
             // `$state`, never anything screen/panel-related, so this needs no
             // `NotchWindowController` (which would need a real notch screen
@@ -1575,7 +1577,8 @@ enum SelfTest {
                                               arranger: routerArranger, calendar: testCalendar,
                                               permissions: testPermissions, viewModel: routerViewModel,
                                               timers: testTimers,
-                                              power: testPower, bluetooth: testBluetooth, startsMonitors: false)
+                                              power: testPower, bluetooth: testBluetooth,
+                                              volume: testVolume, startsMonitors: false)
 
             // `withExtendedLifetime` keeps `router` (and its Combine
             // subscriptions on `testPower`/`testBluetooth`) alive for the
@@ -1583,6 +1586,10 @@ enum SelfTest {
             // otherwise-unread local the moment after construction, silently
             // cancelling the very subscriptions these assertions depend on.
             withExtendedLifetime(router) {
+                testVolume.events.send(.volumeChanged(level: 0.5, muted: false))
+                check(routerActivities.current?.kind != .soundHUD,
+                      "Sound HUD: leaves the system display alone when keys are not intercepted")
+                routerActivities.dismiss(kind: .soundHUD)
                 testPower.events.send(.unplugged(percent: 45))
                 check(routerActivities.current?.kind == .battery,
                       "NotchActivityRouter: a PowerEvent posts a .battery live activity")
