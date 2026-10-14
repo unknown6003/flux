@@ -40,6 +40,7 @@ final class MediaKeyInterceptor {
     }
 
     private func resumeIfRequested() {
+        print("[DEBUG-flux-sound] resume requested=\(wantsInterception), trusted=\(AXIsProcessTrusted()), tap=\(eventTap != nil)")
         if wantsInterception { _ = start() }
     }
 

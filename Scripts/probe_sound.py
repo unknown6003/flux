@@ -57,6 +57,13 @@ func probe() {
         MainActor.assumeIsolated {
             guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("granted").path) else { return }
             timer.invalidate()
+            if let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
+                let owner = AXUIElementCreateApplication(finder.processIdentifier)
+                AXUIElementSetMessagingTimeout(owner, 0.2)
+                var value: CFTypeRef?
+                let status = AXUIElementCopyAttributeValue(owner, kAXChildrenAttribute as CFString, &value)
+                print("Access after grant: trusted=\(AXIsProcessTrusted()), Finder AX reply=\(status.rawValue), post-event=\(CGPreflightPostEventAccess())")
+            }
             // A downstream observer represents the system's volume HUD key path.
             var downstream = 0
             let context = UnsafeMutablePointer<Int>.allocate(capacity: 1)
