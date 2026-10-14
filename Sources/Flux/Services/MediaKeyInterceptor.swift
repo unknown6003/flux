@@ -23,10 +23,33 @@ final class MediaKeyInterceptor {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var wantsInterception = false
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.resumeIfRequested() }
+        })
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.resumeIfRequested() }
+        })
+    }
+
+    private func resumeIfRequested() {
+        if wantsInterception { _ = start() }
+    }
 
     @discardableResult
     func start() -> Bool {
-        guard eventTap == nil else { return true }
+        wantsInterception = true
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            return CGEvent.tapIsEnabled(tap: eventTap)
+        }
         // Permission prompts belong to the explicit Settings action. Starting the
         // sound HUD must never nag on launch or every time the notch appears.
         guard AXIsProcessTrusted() else { return false }
@@ -55,6 +78,7 @@ final class MediaKeyInterceptor {
     }
 
     func stop() {
+        wantsInterception = false
         guard let eventTap else { return }
         CGEvent.tapEnable(tap: eventTap, enable: false)
         if let runLoopSource {
@@ -109,6 +133,10 @@ final class MediaKeyInterceptor {
     }
 
     deinit {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
         if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)

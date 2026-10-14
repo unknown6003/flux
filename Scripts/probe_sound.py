@@ -34,7 +34,7 @@ signal.signal(signal.SIGTERM, interrupted)
 root = Path(__file__).resolve().parents[1]
 source = r'''
 import AppKit
-import Combine
+@preconcurrency import Combine
 
 @MainActor
 func probe() {
