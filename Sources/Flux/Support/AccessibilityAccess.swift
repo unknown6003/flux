@@ -6,6 +6,9 @@ import ApplicationServices
 enum AccessibilityAccess {
     static func isGranted() -> Bool {
         if AXIsProcessTrusted() { return true }
+        // Do not start an AX connection while access is denied. That connection
+        // can retain the denial after the user grants access to the same process.
+        guard CGPreflightPostEventAccess() else { return false }
         guard let app = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.apple.finder").first
             ?? NSRunningApplication.runningApplications(
