@@ -375,6 +375,7 @@ final class MacOS27Hider {
     private func clockFrame() -> CGRect? {
         if let cached = clockFrameCache,
            Date().timeIntervalSince(cached.date) < 2 { return cached.frame }
+        guard AccessibilityAccess.isGranted() else { return nil }
         guard let agent = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.apple.MenuBarAgent").first else { return nil }
         let app = AXUIElementCreateApplication(agent.processIdentifier)

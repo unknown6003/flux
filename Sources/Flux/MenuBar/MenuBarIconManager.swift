@@ -55,6 +55,7 @@ final class MenuBarIconManager: ObservableObject {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 guard let self else { return }
+                _ = AccessibilityAccess.isGranted(forceRefresh: true)
                 self.refresh()
                 if ControlItem.usesMacOS27Model { self.macOS27Hider.retry() }
             }

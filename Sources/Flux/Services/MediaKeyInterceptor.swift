@@ -40,7 +40,10 @@ final class MediaKeyInterceptor {
     }
 
     private func resumeIfRequested() {
-        if wantsInterception { _ = start() }
+        if wantsInterception {
+            _ = AccessibilityAccess.isGranted(forceRefresh: true)
+            _ = start()
+        }
     }
 
     @discardableResult

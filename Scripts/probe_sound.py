@@ -124,6 +124,7 @@ func probe() {
     }
     app.run()
 }
+AccessibilityAccess.exitIfRequested()
 MainActor.assumeIsolated { probe() }
 '''
 

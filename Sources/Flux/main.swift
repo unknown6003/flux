@@ -1,5 +1,7 @@
 import AppKit
 
+AccessibilityAccess.exitIfRequested()
+
 // Flux runs as a menu-bar agent: no Dock icon, no main window, no app menu.
 // We drive NSApplication manually instead of using the SwiftUI `@main`/Settings
 // scene so we have full control over status-item geometry and window lifetime.
