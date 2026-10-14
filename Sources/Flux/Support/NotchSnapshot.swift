@@ -168,7 +168,7 @@ enum NotchSnapshot {
 
         switch state {
         case "sound-activity", "mute-activity":
-            activities.post(LiveActivitySources.soundActivity(level: 0.6, muted: state == "mute-activity"))
+            activities.post(NotchActivityRouter.soundActivity(level: 0.6, muted: state == "mute-activity"))
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
 
         case "activity":

@@ -105,7 +105,9 @@ enum UpdateInstaller {
           sleep 0.1
         done
         wait "$child"
-        exit $?
+        result=$?
+        if kill -0 -- "-$child" 2>/dev/null; then stop; fi
+        exit "$result"
         """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -190,6 +192,13 @@ enum UpdateInstaller {
             sleep 0.1
           done
           wait "$child"
+          local result=$?
+          if kill -0 -- "-$child" 2>/dev/null; then
+            kill -TERM -- "-$child" 2>/dev/null || true
+            sleep 0.2
+            kill -KILL -- "-$child" 2>/dev/null || true
+          fi
+          return "$result"
         }
         cleanup() {
           local result=$?
@@ -229,10 +238,12 @@ enum UpdateInstaller {
           [ "$launched_pid" -gt 1 ]
         }
         receipt_process_lives() {
+          process_inspected=false
           kill -0 "$launched_pid" 2>/dev/null || return 1
           # A zombie has exited. A failed inspection remains uncertain and
           # therefore keeps the backup rather than permitting replacement.
           bounded 3 /bin/ps -p "$launched_pid" -o stat= > "$PROCESSES" || return 0
+          process_inspected=true
           read -r process_state < "$PROCESSES"
           case "$process_state" in Z*|X*) return 1;; esac
           return 0
@@ -244,9 +255,11 @@ enum UpdateInstaller {
           while [ "$SECONDS" -lt "$deadline" ]; do
             if read_receipt; then
               receipt_process_lives || break
-              if [ "$phase" = ready ]; then
+              if [ "$phase" = ready ] && [ "$process_inspected" = true ]; then
                 [ "$stable_since" -ge 0 ] || stable_since=$SECONDS
                 if [ "$SECONDS" -ge "$((stable_since + STABILITY_SECONDS))" ]; then startup_ok=true; break; fi
+              else
+                stable_since=-1
               fi
             fi
             sleep 0.1
@@ -303,6 +316,7 @@ enum UpdateInstaller {
                 while process.isRunning && Date() < grace { Thread.sleep(forTimeInterval: 0.05) }
                 if process.isRunning { kill(process.processIdentifier, SIGKILL) }
             }
+            Log.menuBar.error("Update helper readiness failed: \(outputTail(log))")
             throw Failure.helperNotReady
         }
         Log.menuBar.info("Update helper ready; log at \(log.path)")

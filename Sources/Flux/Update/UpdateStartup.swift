@@ -12,7 +12,9 @@ enum UpdateStartup {
               UUID(uuidString: arguments[index + 1]) != nil else { return }
         let path = URL(fileURLWithPath: arguments[pathIndex + 1])
         let expected = "flux-update-" + arguments[index + 1]
-        guard path.lastPathComponent == "startup", path.deletingLastPathComponent().lastPathComponent == expected else { return }
+        guard path.lastPathComponent == "startup", path.deletingLastPathComponent().lastPathComponent == expected,
+              path.deletingLastPathComponent().deletingLastPathComponent().resolvingSymlinksInPath()
+                == FileManager.default.temporaryDirectory.resolvingSymlinksInPath() else { return }
         receipt = path
         token = arguments[index + 1]
         write("started")

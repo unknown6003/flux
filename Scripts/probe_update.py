@@ -123,7 +123,7 @@ def shell_probe(reference=None):
         raise RuntimeError("FAIL: no emitted install helper found")
     template = textwrap.dedent(match.group(1))
     failures = []
-    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch", "accepted_crash", "ready_crash", "alive_unconfirmed"]:
+    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch", "accepted_crash", "ready_crash", "alive_unconfirmed", "inspection_failure", "worker_outlives_command"]:
         with tempfile.TemporaryDirectory(prefix="flux-swap-probe-") as directory:
             root = Path(directory)
             install_parent = root / "installed"
@@ -147,6 +147,11 @@ def shell_probe(reference=None):
                       + shlex.quote(str(staged)) + ' ]; then exit 1; fi\n'
                       '/bin/mv "$@"',
             }
+            if case == "inspection_failure":
+                bodies["ps"] = "exit 1"
+            if case == "worker_outlives_command":
+                bodies["mv"] = '/bin/mv "$@"; result=$?\nif [ "$1" = ' + shlex.quote(str(dest)) + ' ]; then\n' \
+                    'sleep 30 >/dev/null 2>&1 & echo $! > ' + shlex.quote(str(root / "worker.pid")) + '\nfi\nexit $result'
             open_tool = bins / "open"
             open_tool.write_text("#!" + sys.executable + "\n" + """
 import sys, subprocess, os
@@ -167,8 +172,9 @@ if version == '0.21.26' and '--flux-update-receipt' in args:
     if case == 'accepted_crash':
         receipt.write_text(f'{token}\\n{os.getpid()}\\n{dest}\\nstarted\\n')
         sys.exit(0)
-    launch = [sys.executable, '-c', 'import time; time.sleep(0.2)'] if case == 'ready_crash' else ['sleep', '30']
-    child = subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    launch = [sys.executable, '-c', 'import time; time.sleep(0.2)'] if case in ('ready_crash', 'inspection_failure') else ['sleep', '30']
+    # LaunchServices starts the app outside the requesting open command group.
+    child = subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     Path(SLEEPER).write_text(str(child.pid))
     phase = 'started' if case == 'alive_unconfirmed' else 'ready'
     receipt.write_text(f'{token}\\n{child.pid}\\n{dest}\\n{phase}\\n')
@@ -203,7 +209,7 @@ Path(LAUNCHED).write_text(version)
             # Bound the test's process-exit wait, without changing its outcome policy.
             script = script.replace("seq 1 50", "seq 1 5").replace("EXIT_WAIT_SECONDS=10", "EXIT_WAIT_SECONDS=1")
             script = script.replace("STARTUP_WAIT_SECONDS=20", "STARTUP_WAIT_SECONDS=1").replace("STABILITY_SECONDS=2", "STABILITY_SECONDS=0")
-            if case == "ready_crash":
+            if case in ("ready_crash", "inspection_failure"):
                 script = script.replace("STABILITY_SECONDS=0", "STABILITY_SECONDS=1").replace("STARTUP_WAIT_SECONDS=1", "STARTUP_WAIT_SECONDS=2")
             if case == "hung_relaunch":
                 script = script.replace("bounded 15", "bounded 1")
@@ -213,9 +219,9 @@ Path(LAUNCHED).write_text(version)
             result = run(["/bin/bash", str(helper)], 20, check=False, env=environment)
             installed = (dest / "version").read_text() if (dest / "version").exists() else "missing"
             launched = (root / "relaunched").read_text() if (root / "relaunched").exists() else "none"
-            expected = "0.21.26" if case in ("success", "alive_unconfirmed") else "0.21.25"
+            expected = "0.21.26" if case in ("success", "alive_unconfirmed", "inspection_failure", "worker_outlives_command") else "0.21.25"
             good = installed == expected and (launched == expected if case != "parent_alive" else launched == "none")
-            if case == "alive_unconfirmed":
+            if case in ("alive_unconfirmed", "inspection_failure"):
                 backup_version = root / "backup.app/version"
                 good = good and backup_version.exists() and backup_version.read_text() == "0.21.25"
             if (root / "sleeper.pid").exists():
@@ -225,8 +231,15 @@ Path(LAUNCHED).write_text(version)
                     good = good and (not state or state.startswith("Z"))
                 else:
                     if case == "alive_unconfirmed": good = good and bool(state) and not state.startswith("Z")
+                    if case == "inspection_failure": good = good and (not state or state.startswith("Z"))
                     try: os.kill(sleeper, signal.SIGTERM)
                     except ProcessLookupError: pass
+            if (root / "worker.pid").exists():
+                worker = int((root / "worker.pid").read_text())
+                state = run(["ps", "-p", str(worker), "-o", "stat="], 5, check=False).stdout.strip()
+                good = good and (not state or state.startswith("Z"))
+                try: os.kill(worker, signal.SIGKILL)
+                except ProcessLookupError: pass
             print(f"{'PASS' if good else 'FAIL'}: helper {case}, installed={installed}, relaunched={launched}, exit={result.returncode}", flush=True)
             if not good:
                 failures.append(case)
@@ -234,7 +247,7 @@ Path(LAUNCHED).write_text(version)
         raise RuntimeError("FAIL: helper cases " + ", ".join(failures))
 
 
-def supervisor_probe(reference=None):
+def supervisor_probe(reference=None, leader_exits=False):
     source = (run(["git", "show", f"{reference}:Sources/Flux/Update/UpdateInstaller.swift"], 20).stdout
               if reference else (ROOT / "Sources/Flux/Update/UpdateInstaller.swift").read_text())
     supervisor = textwrap.dedent(re.search(r'let supervisor = """\n(.*?)\n        """', source, re.S).group(1))
@@ -243,7 +256,7 @@ def supervisor_probe(reference=None):
         fixture = root / "hang.sh"
         fixture.write_text("#!/bin/bash\necho diagnostic-before-timeout\necho $$ > "
                            + shlex.quote(str(root / "command.pid")) + "\nsleep 30 & child=$!\necho $child > "
-                           + shlex.quote(str(root / "descendant.pid")) + "\nwait $child\n")
+                           + shlex.quote(str(root / "descendant.pid")) + ("\nexit 0\n" if leader_exits else "\nwait $child\n"))
         fixture.chmod(0o755)
         arguments = ["/bin/bash", "-c", supervisor, "probe"]
         if "limit=$1" in supervisor:
@@ -265,11 +278,11 @@ def supervisor_probe(reference=None):
                 state = run(["ps", "-p", str(pid), "-o", "stat="], 5, check=False).stdout.strip()
                 states.append(not state or state.startswith("Z"))
             output = (root / "output").read_text()
-            good = all(states) and "diagnostic-before-timeout" in output and "deadline reached" in output
-            print(f"{'PASS' if good else 'FAIL'}: exact supervisor after caller exit, all descendants stopped={all(states)}", flush=True)
+            good = all(states) and "diagnostic-before-timeout" in output and (leader_exits or "deadline reached" in output)
+            print(f"{'PASS' if good else 'FAIL'}: exact supervisor after caller exit, leader_exits={leader_exits}, all descendants stopped={all(states)}", flush=True)
             print(output[-800:], flush=True)
             if not good:
-                raise RuntimeError("FAIL: command lost its deadline when its Flux parent exited")
+                raise RuntimeError("FAIL: command descendants survived the owner or command exit")
         finally:
             for name in ["command", "supervisor", "descendant"]:
                 if (root / (name + ".pid")).exists():
@@ -504,14 +517,17 @@ def main():
     args = parser.parse_args()
     if args.supervisor_only:
         supervisor_probe(args.baseline_ref)
+        supervisor_probe(args.baseline_ref, leader_exits=True)
     elif args.helper_only:
         shell_probe(args.baseline_ref)
     elif args.shell_only:
         supervisor_probe(args.baseline_ref)
+        supervisor_probe(args.baseline_ref, leader_exits=True)
         shell_probe(args.baseline_ref)
     else:
         mac_probe(args.baseline_ref, [args.case] if args.case else None)
         supervisor_probe(args.baseline_ref)
+        supervisor_probe(args.baseline_ref, leader_exits=True)
         shell_probe(args.baseline_ref)
 
 
