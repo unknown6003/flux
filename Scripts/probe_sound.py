@@ -140,6 +140,7 @@ with tempfile.TemporaryDirectory(prefix="flux-sound-probe-") as directory:
     main.write_text(source)
     command(["swiftc", "-swift-version", "5", str(main),
              str(root / "Sources/Flux/Services/MediaKeyInterceptor.swift"),
+             str(root / "Sources/Flux/Support/AccessibilityAccess.swift"),
              "-o", str(executable)], 120)
     command(["codesign", "--force", "--sign", "-", str(bundle)], 20)
     register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"

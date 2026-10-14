@@ -46,7 +46,7 @@ final class MenuBarIconManager: ObservableObject {
         ControlItem.usesMacOS27Model && macOS27Hider.isAvailable && macOS27Hider.hasSavedLayout
     }
 
-    init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+    init(trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
         self.trustProvider = trustProvider
         observeAppActivation()
     }

@@ -120,6 +120,7 @@ final class MacOS27Hider {
         macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
         Flux: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
         Accessibility: \(trustProvider())
+        Accessibility system flag: \(AXIsProcessTrusted())
         Hiding interface: \(assessment.isAvailable)
         Saved icon layout: \(hasSavedLayout)
         Install matches registered app: \(registered?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL)
@@ -134,7 +135,7 @@ final class MacOS27Hider {
     }
 
     init(defaults: UserDefaults = .standard,
-         trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+         trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
         self.trustProvider = trustProvider
         self.defaults = defaults
         if let layout = defaults.dictionary(forKey: Self.layoutKey),

@@ -135,7 +135,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/MenuBar/MenuBarIconManager.swift", "Sources/Flux/MenuBar/MacOS27Hider.swift",
         "Sources/Flux/MenuBar/ControlItem.swift", "Sources/Flux/MenuBar/MenuBarSection.swift",
         "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
-        "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift"])
+        "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
+        "Sources/Flux/Support/AccessibilityAccess.swift"])
     process = subprocess.Popen([str(fixture)], start_new_session=True)
     try:
         command([str(binary)], 30)

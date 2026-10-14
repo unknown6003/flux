@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
     private var updateTimer: Timer?
+    private var launchUpdateCheck: Task<Void, Never>?
 
     // Notch suite: one panel/state-machine controller plus the Now Playing
     // service + widget it hosts for M1, and the File Shelf store + widget
@@ -333,7 +334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$automaticUpdateChecks
             .dropFirst()
-            .sink { [weak self] _ in self?.configureUpdateChecks() }
+            .sink { [weak self] enabled in self?.configureUpdateChecks(enabled: enabled) }
             .store(in: &cancellables)
 
         // Track the Settings window so we can suppress the floating hint while
@@ -720,20 +721,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// few seconds after launch (so it never delays startup), then every 6 hours.
     /// Turning the preference off cancels the timer. Manual checks from Settings
     /// are independent of this schedule.
-    private func configureUpdateChecks() {
+    private func configureUpdateChecks(enabled: Bool? = nil) {
+        launchUpdateCheck?.cancel()
+        launchUpdateCheck = nil
         updateTimer?.invalidate()
         updateTimer = nil
-        guard settings.automaticUpdateChecks else { return }
+        guard enabled ?? settings.automaticUpdateChecks else { return }
 
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(4))
+        launchUpdateCheck = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(4)) }
+            catch { return }
             guard let self, self.settings.automaticUpdateChecks else { return }
             self.updater.checkForUpdates(userInitiated: false)
         }
 
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updater.checkForUpdates(userInitiated: false) }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
     }
 
     // MARK: Settings window

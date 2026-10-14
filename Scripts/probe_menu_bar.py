@@ -465,6 +465,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         }, output)
     status = run(["swiftc", "-swift-version", "5", str(source),
                   str(root / "Sources/Flux/Support/Log.swift"),
+                  str(root / "Sources/Flux/Support/AccessibilityAccess.swift"),
                   str(root / "Sources/Flux/MenuBar/MenuBarGeometry.swift"),
                   str(display_object),
                   "-o", str(binary)], 120)

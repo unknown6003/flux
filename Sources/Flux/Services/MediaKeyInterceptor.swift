@@ -40,7 +40,6 @@ final class MediaKeyInterceptor {
     }
 
     private func resumeIfRequested() {
-        print("[DEBUG-flux-sound] resume requested=\(wantsInterception), trusted=\(AXIsProcessTrusted()), tap=\(eventTap != nil)")
         if wantsInterception { _ = start() }
     }
 
@@ -53,7 +52,7 @@ final class MediaKeyInterceptor {
         }
         // Permission prompts belong to the explicit Settings action. Starting the
         // sound HUD must never nag on launch or every time the notch appears.
-        guard AXIsProcessTrusted() else { return false }
+        guard AccessibilityAccess.isGranted() else { return false }
         let mask: CGEventMask = 1 << 14
         let context = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
