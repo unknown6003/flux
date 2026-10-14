@@ -41,6 +41,8 @@ final class UpdateChecker: ObservableObject {
     private let session: URLSession
     private let releaseURL: URL
     private let installURL: URL
+    private let downloadsURL: URL?
+    private var cachedDownload: (version: String, source: URL, file: URL)?
     private let terminate: @MainActor () -> Void
     private var isBusy = false
 
@@ -55,6 +57,7 @@ final class UpdateChecker: ObservableObject {
          session: URLSession? = nil,
          releaseURL: URL? = nil,
          installURL: URL = Bundle.main.bundleURL,
+         downloadsURL: URL? = nil,
          terminate: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }) {
         self.currentVersion = currentVersion
         let configuration = URLSessionConfiguration.default
@@ -62,6 +65,7 @@ final class UpdateChecker: ObservableObject {
         self.session = session ?? URLSession(configuration: configuration)
         self.releaseURL = releaseURL ?? Self.releasesURL
         self.installURL = installURL
+        self.downloadsURL = downloadsURL
         self.terminate = terminate
     }
 
@@ -226,17 +230,23 @@ final class UpdateChecker: ObservableObject {
         defer { isBusy = false }
         state = .downloading
         do {
-            var request = URLRequest(url: dmgURL)
-            request.timeoutInterval = 120
-            request.setValue("Flux/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+            let dmg: URL
+            if let cached = cachedDownload, cached.version == release.version, cached.source == dmgURL,
+               FileManager.default.fileExists(atPath: cached.file.path) {
+                dmg = cached.file
+            } else {
+                var request = URLRequest(url: dmgURL)
+                request.timeoutInterval = 120
+                request.setValue("Flux/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
-            let (tempURL, response) = try await session.download(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw UpdateError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
+                let (tempURL, response) = try await session.download(for: request)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    throw UpdateError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
+                }
+                // The async `download(for:)` temp file is reaped when this returns, so
+                // move it to a stable spot we control before mounting/handing off.
+                dmg = try stageDownload(tempURL)
             }
-            // The async `download(for:)` temp file is reaped when this returns, so
-            // move it to a stable spot we control before mounting/handing off.
-            let dmg = try stageDownload(tempURL)
 
             do {
                 try await selfInstall(dmgAt: dmg, release: release)
@@ -244,7 +254,10 @@ final class UpdateChecker: ObservableObject {
                 // the detached helper takes over from here.
             } catch UpdateInstaller.Failure.notWritable {
                 Log.menuBar.error("Self-install unavailable: install location needs permission")
-                let dest = try moveToDownloads(dmg, version: release.version)
+                let dest: URL
+                if cachedDownload?.file == dmg { dest = dmg }
+                else { dest = try moveToDownloads(dmg, version: release.version) }
+                cachedDownload = (release.version, dmgURL, dest)
                 state = .readyToInstall(dest)
                 if !automatic {
                     NSWorkspace.shared.open(dest)   // mount the DMG for the user
@@ -277,8 +290,8 @@ final class UpdateChecker: ObservableObject {
     /// Never clobbers an existing file of the same name.
     private func moveToDownloads(_ dmg: URL, version: String) throws -> URL {
         let fm = FileManager.default
-        let downloads = try fm.url(for: .downloadsDirectory, in: .userDomainMask,
-                                   appropriateFor: nil, create: true)
+        let downloads = try downloadsURL ?? fm.url(for: .downloadsDirectory, in: .userDomainMask,
+                                                   appropriateFor: nil, create: true)
         let name = version.filter { $0.isNumber || $0 == "." || $0 == "-" }
         var dest = downloads.appendingPathComponent("Flux-\(name).dmg")
         if fm.fileExists(atPath: dest.path) {
