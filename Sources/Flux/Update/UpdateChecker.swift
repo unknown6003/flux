@@ -45,6 +45,10 @@ final class UpdateChecker: ObservableObject {
     @Published private(set) var lastChecked: Date?
 
     private let currentVersion: String
+    private let session: URLSession
+    private let releaseURL: URL
+    private let installURL: URL
+    private let terminate: () -> Void
     private var isBusy = false
 
     /// Set when a user-initiated check arrives while a background one is
@@ -54,8 +58,16 @@ final class UpdateChecker: ObservableObject {
     /// a quiet check's "nothing new" branch deliberately writes no state.
     private var pendingUserInitiated = false
 
-    init(currentVersion: String = AppInfo.version) {
+    init(currentVersion: String = AppInfo.version,
+         session: URLSession = .shared,
+         releaseURL: URL? = nil,
+         installURL: URL = Bundle.main.bundleURL,
+         terminate: @escaping () -> Void = { NSApp.terminate(nil) }) {
         self.currentVersion = currentVersion
+        self.session = session
+        self.releaseURL = releaseURL ?? Self.releasesURL
+        self.installURL = installURL
+        self.terminate = terminate
     }
 
     /// Whether `state` is currently advertising a newer release — the one
@@ -164,7 +176,7 @@ final class UpdateChecker: ObservableObject {
     }
 
     private func fetchLatest() async throws -> Release? {
-        var request = URLRequest(url: Self.releasesURL)
+        var request = URLRequest(url: releaseURL)
         request.timeoutInterval = 15
         // GitHub rejects API requests without a User-Agent (HTTP 403).
         request.setValue("Flux/\(currentVersion) (macOS; +https://github.com/unknown6003/flux)",
@@ -172,7 +184,7 @@ final class UpdateChecker: ObservableObject {
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw UpdateError.network }
         // No published release yet → treat as "up to date", not an error.
         if http.statusCode == 404 { return nil }
@@ -216,7 +228,7 @@ final class UpdateChecker: ObservableObject {
             request.timeoutInterval = 120
             request.setValue("Flux/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
-            let (tempURL, response) = try await URLSession.shared.download(for: request)
+            let (tempURL, response) = try await session.download(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 throw UpdateError.http((response as? HTTPURLResponse)?.statusCode ?? -1)
             }
@@ -252,7 +264,6 @@ final class UpdateChecker: ObservableObject {
     /// after termination. Throws (for the manual fallback) if the install location
     /// isn't writable, the image won't mount, or it holds no `.app`.
     private func selfInstall(dmgAt dmg: URL, release: Release) throws {
-        let installURL = Bundle.main.bundleURL
         let fm = FileManager.default
         guard fm.isWritableFile(atPath: installURL.deletingLastPathComponent().path) else {
             throw UpdateError.notWritable
@@ -269,7 +280,7 @@ final class UpdateChecker: ObservableObject {
         Log.menuBar.info("Installing update \(release.version) → relaunching")
         // Let SwiftUI paint `.installing`, then quit so the helper can do the swap.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            NSApp.terminate(nil)
+            self.terminate()
         }
     }
 
