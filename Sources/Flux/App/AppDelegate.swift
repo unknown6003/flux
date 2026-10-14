@@ -230,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeSettings()
         observeDuoCalendar()
         observeCrashBreadcrumbs()
+        UpdateStartup.confirmLaunch()
     }
 
     /// Flipping the session file to "clean" is the entire crash-detection
