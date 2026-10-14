@@ -71,6 +71,8 @@ enum NotchSnapshot {
         let states: [(state: String, file: String)] = [
             ("collapsed", "collapsed.png"),
             ("activity", "activity.png"),
+            ("sound-activity", "sound-activity.png"),
+            ("mute-activity", "mute-activity.png"),
             ("expanded", "expanded-nowPlaying.png"),
             ("expanded-shelf", "expanded-shelf.png"),
             ("empty-shelf", "empty-shelf.png"),
@@ -165,6 +167,10 @@ enum NotchSnapshot {
         let viewModel = NotchViewModel(registry: registry, activities: activities)
 
         switch state {
+        case "sound-activity", "mute-activity":
+            activities.post(LiveActivitySources.soundActivity(level: 0.6, muted: state == "mute-activity"))
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
         case "activity":
             activities.post(LiveActivity(
                 kind: .nowPlaying,
