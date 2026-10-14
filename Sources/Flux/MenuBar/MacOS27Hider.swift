@@ -111,6 +111,7 @@ final class MacOS27Hider {
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
     private var clockFrameCache: (frame: CGRect, date: Date)?
+    private var lastAccessGranted = false
     private var lastCollapsedScan = "No collapsed scan has run."
     private var lastCollapsedRequest = "No collapsed hide request has run."
 
@@ -120,6 +121,7 @@ final class MacOS27Hider {
         macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
         Flux: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")
         Accessibility: \(trustProvider())
+        Accessibility system flag: \(AXIsProcessTrusted())
         Hiding interface: \(assessment.isAvailable)
         Saved icon layout: \(hasSavedLayout)
         Install matches registered app: \(registered?.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL)
@@ -134,7 +136,7 @@ final class MacOS27Hider {
     }
 
     init(defaults: UserDefaults = .standard,
-         trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+         trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
         self.trustProvider = trustProvider
         self.defaults = defaults
         if let layout = defaults.dictionary(forKey: Self.layoutKey),
@@ -236,7 +238,8 @@ final class MacOS27Hider {
                 self.onStatus?(message)
                 return
             }
-            guard self.trustProvider() else {
+            self.lastAccessGranted = self.trustProvider()
+            guard self.lastAccessGranted else {
                 let message = self.hasSavedLayout
                     ? "Using the saved icon layout. Allow Accessibility to change it."
                     : "Allow Accessibility once to save your menu-bar icon layout."
@@ -374,6 +377,8 @@ final class MacOS27Hider {
     private func clockFrame() -> CGRect? {
         if let cached = clockFrameCache,
            Date().timeIntervalSince(cached.date) < 2 { return cached.frame }
+        // Mouse movement uses the grant read during layout or lifecycle checks.
+        guard lastAccessGranted else { return nil }
         guard let agent = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.apple.MenuBarAgent").first else { return nil }
         let app = AXUIElementCreateApplication(agent.processIdentifier)

@@ -277,7 +277,7 @@ struct NotchTab: View {
                       isOn: $settings.notchActivityTimerEnabled)
             RowDivider()
             ToggleRow(title: "Volume & ringer visualizer",
-                      subtitle: "Show volume and mute changes in the notch and replace Apple's volume bezel.",
+                      subtitle: "Replace Apple's volume and mute display. Needs Accessibility access in Menu Bar settings.",
                       isOn: $settings.notchSoundHUDEnabled)
         }
     }

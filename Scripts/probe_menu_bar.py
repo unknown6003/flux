@@ -247,6 +247,46 @@ func probe() {
             return
         }
         if CommandLine.arguments.contains("--app-click") {
+            // The loopback HTTP fixture can leave Python's network prompt open
+            // on the disposable CI desktop. It blocks physical mouse clicks.
+            let promptDeadline = Date().addingTimeInterval(4)
+            func values(_ element: AXUIElement, nodes: inout Int) -> [(AXUIElement, String)] {
+                guard nodes < 300, Date() < promptDeadline else { return [] }
+                nodes += 1
+                var result: [(AXUIElement, String)] = []
+                for attribute in [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute] {
+                    var value: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+                       let text = value as? String { result.append((element, text)) }
+                }
+                var children: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+                   let children = children as? [AXUIElement] {
+                    for child in children { result += values(child, nodes: &nodes) }
+                }
+                return result
+            }
+            for application in NSWorkspace.shared.runningApplications where Date() < promptDeadline {
+                let owner = AXUIElementCreateApplication(application.processIdentifier)
+                AXUIElementSetMessagingTimeout(owner, 0.1)
+                var windows: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(owner, kAXWindowsAttribute as CFString, &windows) == .success,
+                      let windows = windows as? [AXUIElement] else { continue }
+                for window in windows {
+                    var nodes = 0
+                    let contents = values(window, nodes: &nodes)
+                    let text = contents.map(\.1).joined(separator: " ")
+                    guard text.contains("Python"), text.contains("local networks") else { continue }
+                    guard let button = contents.first(where: {
+                        $0.1 == "Don't Allow" || $0.1 == "Don’t Allow"
+                    })?.0, AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
+                        print("FAIL: could not dismiss the disposable Python network prompt")
+                        exit(1)
+                    }
+                    print("CI: denied local-network access for the disposable Python fixture")
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+                }
+            }
             guard let flux = NSRunningApplication.runningApplications(
                 withBundleIdentifier: "com.flux.menubar").first else {
                 print("FAIL: the built Flux app is not running")
@@ -286,9 +326,14 @@ func probe() {
             }
             func click() {
                 let point = CGPoint(x: chevron.midX, y: chevron.midY)
+                print("Click input: post access=\(CGPreflightPostEventAccess()), modifiers=\(CGEventSource.flagsState(.combinedSessionState).rawValue), pointer=\(NSEvent.mouseLocation)")
                 for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
-                    CGEvent(mouseEventSource: nil, mouseType: type,
-                            mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+                    if let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                                          mouseCursorPosition: point, mouseButton: .left) {
+                        print("Click event: \(type.rawValue), inherited flags=\(event.flags.rawValue)")
+                        event.flags = []
+                        event.post(tap: .cghidEventTap)
+                    }
                 }
             }
             click()
@@ -439,6 +484,7 @@ func probe() {
     }
     app.run()
 }
+AccessibilityAccess.exitIfRequested()
 MainActor.assumeIsolated { probe() }
 '''
 
@@ -465,6 +511,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         }, output)
     status = run(["swiftc", "-swift-version", "5", str(source),
                   str(root / "Sources/Flux/Support/Log.swift"),
+                  str(root / "Sources/Flux/Support/AccessibilityAccess.swift"),
                   str(root / "Sources/Flux/MenuBar/MenuBarGeometry.swift"),
                   str(display_object),
                   "-o", str(binary)], 120)

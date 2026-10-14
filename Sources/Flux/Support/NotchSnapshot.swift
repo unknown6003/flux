@@ -83,6 +83,8 @@ enum NotchSnapshot {
             ("lockscreen", "lockscreen.png"),
             ("lockscreen-media-only", "lockscreen-media-only.png"),
             ("lockscreen-activity-only", "lockscreen-activity-only.png"),
+            ("sound-activity", "sound-activity.png"),
+            ("mute-activity", "mute-activity.png"),
         ]
 
         var allSucceeded = true
@@ -165,6 +167,10 @@ enum NotchSnapshot {
         let viewModel = NotchViewModel(registry: registry, activities: activities)
 
         switch state {
+        case "sound-activity", "mute-activity":
+            activities.post(NotchActivityRouter.soundActivity(level: 0.6, muted: state == "mute-activity"))
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
         case "activity":
             activities.post(LiveActivity(
                 kind: .nowPlaying,

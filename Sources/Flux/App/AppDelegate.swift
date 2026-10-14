@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let crashReporter = CrashReporter()
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
-    private var updateTimer: Timer?
+    private var updateScheduler: AutomaticUpdateScheduler?
 
     // Notch suite: one panel/state-machine controller plus the Now Playing
     // service + widget it hosts for M1, and the File Shelf store + widget
@@ -230,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observeSettings()
         observeDuoCalendar()
         observeCrashBreadcrumbs()
+        UpdateStartup.confirmLaunch()
     }
 
     /// Flipping the session file to "clean" is the entire crash-detection
@@ -329,11 +330,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.configureHotkey() }
-            .store(in: &cancellables)
-
-        settings.$automaticUpdateChecks
-            .dropFirst()
-            .sink { [weak self] _ in self?.configureUpdateChecks() }
             .store(in: &cancellables)
 
         // Track the Settings window so we can suppress the floating hint while
@@ -721,18 +717,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Turning the preference off cancels the timer. Manual checks from Settings
     /// are independent of this schedule.
     private func configureUpdateChecks() {
-        updateTimer?.invalidate()
-        updateTimer = nil
-        guard settings.automaticUpdateChecks else { return }
-
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            guard let self, self.settings.automaticUpdateChecks else { return }
-            self.updater.checkForUpdates(userInitiated: false)
-        }
-
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updater.checkForUpdates(userInitiated: false) }
+        updateScheduler = AutomaticUpdateScheduler(
+            enabled: settings.$automaticUpdateChecks.eraseToAnyPublisher()
+        ) { [weak self] in
+            self?.updater.checkForUpdates(userInitiated: false)
         }
     }
 

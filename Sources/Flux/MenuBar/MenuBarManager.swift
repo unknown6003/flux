@@ -32,7 +32,7 @@ final class MenuBarManager {
     init(settings: SettingsStore,
          arranger: MenuBarArranger,
          timerService: TimerService? = nil,
-         accessibilityTrusted: @escaping () -> Bool = { AXIsProcessTrusted() },
+         accessibilityTrusted: @escaping () -> Bool = { AccessibilityAccess.isGranted() },
          onOpenSettings: @escaping () -> Void) {
         self.settings = settings
         self.arranger = arranger
@@ -260,7 +260,7 @@ final class MenuBarManager {
             menu.addItem(.separator())
         }
 
-        if ControlItem.usesMacOS27Model && !AXIsProcessTrusted() {
+        if ControlItem.usesMacOS27Model && !accessibilityTrusted() {
             let warning = NSMenuItem(title: canHideWithoutAccess()
                                      ? "Using saved icon layout. Allow Accessibility to change it."
                                      : "Allow Accessibility once to save your icon layout",

@@ -46,7 +46,7 @@ final class MenuBarIconManager: ObservableObject {
         ControlItem.usesMacOS27Model && macOS27Hider.isAvailable && macOS27Hider.hasSavedLayout
     }
 
-    init(trustProvider: @escaping () -> Bool = { AXIsProcessTrusted() }) {
+    init(trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
         self.trustProvider = trustProvider
         observeAppActivation()
     }
@@ -55,6 +55,7 @@ final class MenuBarIconManager: ObservableObject {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 guard let self else { return }
+                _ = AccessibilityAccess.isGranted(forceRefresh: true)
                 self.refresh()
                 if ControlItem.usesMacOS27Model { self.macOS27Hider.retry() }
             }
@@ -292,7 +293,12 @@ final class MenuBarIconManager: ObservableObject {
         case .shown:
             return boundaries.hidden.map { $0 + gap }
         case .hidden:
-            if let alwaysHidden = boundaries.alwaysHidden { return alwaysHidden + gap }
+            if let alwaysHidden = boundaries.alwaysHidden, let hidden = boundaries.hidden {
+                guard alwaysHidden < hidden else { return nil }
+                // The drag uses the icon's center. Keep that center between the
+                // boundaries even when macOS 27 leaves only a few points there.
+                return (alwaysHidden + hidden - iconWidth) / 2
+            }
             return boundaries.hidden.map { $0 - iconWidth - gap }
         case .alwaysHidden:
             return boundaries.alwaysHidden.map { $0 - iconWidth - gap }

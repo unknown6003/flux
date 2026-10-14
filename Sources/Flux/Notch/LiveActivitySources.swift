@@ -466,7 +466,7 @@ final class NotchActivityRouter {
     }
 
     private func handleVolumeEvent(_ event: VolumeEvent) {
-        guard settings.notchSoundHUDEnabled else { return }
+        guard settings.notchSoundHUDEnabled, mediaKeys.isActive else { return }
         if case let .volumeChanged(level, muted) = event {
             activities.post(Self.soundActivity(level: level, muted: muted))
         }

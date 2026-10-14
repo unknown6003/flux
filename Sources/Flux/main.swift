@@ -1,5 +1,8 @@
 import AppKit
 
+AccessibilityAccess.exitIfRequested()
+UpdateStartup.registerLaunch()
+
 // Flux runs as a menu-bar agent: no Dock icon, no main window, no app menu.
 // We drive NSApplication manually instead of using the SwiftUI `@main`/Settings
 // scene so we have full control over status-item geometry and window lifetime.
@@ -40,7 +43,7 @@ MainActor.assumeIsolated {
             // list gates whether the flag ever reaches that dispatch at all;
             // without it here, `--snapshot-notch out.png lockscreen` silently
             // fell back to "collapsed" instead.
-            let state = ["collapsed", "activity", "expanded", "lockscreen"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
+            let state = ["collapsed", "activity", "expanded", "lockscreen", "sound-activity", "mute-activity"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
             NotchSnapshot.capture(to: args[idx + 1], dark: dark, state: state)
         }
         exit(0)
