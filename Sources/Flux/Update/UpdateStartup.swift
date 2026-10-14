@@ -25,7 +25,8 @@ enum UpdateStartup {
 
     private static func write(_ state: String) {
         guard let receipt, let token else { return }
-        let value = "\(token)\n\(ProcessInfo.processInfo.processIdentifier)\n\(Bundle.main.bundleURL.path)\n\(state)\n"
+        let bundlePath = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+        let value = "\(token)\n\(ProcessInfo.processInfo.processIdentifier)\n\(bundlePath)\n\(state)\n"
         do { try value.write(to: receipt, atomically: true, encoding: .utf8) }
         catch { Log.menuBar.error("Couldn't confirm update startup: \(error.localizedDescription)") }
     }

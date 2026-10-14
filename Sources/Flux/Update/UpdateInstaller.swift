@@ -24,6 +24,7 @@ enum UpdateInstaller {
 
     static func prepareAndLaunch(dmg: URL, installURL: URL, version: String) throws {
         let fm = FileManager.default
+        let installURL = installURL.resolvingSymlinksInPath()
         let parent = installURL.deletingLastPathComponent()
         guard fm.isWritableFile(atPath: parent.path) else {
             throw Failure.notWritable
