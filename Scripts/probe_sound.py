@@ -41,6 +41,7 @@ func probe() {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let directory = URL(fileURLWithPath: CommandLine.arguments[1])
+    try! String(getpid()).write(to: directory.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
     let keys = MediaKeyInterceptor()
     keys.volumeControllable = { true }
     var received = 0
@@ -102,6 +103,7 @@ func probe() {
                         exit(1)
                     }
                     print("PASS: restoring access handles one sound key and suppresses both system key edges")
+                    try! Data().write(to: directory.appendingPathComponent("passed"))
                     exit(0)
                 }
             }
@@ -135,7 +137,29 @@ with tempfile.TemporaryDirectory(prefix="flux-sound-probe-") as directory:
     command(["codesign", "--force", "--sign", "-", str(bundle)], 20)
     register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
     command([register, "-f", str(bundle)], 20)
-    process = subprocess.Popen([str(executable), str(temporary)], start_new_session=True)
+    log = temporary / "probe.log"
+    process = subprocess.Popen(["/usr/bin/open", "-n", "-g", "-W",
+                                "--stdout", str(log), "--stderr", str(log),
+                                str(bundle), "--args", str(temporary)], start_new_session=True)
+
+    def stop_app():
+        pid_file = temporary / "pid"
+        if not pid_file.exists():
+            return
+        pid = int(pid_file.read_text())
+        listing = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "comm="],
+                                 capture_output=True, text=True, timeout=5)
+        if listing.stdout.strip() != str(executable):
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     try:
         deadline = time.monotonic() + 15
         while not (temporary / "ready").exists():
@@ -146,10 +170,14 @@ with tempfile.TemporaryDirectory(prefix="flux-sound-probe-") as directory:
             (temporary / "granted").touch()
             try:
                 status = process.wait(timeout=10)
-                if status:
-                    raise SystemExit(status)
+                if status or not (temporary / "passed").exists():
+                    raise RuntimeError("FAIL: the sound probe did not pass")
             finally:
+                stop_app()
                 _stop(process)
     finally:
+        stop_app()
         _stop(process)
+        if log.exists():
+            print(log.read_text(), flush=True)
         command([register, "-u", str(bundle)], 20)
