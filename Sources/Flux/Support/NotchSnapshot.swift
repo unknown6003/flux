@@ -71,8 +71,6 @@ enum NotchSnapshot {
         let states: [(state: String, file: String)] = [
             ("collapsed", "collapsed.png"),
             ("activity", "activity.png"),
-            ("sound-activity", "sound-activity.png"),
-            ("mute-activity", "mute-activity.png"),
             ("expanded", "expanded-nowPlaying.png"),
             ("expanded-shelf", "expanded-shelf.png"),
             ("empty-shelf", "empty-shelf.png"),
@@ -85,6 +83,8 @@ enum NotchSnapshot {
             ("lockscreen", "lockscreen.png"),
             ("lockscreen-media-only", "lockscreen-media-only.png"),
             ("lockscreen-activity-only", "lockscreen-activity-only.png"),
+            ("sound-activity", "sound-activity.png"),
+            ("mute-activity", "mute-activity.png"),
         ]
 
         var allSucceeded = true
