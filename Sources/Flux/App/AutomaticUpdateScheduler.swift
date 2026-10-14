@@ -38,12 +38,14 @@ final class AutomaticUpdateScheduler {
             guard let self, self.enabled else { return }
             self.check()
         }
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let periodic = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.enabled else { return }
                 self.check()
             }
         }
+        RunLoop.main.add(periodic, forMode: .common)
+        timer = periodic
     }
 
     deinit {

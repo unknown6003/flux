@@ -202,7 +202,9 @@ so Flux can save the layout. Later access loss does not stop hiding saved
 icons. In 0.21.27, **Check access again** reads the current grant even when
 macOS retains an old denied result.
 
-Automatic updates check after launch and every six hours. They prepare the
+Automatic updates check after launch and every six hours. Enabling the setting
+starts the schedule while Flux is running. Checks also run while a menu is open.
+They prepare the
 new app before quitting, then swap and relaunch it. A failed swap or relaunch
 restores the old app. If the install folder requires admin access, Settings
 offers the downloaded DMG for manual installation.
