@@ -321,9 +321,26 @@ func probe() {
     if version == "0.21.26" {
         let result = "version=\(version) settings=\(defaults.string(forKey: "keep") ?? "missing")"
         UpdateStartup.confirmLaunch()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            try! result.write(to: output, atomically: true, encoding: .utf8)
-            exit(0)
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(12)
+            let parent = Bundle.main.bundleURL.deletingLastPathComponent()
+            while Date() < deadline {
+                let files = try! FileManager.default.contentsOfDirectory(atPath: parent.path)
+                if !files.contains(where: { $0.hasPrefix(".Flux-backup-") && $0.hasSuffix(".app") }) {
+                    try! result.write(to: output, atomically: true, encoding: .utf8)
+                    exit(0)
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            var detail = "FAIL: helper did not confirm the running fixture; temp=\(FileManager.default.temporaryDirectory.path)"
+            if let index = CommandLine.arguments.firstIndex(of: "--flux-update-receipt"),
+               index + 1 < CommandLine.arguments.count {
+                let receipt = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+                detail += "\nreceipt=\(receipt.path)\n" + ((try? String(contentsOf: receipt)) ?? "missing")
+                detail += "\nhelper log:\n" + ((try? String(contentsOf: receipt.deletingLastPathComponent().appendingPathComponent("install.log"))) ?? "missing")
+            }
+            try! detail.write(to: output, atomically: true, encoding: .utf8)
+            exit(1)
         }
         NSApplication.shared.run()
         return
@@ -516,7 +533,7 @@ def mac_probe(reference=None, cases=None):
                         assert output.read_text() == "failed safely settings=unchanged"
                     else:
                         assert installed["CFBundleShortVersionString"] == "0.21.26"
-                        assert output.read_text() == "version=0.21.26 settings=unchanged"
+                        assert output.read_text() == "version=0.21.26 settings=unchanged", output.read_text()
                         assert not list(install_parent.glob(".Flux-backup-*.app")), "FAIL: native helper did not confirm startup"
                         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(dest)], 20)
                     if case == "unwritable":
