@@ -23,7 +23,7 @@ final class Preference: ObservableObject {
 @MainActor
 func probe() {
     _ = NSApplication.shared
-    CFRunLoopAddCommonMode(CFRunLoopGetMain(), RunLoop.Mode.eventTracking.rawValue as CFString)
+    CFRunLoopAddCommonMode(CFRunLoopGetMain(), CFRunLoopMode(rawValue: RunLoop.Mode.eventTracking.rawValue as CFString))
     let preference = Preference()
     var checks = 0
     let scheduler = AutomaticUpdateScheduler(enabled: preference.$enabled.eraseToAnyPublisher(),
