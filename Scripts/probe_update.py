@@ -50,16 +50,21 @@ def stop_tree(process):
                 pass
     try:
         output, _ = process.communicate(timeout=3)
-    except subprocess.TimeoutExpired:
-        output = ""
+    except subprocess.TimeoutExpired as error:
+        output = error.output or ""
+        if isinstance(output, bytes): output = output.decode(errors="replace")
     for pid in owned:
         for send in [os.killpg, os.kill]:
             try:
                 send(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-    if process.poll() is None:
+    try:
         output, _ = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired as error:
+        partial = error.output or ""
+        if isinstance(partial, bytes): partial = partial.decode(errors="replace")
+        output = partial or output
     return output
 
 
@@ -473,6 +478,22 @@ def mac_probe(reference=None, cases=None):
                     with (contents / "Info.plist").open("wb") as stream:
                         plistlib.dump(info, stream)
                     run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)], 20)
+                if not reference and case == "automatic":
+                    token = str(uuid.uuid4())
+                    workspace = Path(tempfile.gettempdir()) / ("flux-update-" + token)
+                    outside = root / "outside" / workspace.name
+                    outside.mkdir(parents=True)
+                    sentinel = outside / "startup"
+                    sentinel.write_text("preserve")
+                    workspace.symlink_to(outside, target_is_directory=True)
+                    try:
+                        run([str(candidate / "Contents/MacOS/FluxUpdateProbe"),
+                             "--flux-update-token", token, "--flux-update-receipt", str(workspace / "startup")], 8)
+                        assert sentinel.read_text() == "preserve", "FAIL: startup receipt escaped its workspace"
+                        print("PASS: native startup receipt rejects a workspace symlink", flush=True)
+                    finally:
+                        workspace.unlink(missing_ok=True)
+                        output.unlink(missing_ok=True)
                 if case == "failure":
                     dmg.write_bytes(b"This fixture is not a disk image.")
                 else:
@@ -496,6 +517,7 @@ def mac_probe(reference=None, cases=None):
                     else:
                         assert installed["CFBundleShortVersionString"] == "0.21.26"
                         assert output.read_text() == "version=0.21.26 settings=unchanged"
+                        assert not list(install_parent.glob(".Flux-backup-*.app")), "FAIL: native helper did not confirm startup"
                         run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(dest)], 20)
                     if case == "unwritable":
                         assert len(list(downloads.glob("*.dmg"))) <= 1, "FAIL: duplicate fallback DMGs"

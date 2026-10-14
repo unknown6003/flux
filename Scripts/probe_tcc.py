@@ -95,8 +95,6 @@ def _apply(action, request):
 
 
 def _stop(process):
-    if process.poll() is not None:
-        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -105,7 +103,13 @@ def _stop(process):
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
+        pass
+    # A finished leader can still leave its command group running.
+    try:
         os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
         process.wait(timeout=5)
 
 
