@@ -326,9 +326,14 @@ func probe() {
             }
             func click() {
                 let point = CGPoint(x: chevron.midX, y: chevron.midY)
+                print("Click input: post access=\(CGPreflightPostEventAccess()), modifiers=\(CGEventSource.flagsState(.combinedSessionState).rawValue), pointer=\(NSEvent.mouseLocation)")
                 for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
-                    CGEvent(mouseEventSource: nil, mouseType: type,
-                            mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+                    if let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                                          mouseCursorPosition: point, mouseButton: .left) {
+                        print("Click event: \(type.rawValue), inherited flags=\(event.flags.rawValue)")
+                        event.flags = []
+                        event.post(tap: .cghidEventTap)
+                    }
                 }
             }
             click()
