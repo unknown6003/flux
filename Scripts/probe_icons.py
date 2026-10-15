@@ -142,6 +142,12 @@ func probe() {
                 exit(1)
             }
             manager.endIconManagement()
+            manager.copyMenuBarReport()
+            guard NSPasteboard.general.string(forType: .string)?
+                .contains("Current reveal: hidden=true, always=true") == true else {
+                print("FAIL: closing management applied hiding before the pending move was verified")
+                exit(1)
+            }
             print("Closed management during programmatic verification after reaching actual Shown geometry")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
