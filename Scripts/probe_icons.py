@@ -403,7 +403,7 @@ func probe() {
         manager.refresh()
         guard let icon = fixture(), icon.section == .hidden,
               let screen = NSScreen.screens.first else { exit(1) }
-        let window = NSWindow(contentRect: NSRect(x: 300, y: 180, width: 500, height: 360),
+        let window = NSWindow(contentRect: NSRect(x: 40, y: 80, width: 500, height: 360),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Flux real manager drag probe"
         window.isReleasedWhenClosed = false
