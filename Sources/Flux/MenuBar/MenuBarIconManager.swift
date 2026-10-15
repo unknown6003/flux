@@ -51,6 +51,8 @@ final class MenuBarIconManager: ObservableObject {
     private var nativeMoveMonitor: Any?
     private var escapeMonitor: Any?
     private var iconUpdateCount = 0
+    private var pendingMoveCount = 0
+    private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
     private let trustProvider: () -> Bool
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = MacOS27Hider()
@@ -426,6 +428,10 @@ final class MenuBarIconManager: ObservableObject {
     func applyDrawerVisibility(revealHidden: Bool,
                                revealAlwaysHidden: Bool,
                                refreshBeforeApplying: Bool = true) {
+        if ControlItem.usesMacOS27Model, pendingMoveCount > 0 {
+            deferredVisibility = (revealHidden, revealAlwaysHidden, refreshBeforeApplying)
+            return
+        }
         beginIconUpdate()
         defer { finishIconUpdate() }
         if ControlItem.usesMacOS27Model {
@@ -489,10 +495,11 @@ final class MenuBarIconManager: ObservableObject {
 
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
         beginIconUpdate()
+        pendingMoveCount += 1
         if nativeMove == nil { commitNativeMove() }
         guard let element = elements[icon.id] else {
             refresh()
-            finishIconUpdate()
+            finishMove()
             return
         }
 
@@ -516,6 +523,17 @@ final class MenuBarIconManager: ObservableObject {
     private func finishIconUpdate() {
         iconUpdateCount -= 1
         if iconUpdateCount == 0 { isUpdatingIcons = false }
+    }
+
+    private func finishMove() {
+        pendingMoveCount -= 1
+        if pendingMoveCount == 0, let visibility = deferredVisibility {
+            deferredVisibility = nil
+            applyDrawerVisibility(revealHidden: visibility.hidden,
+                                  revealAlwaysHidden: visibility.alwaysHidden,
+                                  refreshBeforeApplying: visibility.refresh)
+        }
+        finishIconUpdate()
     }
 
     private func setPosition(_ point: CGPoint, on element: AXUIElement) -> Bool {
@@ -543,7 +561,7 @@ final class MenuBarIconManager: ObservableObject {
             guard let self else { return }
             self.refresh()
             guard let current = self.icons.first(where: { $0.id == icon.id }) else {
-                self.finishIconUpdate()
+                self.finishMove()
                 return
             }
             let actualSection = Self.section(for: current.frame,
@@ -554,14 +572,14 @@ final class MenuBarIconManager: ObservableObject {
                     self.refresh()
                     self.errorMessage = "Flux moved the icon but could not save its section. Try again."
                 }
-                self.finishIconUpdate()
+                self.finishMove()
                 return
             }
             guard retryWithDrag else {
                 self.assignedSections.removeValue(forKey: icon.id)
                 self.refresh()
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
-                self.finishIconUpdate()
+                self.finishMove()
                 return
             }
             self.drag(icon.frame, to: CGPoint(x: target.x + icon.frame.width / 2,

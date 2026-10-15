@@ -151,18 +151,16 @@ jobs:
           import sys
           sys.path.insert(0, 'Scripts')
           from probe_update import run
-          run(['python3', 'Scripts/probe_icons.py', '--move-close'], seconds=180)
-          result = run(['python3', 'Scripts/probe_icons.py', '--native-close',
-                        '--manager-ref', '0bcc1bd270569beb7c763038991021af1b5b80c9'],
+          result = run(['python3', 'Scripts/probe_icons.py', '--move-close',
+                        '--manager-ref', '195cb7063f614b878a3df82b9874b31849ac9738'],
                        seconds=180, check=False)
           print(result.stdout)
           assert result.returncode == 1
-          assert 'native Command changed Hidden to Shown after delivered mouse-up' in result.stdout
-          assert 'Closed management' in result.stdout
-          assert 'native Command move to Shown did not persist' in result.stdout
-          print('PASS: the previous manager loses the completed native section edit')
-          run(['python3', 'Scripts/probe_icons.py', '--native-close'], seconds=180)
-          run(['python3', 'Scripts/probe_icons.py'], seconds=180)
+          assert 'closing management applied hiding before the pending move was verified' in result.stdout
+          print('PASS: the previous manager applies hiding before move verification')
+          print(run(['python3', 'Scripts/probe_icons.py', '--move-close'], seconds=180).stdout)
+          print(run(['python3', 'Scripts/probe_icons.py', '--native-close'], seconds=180).stdout)
+          print(run(['python3', 'Scripts/probe_icons.py'], seconds=180).stdout)
           PY
 
       - name: Upload icon move failure evidence
