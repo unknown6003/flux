@@ -108,6 +108,7 @@ final class MacOS27Hider {
     private var chevronX: () -> CGFloat? = { nil }
     private var alwaysX: () -> CGFloat? = { nil }
     private var generation = 0
+    private var layoutScanPending = false
     private var layoutReadyAt: TimeInterval = 0
     private var overClock = false
     private var mouseMonitor: Any?
@@ -215,20 +216,18 @@ final class MacOS27Hider {
     }
 
     func retry() {
-        guard hasSavedLayout else {
-            rescan()
-            return
-        }
-        generation += 1
-        lastAccessGranted = trustProvider()
-        reconcile()
+        scheduleScan(revealForReading: !hasSavedLayout)
     }
 
     private func rescan() {
+        scheduleScan(revealForReading: true)
+    }
+
+    private func scheduleScan(revealForReading: Bool) {
         generation += 1
         let current = generation
-        // Release before scanning: otherwise the hidden apps have no AX items.
-        releaseAssessment()
+        layoutScanPending = true
+        if revealForReading { releaseAssessment() }
         let delay = max(0, layoutReadyAt - ProcessInfo.processInfo.systemUptime)
         scanAfterLayout(generation: current, attempts: 0, delay: delay)
     }
@@ -249,6 +248,7 @@ final class MacOS27Hider {
                 return
             }
             guard self.assessment.isAvailable else {
+                self.layoutScanPending = false
                 let message = "This macOS build does not provide the menu-bar hiding interface."
                 self.latestError = message
                 self.onStatus?(message)
@@ -256,6 +256,7 @@ final class MacOS27Hider {
             }
             self.lastAccessGranted = self.trustProvider()
             guard self.lastAccessGranted else {
+                self.layoutScanPending = false
                 let message = self.hasSavedLayout
                     ? "Using the saved icon layout. Allow Accessibility to change it."
                     : "Allow Accessibility once to save your menu-bar icon layout."
@@ -272,10 +273,14 @@ final class MacOS27Hider {
             }
             guard let chevronX = self.chevronX() else {
                 if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
-                else if !self.revealHidden && !self.revealAlwaysHidden {
-                    self.lastCollapsedScan = "Flux could not read its arrow position after six attempts."
-                    self.latestError = self.lastCollapsedScan
-                    self.onStatus?(self.latestError)
+                else {
+                    self.layoutScanPending = false
+                    if !self.revealHidden && !self.revealAlwaysHidden {
+                        self.lastCollapsedScan = "Flux could not read its arrow position after six attempts."
+                        self.latestError = self.lastCollapsedScan
+                        self.onStatus?(self.latestError)
+                    }
+                    self.reconcile()
                 }
                 return
             }
@@ -303,12 +308,18 @@ final class MacOS27Hider {
                 AX replies: \(scan.replies.sorted().joined(separator: "; "))
                 """
             }
+            self.layoutScanPending = false
             self.reconcile()
         }
     }
 
     private func reconcile() {
-        guard assessment.isAvailable, hasSavedLayout, !overClock else {
+        guard !overClock else {
+            releaseAssessment()
+            return
+        }
+        guard !layoutScanPending else { return }
+        guard assessment.isAvailable, hasSavedLayout else {
             releaseAssessment()
             return
         }
