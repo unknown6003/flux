@@ -648,7 +648,11 @@ final class MenuBarIconManager: ObservableObject {
         let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
         if !usedAccessibility {
             drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
-                                          y: icon.frame.midY))
+                                          y: icon.frame.midY)) { [self] in
+                verifyMove(icon: icon, expectedSection: expectedSection,
+                           target: target, retryWithDrag: false)
+            }
+            return
         }
         verifyMove(icon: icon,
                    expectedSection: expectedSection,
@@ -806,7 +810,8 @@ final class MenuBarIconManager: ObservableObject {
         }
     }
 
-    private func drag(_ frame: CGRect, to target: CGPoint) {
+    private func drag(_ frame: CGRect, to target: CGPoint,
+                      completion: @escaping () -> Void = {}) {
         let start = CGPoint(x: frame.midX, y: frame.midY)
         guard let down = CGEvent(mouseEventSource: nil,
                                  mouseType: .leftMouseDown,
@@ -815,25 +820,38 @@ final class MenuBarIconManager: ObservableObject {
               let up = CGEvent(mouseEventSource: nil,
                                mouseType: .leftMouseUp,
                                mouseCursorPosition: target,
-                               mouseButton: .left) else { return }
+                               mouseButton: .left) else { completion(); return }
         down.flags = .maskCommand
         down.post(tap: .cghidEventTap)
-        if ControlItem.usesMacOS27Model { Thread.sleep(forTimeInterval: 0.06) }
-
-        for step in 1...5 {
+        func postMove(_ step: Int) {
             let progress = CGFloat(step) / 5
             let point = CGPoint(x: start.x + (target.x - start.x) * progress,
                                 y: start.y + (target.y - start.y) * progress)
             guard let move = CGEvent(mouseEventSource: nil,
                                      mouseType: .leftMouseDragged,
                                      mouseCursorPosition: point,
-                                     mouseButton: .left) else { continue }
+                                     mouseButton: .left) else { return }
             move.flags = .maskCommand
             move.post(tap: .cghidEventTap)
-            if ControlItem.usesMacOS27Model { Thread.sleep(forTimeInterval: 0.018) }
         }
+        if ControlItem.usesMacOS27Model {
+            func next(_ step: Int) {
+                guard step <= 5 else {
+                    up.flags = .maskCommand
+                    up.post(tap: .cghidEventTap)
+                    completion()
+                    return
+                }
+                postMove(step)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.018) { next(step + 1) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { next(1) }
+            return
+        }
+        for step in 1...5 { postMove(step) }
         up.flags = .maskCommand
         up.post(tap: .cghidEventTap)
+        completion()
     }
 
     private func isFluxItem(identifier: String?, title: String, source: String?) -> Bool {
