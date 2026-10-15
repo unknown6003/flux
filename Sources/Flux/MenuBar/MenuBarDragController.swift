@@ -491,10 +491,11 @@ private struct MenuBarDragIdentity {
     let barAttribute: String
 
     init?(icon: MenuBarIconManager.Icon) {
-        let parts = icon.id.split(separator: "|")
+        let parts = icon.id.split(separator: "|", omittingEmptySubsequences: false)
         let apps: [NSRunningApplication]
         let attribute: String
-        if parts.count == 2, Int(parts[1]) != nil {
+        if ControlItem.usesMacOS27Model {
+            guard parts.count == 2, Int(parts[1]) != nil else { return nil }
             apps = NSRunningApplication.runningApplications(withBundleIdentifier: String(parts[0]))
             attribute = kAXExtrasMenuBarAttribute
         } else {
