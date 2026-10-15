@@ -220,6 +220,7 @@ final class Probe {
                                        backing: .buffered, defer: false)
             destination.title = "Ordinary drag destination control"
             destination.isReleasedWhenClosed = false
+            destination.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
             let target = MenuBarDragDestinationView(frame: destination.contentView!.bounds.insetBy(dx: 10, dy: 10))
             target.controller = controller
             target.section = .shown
