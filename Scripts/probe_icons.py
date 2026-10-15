@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from probe_tcc import _stop
 
 
@@ -54,6 +55,7 @@ parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
+fixture_bundle_id = "com.flux.icon-fixture." + uuid.uuid4().hex
 fixture_source = r'''
 import AppKit
 if CommandLine.arguments.count == 8 && CommandLine.arguments[1] == "--drag-siblings" {
@@ -221,7 +223,7 @@ func probe() {
     }, hider: hider)
     manager.boundaryProvider = {
         (hidden: chevron.statusItem.button?.window?.frame.minX,
-         alwaysHidden: always.statusItem.button?.window?.frame.minX)
+         alwaysHidden: always.statusItem.button?.window?.frame.maxX)
     }
     manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
     let closeTest = CommandLine.arguments.contains("--native-close")
@@ -915,7 +917,7 @@ func probe() {
         manager?.applyDrawerVisibility(revealHidden: false, revealAlwaysHidden: false)
     }
     @MainActor
-    func reorder(prepared: Int = 0) {
+    func reorder(prepared: Int = 0, arrowPass: Int = 0) {
         manager.refresh()
         let items = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
         let expected = closeTest ? 1 : 2
@@ -935,8 +937,10 @@ func probe() {
             return
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
-        let moving = ordered[0]
-        let pixelIcon = staleFrameKind == "arrow" ? fixture() : moving
+        let moving = staleFrameKind == "arrow" ? fixture()! : ordered[0]
+        let towardClock = ordered.first?.id == moving.id
+        let direction: MenuBarIconManager.MoveDirection = towardClock ? .towardClock : .towardDrawer
+        let pixelIcon: MenuBarIconManager.Icon? = moving
         if let physical = geometry("prepared-\(reorderSection.rawValue)") {
             guard let pixelIcon, abs(physical.x - pixelIcon.frame.midX) <= 1,
                   MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1, width: 2, height: 2),
@@ -981,8 +985,8 @@ func probe() {
             moveAndClose()
             return
         }
-        guard manager.canMove(moving, toward: .towardClock) else { exit(1) }
-        manager.move(moveArgument(moving, kind: "arrow"), toward: .towardClock)
+        guard manager.canMove(moving, toward: direction) else { exit(1) }
+        manager.move(moveArgument(moving, kind: "arrow"), toward: direction)
         guard manager.isUpdatingIcons else {
             print("FAIL: the arrow move did not publish its pending verification")
             exit(1)
@@ -991,7 +995,8 @@ func probe() {
             manager.refresh()
             let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
                 .sorted { $0.frame.minX < $1.frame.minX }
-            guard !manager.isUpdatingIcons, next.last?.title == moving.title,
+            let edge = towardClock ? next.last : next.first
+            guard !manager.isUpdatingIcons, edge?.id == moving.id,
                   next.allSatisfy({ MenuBarIconManager.section(
                     for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
@@ -1010,7 +1015,11 @@ func probe() {
                 }
             }
             print("PASS: the Settings arrow changed the real icon order")
-            finish()
+            if staleFrameKind == "arrow" && arrowPass == 0 {
+                reorder(prepared: expected, arrowPass: 1)
+            } else {
+                finish()
+            }
         }
     }
     @MainActor
@@ -1145,6 +1154,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         main = sources / "main.swift"
         if "private let injectedHider:" not in manager_source.read_text():
             code = code.replace("}, hider: hider)", "})")
+        code = code.replace("com.flux.icon-fixture", fixture_bundle_id)
         main.write_text(code)
         command(["swiftc", "-swift-version", "5", str(main)] +
                 [str(manager_source if dependency == manager_path else root / dependency)
@@ -1152,7 +1162,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         command(["codesign", "--force", "--sign", "-", str(app)], 20)
         return binary
 
-    fixture = bundle("FluxIconFixture", "com.flux.icon-fixture", fixture_source, [])
+    fixture = bundle("FluxIconFixture", fixture_bundle_id, fixture_source, [])
     binary = bundle("FluxIconProbe", "com.flux.icon-probe", source, [
         "Sources/Flux/MenuBar/MenuBarIconManager.swift", "Sources/Flux/MenuBar/MacOS27Hider.swift",
         "Sources/Flux/MenuBar/ControlItem.swift", "Sources/Flux/MenuBar/MenuBarSection.swift",

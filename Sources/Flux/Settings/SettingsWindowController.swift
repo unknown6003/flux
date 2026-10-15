@@ -52,6 +52,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private static let contentSize = SettingsView.designSize
 
     func show() {
+        let resumesIconManagement = currentTab == .menuBar && window?.isVisible == false
         // A failure or a since-deleted download from an earlier session isn't
         // news; clearing it here means the General tab's update card opens
         // showing what's true now rather than a stale verdict.
@@ -78,6 +79,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // and a ⌘M item, so this arrived with it.
         if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         window?.makeKeyAndOrderFront(nil)
+        if resumesIconManagement { iconManager.beginIconManagement() }
         onVisibilityChanged?(true)
     }
 
