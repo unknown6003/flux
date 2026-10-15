@@ -23,10 +23,19 @@ MainActor.assumeIsolated {
     defaults.set(["hidden": overlapOnly ? ["test.always"] : ["test.normal", "test.always"],
                   "alwaysHidden": ["test.always"]],
                  forKey: "flux.macOS27IconLayout")
+    let batchOnly = CommandLine.arguments.contains("batch")
+    if batchOnly {
+        defaults.set(["hidden": ["test.normal", "test.always", "test.kept"],
+                      "alwaysHidden": ["test.always", "test.kept"]],
+                     forKey: "flux.macOS27IconLayout")
+    }
     var positions: [(bundleID: String, x: CGFloat)] = [("test.normal", 250)]
     var reads = 0
+    var allowCommit = true
+    var invalidateRead = false
     let hider = MacOS27Hider(defaults: defaults, trustProvider: { true }, positionReader: {
         reads += 1
+        if invalidateRead { allowCommit = false }
         return (positions, [])
     })
     func waitForRead() {
@@ -39,6 +48,28 @@ MainActor.assumeIsolated {
     @MainActor func apply(_ revealed: Bool, _ always: Bool, arrow: @escaping () -> CGFloat? = { 300 }) {
         hider.apply(revealHidden: revealed, revealAlwaysHidden: always,
                     chevronX: arrow, alwaysX: { 200 })
+    }
+    if batchOnly {
+        apply(true, true)
+        waitForRead()
+        let before = layout()
+        positions = [("test.normal", 350), ("test.always", 250), ("test.kept", 50)]
+        invalidateRead = true
+        guard !hider.recordLayoutChanges(for: ["test.normal", "test.always"], canCommit: { allowCommit }),
+              layout().hidden == before.hidden, layout().always == before.always,
+              hider.section(for: "test.normal") == .hidden else {
+            print("FAIL: input during a layout read saved a partial native move")
+            exit(1)
+        }
+        invalidateRead = false
+        allowCommit = true
+        guard hider.recordLayoutChanges(for: ["test.normal", "test.always"], canCommit: { allowCommit }),
+              layout().hidden == ["test.always", "test.kept"], layout().always == ["test.kept"] else {
+            print("FAIL: the completed native batch lost a move or an unrelated assignment")
+            exit(1)
+        }
+        print("PASS: native layout batch validates input after reads and saves all edits together")
+        return
     }
     if CommandLine.arguments.contains("no-edit") {
         positions = [("test.normal", 150), ("test.always", 350)]
@@ -130,7 +161,7 @@ def main():
     if sys.platform != "darwin":
         raise RuntimeError("layout scheduling needs native AppKit")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=("all", "moves", "overlap", "no-edit"), default="all")
+    parser.add_argument("--case", choices=("all", "moves", "overlap", "no-edit", "batch"), default="all")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="flux-layout-probe-") as directory:
@@ -144,6 +175,7 @@ def main():
              *[str(root / "Sources/Flux" / path) for path in files], "-o", str(binary)], 120)
         if args.case == "all":
             run([str(binary), "no-edit"], 10)
+            run([str(binary), "batch"], 10)
         run([str(binary), args.case], 10)
 
 

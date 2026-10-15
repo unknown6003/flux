@@ -147,7 +147,9 @@ final class MenuBarIconManager: ObservableObject {
             let pending = nativeMove
             nativeMove = nil
             if let pending, pending.dragged, let bundleID = pending.owner.bundleIdentifier {
-                completedNativeMoves[bundleID] = pending
+                if completedNativeMoves[bundleID]?.owner.isTerminated != false {
+                    completedNativeMoves[bundleID] = pending
+                }
             }
             scheduleNativeMoveCommit()
         default: break
@@ -186,6 +188,7 @@ final class MenuBarIconManager: ObservableObject {
         beginIconUpdate()
         defer { finishIconUpdate() }
         refresh()
+        var changes: [String: Icon] = [:]
         for (bundleID, pending) in completedNativeMoves {
             guard canCommit() else { scheduleNativeMoveCommit(); return }
             let matches = icons.filter {
@@ -193,21 +196,29 @@ final class MenuBarIconManager: ObservableObject {
             }
             guard !pending.owner.isTerminated, pending.owner.launchDate == pending.launched,
                   isTrusted, matches.count == 1, let current = matches.first,
-                  current.title == pending.icon.title, current.source == pending.icon.source,
-                  macOS27Hider.canReadPosition(for: bundleID) else {
+                  current.title == pending.icon.title, current.source == pending.icon.source else {
                 completedNativeMoves.removeValue(forKey: bundleID)
                 continue
+            }
+            guard macOS27Hider.canReadPosition(for: bundleID) else {
+                scheduleNativeMoveCommit()
+                return
             }
             guard abs(current.frame.midX - pending.frame.midX) >= 3
                     || Self.section(for: current.frame, boundaries: boundaryProvider()) != pending.section else {
                 completedNativeMoves.removeValue(forKey: bundleID)
                 continue
             }
-            let saved = saveLayout(for: current, canCommit: canCommit)
+            changes[bundleID] = current
+        }
+        if !changes.isEmpty {
+            let saved = macOS27Hider.recordLayoutChanges(for: Set(changes.keys), canCommit: canCommit)
             guard canCommit() else { scheduleNativeMoveCommit(); return }
-            completedNativeMoves.removeValue(forKey: bundleID)
-            if saved { assignedSections.removeValue(forKey: current.id) }
-            else { errorMessage = "Flux could not save that icon's new position. Try again." }
+            for (bundleID, current) in changes {
+                completedNativeMoves.removeValue(forKey: bundleID)
+                if saved { assignedSections.removeValue(forKey: current.id) }
+            }
+            if !saved { errorMessage = "Flux could not save those icons' new positions. Try again." }
         }
         refresh()
         applyDeferredVisibility()

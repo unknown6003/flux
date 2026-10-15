@@ -195,14 +195,23 @@ final class MacOS27Hider {
 
     @discardableResult
     func recordLayoutChange(for bundleID: String, canCommit: () -> Bool = { true }) -> Bool {
-        guard !bundleID.hasPrefix("com.apple."), !Self.alwaysAllowed.contains(bundleID),
+        recordLayoutChanges(for: [bundleID], canCommit: canCommit)
+    }
+
+    @discardableResult
+    func recordLayoutChanges(for bundleIDs: Set<String>, canCommit: () -> Bool = { true }) -> Bool {
+        guard !bundleIDs.isEmpty,
+              bundleIDs.allSatisfy({ !$0.hasPrefix("com.apple.") && !Self.alwaysAllowed.contains($0) }),
               let chevronX = chevronX() else { return false }
         onReadState?(true)
         defer { onReadState?(false) }
         guard trustProvider() else { return false }
-        let positions = positionReader(hasSavedLayout ? bundleID : nil).positions
-            .filter { !hasSavedLayout || $0.bundleID == bundleID }
-        guard positions.contains(where: { $0.bundleID == bundleID }), canCommit() else { return false }
+        let positions = hasSavedLayout
+            ? bundleIDs.sorted().flatMap { bundleID in
+                positionReader(bundleID).positions.filter { $0.bundleID == bundleID }
+            }
+            : positionReader(nil).positions
+        guard bundleIDs.isSubset(of: Set(positions.map(\.bundleID))), canCommit() else { return false }
         generation += 1
         layoutScanPending = false
         updateLayout(from: positions, chevronX: chevronX)
