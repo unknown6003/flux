@@ -290,7 +290,9 @@ def main():
             run(["codesign", "--verify", "--strict", str(normal_bundle)], 20)
         register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         run([register, "-f", str(bundle)], 20)
+        cleanup.callback(run, [register, "-u", str(bundle)], 20)
         run([register, "-f", str(normal_bundle)], 20)
+        cleanup.callback(run, [register, "-u", str(normal_bundle)], 20)
         normal_process = subprocess.Popen([str(normal_binary)], start_new_session=True)
         try:
             run([str(binary), str(artifacts / "sample.png"), normal_id]
@@ -305,12 +307,14 @@ def main():
                 normal_process.wait(timeout=3)
             except ProcessLookupError:
                 pass
-            finally:
-                run([register, "-u", str(normal_bundle)], 20)
-                run([register, "-u", str(bundle)], 20)
+
+
+def interrupted(signum, _frame):
+    raise SystemExit(128 + signum)
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         main()
     except Exception as error:
