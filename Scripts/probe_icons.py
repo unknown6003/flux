@@ -530,7 +530,19 @@ func probe() {
             }
             print("PASS: native Command changed Hidden to Shown after delivered mouse-up")
             if CommandLine.arguments.contains("--native-overlap") {
-                overlappingNativeMove(from: actual)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                    manager.refresh()
+                    let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
+                    guard let settled = fixture(),
+                          (saved?["hidden"] as? [String])?.contains(fixtureID) == true,
+                          MenuBarIconManager.section(for: settled.frame,
+                                                    boundaries: manager.boundaryProvider()) == .shown else {
+                        print("FAIL: overlapping native setup missed the first move's pending interval")
+                        exit(1)
+                    }
+                    print("OVERLAP pending first move, settled source=\(settled.frame)")
+                    overlappingNativeMove(from: settled)
+                }
                 return
             }
             if CommandLine.arguments.contains("--native-close") {
