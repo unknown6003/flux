@@ -95,6 +95,21 @@ if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap", "--drag-held
         event.flags = CommandLine.arguments[1] == "--drag-row" ? [] : .maskCommand
         event.post(tap: .cghidEventTap)
     }
+    if CommandLine.arguments[1] == "--drag-row" {
+        setbuf(stdout, nil)
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let candidates = windows.filter {
+            guard let bounds = $0[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
+            return frame.contains(start)
+        }.prefix(3).map {
+            ["window": $0[kCGWindowNumber as String] ?? -1,
+             "pid": $0[kCGWindowOwnerPID as String] ?? -1,
+             "layer": $0[kCGWindowLayer as String] ?? -1,
+             "bounds": $0[kCGWindowBounds as String] ?? [:]]
+        }
+        print("[DEBUG-real-drag-first-down] driver-before-down t=\(ProcessInfo.processInfo.systemUptime) pid=\(getpid()) allowed=\(CGPreflightPostEventAccess()) from=\(start) to=\(target) pointer=\(String(describing: CGEvent(source: nil)?.location)) windowsAtPoint=\(candidates)")
+    }
     post(.leftMouseDown, start)
     Thread.sleep(forTimeInterval: 0.08)
     let steps = 24
@@ -403,7 +418,24 @@ func probe() {
         window.contentView!.addSubview(row)
         window.contentView!.addSubview(destination)
         var events: [String] = []
-        controller.trace = { value in events.append(value); print("REAL_DRAG \(value)") }
+        controller.trace = { value in
+            events.append(value)
+            print("REAL_DRAG \(value)")
+            print("[DEBUG-real-drag-first-down] controller t=\(ProcessInfo.processInfo.systemUptime) \(value)")
+        }
+        let resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: nil, queue: nil) { notification in
+                let source = notification.object as? NSWindow
+                print("[DEBUG-real-drag-first-down] resign t=\(ProcessInfo.processInfo.systemUptime) object=\(source?.windowNumber ?? -1) class=\(String(describing: source.map { type(of: $0) }))")
+            }
+        var tracedDown = false
+        let inputMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            if !tracedDown {
+                tracedDown = true
+                print("[DEBUG-real-drag-first-down] received-down t=\(ProcessInfo.processInfo.systemUptime) window=\(event.windowNumber) local=\(event.locationInWindow) cg=\(String(describing: event.cgEvent?.location)) sender=\(event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1)")
+            }
+            return event
+        }
         window.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps: true)
         let readyDeadline = ProcessInfo.processInfo.systemUptime + 5
@@ -421,12 +453,16 @@ func probe() {
                 return CGPoint(x: p.x, y: screen.frame.maxY - p.y)
             }
             let from = center(row), to = center(destination)
+            print("[DEBUG-real-drag-first-down] host-before-launch t=\(ProcessInfo.processInfo.systemUptime) pid=\(getpid()) expected=\(window.windowNumber) screen=\(screen.frame) from=\(from) to=\(to)")
             let driver = Process()
             driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
             driver.arguments = ["--drag-row", String(Double(from.x)), String(Double(from.y)),
                                 String(Double(to.x)), String(Double(to.y))]
             driver.terminationHandler = { driver in
+                print("[DEBUG-real-drag-first-down] driver-exit t=\(ProcessInfo.processInfo.systemUptime) pid=\(driver.processIdentifier) status=\(driver.terminationStatus) reason=\(driver.terminationReason.rawValue)")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    NotificationCenter.default.removeObserver(resignObserver)
+                    if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
                     manager.refresh()
                     let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
                     guard driver.terminationStatus == 0,
