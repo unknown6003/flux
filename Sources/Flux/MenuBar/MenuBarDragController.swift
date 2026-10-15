@@ -168,6 +168,7 @@ final class MenuBarDragController: ObservableObject {
         setPassThrough(true)
         let session = view.beginDraggingSession(with: [item], event: mouseDown, source: view)
         session.animatesToStartingPositionsOnCancelOrFail = true
+        trace?("return scheduled")
         // Defer until AppKit has registered the source. These windows receive drops only.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.active?.token == token else { return }
@@ -246,6 +247,7 @@ final class MenuBarDragController: ObservableObject {
     }
 
     private func showReturnPanels() {
+        trace?("return setup canManage=\(canManage) active=\(active != nil)")
         guard canManage, active != nil else { return }
         removeReturnPanels()
         for screen in NSScreen.screens {
@@ -259,6 +261,7 @@ final class MenuBarDragController: ObservableObject {
             let panel = Self.panel(frame: frame, view: view)
             panel.orderFrontRegardless()
             returnPanels.append(panel)
+            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
         }
     }
 
