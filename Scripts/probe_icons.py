@@ -45,6 +45,8 @@ parser.add_argument("--menu-context", action="store_true")
 parser.add_argument("--drag-context", action="store_true")
 parser.add_argument("--stale-frame", choices=["section", "arrow"],
                     help="Pass an old UI row frame to the public move action")
+parser.add_argument("--removed-row", action="store_true",
+                    help="Reject a row whose AX index was reused after item removal")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
@@ -152,6 +154,17 @@ if !CommandLine.arguments.contains("--single") {
     second = NSStatusBar.system.statusItem(withLength: 28)
     second?.button?.title = "FXB"
     second?.button?.setAccessibilityTitle("Flux fixture B")
+}
+if let index = CommandLine.arguments.firstIndex(of: "--remove-first") {
+    let request = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+    var removalTimer: Timer?
+    removalTimer = Timer(timeInterval: 0.05, repeats: true) { _ in
+        guard FileManager.default.fileExists(atPath: request.path) else { return }
+        NSStatusBar.system.removeStatusItem(item)
+        removalTimer?.invalidate()
+        removalTimer = nil
+    }
+    RunLoop.main.add(removalTimer!, forMode: .common)
 }
 DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(1) }
 app.run()
@@ -1039,10 +1052,60 @@ func probe() {
             }
         }
     }
+    @MainActor
+    func removedRow() {
+        guard let index = CommandLine.arguments.firstIndex(of: "--removed-row"),
+              let old = fixture(), old.id == "com.flux.icon-fixture|0" else {
+            print("FAIL: the removed-row fixture did not expose A at index zero")
+            exit(1)
+        }
+        let request = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+        try! Data("remove".utf8).write(to: request, options: .atomic)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        func awaitRemoval() {
+            manager.refresh()
+            let remaining = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+            guard remaining.count == 1, let replacement = remaining.first,
+                  replacement.title == "Flux fixture B", replacement.id == old.id else {
+                guard ProcessInfo.processInfo.systemUptime < deadline else {
+                    print("FAIL: native removal did not reuse the first AX index")
+                    exit(1)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { awaitRemoval() }
+                return
+            }
+            print("REUSED_INDEX old=\(old.title) current=\(replacement.title) id=\(old.id)")
+            let saved = UserDefaults.standard.dictionary(forKey: MacOS27Hider.layoutKey) as NSDictionary?
+            manager.move(old, to: .hidden)
+            guard !manager.isUpdatingIcons, manager.errorMessage != nil else {
+                print("FAIL: a removed icon row started a move of its replacement")
+                exit(1)
+            }
+            manager.move(old, toward: .towardClock)
+            guard !manager.isUpdatingIcons, manager.errorMessage != nil else {
+                print("FAIL: a removed icon row reached the replacement's arrow action")
+                exit(1)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                manager.refresh()
+                let current = manager.icons.first { $0.id == replacement.id }
+                let after = UserDefaults.standard.dictionary(forKey: MacOS27Hider.layoutKey) as NSDictionary?
+                guard current?.title == replacement.title, current?.frame == replacement.frame,
+                      saved == after else {
+                    print("FAIL: a rejected removed row changed the replacement or saved layout")
+                    exit(1)
+                }
+                print("PASS: both public actions reject the removed row and preserve its replacement")
+                finish()
+            }
+        }
+        awaitRemoval()
+    }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
         manager.beginIconManagement()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if closeTest || staleFrameKind == "arrow" { reorder() }
+            if CommandLine.arguments.contains("--removed-row") { removedRow() }
+            else if closeTest || staleFrameKind == "arrow" { reorder() }
             else { move(index: 0) }
         }
     }
@@ -1102,6 +1165,9 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     geometry = temporary / "geometry"
     geometry.mkdir()
     fixture_flags = (["--single"] if close_test else [])
+    removal_request = temporary / "remove-first"
+    if options.removed_row:
+        fixture_flags += ["--remove-first", str(removal_request)]
     if capture_geometry:
         fixture_flags += ["--geometry-output", str(geometry / "fixture.json")]
     process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
@@ -1120,6 +1186,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         flags = [flag for flag, enabled in selected if enabled]
         if options.stale_frame:
             flags += ["--stale-frame", options.stale_frame]
+        if options.removed_row:
+            flags += ["--removed-row", str(removal_request)]
         if capture_geometry:
             flags += ["--geometry-output", str(geometry)]
         command([str(binary), str(fixture)] + flags, 30)

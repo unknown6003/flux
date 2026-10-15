@@ -207,6 +207,9 @@ jobs:
               ('stale-arrow-baseline', 'probe_icons.py', ['--stale-frame', 'arrow', '--manager-ref',
                   '0d92d35c73521707bf3a8408ec67b008dd43017e'], 'the Settings arrow did not change the real icon order'),
               ('stale-arrow', 'probe_icons.py', ['--stale-frame', 'arrow'], None),
+              ('removed-row-baseline', 'probe_icons.py', ['--removed-row', '--manager-ref',
+                  '0e45a2291b9ac1b702d251c2c3d2c5badc4178dd'], 'a removed icon row started a move of its replacement'),
+              ('removed-row', 'probe_icons.py', ['--removed-row'], None),
           ]
           selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
           if selected:
