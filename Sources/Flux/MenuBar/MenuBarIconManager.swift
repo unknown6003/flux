@@ -699,13 +699,13 @@ final class MenuBarIconManager: ObservableObject {
                 cancel("Flux could not read the menu state. Try again.")
                 return
             }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                cancel("Close the menu, then try moving the icon again.")
+                return
+            }
             if !visible {
                 action()
                 finishMove()
-                return
-            }
-            guard ProcessInfo.processInfo.systemUptime < deadline else {
-                cancel("Close the menu, then try moving the icon again.")
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { poll() }
