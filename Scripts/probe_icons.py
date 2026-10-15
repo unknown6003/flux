@@ -135,9 +135,12 @@ func probe() {
             exit(1)
         }
         let driver = Process()
+        let targetX = max(x + icon.frame.width / 2,
+                          (chevron.statusItem.button?.window?.frame.maxX ?? x) + icon.frame.width)
+        print("Native source=\(icon.frame), targetX=\(targetX), boundaries=\(manager.boundaryProvider())")
         driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
         driver.arguments = ["--drag", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
-                            String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
+                            String(Double(targetX)), String(Double(icon.frame.midY))]
         var releasedAt: TimeInterval?
         let releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
             guard event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID)
