@@ -403,6 +403,12 @@ func probe() {
                 fresh.boundaryProvider = manager.boundaryProvider
                 fresh.refresh()
                 let items = fresh.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+                print("OVERLAP after Escape saved=\(String(describing: saved)) items=\(items.map { ($0.title, $0.section, $0.frame) }) boundaries=\(manager.boundaryProvider())")
+                guard items.count == 1, MenuBarIconManager.section(for: items[0].frame,
+                    boundaries: manager.boundaryProvider()) == .shown else {
+                    print("FAIL: native overlap Escape did not restore actual Shown geometry")
+                    exit(1)
+                }
                 guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false,
                       (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false,
                       items.count == 1, items[0].section == .shown,
