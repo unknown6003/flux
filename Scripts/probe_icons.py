@@ -153,7 +153,8 @@ var second: NSStatusItem?
 if !CommandLine.arguments.contains("--single") {
     second = NSStatusBar.system.statusItem(withLength: 28)
     second?.button?.title = "FXB"
-    second?.button?.setAccessibilityTitle("Flux fixture B")
+    second?.button?.setAccessibilityTitle(CommandLine.arguments.contains("--duplicate-title")
+        ? "Flux fixture A" : "Flux fixture B")
 }
 if let index = CommandLine.arguments.firstIndex(of: "--remove-first") {
     let request = URL(fileURLWithPath: CommandLine.arguments[index + 1])
@@ -1055,7 +1056,8 @@ func probe() {
     @MainActor
     func removedRow() {
         guard let index = CommandLine.arguments.firstIndex(of: "--removed-row"),
-              let old = fixture(), old.id == "com.flux.icon-fixture|0" else {
+              let old = manager.icons.first(where: { $0.id == "com.flux.icon-fixture|0" }),
+              old.title == "Flux fixture A" else {
             print("FAIL: the removed-row fixture did not expose A at index zero")
             exit(1)
         }
@@ -1066,7 +1068,7 @@ func probe() {
             manager.refresh()
             let remaining = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
             guard remaining.count == 1, let replacement = remaining.first,
-                  replacement.title == "Flux fixture B", replacement.id == old.id else {
+                  replacement.title == old.title, replacement.id == old.id else {
                 guard ProcessInfo.processInfo.systemUptime < deadline else {
                     print("FAIL: native removal did not reuse the first AX index")
                     exit(1)
@@ -1167,7 +1169,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     fixture_flags = (["--single"] if close_test else [])
     removal_request = temporary / "remove-first"
     if options.removed_row:
-        fixture_flags += ["--remove-first", str(removal_request)]
+        fixture_flags += ["--remove-first", str(removal_request), "--duplicate-title"]
     if capture_geometry:
         fixture_flags += ["--geometry-output", str(geometry / "fixture.json")]
     process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
