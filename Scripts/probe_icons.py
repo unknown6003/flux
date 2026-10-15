@@ -1077,7 +1077,8 @@ func probe() {
                 return
             }
             print("REUSED_INDEX old=\(old.title) current=\(replacement.title) id=\(old.id)")
-            let saved = UserDefaults.standard.dictionary(forKey: MacOS27Hider.layoutKey) as NSDictionary?
+            let layoutKey = "flux.macOS27IconLayout"
+            let saved = UserDefaults.standard.dictionary(forKey: layoutKey) as NSDictionary?
             manager.move(old, to: .hidden)
             guard !manager.isUpdatingIcons, manager.errorMessage != nil else {
                 print("FAIL: a removed icon row started a move of its replacement")
@@ -1091,7 +1092,7 @@ func probe() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 manager.refresh()
                 let current = manager.icons.first { $0.id == replacement.id }
-                let after = UserDefaults.standard.dictionary(forKey: MacOS27Hider.layoutKey) as NSDictionary?
+                let after = UserDefaults.standard.dictionary(forKey: layoutKey) as NSDictionary?
                 guard current?.title == replacement.title, current?.frame == replacement.frame,
                       saved == after else {
                     print("FAIL: a rejected removed row changed the replacement or saved layout")
