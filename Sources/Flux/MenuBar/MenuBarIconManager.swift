@@ -561,20 +561,8 @@ final class MenuBarIconManager: ObservableObject {
             targetX = neighbor.frame.maxX + 4
         }
         let bounds = boundaryProvider()
-        if ControlItem.usesMacOS27Model,
-           Self.section(for: CGRect(x: targetX, y: icon.frame.minY,
-                                    width: icon.frame.width, height: icon.frame.height),
-                        boundaries: bounds) != icon.section {
-            let edge: CGFloat?
-            switch (direction, icon.section) {
-            case (.towardClock, .hidden): edge = bounds.hidden
-            case (.towardClock, .alwaysHidden): edge = bounds.alwaysHidden
-            case (.towardDrawer, .shown): edge = bounds.hidden
-            case (.towardDrawer, .hidden): edge = bounds.alwaysHidden
-            default: edge = nil
-            }
-            guard let edge else { return }
-            targetX = (neighbor.frame.midX + edge - icon.frame.width) / 2
+        if ControlItem.usesMacOS27Model {
+            targetX = neighbor.frame.midX - icon.frame.width / 2
             guard Self.section(for: CGRect(x: targetX, y: icon.frame.minY,
                                           width: icon.frame.width, height: icon.frame.height),
                                boundaries: bounds) == icon.section else {
@@ -714,7 +702,8 @@ final class MenuBarIconManager: ObservableObject {
         return true
     }
 
-    private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
+    private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection,
+                      allowNativeRetry: Bool = true) {
         beginIconUpdate()
         pendingMoveCount += 1
         if let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
@@ -737,7 +726,7 @@ final class MenuBarIconManager: ObservableObject {
         verifyMove(icon: icon,
                    expectedSection: expectedSection,
                    target: target,
-                   retryWithDrag: usedAccessibility)
+                   retryWithDrag: usedAccessibility || (ControlItem.usesMacOS27Model && allowNativeRetry))
     }
 
     private func beginIconUpdate() {
@@ -847,6 +836,25 @@ final class MenuBarIconManager: ObservableObject {
                 self.assignedSections.removeValue(forKey: icon.id)
                 self.refresh()
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
+                self.finishMove()
+                return
+            }
+            if ControlItem.usesMacOS27Model {
+                guard let fresh = self.refreshedIcon(icon),
+                      let targetX = Self.insertionX(for: expectedSection,
+                                                   iconWidth: fresh.frame.width,
+                                                   boundaries: self.boundaryProvider()) else {
+                    self.finishUnsavedMove(icon)
+                    return
+                }
+                guard canCommit() else {
+                    self.verifyMove(icon: icon, expectedSection: expectedSection,
+                                    target: target, retryWithDrag: true,
+                                    readAttempts: readAttempts)
+                    return
+                }
+                self.move(fresh, toX: targetX, expectedSection: expectedSection,
+                          allowNativeRetry: false)
                 self.finishMove()
                 return
             }

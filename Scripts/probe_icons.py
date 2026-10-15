@@ -55,6 +55,7 @@ parser.add_argument("--native-sibling", action="store_true")
 parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
+parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
 options = parser.parse_args()
 fixture_bundle_id = "com.flux.icon-fixture." + uuid.uuid4().hex
 fixture_source = r'''
@@ -1196,11 +1197,18 @@ MainActor.assumeIsolated { probe() }
 with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     temporary = Path(directory)
     manager_path = "Sources/Flux/MenuBar/MenuBarIconManager.swift"
+    hider_path = "Sources/Flux/MenuBar/MacOS27Hider.swift"
+    hider_source = root / hider_path
     manager_source = root / manager_path
     if options.manager_ref:
         manager_source = temporary / "MenuBarIconManager.swift"
         manager_source.write_text(subprocess.check_output(
             ["git", "show", options.manager_ref + ":" + manager_path],
+            cwd=root, text=True, timeout=15))
+    if options.hider_ref:
+        hider_source = temporary / "MacOS27Hider.swift"
+        hider_source.write_text(subprocess.check_output(
+            ["git", "show", options.hider_ref + ":" + hider_path],
             cwd=root, text=True, timeout=15))
     if options.menu_expired:
         manager_text = manager_source.read_text()
@@ -1228,7 +1236,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         code = code.replace("com.flux.icon-fixture", fixture_bundle_id)
         main.write_text(code)
         command(["swiftc", "-swift-version", "5", str(main)] +
-                [str(manager_source if dependency == manager_path else root / dependency)
+                [str({manager_path: manager_source, hider_path: hider_source}.get(dependency, root / dependency))
                  for dependency in dependencies] + ["-o", str(binary)], 120)
         command(["codesign", "--force", "--sign", "-", str(app)], 20)
         return binary
