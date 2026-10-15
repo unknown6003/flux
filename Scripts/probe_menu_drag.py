@@ -319,13 +319,27 @@ final class Probe {
         }
         targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - 10))
         targets["invalid"] = cg(NSPoint(x: primary.frame.minX + 30, y: primary.frame.minY + 80))
+        let sourceWindow = manager.icons.first.flatMap { icon in
+            NSApp.windows.first { window in
+                guard window.isVisible, let source = window.contentView as? MenuBarDragSourceView else { return false }
+                return source.icon?.id == icon.id && source.icon?.title == icon.title
+            }
+        }
+        let gripFrame = sourceWindow.map { window in
+            [Double(window.frame.minX), Double(primary.frame.maxY - window.frame.maxY),
+             Double(window.frame.width), Double(window.frame.height)]
+        } ?? []
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
             "moving": manager.isUpdatingIcons, "taps": ownTapStates() ?? [],
             "labels": manager.labels,
             "buttons": NSEvent.pressedMouseButtons,
-            "source": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "source": sourceWindow.map { center($0.frame) } ?? [],
+            "icon": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "gripFrame": gripFrame,
+            "iconFrame": manager.icons.first.map { [Double($0.frame.minX), Double($0.frame.minY),
+                                                    Double($0.frame.width), Double($0.frame.height)] } ?? [],
             "row": center(window.convertToScreen(root.convert(row?.frame ?? .zero, to: nil))),
             "targets": targets,
             "screens": NSScreen.screens.map { ["x": $0.frame.minX, "y": $0.frame.minY,
@@ -624,6 +638,14 @@ def main():
         probe = processes[-1]
         state_path = args.output / "state.json"
         state = wait_state(state_path, probe)
+        grip, icon = state["gripFrame"], state["iconFrame"]
+        if len(grip) != 4 or len(icon) != 4 or not state["source"]:
+            raise RuntimeError("production grip window was not found")
+        intersects = (grip[0] < icon[0] + icon[2] and icon[0] < grip[0] + grip[2]
+                      and grip[1] < icon[1] + icon[3] and icon[1] < grip[1] + grip[3])
+        if intersects or grip[1] < icon[1] + icon[3]:
+            raise RuntimeError(f"grip overlaps or is not below the actual icon: {grip} vs {icon}")
+        print(f"GRIP {grip}; original icon {icon}; native Command targets ICON CENTER {state['icon']}", flush=True)
         if args.empty_title and not any(label["rawTitle"] == "" and label["normalized"]
                                         for label in state["labels"]):
             raise RuntimeError(f"fixture did not expose an empty AXTitle: {state['labels']}")
@@ -683,15 +705,15 @@ def main():
             state = wait_state(state_path, probe, 2)
             if not state["mode"] or not state["taps"] or not all(state["taps"]):
                 raise RuntimeError("drag mode stopped before the native Command check")
-            start = state["source"]
+            start = state["icon"]
             events_before = len(state["events"])
             # The temporary bar destination exists only in Flux sessions. Native
             # Command gestures must reach the real fixture without a Flux session.
-            bounded([str(binary), "--drive", str(state_path), "source", "native", kind],
+            bounded([str(binary), "--drive", str(state_path), "icon", "native", kind],
                     4, args.output / f"command-{kind}.log")
             position_deadline = time.monotonic() + 4
             state = wait_state(state_path, probe, 2)
-            while abs(state["source"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
+            while abs(state["icon"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
                 time.sleep(0.05)
                 state = wait_state(state_path, probe, 1)
             new_events = state["events"][events_before:]
@@ -699,7 +721,7 @@ def main():
                 raise RuntimeError(f"Command {kind} did not exercise the armed event tap")
             if any(e.startswith("source down") or e.startswith("begin ") for e in new_events):
                 raise RuntimeError(f"Command {kind} was intercepted: {new_events}")
-            if abs(state["source"][0] - start[0]) < 10:
+            if abs(state["icon"][0] - start[0]) < 10:
                 raise RuntimeError(f"Command {kind} did not move the disposable status item")
             results.append(f"PASS native Command {kind} bypass and fixture movement")
         Path(str(state_path) + ".stop").touch()

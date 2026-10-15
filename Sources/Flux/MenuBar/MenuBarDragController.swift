@@ -310,15 +310,28 @@ final class MenuBarDragController: ObservableObject {
         overlays.forEach { $0.orderOut(nil); $0.close() }
         overlays.removeAll()
         overlayIcons = icons
+        let iconFrames = manager.icons.compactMap { Self.appKitFrame(for: $0.frame) }
         for icon in icons {
             guard let frame = Self.appKitFrame(for: icon.frame),
-                  NSScreen.screens.contains(where: { screen in
+                  let screen = NSScreen.screens.first(where: { screen in
                       let strip = NSRect(x: screen.frame.minX, y: screen.frame.maxY - NSStatusBar.system.thickness - 16,
                                          width: screen.frame.width, height: NSStatusBar.system.thickness + 16)
                       return strip.contains(frame) && frame.width > 1
                   }) else { continue }
             let view = makeSourceView(for: icon)
-            let panel = Self.panel(frame: frame, view: view)
+            view.showsHandle = true
+            view.isMenuBarGrip = true
+            view.toolTip = "Drag \(icon.title) into Hidden or Always Hidden"
+            view.setAccessibilityElement(true)
+            view.setAccessibilityRole(.image)
+            view.setAccessibilityLabel("Drag \(icon.title) from its menu bar grip")
+            let gripWidth = min(frame.width, 24)
+            let barBottom = screen.frame.maxY - max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+            let gripFrame = NSRect(x: frame.midX - gripWidth / 2, y: min(frame.minY, barBottom) - 18,
+                                   width: gripWidth, height: 16)
+            guard !iconFrames.contains(where: { $0.intersects(gripFrame) }),
+                  screen.frame.contains(gripFrame) else { continue }
+            let panel = Self.panel(frame: gripFrame, view: view)
             panel.ignoresMouseEvents = shouldPassThrough
             panel.orderFrontRegardless()
             overlays.append(panel)
@@ -437,6 +450,7 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
     weak var controller: MenuBarDragController?
     var icon: MenuBarIconManager.Icon?
     var showsHandle = false { didSet { needsDisplay = true } }
+    var isMenuBarGrip = false
     private var down: NSEvent?
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -478,6 +492,21 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 
     override func draw(_ dirtyRect: NSRect) {
         guard showsHandle else { return }
+        if isMenuBarGrip {
+            let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
+            NSColor.windowBackgroundColor.setFill()
+            shape.fill()
+            NSColor.separatorColor.setStroke()
+            shape.stroke()
+            NSColor.labelColor.setStroke()
+            let lines = NSBezierPath()
+            for y in [bounds.midY - 3, bounds.midY, bounds.midY + 3] {
+                lines.move(to: NSPoint(x: bounds.midX - 5, y: y))
+                lines.line(to: NSPoint(x: bounds.midX + 5, y: y))
+            }
+            lines.stroke()
+            return
+        }
         NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag icon")?
             .draw(in: bounds.insetBy(dx: 3, dy: 5))
     }
