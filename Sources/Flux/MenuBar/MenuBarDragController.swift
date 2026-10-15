@@ -464,8 +464,8 @@ private struct MenuBarDragIdentity {
 
     private static func matches(_ element: AXUIElement, icon: MenuBarIconManager.Icon,
                                 owner: NSRunningApplication) -> Bool {
-        let title = read(element, kAXTitleAttribute) as? String
-            ?? read(element, kAXDescriptionAttribute) as? String
+        let title = nonemptyString(element, kAXTitleAttribute)
+            ?? nonemptyString(element, kAXDescriptionAttribute)
             ?? owner.localizedName ?? owner.bundleIdentifier
         guard title == icon.title,
               let p = read(element, kAXPositionAttribute), CFGetTypeID(p) == AXValueGetTypeID(),
@@ -475,6 +475,12 @@ private struct MenuBarDragIdentity {
         guard AXValueGetValue(p as! AXValue, .cgPoint, &point),
               AXValueGetValue(s as! AXValue, .cgSize, &size) else { return false }
         return CGRect(origin: point, size: size) == icon.frame
+    }
+
+    private static func nonemptyString(_ element: AXUIElement, _ attribute: String) -> String? {
+        guard let text = read(element, attribute) as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func read(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {

@@ -35,11 +35,13 @@ final class MenuBarIconManager {
         let frame: CGRect
     }
     var icons: [Icon] = []
+    var labels: [[String: String]] = []
     var isTrusted: Bool { AXIsProcessTrusted() }
     var section: MenuBarSection = .shown
     var onMove: ((String) -> Void)?
     func refresh() {
         icons = []
+        labels = []
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.flux.menu-drag-fixture")
         guard apps.count == 1, let app = apps.first else { return }
         let owner = AXUIElementCreateApplication(app.processIdentifier)
@@ -47,8 +49,15 @@ final class MenuBarIconManager {
         guard let bar = read(owner, kAXExtrasMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID(),
               let children = read(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] else { return }
         for (index, child) in children.enumerated() {
-            let title = read(child, kAXTitleAttribute) as? String
-                ?? read(child, kAXDescriptionAttribute) as? String ?? app.localizedName ?? "fixture"
+            func text(_ key: String) -> String? {
+                guard let raw = read(child, key) as? String else { return nil }
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            let title = text(kAXTitleAttribute) ?? text(kAXDescriptionAttribute) ?? app.localizedName ?? "fixture"
+            labels.append(["rawTitle": read(child, kAXTitleAttribute) as? String ?? "<nil>",
+                           "description": read(child, kAXDescriptionAttribute) as? String ?? "<nil>",
+                           "normalized": title])
             guard let p = read(child, kAXPositionAttribute), let s = read(child, kAXSizeAttribute) else { continue }
             var point = CGPoint.zero
             var size = CGSize.zero
@@ -136,6 +145,7 @@ final class Probe {
             guard let icon = self.manager.icons.first else { return }
             readiness.invalidate()
             print("READY active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
+            print("FIXTURE labels=\(self.manager.labels)")
             fflush(stdout)
             let row = self.controller.makeSourceView(for: icon)
             row.showsHandle = true
@@ -187,6 +197,7 @@ final class Probe {
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
+            "labels": manager.labels,
             "buttons": NSEvent.pressedMouseButtons,
             "source": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
             "row": center(window.convertToScreen(root.convert(row?.frame ?? .zero, to: nil))),
@@ -201,11 +212,12 @@ final class Probe {
 }
 
 @MainActor
-func fixture(seconds: Double) {
+func fixture(seconds: Double, emptyTitle: Bool) {
     NSApp.setActivationPolicy(.accessory)
     let a = NSStatusBar.system.statusItem(withLength: 36)
     a.button?.title = "FXD"
-    a.button?.setAccessibilityTitle("Flux drag fixture")
+    a.button?.setAccessibilityTitle(emptyTitle ? "" : "Flux drag fixture")
+    if emptyTitle { a.button?.setAccessibilityLabel("Flux drag fixture") }
     let b = NSStatusBar.system.statusItem(withLength: 36)
     b.button?.title = "FXE"
     b.button?.setAccessibilityTitle("Flux drag neighbour")
@@ -304,7 +316,7 @@ struct Main {
     @MainActor static func main() {
         let args = CommandLine.arguments
         let _ = NSApplication.shared
-        if args[1] == "--fixture" { fixture(seconds: Double(args[2])!) }
+        if args[1] == "--fixture" { fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title")) }
         else if args[1] == "--drive" { drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5]) }
         else if args[1] == "--release" {
             if CGPreflightPostEventAccess() {
@@ -376,6 +388,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="New scratch directory for bundles and logs")
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--empty-title", action="store_true", help="Require the fixture's empty AXTitle fallback")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91), metavar="25..90")
     args = parser.parse_args()
     if sys.platform != "darwin":
@@ -407,13 +420,19 @@ def main():
         return
     processes = []
     try:
-        for argv, name in (([str(fixture_binary), "--fixture", str(args.seconds + 5)], "fixture.log"),
+        fixture_argv = [str(fixture_binary), "--fixture", str(args.seconds + 5)]
+        if args.empty_title:
+            fixture_argv.append("--empty-title")
+        for argv, name in ((fixture_argv, "fixture.log"),
                            ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)], "probe.log")):
             with (args.output / name).open("wb") as log:
                 processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         probe = processes[-1]
         state_path = args.output / "state.json"
         state = wait_state(state_path, probe)
+        if args.empty_title and not any(label["rawTitle"] == "" and label["normalized"]
+                                        for label in state["labels"]):
+            raise RuntimeError(f"fixture did not expose an empty AXTitle: {state['labels']}")
         started = time.monotonic()
         results = []
         for source, destination, kind, expected in (
