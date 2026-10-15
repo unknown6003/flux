@@ -548,7 +548,9 @@ private struct MenuBarDragIdentity {
         }
         guard apps.count == 1, let owner = apps.first,
               let elements = Self.items(owner: owner, attribute: attribute) else { return nil }
-        let matches = elements.enumerated().filter { Self.matches($0.element, icon: icon, owner: owner) }
+        let matches = elements.enumerated().filter {
+            Self.matches($0.element, icon: icon, owner: owner, index: $0.offset)
+        }
         guard matches.count == 1, let match = matches.first else { return nil }
         if attribute == kAXExtrasMenuBarAttribute, match.offset != Int(parts[1]) { return nil }
         self.owner = owner
@@ -565,8 +567,10 @@ private struct MenuBarDragIdentity {
               current.count == elements.count, current.indices.contains(index),
               zip(current, elements).allSatisfy({ CFEqual($0.0, $0.1) }),
               CFEqual(current[index], element),
-              Self.matches(current[index], icon: icon, owner: owner) else { return false }
-        return current.filter { Self.matches($0, icon: icon, owner: owner) }.count == 1
+              Self.matches(current[index], icon: icon, owner: owner, index: index) else { return false }
+        return current.enumerated().filter {
+            Self.matches($0.element, icon: icon, owner: owner, index: $0.offset)
+        }.count == 1
     }
 
     private static func items(owner: NSRunningApplication, attribute: String) -> [AXUIElement]? {
@@ -578,10 +582,12 @@ private struct MenuBarDragIdentity {
     }
 
     private static func matches(_ element: AXUIElement, icon: MenuBarIconManager.Icon,
-                                owner: NSRunningApplication) -> Bool {
+                                owner: NSRunningApplication, index: Int) -> Bool {
+        let fallback = ControlItem.usesMacOS27Model
+            ? owner.localizedName ?? owner.bundleIdentifier : "Menu bar item \(index + 1)"
         let title = nonemptyString(element, kAXTitleAttribute)
             ?? nonemptyString(element, kAXDescriptionAttribute)
-            ?? owner.localizedName ?? owner.bundleIdentifier
+            ?? fallback
         guard title == icon.title,
               let p = read(element, kAXPositionAttribute), CFGetTypeID(p) == AXValueGetTypeID(),
               let s = read(element, kAXSizeAttribute), CFGetTypeID(s) == AXValueGetTypeID() else { return false }
