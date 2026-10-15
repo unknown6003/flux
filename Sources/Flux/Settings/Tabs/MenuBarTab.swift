@@ -86,7 +86,7 @@ private struct MenuBarDrawer: View {
                 RowText(title: "Manage icons here",
                         subtitle: "Drag a row handle into a section or back to the menu bar. Move to… and the arrows also work.")
                 ToggleRow(title: "Drag icons from menu bar",
-                          subtitle: "While on, drag app icons into a section below. Plain clicks do nothing. Hold Command before dragging to move icons within the bar.",
+                          subtitle: "While on, drag app icons into a section below. Hold Command before dragging to move icons within the bar.",
                           isOn: Binding(get: { dragController.isMenuBarDragging },
                                         set: { dragController.setMenuBarDragging($0) }))
                 if ControlItem.usesMacOS27Model {

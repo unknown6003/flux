@@ -32,7 +32,7 @@ enum ControlItem {
 
 @MainActor
 final class MenuBarIconManager {
-    @Published private(set) var isMovingIcons = false
+    @Published private(set) var isUpdatingIcons = false
     private(set) var pendingVerifications = 0
     struct Icon: Identifiable, Equatable {
         let id: String
@@ -85,12 +85,12 @@ final class MenuBarIconManager {
     }
     func beginVerification(after delay: Double) {
         pendingVerifications += 1
-        if pendingVerifications == 1 { isMovingIcons = true }
+        if pendingVerifications == 1 { isUpdatingIcons = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             self.onVerification?()
             self.refresh()
             self.pendingVerifications -= 1
-            if self.pendingVerifications == 0 { self.isMovingIcons = false }
+            if self.pendingVerifications == 0 { self.isUpdatingIcons = false }
         }
     }
     private func read(_ item: AXUIElement, _ key: String) -> CFTypeRef? {
@@ -217,7 +217,7 @@ final class Probe {
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
-            "moving": manager.isMovingIcons, "taps": ownTapStates() ?? [],
+            "moving": manager.isUpdatingIcons, "taps": ownTapStates() ?? [],
             "labels": manager.labels,
             "buttons": NSEvent.pressedMouseButtons,
             "source": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
@@ -233,9 +233,9 @@ final class Probe {
 
     func runBusyProbe() {
         func check(_ busy: Bool, _ phase: String) {
-            guard self.manager.isMovingIcons == busy, let taps = ownTapStates(), !taps.isEmpty,
+            guard self.manager.isUpdatingIcons == busy, let taps = ownTapStates(), !taps.isEmpty,
                   taps.allSatisfy({ $0 == !busy }) else {
-                print("FAIL busy \(phase) moving=\(self.manager.isMovingIcons) taps=\(ownTapStates() ?? [])")
+                print("FAIL busy \(phase) moving=\(self.manager.isUpdatingIcons) taps=\(ownTapStates() ?? [])")
                 fflush(stdout)
                 self.controller.close()
                 exit(8)
