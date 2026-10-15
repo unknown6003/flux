@@ -145,7 +145,7 @@ jobs:
 
       - name: Probe Settings icon section moves
         if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
-        timeout-minutes: 5
+        timeout-minutes: 7
         run: |
           python3 - <<'PY'
           import sys
@@ -163,6 +163,9 @@ jobs:
                   '66dbf21690e7d0936162744822dea44abdf342aa'], 'AX position disagrees with the drawn fixture'),
               ('geometry', 'probe_icons.py', ['--native-geometry'], None),
               ('overlap', 'probe_icons.py', ['--native-overlap'], None),
+              ('sibling-baseline', 'probe_icons.py', ['--native-sibling', '--manager-ref',
+                  '7cdb20ae7e35312c7952b03aaf0195186b1a33a6'], 'an unchanged first icon discarded the second icon'),
+              ('sibling', 'probe_icons.py', ['--native-sibling'], None),
               ('move-close-baseline', 'probe_icons.py', ['--move-close', '--manager-ref',
                   '195cb7063f614b878a3df82b9874b31849ac9738'],
                   'closing management applied hiding before the pending move was verified'),

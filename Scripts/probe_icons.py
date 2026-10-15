@@ -39,10 +39,43 @@ parser.add_argument("--native-close", action="store_true")
 parser.add_argument("--move-close", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
+parser.add_argument("--native-sibling", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
 fixture_source = r'''
 import AppKit
+if CommandLine.arguments.count == 8 && CommandLine.arguments[1] == "--drag-siblings" {
+    let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
+    guard values.count == 6 else { exit(2) }
+    func post(_ type: CGEventType, _ point: CGPoint) {
+        let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                            mouseCursorPosition: point, mouseButton: .left)!
+        event.flags = .maskCommand
+        event.post(tap: .cghidEventTap)
+    }
+    let first = CGPoint(x: values[0], y: values[1])
+    let second = CGPoint(x: values[2], y: values[3])
+    let target = CGPoint(x: values[4], y: values[5])
+    post(.leftMouseDown, first)
+    Thread.sleep(forTimeInterval: 0.08)
+    for step in 1...24 {
+        let distance = CGFloat(step <= 12 ? step : 24 - step) / 12 * 8
+        post(.leftMouseDragged, CGPoint(x: first.x - distance, y: first.y))
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    post(.leftMouseUp, first)
+    Thread.sleep(forTimeInterval: 0.08)
+    post(.leftMouseDown, second)
+    Thread.sleep(forTimeInterval: 0.08)
+    for step in 1...24 {
+        let progress = CGFloat(step) / 24
+        post(.leftMouseDragged, CGPoint(x: second.x + (target.x - second.x) * progress,
+                                        y: second.y))
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    post(.leftMouseUp, target)
+    exit(0)
+}
 if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap"].contains(CommandLine.arguments[1]) {
     let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
     guard values.count == 4 else { exit(2) }
@@ -293,6 +326,55 @@ func probe() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { closeAfterMovement() }
     }
     @MainActor
+    func moveSibling(_ items: [MenuBarIconManager.Icon]) {
+        let first = items[0], second = items[1]
+        guard let boundary = manager.boundaryProvider().hidden else { exit(1) }
+        let targetX = max(boundary + 80, second.frame.midX + 80)
+        let driver = Process()
+        driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
+        driver.arguments = ["--drag-siblings", String(Double(first.frame.midX)), String(Double(first.frame.midY)),
+                            String(Double(second.frame.midX)), String(Double(second.frame.midY)),
+                            String(Double(targetX)), String(Double(second.frame.midY))]
+        var releases = 0
+        let monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
+            if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(driver.processIdentifier) {
+                releases += 1
+            }
+        }
+        driver.terminationHandler = { driver in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                manager.refresh()
+                let current = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+                guard driver.terminationStatus == 0, releases == 2,
+                      let a = current.first(where: { $0.title == first.title }),
+                      let b = current.first(where: { $0.title == second.title }),
+                      abs(a.frame.midX - first.frame.midX) < 1,
+                      MenuBarIconManager.section(for: b.frame, boundaries: manager.boundaryProvider()) == .shown else {
+                    print("FAIL: sibling native control needs unchanged first icon and a second icon moved to Shown; before=\(items.map { ($0.title, $0.frame) }), after=\(current.map { ($0.title, $0.frame) }), releases=\(releases)")
+                    exit(1)
+                }
+                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                    print("FAIL: an unchanged first icon discarded the second icon's native Shown move")
+                    exit(1)
+                }
+                let fresh = MenuBarIconManager()
+                fresh.boundaryProvider = manager.boundaryProvider
+                fresh.refresh()
+                guard fresh.icons.filter({ $0.id.hasPrefix("com.flux.icon-fixture|") })
+                    .allSatisfy({ $0.section == .shown }) else {
+                    print("FAIL: the sibling native assignment did not survive manager reload")
+                    exit(1)
+                }
+                print("PASS: an unchanged pending icon preserves another icon's completed move from the same app")
+                finish()
+            }
+        }
+        do { try driver.run() }
+        catch { print("FAIL: sibling native driver could not start: \(error)"); exit(1) }
+    }
+    @MainActor
     func overlappingNativeMove(from icon: MenuBarIconManager.Icon) {
         guard let x = MenuBarIconManager.insertionX(for: .alwaysHidden, iconWidth: icon.frame.width,
                                                     boundaries: manager.boundaryProvider()) else { exit(1) }
@@ -531,6 +613,10 @@ func probe() {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
         }
+        if CommandLine.arguments.contains("--native-sibling") {
+            moveSibling(ordered)
+            return
+        }
         if CommandLine.arguments.contains("--native-close") || CommandLine.arguments.contains("--native-overlap")
             || CommandLine.arguments.contains("--native-geometry") {
             nativeMove()
@@ -660,9 +746,9 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
     started_at = time.time()
     try:
-        flags = (["--native-close"] if options.native_close else
+        flags = (["--native-sibling"] if options.native_sibling else (["--native-close"] if options.native_close else
                  (["--move-close"] if options.move_close else (["--native-overlap"] if options.native_overlap else
-                  (["--native-geometry"] if options.native_geometry else []))))
+                  (["--native-geometry"] if options.native_geometry else [])))))
         if options.native_geometry:
             flags += ["--geometry-output", str(geometry)]
         command([str(binary), str(fixture)] + flags, 30)
