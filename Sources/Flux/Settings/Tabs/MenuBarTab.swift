@@ -228,6 +228,7 @@ private struct MenuBarIconRow: View {
             Spacer(minLength: 2)
             if icon.isMovable {
                 Button {
+                    dragController.setMenuBarDragging(false)
                     iconManager.move(icon, toward: .towardDrawer)
                 } label: {
                     Image(systemName: "chevron.left")
@@ -238,6 +239,7 @@ private struct MenuBarIconRow: View {
                 .accessibilityLabel("Move \(icon.title) toward the drawer")
 
                 Button {
+                    dragController.setMenuBarDragging(false)
                     iconManager.move(icon, toward: .towardClock)
                 } label: {
                     Image(systemName: "chevron.right")
@@ -250,6 +252,7 @@ private struct MenuBarIconRow: View {
                 Menu {
                     ForEach(MenuBarSection.allCases) { section in
                         Button {
+                            dragController.setMenuBarDragging(false)
                             iconManager.move(icon, to: section)
                         } label: {
                             Label(section.displayName, systemImage: section.symbolName)
