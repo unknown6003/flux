@@ -137,6 +137,14 @@ func probe() {
                     print("FAIL: the independent native Command driver failed")
                     exit(1)
                 }
+                manager.refresh()
+                guard let actual = fixture(),
+                      MenuBarIconManager.section(for: actual.frame,
+                                                boundaries: manager.boundaryProvider()) == .shown else {
+                    print("FAIL: the native Command driver did not move the real icon to Shown")
+                    exit(1)
+                }
+                print("PASS: native Command crossed the real Shown boundary")
                 if CommandLine.arguments.contains("--native-close") {
                     manager.endIconManagement()
                     print("Closed management immediately after the native release")
