@@ -2,10 +2,12 @@
 """Observe an Always Hidden status item throughout public hide/reveal calls."""
 
 import argparse
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import plistlib
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -185,10 +187,17 @@ MainActor.assumeIsolated {
             guard control > 0, normalPixels > 0 else {
                 finish(false, "FAIL: both visible-marker controls were not captured")
             }
-            hider.apply(revealHidden: false, revealAlwaysHidden: false,
+            let freshReveal = CommandLine.arguments.contains("--fresh-reveal-control")
+            hider.apply(revealHidden: freshReveal, revealAlwaysHidden: false,
                         chevronX: { region.maxX }, alwaysX: { region.maxX })
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                guard visiblePixels() == 0, normalPixels == 0 else {
+                let always = visiblePixels()
+                if freshReveal {
+                    print("FRESH_ALLOW_CONTROL ALWAYS \(always) NORMAL \(normalPixels) \(hider.transitionProbeState)")
+                    finish(always == 0 && normalPixels >= max(1, normalControlPixels / 2),
+                           "Fresh allow-list control finished")
+                }
+                guard always == 0, normalPixels == 0 else {
                     finish(false, "FAIL: both Hidden fixtures did not collapse")
                 }
                 transition(0)
@@ -229,6 +238,9 @@ def main():
     parser.add_argument("--baseline-ref")
     parser.add_argument("--artifacts-dir", type=Path)
     parser.add_argument("--invalidate-before-transition", action="store_true")
+    parser.add_argument("--fresh-reveal-control", action="store_true")
+    parser.add_argument("--install-normal-fixture", action="store_true",
+                        help="Create and remove a unique disposable fixture in /Applications")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     artifacts = args.artifacts_dir or root / "build/transition-probe"
@@ -236,7 +248,7 @@ def main():
     source = root / "Sources/Flux/MenuBar/MacOS27Hider.swift"
     hider = (run(["git", "show", f"{args.baseline_ref}:Sources/Flux/MenuBar/MacOS27Hider.swift"],
                  15, capture=True) if args.baseline_ref else source.read_text())
-    with tempfile.TemporaryDirectory(prefix="flux-transition-probe-") as directory:
+    with tempfile.TemporaryDirectory(prefix="flux-transition-probe-") as directory, ExitStack() as cleanup:
         temporary = Path(directory)
         bundle = temporary / "FluxTransitionProbe.app"
         binary = bundle / "Contents/MacOS/FluxTransitionProbe"
@@ -268,13 +280,22 @@ def main():
         run(["xcrun", "swiftc", "-swift-version", "5", str(normal_source),
              "-o", str(normal_binary)], 120)
         run(["codesign", "--force", "--sign", "-", str(normal_bundle)], 20)
+        if args.install_normal_fixture:
+            destination = Path("/Applications") / f"FluxTransitionFixture-{uuid.uuid4().hex}.app"
+            destination.mkdir()
+            cleanup.callback(shutil.rmtree, destination)
+            shutil.copytree(normal_bundle, destination, dirs_exist_ok=True)
+            normal_bundle = destination
+            normal_binary = normal_bundle / "Contents/MacOS/FluxNormalHiddenFixture"
+            run(["codesign", "--verify", "--strict", str(normal_bundle)], 20)
         register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         run([register, "-f", str(bundle)], 20)
         run([register, "-f", str(normal_bundle)], 20)
         normal_process = subprocess.Popen([str(normal_binary)], start_new_session=True)
         try:
             run([str(binary), str(artifacts / "sample.png"), normal_id]
-                + (["--invalidate-before-transition"] if args.invalidate_before_transition else []), 22)
+                + (["--invalidate-before-transition"] if args.invalidate_before_transition else [])
+                + (["--fresh-reveal-control"] if args.fresh_reveal_control else []), 22)
         finally:
             try:
                 os.killpg(normal_process.pid, signal.SIGTERM)
