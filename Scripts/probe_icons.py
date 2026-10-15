@@ -41,6 +41,7 @@ parser.add_argument("--move-refresh-retry", action="store_true")
 parser.add_argument("--move-refresh-failure", action="store_true")
 parser.add_argument("--move-save-retry", action="store_true")
 parser.add_argument("--move-save-failure", action="store_true")
+parser.add_argument("--menu-context", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
@@ -158,6 +159,12 @@ import ApplicationServices
 setbuf(stdout, nil)
 
 @MainActor
+final class MenuMoveAction: NSObject {
+    var invoke: (() -> Void)?
+    @objc func perform() { invoke?() }
+}
+
+@MainActor
 func probe() {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
@@ -204,6 +211,7 @@ func probe() {
         || CommandLine.arguments.contains("--move-close")
         || CommandLine.arguments.contains("--move-refresh-retry")
         || CommandLine.arguments.contains("--move-refresh-failure")
+        || CommandLine.arguments.contains("--menu-context")
         || saveTest
         || CommandLine.arguments.contains("--native-overlap")
         || CommandLine.arguments.contains("--native-geometry")
@@ -322,6 +330,57 @@ func probe() {
         hidden.removeFromStatusBar()
         always.removeFromStatusBar()
         exit(0)
+    }
+    @MainActor
+    func moveFromMenu() {
+        manager.refresh()
+        guard let icon = fixture(), icon.section == .hidden else { exit(1) }
+        let target = MenuMoveAction()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Move fixture to Shown", action: #selector(MenuMoveAction.perform), keyEquivalent: "")
+        item.target = target
+        menu.addItem(item)
+        var invoked = false
+        target.invoke = {
+            invoked = true
+            print("MENU action mode=\(RunLoop.current.currentMode?.rawValue ?? "nil") frame=\(icon.frame) boundaries=\(manager.boundaryProvider())")
+            manager.move(icon, to: .shown)
+        }
+        let select = Timer(timeInterval: 0.2, repeats: false) { _ in
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: down)!
+                event.flags = []
+                event.post(tap: .cghidEventTap)
+            }
+        }
+        let deadline = Timer(timeInterval: 2, repeats: false) { _ in
+            print("FAIL: native menu control did not invoke the selected action")
+            menu.cancelTracking()
+            exit(1)
+        }
+        RunLoop.main.add(select, forMode: .common)
+        RunLoop.main.add(deadline, forMode: .common)
+        app.activate(ignoringOtherApps: true)
+        menu.popUp(positioning: item, at: NSPoint(x: 400, y: 400), in: nil)
+        deadline.invalidate()
+        select.invalidate()
+        target.invoke = nil
+        guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
+        print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            manager.refresh()
+            let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+            guard !manager.isUpdatingIcons, let current = fixture(),
+                  MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
+                  current.section == .shown,
+                  (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                print("FAIL: a real menu action did not move and save the fixture as Shown")
+                print("MENU actual=\(String(describing: fixture()?.frame)) boundaries=\(manager.boundaryProvider()) error=\(manager.errorMessage ?? "none")")
+                exit(1)
+            }
+            print("PASS: a real menu action moves the fixture and saves Shown")
+            finish()
+        }
     }
     @MainActor
     func moveAndClose() {
@@ -789,6 +848,10 @@ func probe() {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
         }
+        if CommandLine.arguments.contains("--menu-context") {
+            moveFromMenu()
+            return
+        }
         if CommandLine.arguments.contains("--native-sibling") {
             moveSibling(ordered)
             return
@@ -929,7 +992,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     close_test = (options.native_close or options.move_close or options.native_overlap
                   or options.native_geometry or options.native_refresh_retry
                   or options.move_refresh_retry or options.move_refresh_failure
-                  or options.move_save_retry or options.move_save_failure)
+                  or options.move_save_retry or options.move_save_failure or options.menu_context)
     capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
                         or options.move_save_retry or options.move_save_failure)
     geometry = temporary / "geometry"
@@ -946,6 +1009,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--move-refresh-failure", options.move_refresh_failure),
                     ("--move-save-retry", options.move_save_retry),
                     ("--move-save-failure", options.move_save_failure),
+                    ("--menu-context", options.menu_context),
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap)]
         flags = [flag for flag, enabled in selected if enabled]

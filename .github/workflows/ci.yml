@@ -199,6 +199,7 @@ jobs:
               ('move-close', 'probe_icons.py', ['--move-close'], None),
               ('native-close', 'probe_icons.py', ['--native-close'], None),
               ('settings', 'probe_icons.py', [], None),
+              ('menu-context', 'probe_icons.py', ['--menu-context'], None),
           ]
           selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
           if selected:
