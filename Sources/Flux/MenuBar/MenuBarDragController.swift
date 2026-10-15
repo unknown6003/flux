@@ -149,6 +149,11 @@ final class MenuBarDragController: ObservableObject {
         return view
     }
 
+    func refreshIcons() {
+        withInputSuspended { manager?.refresh() }
+        refreshOverlays()
+    }
+
     func accepts(_ sender: NSDraggingInfo) -> Bool {
         guard canManage, let active,
               sender.draggingSource as? MenuBarDragSourceView != nil,

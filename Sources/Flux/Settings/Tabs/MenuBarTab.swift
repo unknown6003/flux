@@ -74,6 +74,7 @@ struct MenuBarTab: View {
 }
 
 private struct MenuBarDrawer: View {
+    @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var iconManager: MenuBarIconManager
     @EnvironmentObject private var dragController: MenuBarDragController
 
@@ -108,7 +109,7 @@ private struct MenuBarDrawer: View {
                     if section != .alwaysHidden { RowDivider() }
                 }
                 Button {
-                    iconManager.refresh()
+                    dragController.refreshIcons()
                 } label: {
                     Label("Refresh icons", systemImage: "arrow.clockwise")
                 }
@@ -165,9 +166,16 @@ private struct MenuBarDrawer: View {
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondaryColor)
                 .padding(.leading, 15)
-            MenuBarIconDropZone(controller: dragController, section: section)
-                .frame(height: 30)
-                .padding(.leading, 15)
+            if section == .alwaysHidden && !settings.showAlwaysHiddenSection {
+                Text("Turn on Always-Hidden section below to use this drop target.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondaryColor)
+                    .padding(.leading, 15)
+            } else {
+                MenuBarIconDropZone(controller: dragController, section: section)
+                    .frame(height: 30)
+                    .padding(.leading, 15)
+            }
             if items.isEmpty {
                 Text(emptyText(for: section))
                     .font(.caption)
