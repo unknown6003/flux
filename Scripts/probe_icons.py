@@ -193,12 +193,18 @@ func probe() {
                                                       Float(center.x), Float(center.y), &hit)
         var pid: pid_t = 0
         var title: CFTypeRef?
+        var hitPosition: CFTypeRef?
+        var hitSize: CFTypeRef?
         if let hit {
             AXUIElementGetPid(hit, &pid)
             AXUIElementCopyAttributeValue(hit, kAXTitleAttribute as CFString, &title)
+            AXUIElementCopyAttributeValue(hit, kAXPositionAttribute as CFString, &hitPosition)
+            AXUIElementCopyAttributeValue(hit, kAXSizeAttribute as CFString, &hitSize)
         }
-        let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"))) ?? "missing"
-        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) own=\(own)")
+        let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"), encoding: .utf8)) ?? "missing"
+        let windows = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
+            .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
+        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) own=\(own) windows=\(windows)")
     }
     @MainActor
     func finish() {
@@ -403,6 +409,7 @@ func probe() {
                 print("Closed management \(delay)s after native mouse-up")
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                geometry("after-native-1s")
                 let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
                 guard (saved?["hidden"] as? [String])?.contains(fixtureID) == false,
                       (saved?["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
