@@ -111,7 +111,11 @@ final class Probe {
     let state: String
     var timer: Timer?
     let busyOnly: Bool
-    init(state: String, busyOnly: Bool) { self.state = state; self.busyOnly = busyOnly }
+    let separateDestination: Bool
+    var destinationWindow: NSWindow?
+    init(state: String, busyOnly: Bool, separateDestination: Bool) {
+        self.state = state; self.busyOnly = busyOnly; self.separateDestination = separateDestination
+    }
     func start(seconds: Double) {
         guard AXIsProcessTrusted() else {
             print("BLOCKED: probe identity lacks existing Accessibility access; no permission was requested")
@@ -139,6 +143,24 @@ final class Probe {
         manager.onMove = { [weak self] value in self?.commits.append(value) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        if separateDestination, let screen = NSScreen.screens.first {
+            let frame = NSRect(x: min(window.frame.maxX + 20, screen.visibleFrame.maxX - 250),
+                               y: window.frame.minY + 20, width: 230, height: 200)
+            let destination = NSWindow(contentRect: frame, styleMask: [.titled, .closable],
+                                       backing: .buffered, defer: false)
+            destination.title = "Ordinary drag destination control"
+            destination.isReleasedWhenClosed = false
+            let target = MenuBarDragDestinationView(frame: destination.contentView!.bounds.insetBy(dx: 10, dy: 10))
+            target.controller = controller
+            target.section = .shown
+            target.showsReturnHint = true
+            target.autoresizingMask = [.width, .height]
+            destination.contentView!.addSubview(target)
+            destination.orderFront(nil)
+            destinationWindow = destination
+            print("ordinary destination window=\(destination.windowNumber) frame=\(destination.frame) key=\(NSApp.keyWindow?.windowNumber ?? -1)")
+            fflush(stdout)
+        }
         let activationDeadline = ProcessInfo.processInfo.systemUptime + 8
         var retriedActivation = false
         let readiness = Timer(timeInterval: 0.1, repeats: true) { readiness in
@@ -196,6 +218,8 @@ final class Probe {
     func stop() {
         timer?.invalidate()
         controller.close()
+        destinationWindow?.close()
+        destinationWindow = nil
         writeState()
         window.close()
         print("STOP buttons=\(NSEvent.pressedMouseButtons)")
@@ -213,6 +237,10 @@ final class Probe {
             targets[section.rawValue] = cg(window.convertPoint(toScreen: NSPoint(x: 110 + i * 200, y: 90)))
         }
         targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - 10))
+        if let destinationWindow, let content = destinationWindow.contentView {
+            targets["second-window"] = cg(destinationWindow.convertPoint(toScreen:
+                NSPoint(x: content.bounds.midX, y: content.bounds.midY)))
+        }
         targets["invalid"] = cg(NSPoint(x: primary.frame.minX + 30, y: primary.frame.minY + 80))
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
@@ -372,7 +400,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     }
     Thread.sleep(forTimeInterval: 0.15)
     if !command && kind != "late-command" && destination != "invalid" {
-        let section = destination == "bar" ? "shown" : destination
+        let section = destination == "bar" || destination == "second-window" ? "shown" : destination
         guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
             fail("destination never accepted the session")
         }
@@ -400,7 +428,7 @@ struct Main {
                 CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
             }
         }
-        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
+        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only"), separateDestination: args.contains("--second-window")).start(seconds: Double(args[3])!) }
     }
 }
 '''
@@ -465,7 +493,7 @@ def main():
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--busy-only", action="store_true", help="Test delayed shared move state without dragging")
     parser.add_argument("--case", default="all", choices=(
-        "all", "row-hidden", "menu-hidden", "menu-always", "row-bar", "row-hidden-escape",
+        "all", "row-second-window", "row-hidden", "menu-hidden", "menu-always", "row-bar", "row-hidden-escape",
         "menu-always-escape", "row-bar-escape", "invalid", "late-command",
         "command-held", "command-rapid", "command-down-only"), help="Run one independent native scenario")
     parser.add_argument("--controller-ref", help="Compile the production controller from this Git ref for regression proof")
@@ -513,7 +541,8 @@ def main():
             fixture_argv.append("--empty-title")
         for argv, name in ((fixture_argv, "fixture.log"),
                            ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)]
-                            + (["--busy-only"] if args.busy_only else []), "probe.log")):
+                            + (["--busy-only"] if args.busy_only else [])
+                            + (["--second-window"] if args.case == "row-second-window" else []), "probe.log")):
             with (args.output / name).open("wb") as log:
                 processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         probe = processes[-1]
@@ -533,6 +562,7 @@ def main():
                 raise RuntimeError("shared move-state probe deadline")
             results.append("PASS delayed overlapping manager moves kept the actual event tap disabled")
         scenarios = () if args.busy_only else (
+            ("row-second-window", "row", "second-window", "normal", "shown"),
             ("row-hidden", "row", "hidden", "normal", "hidden"),
             ("menu-hidden", "source", "hidden", "normal", "hidden"),
             ("menu-always", "source", "alwaysHidden", "normal", "alwaysHidden"),
