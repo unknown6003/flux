@@ -578,12 +578,12 @@ func probe() {
             let exhausted = CommandLine.arguments.contains("--move-refresh-failure")
                 || CommandLine.arguments.contains("--move-save-failure")
             if failedRead || exhausted {
+                if saveTest { saveFailures = exhausted ? 3 : 1 }
+                else { inventoryFailures = exhausted ? 3 : 1 }
                 guard geometry("programmatic-shown") != nil else {
                     print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
                     exit(1)
                 }
-                if saveTest { saveFailures = exhausted ? 3 : 1 }
-                else { inventoryFailures = exhausted ? 3 : 1 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
