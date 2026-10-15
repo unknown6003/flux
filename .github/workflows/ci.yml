@@ -19,16 +19,88 @@ on:
         description: Focus menu_bar_probe on icon moves and real arrow clicks
         type: boolean
         default: false
+      drag_probe_plan:
+        description: Run isolated native drag cases from exact commits instead of building
+        type: string
+        default: ''
 
 permissions:
   contents: write
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ inputs.drag_probe_plan && 'native-drag-probes' || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  drag-probes:
+    if: ${{ inputs.drag_probe_plan }}
+    runs-on: xcode-27
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run isolated native drag cases
+        env:
+          FLUX_DRAG_PROBE_PLAN: ${{ inputs.drag_probe_plan }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, time
+          from pathlib import Path
+          sys.path.insert(0, 'Scripts')
+          from probe_hidden_transition import run
+          from probe_tcc import accessibility_grant
+          plan = json.loads(os.environ['FLUX_DRAG_PROBE_PLAN'])
+          assert isinstance(plan, list) and 0 < len(plan) <= 6
+          assert sum(len(item['cases']) for item in plan) <= 12
+          for item in plan:
+              assert re.fullmatch(r'[0-9a-f]{40}', item['ref'])
+              assert isinstance(item['cases'], list) and item['cases']
+              assert all(re.fullmatch(r'[a-z-]+', case) for case in item['cases'])
+          output = Path('build/native-drag-debug').resolve()
+          output.mkdir(parents=True)
+          results = []
+          deadline = time.monotonic() + 480
+          with accessibility_grant('com.flux.menu-drag-probe'):
+              for item in plan:
+                  ref = item['ref']
+                  source = output / ref[:8]
+                  source.mkdir()
+                  archive = source / 'source.tar'
+                  run(['git', 'archive', '--format=tar', '--output', str(archive), ref,
+                       'Scripts', 'Sources/Flux/MenuBar/MenuBarDragController.swift',
+                       'Sources/Flux/MenuBar/MenuBarSection.swift'], 15)
+                  run(['tar', '-xf', str(archive), '-C', str(source)], 15)
+                  for case in item['cases']:
+                      if time.monotonic() + 130 > deadline:
+                          raise RuntimeError('native drag plan reached its overall deadline')
+                      try:
+                          log = run(['python3', str(source / 'Scripts/probe_menu_drag.py'),
+                                     '--output', str(source / case), '--case', case,
+                                     '--seconds', '25'], 130, capture=True)
+                          result = 'pass'
+                      except RuntimeError as error:
+                          log, result = str(error), 'fail'
+                      (source / (case + '-runner.log')).write_text(log)
+                      results.append(dict(ref=ref, case=case, result=result))
+                      (output / 'results.json').write_text(json.dumps(results, indent=2))
+                      print(ref[:8], case, result, flush=True)
+          if any(item['result'] != 'pass' for item in results):
+              raise SystemExit(1)
+          PY
+      - name: Upload isolated native drag evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-drag-debug
+          path: build/native-drag-debug/
+          if-no-files-found: warn
+
   build:
+    if: ${{ !inputs.drag_probe_plan }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
     timeout-minutes: 30
     steps:
