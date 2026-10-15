@@ -94,6 +94,21 @@ MainActor.assumeIsolated {
         }
         print("PASS: native layout batch validates input after reads and saves all edits together")
         print("PASS: a missing app preserves readable moves and can be saved after recovery")
+        positions = [("test.normal", 350)]
+        guard hider.recordLayoutChange(for: "test.normal") else { exit(1) }
+        let complete = layout()
+        positions = MacOS27Hider.completePositions(for: "test.normal", centers: [250, nil])
+        guard hider.recordAvailableLayoutChanges(for: ["test.normal"], canCommit: { true }).isEmpty,
+              layout().hidden == complete.hidden, layout().always == complete.always else {
+            print("FAIL: an incomplete sibling scan changed saved visibility")
+            exit(1)
+        }
+        positions = MacOS27Hider.completePositions(for: "test.normal", centers: [250, 350])
+        guard hider.recordLayoutChange(for: "test.normal"), hider.section(for: "test.normal") == .shown else {
+            print("FAIL: a complete sibling scan did not recover its Shown assignment")
+            exit(1)
+        }
+        print("PASS: unreadable sibling geometry preserves app visibility until every sibling is readable")
         return
     }
     if CommandLine.arguments.contains("no-edit") {
@@ -209,6 +224,14 @@ def main():
 extension MacOS27Hider {
     func recordAvailableLayoutChanges(for ids: Set<String>, canCommit: () -> Bool) -> Set<String> {
         recordLayoutChanges(for: ids, canCommit: canCommit) ? ids : []
+    }
+}
+''')
+            if "func completePositions" not in previous.read_text():
+                source.write_text(source.read_text() + '''
+extension MacOS27Hider {
+    static func completePositions(for id: String, centers: [CGFloat?]) -> [(bundleID: String, x: CGFloat)] {
+        centers.compactMap { $0.map { (id, $0) } }
     }
 }
 ''')

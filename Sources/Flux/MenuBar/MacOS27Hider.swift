@@ -250,6 +250,11 @@ final class MacOS27Hider {
         })
     }
 
+    nonisolated static func completePositions(for bundleID: String, centers: [CGFloat?]) -> [(bundleID: String, x: CGFloat)] {
+        guard centers.allSatisfy({ $0 != nil }) else { return [] }
+        return centers.compactMap { $0.map { (bundleID, $0) } }
+    }
+
     private static func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success
@@ -461,20 +466,21 @@ final class MacOS27Hider {
                   CFGetTypeID(barValue) == AXUIElementGetTypeID(),
                   let children = read(barValue as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]
             else { return }
-            for child in children {
+            let centers: [CGFloat?] = children.map { child in
                 guard let position = read(child, kAXPositionAttribute),
                       CFGetTypeID(position) == AXValueGetTypeID(),
                       let size = read(child, kAXSizeAttribute),
-                      CFGetTypeID(size) == AXValueGetTypeID() else { continue }
+                      CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
                 var point = CGPoint.zero
                 var dimensions = CGSize.zero
                 guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
                       AXValueGetValue(size as! AXValue, .cgSize, &dimensions),
-                      dimensions.width > 0 else { continue }
-                lock.lock()
-                result.append((apps[index].id, point.x + dimensions.width / 2))
-                lock.unlock()
+                      dimensions.width > 0 else { return nil }
+                return point.x + dimensions.width / 2
             }
+            lock.lock()
+            result.append(contentsOf: completePositions(for: apps[index].id, centers: centers))
+            lock.unlock()
         }
         return (result, replies)
     }

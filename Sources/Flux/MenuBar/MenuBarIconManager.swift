@@ -172,10 +172,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func commitNativeMoves() {
-        guard !CGEventSource.buttonState(.combinedSessionState, button: .left),
-              CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown) >= 0.35,
-              CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) >= 0.35,
-              pendingMoveCount == 0 else {
+        guard nativeInputIsQuiet(), pendingMoveCount == 0 else {
             scheduleNativeMoveCommit()
             return
         }
@@ -202,10 +199,19 @@ final class MenuBarIconManager: ObservableObject {
                 elements[$0.id].map { CFEqual($0, pending.element) } ?? false
             }
             guard !pending.owner.isTerminated, pending.owner.launchDate == pending.launched,
-                  isTrusted, matches.count == 1, let current = matches.first,
-                  current.title == pending.icon.title, current.source == pending.icon.source,
                   let bundleID = pending.owner.bundleIdentifier else {
                 completedNativeMoves.removeValue(forKey: key)
+                continue
+            }
+            guard isTrusted, !matches.isEmpty else {
+                retryNativeSave(pending, key: key)
+                continue
+            }
+            guard matches.count == 1, let current = matches.first,
+                  current.title == pending.icon.title, current.source == pending.icon.source,
+                  current.isMovable else {
+                completedNativeMoves.removeValue(forKey: key)
+                nativeSaveFailures.insert(bundleID)
                 continue
             }
             guard macOS27Hider.canReadPosition(for: bundleID) else {
@@ -228,24 +234,35 @@ final class MenuBarIconManager: ObservableObject {
                 !saved.contains(where: { entry.key.hasPrefix($0 + "|") })
             }
             for key in changedMoves {
-                guard var pending = completedNativeMoves[key],
+                guard let pending = completedNativeMoves[key],
                       let bundleID = pending.owner.bundleIdentifier else { continue }
                 if saved.contains(bundleID) {
                     completedNativeMoves.removeValue(forKey: key)
                 } else {
-                    pending.saveAttempts += 1
-                    if pending.saveAttempts < 3 {
-                        completedNativeMoves[key] = pending
-                    } else {
-                        completedNativeMoves.removeValue(forKey: key)
-                        nativeSaveFailures.insert(bundleID)
-                    }
+                    retryNativeSave(pending, key: key)
                 }
             }
         }
         refresh()
         if !completedNativeMoves.isEmpty { scheduleNativeMoveCommit() }
         applyDeferredVisibility()
+    }
+
+    private func retryNativeSave(_ move: NativeMove, key: UUID) {
+        var move = move
+        move.saveAttempts += 1
+        if move.saveAttempts < 3 {
+            completedNativeMoves[key] = move
+        } else {
+            completedNativeMoves.removeValue(forKey: key)
+            if let bundleID = move.owner.bundleIdentifier { nativeSaveFailures.insert(bundleID) }
+        }
+    }
+
+    private func nativeInputIsQuiet() -> Bool {
+        !CGEventSource.buttonState(.combinedSessionState, button: .left)
+            && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown) >= 0.35
+            && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) >= 0.35
     }
 
     private func observeAppActivation() {
@@ -636,7 +653,23 @@ final class MenuBarIconManager: ObservableObject {
                             retryWithDrag: Bool) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self else { return }
+            guard !ControlItem.usesMacOS27Model || self.nativeInputIsQuiet() else {
+                self.verifyMove(icon: icon, expectedSection: expectedSection,
+                                target: target, retryWithDrag: retryWithDrag)
+                return
+            }
+            let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+            let canCommit = {
+                !ControlItem.usesMacOS27Model || (
+                    self.nativeInputIsQuiet()
+                    && CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount)
+            }
             self.refresh()
+            guard canCommit() else {
+                self.verifyMove(icon: icon, expectedSection: expectedSection,
+                                target: target, retryWithDrag: retryWithDrag)
+                return
+            }
             guard let current = self.icons.first(where: { $0.id == icon.id }) else {
                 self.finishMove()
                 return
@@ -644,7 +677,12 @@ final class MenuBarIconManager: ObservableObject {
             let actualSection = Self.section(for: current.frame,
                                              boundaries: self.boundaryProvider())
             guard actualSection != expectedSection else {
-                if !self.saveLayout(for: current) {
+                if !self.saveLayout(for: current, canCommit: canCommit) {
+                    guard canCommit() else {
+                        self.verifyMove(icon: icon, expectedSection: expectedSection,
+                                        target: target, retryWithDrag: retryWithDrag)
+                        return
+                    }
                     self.assignedSections.removeValue(forKey: current.id)
                     self.refresh()
                     self.errorMessage = "Flux moved the icon but could not save its section. Try again."
@@ -668,10 +706,10 @@ final class MenuBarIconManager: ObservableObject {
         }
     }
 
-    private func saveLayout(for icon: Icon) -> Bool {
+    private func saveLayout(for icon: Icon, canCommit: () -> Bool) -> Bool {
         guard ControlItem.usesMacOS27Model else { return true }
         guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
-        let saved = macOS27Hider.recordLayoutChange(for: String(bundleID))
+        let saved = macOS27Hider.recordLayoutChange(for: String(bundleID), canCommit: canCommit)
         if saved { nativeSaveFailures.remove(String(bundleID)) }
         return saved
     }
