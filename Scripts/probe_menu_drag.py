@@ -15,8 +15,10 @@ import plistlib
 import shutil
 import signal
 import subprocess
+import struct
 import sys
 import time
+import zlib
 
 
 SWIFT = r'''
@@ -409,7 +411,7 @@ func ownTapStates() -> [Bool]? {
 }
 
 @MainActor
-func fixture(seconds: Double, emptyTitle: Bool) {
+func fixture(seconds: Double, emptyTitle: Bool, geometryPath: String) {
     NSApp.setActivationPolicy(.accessory)
     let a = NSStatusBar.system.statusItem(withLength: 36)
     a.button?.title = "FXD"
@@ -418,12 +420,150 @@ func fixture(seconds: Double, emptyTitle: Bool) {
     let b = NSStatusBar.system.statusItem(withLength: 36)
     b.button?.title = "FXE"
     b.button?.setAccessibilityTitle("Flux drag neighbour")
+    for (item, color) in [(a, NSColor.magenta), (b, NSColor.cyan)] {
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        image.lockFocus()
+        color.setFill()
+        NSRect(x: 0, y: 0, width: 18, height: 18).fill()
+        image.unlockFocus()
+        image.isTemplate = false
+        item.button?.image = image
+        item.button?.imagePosition = .imageOnly
+    }
+    let geometryTimer = Timer(timeInterval: 0.1, repeats: true) { _ in
+        MainActor.assumeIsolated {
+            guard FileManager.default.fileExists(atPath: geometryPath + ".request") else { return }
+            let request = (try? String(contentsOfFile: geometryPath + ".request", encoding: .utf8)) ?? ""
+            try? FileManager.default.removeItem(atPath: geometryPath + ".request")
+            func rect(_ frame: NSRect) -> [Double] {
+                [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]
+            }
+            let items: [[String: Any]] = [a, b].map { item in
+                guard let button = item.button, let window = button.window else { return ["missingWindow": true] }
+                return ["window": window.windowNumber, "windowFrameAppKit": rect(window.frame),
+                        "buttonBounds": rect(button.bounds),
+                        "buttonScreenFrameAppKit": rect(window.convertToScreen(button.convert(button.bounds, to: nil)))]
+            }
+            let value: [String: Any] = ["uptime": ProcessInfo.processInfo.systemUptime,
+                "request": request, "pid": ProcessInfo.processInfo.processIdentifier, "items": items]
+            if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: geometryPath), options: .atomic)
+            }
+        }
+    }
+    RunLoop.main.add(geometryTimer, forMode: .common)
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
         NSStatusBar.system.removeStatusItem(a)
         NSStatusBar.system.removeStatusItem(b)
         exit(0)
     }
     NSApp.run()
+}
+
+@MainActor
+func geometry(path: String, x: Double, y: Double) {
+    let started = ProcessInfo.processInfo.systemUptime
+    let manager = MenuBarIconManager()
+    manager.refresh()
+    var value: [String: Any] = ["started": started, "pointCG": [x, y], "freshIcons": manager.icons.map {
+        ["id": $0.id, "title": $0.title,
+         "frameCG": [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)]] as [String: Any]
+    }]
+    value["freshOwnerReadFinished"] = ProcessInfo.processInfo.systemUptime
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 0.15)
+    var hit: AXUIElement?
+    value["hitStarted"] = ProcessInfo.processInfo.systemUptime
+    let status = AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &hit)
+    value["hitFinished"] = ProcessInfo.processInfo.systemUptime
+    value["hitStatus"] = status.rawValue
+    if let hit {
+        AXUIElementSetMessagingTimeout(hit, 0.15)
+        var pid: pid_t = 0
+        value["pidStatus"] = AXUIElementGetPid(hit, &pid).rawValue
+        value["hitPID"] = pid
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            value["hitOwner"] = ["bundleID": app.bundleIdentifier ?? "", "name": app.localizedName ?? ""]
+        }
+        var attributes: [String: Any] = [:]
+        for name in [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                     kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+            var result: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(hit, name as CFString, &result)
+            var record: [String: Any] = ["status": error.rawValue]
+            if let result {
+                if let string = result as? String { record["value"] = string }
+                else if CFGetTypeID(result) == AXValueGetTypeID() {
+                    var point = CGPoint.zero
+                    var size = CGSize.zero
+                    if AXValueGetValue(result as! AXValue, .cgPoint, &point) { record["value"] = [point.x, point.y] }
+                    else if AXValueGetValue(result as! AXValue, .cgSize, &size) { record["value"] = [size.width, size.height] }
+                }
+            }
+            attributes[name] = record
+        }
+        value["hitAttributes"] = attributes
+        if let owner = NSRunningApplication.runningApplications(withBundleIdentifier: "com.flux.menu-drag-fixture").first {
+            value["ownerAfterHitStarted"] = ProcessInfo.processInfo.systemUptime
+            let app = AXUIElementCreateApplication(owner.processIdentifier)
+            AXUIElementSetMessagingTimeout(app, 0.15)
+            var bar: CFTypeRef?
+            value["ownerBarStatus"] = AXUIElementCopyAttributeValue(app, kAXExtrasMenuBarAttribute as CFString, &bar).rawValue
+            if let bar, CFGetTypeID(bar) == AXUIElementGetTypeID() {
+                AXUIElementSetMessagingTimeout(bar as! AXUIElement, 0.15)
+                var children: CFTypeRef?
+                value["ownerChildrenStatus"] = AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &children).rawValue
+                if let children = children as? [AXUIElement] {
+                    value["hitEqualOwnerChildren"] = children.enumerated().map {
+                        ["index": $0.offset, "equal": CFEqual(hit, $0.element)] as [String: Any]
+                    }
+                    value["ownerChildrenAfterHit"] = children.enumerated().map { pair -> [String: Any] in
+                        AXUIElementSetMessagingTimeout(pair.element, 0.15)
+                        var record: [String: Any] = ["index": pair.offset, "equalHit": CFEqual(hit, pair.element),
+                            "started": ProcessInfo.processInfo.systemUptime]
+                        for name in [kAXTitleAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+                            var result: CFTypeRef?
+                            let status = AXUIElementCopyAttributeValue(pair.element, name as CFString, &result)
+                            var attribute: [String: Any] = ["status": status.rawValue]
+                            if let result {
+                                if let text = result as? String { attribute["value"] = text }
+                                else if CFGetTypeID(result) == AXValueGetTypeID() {
+                                    var point = CGPoint.zero
+                                    var size = CGSize.zero
+                                    if AXValueGetValue(result as! AXValue, .cgPoint, &point) { attribute["value"] = [point.x, point.y] }
+                                    else if AXValueGetValue(result as! AXValue, .cgSize, &size) { attribute["value"] = [size.width, size.height] }
+                                }
+                            }
+                            record[name] = attribute
+                        }
+                        record["finished"] = ProcessInfo.processInfo.systemUptime
+                        return record
+                    }
+                }
+            }
+            value["ownerAfterHitFinished"] = ProcessInfo.processInfo.systemUptime
+        }
+    }
+    if let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] {
+        let fixturePIDs = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.flux.menu-drag-fixture").map(\.processIdentifier))
+        let agentPIDs = Set(NSWorkspace.shared.runningApplications.filter {
+            (($0.bundleIdentifier ?? "") + ($0.localizedName ?? "")).lowercased().contains("menubaragent")
+        }.map(\.processIdentifier))
+        value["fixtureAndAgentWindows"] = windows.filter {
+            let pid = ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+            let name = ($0[kCGWindowOwnerName as String] as? String ?? "").lowercased()
+            return fixturePIDs.contains(pid) || agentPIDs.contains(pid) || name.contains("menubaragent")
+        }
+        value["windowsAtPoint"] = windows.filter {
+            guard let bounds = $0[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
+            return frame.contains(CGPoint(x: x, y: y))
+        }.map { ["window": $0[kCGWindowNumber as String] ?? -1, "pid": $0[kCGWindowOwnerPID as String] ?? -1,
+                 "layer": $0[kCGWindowLayer as String] ?? -1, "bounds": $0[kCGWindowBounds as String] ?? [:]] }
+    }
+    value["finished"] = ProcessInfo.processInfo.systemUptime
+    guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]) else { exit(9) }
+    do { try data.write(to: URL(fileURLWithPath: path), options: .atomic) } catch { exit(9) }
 }
 
 func drive(statePath: String, source: String, destination: String, kind: String) {
@@ -509,7 +649,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
 struct Main {
     @MainActor static func main() {
         let args = CommandLine.arguments
-        if args[1] == "--fixture" { let _ = NSApplication.shared; fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title")) }
+        if args[1] == "--fixture" { let _ = NSApplication.shared; fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"), geometryPath: args[3]) }
+        else if args[1] == "--geometry" { geometry(path: args[2], x: Double(args[3])!, y: Double(args[4])!) }
         else if args[1] == "--drive" { drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5]) }
         else if args[1] == "--release" {
             if CGPreflightPostEventAccess() {
@@ -548,6 +689,123 @@ def bounded(argv, seconds, log):
             raise RuntimeError(f"deadline {seconds}s: {log}") from error
         finally:
             stop(process)
+
+
+def marker_pixels(path, region):
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise RuntimeError("BLOCKED marker capture is not PNG")
+    offset, compressed = 8, bytearray()
+    while offset + 12 <= len(data):
+        size = struct.unpack(">I", data[offset:offset + 4])[0]
+        kind, value = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + size]
+        if kind == b"IHDR":
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", value)
+        if kind == b"IDAT":
+            compressed.extend(value)
+        offset += size + 12
+    if depth != 8 or color not in (2, 6) or interlace or width * height > 2_000_000:
+        raise RuntimeError(f"BLOCKED unsupported marker PNG: {width}x{height} depth={depth} color={color} interlace={interlace}")
+    channels = 3 if color == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(compressed)
+    if len(raw) != (stride + 1) * height:
+        raise RuntimeError("BLOCKED truncated marker PNG")
+    previous, masks = bytearray(stride), {"magenta": set(), "cyan": set()}
+    def paeth(a, b, c):
+        p = a + b - c
+        distances = [abs(p - a), abs(p - b), abs(p - c)]
+        return (a, b, c)[distances.index(min(distances))]
+    for y in range(height):
+        method = raw[y * (stride + 1)]
+        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            left = row[i - channels] if i >= channels else 0
+            up, corner = previous[i], previous[i - channels] if i >= channels else 0
+            if method == 1: row[i] = (row[i] + left) & 255
+            elif method == 2: row[i] = (row[i] + up) & 255
+            elif method == 3: row[i] = (row[i] + (left + up) // 2) & 255
+            elif method == 4: row[i] = (row[i] + paeth(left, up, corner)) & 255
+            elif method != 0: raise RuntimeError(f"BLOCKED unsupported PNG filter {method}")
+        for x in range(width):
+            r, g, b = row[x * channels:x * channels + 3]
+            if channels == 4 and row[x * channels + 3] < 200:
+                continue
+            if r > 175 and b > 175 and g < 100: masks["magenta"].add((x, y))
+            if g > 175 and b > 175 and r < 100: masks["cyan"].add((x, y))
+        previous = row
+    scale_x, scale_y = width / region[2], height / region[3]
+    result = {"pixels": [width, height], "scale": [scale_x, scale_y], "regionCG": region, "markers": {}}
+    for name, remaining in masks.items():
+        candidates = []
+        while remaining:
+            stack, component = [remaining.pop()], []
+            while stack:
+                x, y = stack.pop()
+                component.append((x, y))
+                for point in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if point in remaining:
+                        remaining.remove(point)
+                        stack.append(point)
+            xs, ys = zip(*component)
+            w, h = (max(xs) - min(xs) + 1) / scale_x, (max(ys) - min(ys) + 1) / scale_y
+            if abs(w - 18) <= 3 and abs(h - 18) <= 3 and len(component) >= 200 * scale_x * scale_y:
+                candidates.append({"count": len(component), "sizePoints": [w, h],
+                    "centroidCG": [region[0] + (sum(xs) / len(xs) + 0.5) / scale_x,
+                                   region[1] + (sum(ys) / len(ys) + 0.5) / scale_y]})
+        if len(candidates) != 1:
+            raise RuntimeError(f"BLOCKED marker {name} absent or ambiguous: candidates={candidates}; capture={path}")
+        result["markers"][name] = candidates[0]
+    return result
+
+
+def observe_geometry(binary, output, state, phase):
+    screens = state["screens"]
+    if len(screens) != 1 or screens[0]["x"] != 0 or screens[0]["y"] != 0:
+        raise RuntimeError("BLOCKED marker control requires one primary display at origin")
+    region = [0, 0, int(screens[0]["width"]), min(96, int(screens[0]["height"]))]
+    started = time.monotonic()
+    fixture_path = output / "fixture-geometry.json"
+    request = f"{phase}:{started}"
+    Path(str(fixture_path) + ".request").write_text(request)
+    deadline = time.monotonic() + 1.5
+    own = None
+    while time.monotonic() < deadline:
+        try:
+            value = json.loads(fixture_path.read_text())
+            if value["request"] == request:
+                own = value
+                break
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.02)
+    if own is None:
+        raise RuntimeError("BLOCKED fixture own-window snapshot deadline")
+    png, capture_log = output / f"{phase}.png", output / f"{phase}-capture.log"
+    capture_started = time.monotonic()
+    try:
+        bounded(["/usr/sbin/screencapture", "-x", "-t", "png", "-R" + ",".join(map(str, region)), str(png)], 3, capture_log)
+    except RuntimeError as error:
+        detail = capture_log.read_text(errors="replace") if capture_log.exists() else "no capture log"
+        raise RuntimeError(f"BLOCKED native screenshot: {error}; {detail}") from error
+    capture_finished = time.monotonic()
+    pixels = marker_pixels(png, region)
+    point = pixels["markers"]["magenta"]["centroidCG"]
+    ax_path = output / f"{phase}-ax.json"
+    bounded([str(binary), "--geometry", str(ax_path), str(point[0]), str(point[1])], 3, output / f"{phase}-ax.log")
+    ax = json.loads(ax_path.read_text())
+    if len(ax["freshIcons"]) != 2:
+        raise RuntimeError(f"BLOCKED fresh owner AX inventory missing: {ax}")
+    frame = ax["freshIcons"][0]["frameCG"]
+    record = {"phase": phase, "started": started, "finished": time.monotonic(), "own": own,
+              "captureStarted": capture_started, "captureFinished": capture_finished, "screen": screens[0],
+              "pixels": pixels, "ax": ax, "cachedIconFrame": state["iconFrame"],
+              "originalDriverIconPoint": state["icon"],
+              "pixelMinusFreshAXCenter": [point[0] - frame[0] - frame[2] / 2,
+                                          point[1] - frame[1] - frame[3] / 2]}
+    (output / f"{phase}-geometry.json").write_text(json.dumps(record, indent=2))
+    print("GEOMETRY " + json.dumps(record, sort_keys=True), flush=True)
+    return record
 
 
 def wait_state(path, process, seconds=12):
@@ -627,7 +885,7 @@ def main():
         return
     processes = []
     try:
-        fixture_argv = [str(fixture_binary), "--fixture", str(args.seconds + 5)]
+        fixture_argv = [str(fixture_binary), "--fixture", str(args.seconds + 5), str(args.output / "fixture-geometry.json")]
         if args.empty_title:
             fixture_argv.append("--empty-title")
         for argv, name in ((fixture_argv, "fixture.log"),
@@ -679,6 +937,7 @@ def main():
             event_offset = len(state["events"])
             if not state["mode"]:
                 raise RuntimeError("drag mode stopped before the scenario")
+            observe_geometry(binary, args.output, state, f"{name}-before")
             bounded([str(binary), "--drive", str(state_path), source, destination, kind],
                     8, args.output / f"drive-{len(results)}.log")
             state, events = wait_scenario(state_path, probe, event_offset, kind)
@@ -705,6 +964,7 @@ def main():
             state = wait_state(state_path, probe, 2)
             if not state["mode"] or not state["taps"] or not all(state["taps"]):
                 raise RuntimeError("drag mode stopped before the native Command check")
+            geometry_before = observe_geometry(binary, args.output, state, f"command-{kind}-before")
             start = state["icon"]
             events_before = len(state["events"])
             # The temporary bar destination exists only in Flux sessions. Native
@@ -712,6 +972,13 @@ def main():
             bounded([str(binary), "--drive", str(state_path), "icon", "native", kind],
                     4, args.output / f"command-{kind}.log")
             position_deadline = time.monotonic() + 4
+            geometry_after = observe_geometry(binary, args.output, wait_state(state_path, probe, 2), f"command-{kind}-after")
+            movement = {"magentaPixelDelta": [b - a for a, b in zip(
+                geometry_before["pixels"]["markers"]["magenta"]["centroidCG"],
+                geometry_after["pixels"]["markers"]["magenta"]["centroidCG"])],
+                "before": geometry_before["pixelMinusFreshAXCenter"], "after": geometry_after["pixelMinusFreshAXCenter"]}
+            (args.output / f"command-{kind}-geometry-comparison.json").write_text(json.dumps(movement, indent=2))
+            print("GEOMETRY comparison " + json.dumps(movement), flush=True)
             state = wait_state(state_path, probe, 2)
             while abs(state["icon"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
                 time.sleep(0.05)
