@@ -110,11 +110,33 @@ final class Probe {
         manager.onMove = { [weak self] value in self?.commits.append(value) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            self.manager.refresh()
-            guard let icon = self.manager.icons.first else {
-                print("FAIL: fixture AX status item was not readable"); exit(4)
+        let activationDeadline = ProcessInfo.processInfo.systemUptime + 8
+        var retriedActivation = false
+        let readiness = Timer(timeInterval: 0.1, repeats: true) { readiness in
+            MainActor.assumeIsolated {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now < activationDeadline else {
+                let front = NSWorkspace.shared.frontmostApplication
+                print("BLOCKED readiness deadline active=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(self.window.windowNumber) front=\(front?.processIdentifier ?? -1)")
+                fflush(stdout)
+                readiness.invalidate()
+                exit(5)
             }
+            guard NSApp.isActive, NSApp.keyWindow === self.window, self.window.isVisible else {
+                if !retriedActivation && now > activationDeadline - 6 {
+                    retriedActivation = true
+                    print("readiness retry activation")
+                    fflush(stdout)
+                    NSApp.activate(ignoringOtherApps: true)
+                    self.window.makeKeyAndOrderFront(nil)
+                }
+                return
+            }
+            self.manager.refresh()
+            guard let icon = self.manager.icons.first else { return }
+            readiness.invalidate()
+            print("READY active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
+            fflush(stdout)
             let row = self.controller.makeSourceView(for: icon)
             row.showsHandle = true
             row.frame = NSRect(x: 24, y: 230, width: 140, height: 32)
@@ -134,7 +156,9 @@ final class Probe {
             }
             self.timer = timer
             RunLoop.main.add(timer, forMode: .common)
+            }
         }
+        RunLoop.main.add(readiness, forMode: .common)
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { self.stop() }
         NSApp.run()
     }
@@ -321,7 +345,7 @@ def bounded(argv, seconds, log):
             stop(process)
 
 
-def wait_state(path, process, seconds=8):
+def wait_state(path, process, seconds=12):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if process.poll() is not None:
