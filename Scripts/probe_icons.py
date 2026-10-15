@@ -98,12 +98,6 @@ if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap"].contains(Com
     }
     if CommandLine.arguments[1] == "--drag-overlap" {
         Thread.sleep(forTimeInterval: 0.8)
-        for down in [true, false] {
-            let escape = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)!
-            escape.flags = []
-            escape.post(tap: .cghidEventTap)
-        }
-        Thread.sleep(forTimeInterval: 0.08)
     }
     post(.leftMouseUp, target)
     exit(0)
@@ -394,30 +388,30 @@ func probe() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 if let current = monitor { NSEvent.removeMonitor(current); monitor = nil }
                 guard driver.terminationStatus == 0, released, NSEvent.pressedMouseButtons & 1 == 0 else {
-                    print("FAIL: the overlapping native cancellation did not deliver mouse-up")
+                    print("FAIL: the overlapping native driver did not deliver mouse-up")
                     exit(1)
                 }
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                geometry("after-overlap-cancel")
+                geometry("after-overlap-release")
                 let fresh = MenuBarIconManager()
                 fresh.boundaryProvider = manager.boundaryProvider
                 fresh.refresh()
                 let items = fresh.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-                print("OVERLAP after Escape saved=\(String(describing: saved)) items=\(items.map { ($0.title, $0.section, $0.frame) }) boundaries=\(manager.boundaryProvider())")
+                print("OVERLAP after release saved=\(String(describing: saved)) items=\(items.map { ($0.title, $0.section, $0.frame) }) boundaries=\(manager.boundaryProvider())")
                 guard items.count == 1, MenuBarIconManager.section(for: items[0].frame,
-                    boundaries: manager.boundaryProvider()) == .shown else {
-                    print("FAIL: native overlap Escape did not restore actual Shown geometry")
+                    boundaries: manager.boundaryProvider()) == .alwaysHidden else {
+                    print("FAIL: the completed second native drag did not reach Always Hidden")
                     exit(1)
                 }
-                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false,
-                      (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false,
-                      items.count == 1, items[0].section == .shown,
+                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
+                      (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
+                      items.count == 1, items[0].section == .alwaysHidden,
                       MenuBarIconManager.section(for: items[0].frame,
-                                                boundaries: manager.boundaryProvider()) == .shown else {
-                    print("FAIL: cancelling the second native drag lost the first completed Shown move")
+                                                boundaries: manager.boundaryProvider()) == .alwaysHidden else {
+                    print("FAIL: delayed callbacks lost the latest completed native move")
                     exit(1)
                 }
-                print("PASS: delayed callbacks preserve the completed native move after a later cancelled drag")
+                print("PASS: delayed callbacks save the latest completed native move after held input ends")
                 finish()
             }
         }
