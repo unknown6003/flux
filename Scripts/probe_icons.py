@@ -291,6 +291,38 @@ func probe() {
             try? data.write(to: output.appendingPathComponent(stage + "-parents.json"), options: .atomic)
         }
         previousHit = hit
+        let scanStart = ProcessInfo.processInfo.systemUptime
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.03)
+        var scanX = screen.frame.maxX - 1
+        var queries = 0
+        var visibleFrames: [CGRect] = []
+        while scanX >= screen.frame.minX, queries < 256,
+              ProcessInfo.processInfo.systemUptime - scanStart < 1 {
+            queries += 1
+            var value: AXUIElement?
+            defer { scanX -= 8 }
+            guard AXUIElementCopyElementAtPosition(system, Float(scanX), Float(center.y), &value) == .success,
+                  let value else { continue }
+            AXUIElementSetMessagingTimeout(value, 0.03)
+            var role: CFTypeRef?, position: CFTypeRef?, size: CFTypeRef?
+            AXUIElementCopyAttributeValue(value, kAXRoleAttribute as CFString, &role)
+            guard role as? String == kAXMenuBarItemRole as String else { continue }
+            AXUIElementCopyAttributeValue(value, kAXPositionAttribute as CFString, &position)
+            AXUIElementCopyAttributeValue(value, kAXSizeAttribute as CFString, &size)
+            guard let position, let size, CFGetTypeID(position) == AXValueGetTypeID(),
+                  CFGetTypeID(size) == AXValueGetTypeID() else { continue }
+            var point = CGPoint.zero, dimensions = CGSize.zero
+            guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
+                  AXValueGetValue(size as! AXValue, .cgSize, &dimensions) else { continue }
+            let frame = CGRect(origin: point, size: dimensions)
+            guard frame.contains(CGPoint(x: scanX, y: center.y)) else { continue }
+            var ownerPID: pid_t = 0
+            AXUIElementGetPid(value, &ownerPID)
+            if ownerPID == pid, !visibleFrames.contains(frame) { visibleFrames.append(frame) }
+            scanX = min(scanX, frame.minX + 7)
+        }
+        print("GEOMETRY_SCAN \(stage) queries=\(queries) seconds=\(ProcessInfo.processInfo.systemUptime-scanStart) fixtureFrames=\(visibleFrames) marker=\(center)")
         return center
     }
     @MainActor
