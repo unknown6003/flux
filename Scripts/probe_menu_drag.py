@@ -101,10 +101,17 @@ final class MenuBarIconManager {
 }
 
 @MainActor
+final class EarlyReturnPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
 final class Probe {
     let controller = MenuBarDragController()
     let manager = MenuBarIconManager()
     var window: NSWindow!
+    var earlyReturn: NSPanel?
     var row: MenuBarDragSourceView?
     var events: [String] = []
     var commits: [String] = []
@@ -135,10 +142,38 @@ final class Probe {
             target.addSubview(label)
             content.addSubview(target)
         }
-        controller.trace = { [weak self] value in self?.events.append(value); print(value); fflush(stdout) }
+        controller.trace = { [weak self] value in
+            self?.events.append(value)
+            if value.hasPrefix("return created ") { self?.earlyReturn?.orderFrontRegardless() }
+            print(value); fflush(stdout)
+        }
         manager.onMove = { [weak self] value in self?.commits.append(value) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        if let screen = NSScreen.screens.first {
+            let height = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+            let frame = NSRect(x: screen.frame.minX, y: screen.frame.maxY - height,
+                               width: screen.frame.width, height: height)
+            let target = MenuBarDragDestinationView(frame: .zero)
+            target.controller = controller
+            target.section = .shown
+            target.showsReturnHint = true
+            let panel = EarlyReturnPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
+                                         backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.hidesOnDeactivate = true
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            panel.contentView = target
+            panel.ignoresMouseEvents = false
+            panel.orderFrontRegardless()
+            earlyReturn = panel
+            print("early interactive return window=\(panel.windowNumber) frame=\(panel.frame) level=\(panel.level.rawValue) ignore=\(panel.ignoresMouseEvents)")
+            fflush(stdout)
+        }
         let activationDeadline = ProcessInfo.processInfo.systemUptime + 8
         var retriedActivation = false
         let readiness = Timer(timeInterval: 0.1, repeats: true) { readiness in
@@ -196,6 +231,9 @@ final class Probe {
     func stop() {
         timer?.invalidate()
         controller.close()
+        earlyReturn?.orderOut(nil)
+        earlyReturn?.close()
+        earlyReturn = nil
         writeState()
         window.close()
         print("STOP buttons=\(NSEvent.pressedMouseButtons)")
