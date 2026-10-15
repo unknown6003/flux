@@ -516,6 +516,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func move(_ icon: Icon, to section: MenuBarSection) {
+        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: section) }) { return }
         guard let icon = refreshedIcon(icon),
               let targetX = Self.insertionX(for: section,
                                              iconWidth: icon.frame.width,
@@ -543,6 +544,7 @@ final class MenuBarIconManager: ObservableObject {
     /// Moves an icon one place within its current section. The drawer UI owns
     /// order, so the user never has to Cmd-drag a crowded menu bar.
     func move(_ icon: Icon, toward direction: MoveDirection) {
+        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, toward: direction) }) { return }
         guard let icon = refreshedIcon(icon), canMove(icon, toward: direction) else { return }
         let siblings = icons
             .filter { $0.section == icon.section }
@@ -634,6 +636,58 @@ final class MenuBarIconManager: ObservableObject {
         case .alwaysHidden:
             return boundaries.alwaysHidden.map { $0 - iconWidth - gap }
         }
+    }
+
+    private func visibleMenuWindow() -> Bool? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                      kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return windows.contains {
+            ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
+                && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
+        }
+    }
+
+    private func deferMoveUntilMenuCloses(_ action: @escaping () -> Void) -> Bool {
+        guard ControlItem.usesMacOS27Model else { return false }
+        guard let visible = visibleMenuWindow() else {
+            errorMessage = "Flux could not read the menu state. Try again."
+            return true
+        }
+        guard visible else { return false }
+        beginIconUpdate()
+        pendingMoveCount += 1
+        lastMoveReport = "waiting for menu to close"
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        let wasActive = NSApp.isActive
+        let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+        func cancel(_ message: String) {
+            finishMove()
+            errorMessage = message
+            lastMoveVerification = message
+        }
+        func poll() {
+            guard (!wasActive || NSApp.isActive),
+                  CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount else {
+                cancel("Icon move cancelled because input changed. Try again.")
+                return
+            }
+            guard let visible = visibleMenuWindow() else {
+                cancel("Flux could not read the menu state. Try again.")
+                return
+            }
+            if !visible {
+                action()
+                finishMove()
+                return
+            }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                cancel("Close the menu, then try moving the icon again.")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { poll() }
+        }
+        DispatchQueue.main.async { poll() }
+        return true
     }
 
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
