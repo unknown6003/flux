@@ -115,7 +115,17 @@ final class Probe {
     var screenRecords: [[String: Any]] = []
     var lastScreenNotification = -Double.infinity
     let busyOnly: Bool
-    init(state: String, busyOnly: Bool) { self.state = state; self.busyOnly = busyOnly }
+    let captureOffControl: Bool
+    var controlSnapshot = 0
+    init(state: String, busyOnly: Bool, captureOffControl: Bool) {
+        self.state = state; self.busyOnly = busyOnly; self.captureOffControl = captureOffControl
+    }
+    func captureIsAbsent() -> Bool {
+        guard !controller.isMenuBarDragging, let taps = ownTapStates(), taps.isEmpty else { return false }
+        return NSApp.windows.allSatisfy {
+            !($0.contentView is MenuBarDragSourceView) && !($0.contentView is MenuBarDragDestinationView)
+        }
+    }
     func screens() -> [String: Any] {
         func rect(_ value: CGRect) -> [Double] {
             [Double(value.minX), Double(value.minY), Double(value.width), Double(value.height)]
@@ -230,7 +240,8 @@ final class Probe {
                 exit(5)
             }
             if let enabledAt {
-                guard self.controller.isMenuBarDragging, currentConfiguration == enabledConfiguration else {
+                guard (self.captureOffControl ? self.captureIsAbsent() : self.controller.isMenuBarDragging),
+                      currentConfiguration == enabledConfiguration else {
                     self.recordScreens("BLOCKED armed readiness invalidated", after: configuration)
                     self.controller.close()
                     readiness.invalidate()
@@ -243,6 +254,11 @@ final class Probe {
                 let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
                     MainActor.assumeIsolated {
                         if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
+                        if self.captureOffControl, FileManager.default.fileExists(atPath: self.state + ".refresh") {
+                            try? FileManager.default.removeItem(atPath: self.state + ".refresh")
+                            self.manager.refresh()
+                            self.controlSnapshot += 1
+                        }
                         self.writeState()
                     }
                 }
@@ -277,6 +293,12 @@ final class Probe {
             print("READY stable2s active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
             print("FIXTURE labels=\(self.manager.labels)")
             fflush(stdout)
+            if self.captureOffControl {
+                self.controller.close()
+                guard self.captureIsAbsent() else {
+                    print("BLOCKED: capture-off control still has an input tap or drag window"); fflush(stdout); exit(5)
+                }
+            } else {
             let row = self.controller.makeSourceView(for: icon)
             row.showsHandle = true
             row.frame = NSRect(x: 24, y: 230, width: 140, height: 32)
@@ -286,6 +308,7 @@ final class Probe {
             self.controller.setMenuBarDragging(true)
             guard self.controller.isMenuBarDragging else {
                 print("BLOCKED: \(self.controller.message ?? "event tap unavailable")"); exit(5)
+            }
             }
             enabledAt = now
             enabledConfiguration = currentConfiguration
@@ -319,8 +342,8 @@ final class Probe {
         }
         targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - 10))
         targets["invalid"] = cg(NSPoint(x: primary.frame.minX + 30, y: primary.frame.minY + 80))
-        let state: [String: Any] = [
-            "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
+        var state: [String: Any] = [
+            "ready": row != nil || captureOffControl, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
             "moving": manager.isUpdatingIcons, "taps": ownTapStates() ?? [],
             "labels": manager.labels,
@@ -331,6 +354,17 @@ final class Probe {
             "screens": NSScreen.screens.map { ["x": $0.frame.minX, "y": $0.frame.minY,
                                                "width": $0.frame.width, "height": $0.frame.height] }
         ]
+        if captureOffControl {
+            state["control"] = ["captureOff": captureIsAbsent(), "tapQuerySucceeded": ownTapStates() != nil,
+                "sourceWindows": NSApp.windows.filter { $0.contentView is MenuBarDragSourceView }.count,
+                "returnWindows": NSApp.windows.filter { $0.contentView is MenuBarDragDestinationView }.count,
+                "snapshot": controlSnapshot,
+                "fixtureID": manager.icons.first?.id ?? "",
+                "fixtureTitle": manager.icons.first?.title ?? "",
+                "fixtureFrame": manager.icons.first.map {
+                    [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)]
+                } ?? []] as [String: Any]
+        }
         if let data = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: self.state), options: .atomic)
         }
@@ -505,7 +539,7 @@ struct Main {
                 CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
             }
         }
-        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
+        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only"), captureOffControl: args.contains("--capture-off-control")).start(seconds: Double(args[3])!) }
     }
 }
 '''
@@ -572,7 +606,7 @@ def main():
     parser.add_argument("--case", default="all", choices=(
         "all", "row-hidden", "menu-hidden", "menu-always", "row-bar", "row-hidden-escape",
         "menu-always-escape", "row-bar-escape", "invalid", "late-command",
-        "command-held", "command-rapid", "command-down-only"), help="Run one independent native scenario")
+        "command-held", "command-rapid", "command-down-only", "command-down-only-control"), help="Run one independent native scenario")
     parser.add_argument("--controller-ref", help="Compile the production controller from this Git ref for regression proof")
     parser.add_argument("--empty-title", action="store_true", help="Require the fixture's empty AXTitle fallback")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91), metavar="25..90")
@@ -618,7 +652,8 @@ def main():
             fixture_argv.append("--empty-title")
         for argv, name in ((fixture_argv, "fixture.log"),
                            ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)]
-                            + (["--busy-only"] if args.busy_only else []), "probe.log")):
+                            + (["--busy-only"] if args.busy_only else [])
+                            + (["--capture-off-control"] if args.case == "command-down-only-control" else []), "probe.log")):
             with (args.output / name).open("wb") as log:
                 processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         probe = processes[-1]
@@ -629,6 +664,55 @@ def main():
             raise RuntimeError(f"fixture did not expose an empty AXTitle: {state['labels']}")
         started = time.monotonic()
         results = []
+        if args.case == "command-down-only-control":
+            def snapshot():
+                previous = wait_state(state_path, probe, 1)["control"]["snapshot"]
+                Path(str(state_path) + ".refresh").touch()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    value = wait_state(state_path, probe, 1)
+                    control = value["control"]
+                    if control["snapshot"] > previous:
+                        if (value["mode"] or value["taps"] or not control["captureOff"]
+                                or not control["tapQuerySucceeded"] or control["sourceWindows"]
+                                or control["returnWindows"]):
+                            raise RuntimeError(f"capture-off control is armed: {value}")
+                        return value
+                    time.sleep(0.02)
+                raise RuntimeError("capture-off fresh AX snapshot deadline")
+
+            before_state = snapshot()
+            before_control = before_state["control"]
+            frame_before = before_control["fixtureFrame"]
+            if len(frame_before) != 4 or not before_control["fixtureTitle"] or before_state["buttons"]:
+                raise RuntimeError(f"capture-off missing original fixture frame: {before_control}")
+            print(f"CONTROL before mode={before_state['mode']} taps={before_state['taps']} {before_control}", flush=True)
+            event_offset = len(before_state["events"])
+            bounded([str(binary), "--drive", str(state_path), "source", "native", "down-only"],
+                    4, args.output / "command-down-only-control.log")
+            deadline = time.monotonic() + 4
+            state = snapshot()
+            while (len(state["control"]["fixtureFrame"]) == 4
+                   and abs(state["control"]["fixtureFrame"][0] - frame_before[0]) < 10
+                   and time.monotonic() < deadline):
+                time.sleep(0.05)
+                state = snapshot()
+            after_control = state["control"]
+            frame_after = after_control["fixtureFrame"]
+            evidence = {"before": before_state, "after": state}
+            (args.output / "control.json").write_text(json.dumps(evidence, indent=2))
+            print(f"CONTROL after mode={state['mode']} taps={state['taps']} {after_control}", flush=True)
+            if state["screens"] != before_state["screens"]:
+                raise RuntimeError("capture-off display geometry changed during the control")
+            if (after_control["fixtureTitle"] != before_control["fixtureTitle"] or len(frame_after) != 4
+                    or frame_after[2:] != frame_before[2:] or frame_after[1] != frame_before[1]):
+                raise RuntimeError(f"capture-off fixture identity/size/row changed: {frame_before} -> {frame_after}")
+            if any(event.startswith(("tap down", "source down", "begin ", "native began ", "commit "))
+                   for event in state["events"][event_offset:]) or state["commits"] or state["buttons"]:
+                raise RuntimeError(f"capture-off input was captured or left held: {state}")
+            if abs(frame_after[0] - frame_before[0]) < 10:
+                raise RuntimeError(f"capture-off down-only driver did not move fixture: {frame_before} -> {frame_after}")
+            results.append(f"PASS capture-off down-only native frame movement {frame_before} -> {frame_after}")
         if args.busy_only:
             deadline = time.monotonic() + 6
             while "busy probe passed" not in state["events"] and time.monotonic() < deadline:
