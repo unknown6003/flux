@@ -245,8 +245,8 @@ func probe() {
     func moveAndClose() {
         manager.refresh()
         guard let icon = fixture(), icon.section == .hidden else { exit(1) }
-        let started = ProcessInfo.processInfo.systemUptime
         manager.move(icon, to: .shown)
+        let started = ProcessInfo.processInfo.systemUptime
         @MainActor
         func closeAfterMovement() {
             manager.refresh()
@@ -339,15 +339,17 @@ func probe() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
             manager.refresh()
-            print("OVERLAP held buttons=\(NSEvent.pressedMouseButtons) actual=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) saved=\(String(describing: saved))")
-            guard NSEvent.pressedMouseButtons & 1 != 0, let current = fixture(),
-                  MenuBarIconManager.section(for: current.frame,
-                                            boundaries: manager.boundaryProvider()) == .alwaysHidden else {
-                print("FAIL: the overlapping native control did not hold an unfinished Always Hidden drag")
+            let pointer = CGEvent(source: nil)?.location
+            print("OVERLAP held buttons=\(NSEvent.pressedMouseButtons) pointer=\(String(describing: pointer)) actual=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) saved=\(String(describing: saved))")
+            guard NSEvent.pressedMouseButtons & 1 != 0, let pointer,
+                  let alwaysX = manager.boundaryProvider().alwaysHidden,
+                  pointer.x < alwaysX - 12 else {
+                print("FAIL: the overlapping native control did not hold its drag across Always Hidden")
                 exit(1)
             }
-            guard (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                print("FAIL: an older native callback saved the unfinished second drag as Always Hidden")
+            guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
+                  (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                print("FAIL: an older native callback saved while a later drag was held")
                 exit(1)
             }
             print("PASS: the held second native drag has not overwritten saved assignments")
