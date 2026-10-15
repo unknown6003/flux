@@ -119,6 +119,7 @@ final class Probe {
         controller.trace = { [weak self] value in
             self?.events.append(value)
             if value.hasPrefix("native began ") { self?.earlyReturn?.ignoresMouseEvents = false }
+            if value.hasPrefix("return created ") { self?.earlyReturn?.orderFrontRegardless() }
             if value.hasPrefix("ended ") { self?.earlyReturn?.ignoresMouseEvents = true }
             print(value); fflush(stdout)
         }
