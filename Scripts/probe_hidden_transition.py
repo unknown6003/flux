@@ -89,9 +89,9 @@ MainActor.assumeIsolated {
         for y in 0..<bitmap.pixelsHigh {
             for x in 0..<bitmap.pixelsWide {
                 if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
-                   color.blueComponent > 0.95, color.alphaComponent > 0.9 {
-                    if color.redComponent > 0.95, color.greenComponent < 0.05 { count += 1 }
-                    if color.greenComponent > 0.95, color.redComponent < 0.05 { normalPixels += 1 }
+                   color.blueComponent > 0.7, color.alphaComponent > 0.9 {
+                    if color.redComponent > 0.7, color.greenComponent < 0.4 { count += 1 }
+                    if color.greenComponent > 0.7, color.redComponent < 0.4 { normalPixels += 1 }
                 }
             }
         }
@@ -113,7 +113,7 @@ MainActor.assumeIsolated {
             MainActor.assumeIsolated {
                 let pixels = visiblePixels()
                 maximum = max(maximum, pixels)
-                print("TRANSITION \(step) SAMPLE \(samples) PIXELS \(pixels)")
+                print("TRANSITION \(step) SAMPLE \(samples) PIXELS \(pixels) NORMAL \(normalPixels)")
                 if pixels > 0 {
                     timer.invalidate()
                     finish(false, "FAIL: an Always Hidden icon appeared during transition \(step)")
@@ -171,13 +171,20 @@ NORMAL_FIXTURE = r'''
 import AppKit
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+let suite = Bundle.main.bundleIdentifier!
+UserDefaults.standard.set(150, forKey: "NSStatusItem Preferred Position normal-transition-probe")
 let item = NSStatusBar.system.statusItem(withLength: 24)
+item.autosaveName = "normal-transition-probe"
 let marker = NSImage(size: NSSize(width: 18, height: 18))
 marker.lockFocus()
 NSColor(srgbRed: 0, green: 1, blue: 1, alpha: 1).setFill()
 NSRect(x: 0, y: 0, width: 18, height: 18).fill()
 marker.unlockFocus()
 item.button?.image = marker
+DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+    print("NORMAL_FIXTURE_FRAME \(String(describing: item.button?.window?.frame))")
+    fflush(stdout)
+}
 DispatchQueue.main.asyncAfter(deadline: .now() + 30) { exit(1) }
 app.run()
 '''
@@ -246,6 +253,11 @@ def main():
             finally:
                 run([register, "-u", str(normal_bundle)], 20)
                 run([register, "-u", str(bundle)], 20)
+                try:
+                    run(["/usr/bin/defaults", "delete", normal_id], 10, capture=True)
+                except RuntimeError as error:
+                    if "not found" not in str(error):
+                        raise
 
 
 if __name__ == "__main__":
