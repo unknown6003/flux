@@ -173,14 +173,9 @@ final class MenuBarDragController: ObservableObject {
         let image = NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: current.title)!
         item.setDraggingFrame(NSRect(x: 0, y: 0, width: 28, height: 24), contents: image)
         setPassThrough(true)
+        showReturnPanels()
         let session = view.beginDraggingSession(with: [item], event: mouseDown, source: view)
         session.animatesToStartingPositionsOnCancelOrFail = true
-        trace?("return scheduled")
-        // Defer until AppKit has registered the source. These windows receive drops only.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.active?.token == token else { return }
-            self.showReturnPanels()
-        }
         trace?("begin window=\(mouseDown.windowNumber) source=\(view.window?.windowNumber ?? -1)")
         return session
     }
