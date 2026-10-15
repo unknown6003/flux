@@ -20,7 +20,7 @@ final class MenuBarDragController: ObservableObject {
     private var tapSource: CFRunLoopSource?
     private var overlays: [NSPanel] = []
     private var overlayIcons: [MenuBarIconManager.Icon] = []
-    private var returnPanels: [NSPanel] = []
+    private var returnPanels: [NSWindow] = []
     private var commandDown = false
     private var nativeGesture = false
     private var refreshing = false
@@ -36,7 +36,7 @@ final class MenuBarDragController: ObservableObject {
         if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
-        let panels = overlays + returnPanels
+        let panels = overlays.map { $0 as NSWindow } + returnPanels
         DispatchQueue.main.async {
             for panel in panels {
                 panel.ignoresMouseEvents = true
@@ -375,17 +375,32 @@ final class MenuBarDragController: ObservableObject {
 
     private func showReturnPanels() {
         trace?("return setup canManage=\(canManage) active=\(active != nil)")
-        guard canManage, active != nil else { return }
+        guard canManage, active != nil, let settingsWindow else { return }
         removeReturnPanels()
         for screen in NSScreen.screens {
-            let height = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-            let frame = NSRect(x: screen.frame.minX, y: screen.frame.maxY - height,
-                               width: screen.frame.width, height: height)
-            let view = MenuBarDragDestinationView(frame: .zero)
+            let barHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
+            let x = min(max(settingsWindow.frame.maxX + 20, screen.frame.minX),
+                        max(screen.frame.minX, screen.frame.maxX - 250))
+            let frame = NSRect(x: x, y: screen.frame.maxY - barHeight - 64 - 8, width: 230, height: 64)
+            guard screen.frame.contains(frame) else { continue }
+            let panel = MenuBarReturnWindow(contentRect: frame, styleMask: [.borderless],
+                                            backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            panel.isOpaque = true
+            panel.backgroundColor = .windowBackgroundColor
+            panel.hidesOnDeactivate = true
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            let view = MenuBarDragDestinationView(frame: panel.contentView!.bounds.insetBy(dx: 10, dy: 10))
             view.controller = self
             view.section = .shown
             view.showsReturnHint = true
-            let panel = Self.panel(frame: frame, view: view)
+            view.autoresizingMask = [.width, .height]
+            view.toolTip = "Drop here to keep this icon visible"
+            view.setAccessibilityElement(true)
+            view.setAccessibilityRole(.group)
+            view.setAccessibilityLabel("Keep shown. Drop here to keep this icon visible.")
+            panel.contentView!.addSubview(view)
             panel.orderFrontRegardless()
             returnPanels.append(panel)
             trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
@@ -443,6 +458,11 @@ final class MenuBarDragController: ObservableObject {
 private final class MenuBarDragPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+private final class MenuBarReturnWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { true }
 }
 
 @MainActor
@@ -538,10 +558,16 @@ final class MenuBarDragDestinationView: NSView {
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) { targeted = false }
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { controller?.accepts(sender) == true }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let accepted = controller?.accepts(sender) == true
+        controller?.trace?("prepared \(section.rawValue) valid=\(accepted)")
+        return accepted
+    }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         targeted = false
-        return controller?.performDrop(sender, to: section) == true
+        let committed = controller?.performDrop(sender, to: section) == true
+        controller?.trace?("performed \(section.rawValue) valid=\(committed)")
+        return committed
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -549,10 +575,14 @@ final class MenuBarDragDestinationView: NSView {
         NSColor.controlAccentColor.withAlphaComponent(targeted ? 0.24 : 0.10).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6).fill()
         if showsReturnHint {
-            let text = "Drop to keep Shown" as NSString
-            text.draw(at: NSPoint(x: 12, y: max(2, (bounds.height - 15) / 2)),
+            let text = "Keep shown" as NSString
+            text.draw(at: NSPoint(x: 12, y: bounds.midY + 2),
                       withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold),
                                        .foregroundColor: NSColor.labelColor])
+            let hint = "Drop here to keep this icon visible" as NSString
+            hint.draw(at: NSPoint(x: 12, y: bounds.midY - 13),
+                      withAttributes: [.font: NSFont.systemFont(ofSize: 10),
+                                       .foregroundColor: NSColor.secondaryLabelColor])
         }
     }
 }

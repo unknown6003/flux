@@ -49,7 +49,7 @@ struct MenuBarIconDragHandle: NSViewRepresentable {
     func updateNSView(_ view: MenuBarDragSourceView, context: Context) {
         view.controller = controller
         view.icon = icon
-        view.toolTip = "Drag \(icon.title) into a section or back to the menu bar"
+        view.toolTip = "Drag \(icon.title) into a section or onto Keep shown below the menu bar"
         view.setAccessibilityLabel("Drag \(icon.title)")
     }
 }
