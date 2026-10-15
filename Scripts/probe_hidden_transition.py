@@ -37,6 +37,18 @@ def run(command, seconds, *, capture=False):
 FIXTURE = r'''
 import AppKit
 
+private extension MenuBarAssessment {
+    var transitionProbeState: String {
+        "active=\(active?.allowed ?? []) pending=\(pending != nil)"
+    }
+}
+
+private extension MacOS27Hider {
+    var transitionProbeState: String {
+        "hidden=\(hidden.sorted()) always=\(alwaysHidden.sorted()) \(assessment.transitionProbeState)"
+    }
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
@@ -54,6 +66,7 @@ MainActor.assumeIsolated {
     marker.unlockFocus()
     item.button?.image = marker
     let hider = MacOS27Hider(defaults: cache, trustProvider: { false })
+    hider.onStatus = { print("HIDE_STATUS \($0 ?? "accepted")") }
     let savedCursor = CGEvent(source: nil)!.location
     var region = CGRect.zero
     var captures = 0
@@ -108,6 +121,8 @@ MainActor.assumeIsolated {
             hider.apply(revealHidden: step == 0, revealAlwaysHidden: false,
                         chevronX: { region.maxX }, alwaysX: { region.maxX })
         }
+        print("TRANSITION_START \(step) \(hider.transitionProbeState)")
+        print("NORMAL_OWNER \(NSRunningApplication.runningApplications(withBundleIdentifier: CommandLine.arguments[2]).map { $0.bundleIdentifier ?? "nil" })")
         var samples = 0
         let timer = Timer(timeInterval: 0.04, repeats: true) { timer in
             MainActor.assumeIsolated {
@@ -121,6 +136,7 @@ MainActor.assumeIsolated {
                 samples += 1
                 if samples == 12 {
                     timer.invalidate()
+                    print("TRANSITION_END \(step) \(hider.transitionProbeState)")
                     guard (normalPixels > 0) == (step == 0) else {
                         finish(false, "FAIL: normal Hidden icon did not follow transition \(step)")
                     }
