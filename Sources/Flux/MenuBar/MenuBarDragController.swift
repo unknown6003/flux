@@ -285,6 +285,9 @@ final class MenuBarDragController: ObservableObject {
         // Never replay, consume, or transplant a foreign mouse event. Set the
         // window input policy before returning the original Command-down.
         setPassThrough(shouldPassThrough)
+        if active == nil && (commandDown || nativeGesture) {
+            for panel in overlays { panel.orderOut(nil) }
+        }
         if type == .leftMouseUp {
             let refreshNativePosition = nativeGesture && active == nil
             nativeGesture = false
