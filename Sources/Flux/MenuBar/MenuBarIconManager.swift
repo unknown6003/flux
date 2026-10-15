@@ -650,12 +650,14 @@ final class MenuBarIconManager: ObservableObject {
     private func verifyMove(icon: Icon,
                             expectedSection: MenuBarSection,
                             target: CGPoint,
-                            retryWithDrag: Bool) {
+                            retryWithDrag: Bool,
+                            inventoryAttempts: Int = 0) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self else { return }
             guard !ControlItem.usesMacOS27Model || self.nativeInputIsQuiet() else {
                 self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                target: target, retryWithDrag: retryWithDrag)
+                                target: target, retryWithDrag: retryWithDrag,
+                                inventoryAttempts: inventoryAttempts)
                 return
             }
             let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
@@ -667,10 +669,25 @@ final class MenuBarIconManager: ObservableObject {
             self.refresh()
             guard canCommit() else {
                 self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                target: target, retryWithDrag: retryWithDrag)
+                                target: target, retryWithDrag: retryWithDrag,
+                                inventoryAttempts: inventoryAttempts)
                 return
             }
             guard let current = self.icons.first(where: { $0.id == icon.id }) else {
+                if inventoryAttempts < 2 {
+                    self.verifyMove(icon: icon, expectedSection: expectedSection,
+                                    target: target, retryWithDrag: retryWithDrag,
+                                    inventoryAttempts: inventoryAttempts + 1)
+                    return
+                }
+                self.assignedSections.removeValue(forKey: icon.id)
+                if ControlItem.usesMacOS27Model,
+                   let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
+                    self.nativeSaveFailures.insert(String(bundleID))
+                }
+                self.refresh()
+                self.errorMessage = self.nativeSaveError
+                    ?? "Flux could not verify the icon's new position. Try again."
                 self.finishMove()
                 return
             }
@@ -680,7 +697,8 @@ final class MenuBarIconManager: ObservableObject {
                 if !self.saveLayout(for: current, canCommit: canCommit) {
                     guard canCommit() else {
                         self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                        target: target, retryWithDrag: retryWithDrag)
+                                        target: target, retryWithDrag: retryWithDrag,
+                                        inventoryAttempts: inventoryAttempts)
                         return
                     }
                     self.assignedSections.removeValue(forKey: current.id)

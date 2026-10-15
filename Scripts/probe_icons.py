@@ -37,6 +37,8 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-close", action="store_true")
 parser.add_argument("--move-close", action="store_true")
+parser.add_argument("--move-refresh-retry", action="store_true")
+parser.add_argument("--move-refresh-failure", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
@@ -187,6 +189,8 @@ func probe() {
     manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
     let closeTest = CommandLine.arguments.contains("--native-close")
         || CommandLine.arguments.contains("--move-close")
+        || CommandLine.arguments.contains("--move-refresh-retry")
+        || CommandLine.arguments.contains("--move-refresh-failure")
         || CommandLine.arguments.contains("--native-overlap")
         || CommandLine.arguments.contains("--native-geometry")
         || CommandLine.arguments.contains("--native-refresh-retry")
@@ -319,11 +323,36 @@ func probe() {
                 exit(1)
             }
             print("Closed management during programmatic verification after reaching actual Shown geometry")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let failedRead = CommandLine.arguments.contains("--move-refresh-retry")
+            let exhausted = CommandLine.arguments.contains("--move-refresh-failure")
+            if failedRead || exhausted {
+                guard let physical = geometry("programmatic-shown"),
+                      abs(physical.x - current.frame.midX) <= 1 else {
+                    print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
+                    exit(1)
+                }
+                inventoryFailures = exhausted ? 3 : 1
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                if exhausted {
+                    manager.refresh()
+                    guard inventoryFailures == 0, !manager.isUpdatingIcons,
+                          manager.errorMessage?.contains("could not save") == true,
+                          fixture()?.section == .hidden,
+                          (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true else {
+                        print("FAIL: exhausted programmatic inventory retries left a false Shown assignment or no notice")
+                        exit(1)
+                    }
+                    print("PASS: programmatic inventory retries stop, clear the override and retain a save notice")
+                    finish()
+                }
                 guard !manager.isUpdatingIcons,
+                      inventoryFailures == 0,
                       (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                    print("FAIL: closing management lost the pending programmatic Shown assignment")
+                    print(failedRead
+                        ? "FAIL: a transient programmatic inventory read lost the Shown assignment"
+                        : "FAIL: closing management lost the pending programmatic Shown assignment")
                     exit(1)
                 }
                 let fresh = MenuBarIconManager()
@@ -715,7 +744,9 @@ func probe() {
             nativeMove()
             return
         }
-        if CommandLine.arguments.contains("--move-close") {
+        if CommandLine.arguments.contains("--move-close")
+            || CommandLine.arguments.contains("--move-refresh-retry")
+            || CommandLine.arguments.contains("--move-refresh-failure") {
             moveAndClose()
             return
         }
@@ -830,24 +861,29 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
         "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
         "Sources/Flux/Support/AccessibilityAccess.swift"])
-    close_test = options.native_close or options.move_close or options.native_overlap or options.native_geometry or options.native_refresh_retry
+    close_test = (options.native_close or options.move_close or options.native_overlap
+                  or options.native_geometry or options.native_refresh_retry
+                  or options.move_refresh_retry or options.move_refresh_failure)
+    capture_geometry = options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
     geometry = temporary / "geometry"
     geometry.mkdir()
     fixture_flags = (["--single"] if close_test else [])
-    if options.native_geometry:
+    if capture_geometry:
         fixture_flags += ["--geometry-output", str(geometry / "fixture.json")]
     process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
     started_at = time.time()
     try:
         selected = [("--native-sibling", options.native_sibling), ("--native-close", options.native_close),
                     ("--move-close", options.move_close), ("--native-overlap", options.native_overlap),
+                    ("--move-refresh-retry", options.move_refresh_retry),
+                    ("--move-refresh-failure", options.move_refresh_failure),
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap)]
         flags = [flag for flag, enabled in selected if enabled]
-        if options.native_geometry:
+        if capture_geometry:
             flags += ["--geometry-output", str(geometry)]
         command([str(binary), str(fixture)] + flags, 30)
-        if options.native_geometry:
+        if capture_geometry:
             shutil.copytree(geometry, root / "build/icon-probe/geometry", dirs_exist_ok=True)
     except BaseException:
         label = (options.manager_ref or "current")[:8] + ("-overlap" if options.native_overlap else
