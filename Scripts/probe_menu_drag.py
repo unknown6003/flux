@@ -24,6 +24,12 @@ import AppKit
 import ApplicationServices
 import Combine
 
+enum ControlItem {
+    static var usesMacOS27Model: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+    }
+}
+
 @MainActor
 final class MenuBarIconManager {
     struct Icon: Identifiable, Equatable {
