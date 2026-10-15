@@ -59,8 +59,9 @@ final class MenuBarIconManager: ObservableObject {
         nativeSaveFailures.isEmpty ? nil : "Flux could not save an icon's new position. Try again."
     }
     private let trustProvider: () -> Bool
+    private let injectedHider: MacOS27Hider?
     private lazy var macOS27Hider: MacOS27Hider = {
-        let hider = MacOS27Hider()
+        let hider = injectedHider ?? MacOS27Hider()
         hider.onStatus = { [weak self] message in self?.errorMessage = self?.nativeSaveError ?? message }
         hider.onReadState = { [weak self] reading in
             if reading { self?.beginIconUpdate() }
@@ -74,8 +75,10 @@ final class MenuBarIconManager: ObservableObject {
         ControlItem.usesMacOS27Model && macOS27Hider.isAvailable && macOS27Hider.hasSavedLayout
     }
 
-    init(trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
+    init(trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() },
+         hider: MacOS27Hider? = nil) {
         self.trustProvider = trustProvider
+        injectedHider = hider
         observeAppActivation()
         observeNativeMoves()
     }

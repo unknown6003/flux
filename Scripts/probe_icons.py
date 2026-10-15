@@ -39,6 +39,8 @@ parser.add_argument("--native-close", action="store_true")
 parser.add_argument("--move-close", action="store_true")
 parser.add_argument("--move-refresh-retry", action="store_true")
 parser.add_argument("--move-refresh-failure", action="store_true")
+parser.add_argument("--move-save-retry", action="store_true")
+parser.add_argument("--move-save-failure", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
@@ -174,6 +176,17 @@ func probe() {
     let hidden = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).hidden")
     let always = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).always")
     var inventoryFailures = 0
+    var saveFailures = 0
+    let saveTest = CommandLine.arguments.contains("--move-save-retry")
+        || CommandLine.arguments.contains("--move-save-failure")
+    let hider = saveTest ? MacOS27Hider(trustProvider: {
+        if saveFailures > 0 {
+            saveFailures -= 1
+            print("SAVE injected one failed position read")
+            return false
+        }
+        return AccessibilityAccess.isGranted()
+    }) : nil
     let manager = MenuBarIconManager(trustProvider: {
         if inventoryFailures > 0 {
             inventoryFailures -= 1
@@ -181,7 +194,7 @@ func probe() {
             return false
         }
         return AccessibilityAccess.isGranted()
-    })
+    }, hider: hider)
     manager.boundaryProvider = {
         (hidden: chevron.statusItem.button?.window?.frame.minX,
          alwaysHidden: always.statusItem.button?.window?.frame.minX)
@@ -191,6 +204,7 @@ func probe() {
         || CommandLine.arguments.contains("--move-close")
         || CommandLine.arguments.contains("--move-refresh-retry")
         || CommandLine.arguments.contains("--move-refresh-failure")
+        || saveTest
         || CommandLine.arguments.contains("--native-overlap")
         || CommandLine.arguments.contains("--native-geometry")
         || CommandLine.arguments.contains("--native-refresh-retry")
@@ -324,20 +338,23 @@ func probe() {
             }
             print("Closed management during programmatic verification after reaching actual Shown geometry")
             let failedRead = CommandLine.arguments.contains("--move-refresh-retry")
+                || CommandLine.arguments.contains("--move-save-retry")
             let exhausted = CommandLine.arguments.contains("--move-refresh-failure")
+                || CommandLine.arguments.contains("--move-save-failure")
             if failedRead || exhausted {
                 guard let physical = geometry("programmatic-shown"),
                       abs(physical.x - current.frame.midX) <= 1 else {
                     print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
                     exit(1)
                 }
-                inventoryFailures = exhausted ? 3 : 1
+                if saveTest { saveFailures = exhausted ? 3 : 1 }
+                else { inventoryFailures = exhausted ? 3 : 1 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
                 if exhausted {
                     manager.refresh()
-                    guard inventoryFailures == 0, !manager.isUpdatingIcons,
+                    guard inventoryFailures == 0, saveFailures == 0, !manager.isUpdatingIcons,
                           manager.errorMessage?.contains("could not save") == true,
                           fixture()?.section == .hidden,
                           (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true else {
@@ -349,9 +366,11 @@ func probe() {
                 }
                 guard !manager.isUpdatingIcons,
                       inventoryFailures == 0,
+                      saveFailures == 0,
                       (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
                     print(failedRead
-                        ? "FAIL: a transient programmatic inventory read lost the Shown assignment"
+                        ? (saveTest ? "FAIL: a transient position save lost the programmatic Shown assignment"
+                            : "FAIL: a transient programmatic inventory read lost the Shown assignment")
                         : "FAIL: closing management lost the pending programmatic Shown assignment")
                     exit(1)
                 }
@@ -750,6 +769,10 @@ func probe() {
             moveAndClose()
             return
         }
+        if saveTest {
+            moveAndClose()
+            return
+        }
         guard manager.canMove(moving, toward: .towardClock) else { exit(1) }
         manager.move(moving, toward: .towardClock)
         guard manager.isUpdatingIcons else {
@@ -847,6 +870,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         sources = temporary / name
         sources.mkdir()
         main = sources / "main.swift"
+        if "private let injectedHider:" not in manager_source.read_text():
+            code = code.replace("}, hider: hider)", "})")
         main.write_text(code)
         command(["swiftc", "-swift-version", "5", str(main)] +
                 [str(manager_source if dependency == manager_path else root / dependency)
@@ -863,8 +888,10 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/Support/AccessibilityAccess.swift"])
     close_test = (options.native_close or options.move_close or options.native_overlap
                   or options.native_geometry or options.native_refresh_retry
-                  or options.move_refresh_retry or options.move_refresh_failure)
-    capture_geometry = options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
+                  or options.move_refresh_retry or options.move_refresh_failure
+                  or options.move_save_retry or options.move_save_failure)
+    capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
+                        or options.move_save_retry or options.move_save_failure)
     geometry = temporary / "geometry"
     geometry.mkdir()
     fixture_flags = (["--single"] if close_test else [])
@@ -877,6 +904,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--move-close", options.move_close), ("--native-overlap", options.native_overlap),
                     ("--move-refresh-retry", options.move_refresh_retry),
                     ("--move-refresh-failure", options.move_refresh_failure),
+                    ("--move-save-retry", options.move_save_retry),
+                    ("--move-save-failure", options.move_save_failure),
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap)]
         flags = [flag for flag, enabled in selected if enabled]
