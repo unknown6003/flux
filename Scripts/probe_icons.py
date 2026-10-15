@@ -377,6 +377,31 @@ func probe() {
                         exit(1)
                     }
                     print("PASS: programmatic inventory retries stop, clear the override and retain a save notice")
+                    if saveTest {
+                        manager.beginIconManagement()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                            guard let retry = fixture(), manager.errorMessage?.contains("could not save") == true else {
+                                print("FAIL: the same-manager retry lost its failed-save control")
+                                exit(1)
+                            }
+                            manager.move(retry, to: .shown)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                                guard !manager.isUpdatingIcons,
+                                      (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                                    print("FAIL: the same-manager retry did not save Shown")
+                                    exit(1)
+                                }
+                                guard manager.errorMessage == nil else {
+                                    print("FAIL: a successful retry retained the old save warning")
+                                    exit(1)
+                                }
+                                print("PASS: a successful same-app retry clears its saved failure notice")
+                                finish()
+                            }
+                        }
+                        return
+                    }
                     finish()
                 }
                 guard !manager.isUpdatingIcons,
