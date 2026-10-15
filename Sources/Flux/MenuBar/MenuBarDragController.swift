@@ -354,6 +354,14 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
 
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        controller?.trace?("native began window=\(window?.windowNumber ?? -1) point=\(screenPoint)")
+    }
+
+    func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
+        controller?.trace?("native moved point=\(screenPoint)")
+    }
+
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         down = nil
         controller?.ended(operation: operation)

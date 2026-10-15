@@ -238,6 +238,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
           let start = state[source] as? [Double], start.count == 2,
           let targets = state["targets"] as? [String: [Double]],
           let target = destination == "native" ? [start[0] - 75, start[1]] : targets[destination] else { exit(6) }
+    print("driver source=\(source) start=\(start) destination=\(destination) target=\(target) kind=\(kind)")
+    fflush(stdout)
     let command = kind == "held" || kind == "rapid" || kind == "down-only"
     let eventOffset = (state["events"] as? [String] ?? []).count
     func events() -> [String] {
@@ -288,11 +290,6 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let point = [start[0] + (target[0] - start[0]) * fraction,
                      start[1] + (target[1] - start[1]) * fraction]
         mouse(.leftMouseDragged, point, command || kind == "late-command" ? .maskCommand : [])
-        if step == 1 && !command && kind != "late-command" {
-            guard waitFor({ $0.contains(where: { $0.hasPrefix("begin ") }) }) else {
-                fail("source never began a session")
-            }
-        }
         Thread.sleep(forTimeInterval: 0.018)
     }
     Thread.sleep(forTimeInterval: 0.15)
@@ -455,13 +452,14 @@ def main():
                     8, args.output / f"drive-{len(results)}.log")
             state, events = wait_scenario(state_path, probe, event_offset, kind)
             begins = [event for event in events if event.startswith("begin ")]
+            native_begins = [event for event in events if event.startswith("native began ")]
             ends = [event for event in events if event.startswith("ended ")]
             if kind == "late-command":
-                if begins or ends:
+                if begins or native_begins or ends:
                     raise RuntimeError(f"late Command started a session: {events}")
             else:
                 wanted_end = "ended operation=16" if expected else "ended operation=0"
-                if len(begins) != 1 or ends != [wanted_end]:
+                if len(begins) != 1 or len(native_begins) != 1 or ends != [wanted_end]:
                     raise RuntimeError(f"wrong session callbacks: {events}")
             actual = state["commits"][before:]
             wanted = [expected] if expected else []
