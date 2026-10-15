@@ -39,6 +39,10 @@ private final class MenuBarAssessment {
     var allowed: [String]? { active?.allowed }
     var isRestricting: Bool { active != nil || pending != nil }
 
+    func permitsPositionRead(for bundleID: String) -> Bool {
+        pending == nil && (active?.allowed.contains(bundleID) ?? true)
+    }
+
     func restrict(to bundleIDs: [String]) {
         guard let classes, bundleIDs != allowed else { return }
         let allocated = (classes.configuration as AnyObject)
@@ -183,6 +187,10 @@ final class MacOS27Hider {
         guard hasSavedLayout else { return nil }
         if alwaysHidden.contains(bundleID) { return .alwaysHidden }
         return hidden.contains(bundleID) ? .hidden : .shown
+    }
+
+    func canReadPosition(for bundleID: String) -> Bool {
+        assessment.permitsPositionRead(for: bundleID)
     }
 
     @discardableResult
@@ -421,11 +429,16 @@ final class MacOS27Hider {
             else { return }
             for child in children {
                 guard let position = read(child, kAXPositionAttribute),
-                      CFGetTypeID(position) == AXValueGetTypeID() else { continue }
+                      CFGetTypeID(position) == AXValueGetTypeID(),
+                      let size = read(child, kAXSizeAttribute),
+                      CFGetTypeID(size) == AXValueGetTypeID() else { continue }
                 var point = CGPoint.zero
-                guard AXValueGetValue(position as! AXValue, .cgPoint, &point) else { continue }
+                var dimensions = CGSize.zero
+                guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
+                      AXValueGetValue(size as! AXValue, .cgSize, &dimensions),
+                      dimensions.width > 0 else { continue }
                 lock.lock()
-                result.append((apps[index].id, point.x))
+                result.append((apps[index].id, point.x + dimensions.width / 2))
                 lock.unlock()
             }
         }

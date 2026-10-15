@@ -35,6 +35,18 @@ final class MenuBarIconManager: ObservableObject {
 
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
+    private struct NativeMove {
+        let icon: Icon
+        let element: AXUIElement
+        let owner: NSRunningApplication
+        let launched: Date?
+        let start: CGPoint
+        let frame: CGRect
+        var dragged = false
+    }
+    private var nativeMove: NativeMove?
+    private var nativeMoveMonitor: Any?
+    private var escapeMonitor: Any?
     private var iconUpdateCount = 0
     private let trustProvider: () -> Bool
     private lazy var macOS27Hider: MacOS27Hider = {
@@ -55,6 +67,91 @@ final class MenuBarIconManager: ObservableObject {
     init(trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
         self.trustProvider = trustProvider
         observeAppActivation()
+        observeNativeMoves()
+    }
+
+    deinit {
+        if let nativeMoveMonitor { NSEvent.removeMonitor(nativeMoveMonitor) }
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+    }
+
+    private func observeNativeMoves() {
+        guard ControlItem.usesMacOS27Model else { return }
+        nativeMoveMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]) { [weak self] event in
+            MainActor.assumeIsolated { self?.observeNativeMove(event) }
+        }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated {
+                if event.keyCode == 53 { self?.nativeMove = nil }
+            }
+            return event
+        }
+    }
+
+    private func observeNativeMove(_ event: NSEvent) {
+        if event.type == .keyDown {
+            if event.keyCode == 53 { nativeMove = nil }
+            return
+        }
+        guard let cgEvent = event.cgEvent,
+              cgEvent.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
+        switch event.type {
+        case .leftMouseDown:
+            nativeMove = nil
+            guard event.modifierFlags.contains(.command),
+                  let primary = NSScreen.screens.first else { return }
+            let point = cgEvent.location
+            let appKitPoint = CGPoint(x: point.x, y: primary.frame.maxY - point.y)
+            guard NSScreen.screens.contains(where: {
+                $0.frame.contains(appKitPoint)
+                    && appKitPoint.y >= $0.frame.maxY - max(NSStatusBar.system.thickness, $0.safeAreaInsets.top)
+            }) else { return }
+            let matches = icons.filter { $0.isMovable && $0.frame.contains(point) }
+            guard matches.count == 1, let icon = matches.first,
+                  let element = elements[icon.id] else { return }
+            beginIconUpdate()
+            defer { finishIconUpdate() }
+            guard trustProvider() else { return }
+            AXUIElementSetMessagingTimeout(element, 0.15)
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(element, &pid) == .success,
+                  let owner = NSRunningApplication(processIdentifier: pid),
+                  let bundleID = owner.bundleIdentifier, icon.id.hasPrefix(bundleID + "|"),
+                  macOS27Hider.canReadPosition(for: bundleID),
+                  let frame = frame(of: element), frame.contains(point) else { return }
+            nativeMove = NativeMove(icon: icon, element: element, owner: owner,
+                                    launched: owner.launchDate, start: point, frame: frame)
+        case .leftMouseDragged:
+            guard let pending = nativeMove else { return }
+            if hypot(cgEvent.location.x - pending.start.x, cgEvent.location.y - pending.start.y) >= 3 {
+                nativeMove?.dragged = true
+            }
+        case .leftMouseUp:
+            let pending = nativeMove
+            nativeMove = nil
+            guard let pending, pending.dragged else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                guard let self, !pending.owner.isTerminated,
+                      pending.owner.launchDate == pending.launched else { return }
+                self.refresh()
+                let matches = self.icons.filter {
+                    self.elements[$0.id].map { CFEqual($0, pending.element) } ?? false
+                }
+                guard self.isTrusted, matches.count == 1, let current = matches.first,
+                      current.title == pending.icon.title, current.source == pending.icon.source,
+                      let bundleID = pending.owner.bundleIdentifier,
+                      self.macOS27Hider.canReadPosition(for: bundleID),
+                      abs(current.frame.midX - pending.frame.midX) >= 3 else { return }
+                if self.saveLayout(for: current) {
+                    self.assignedSections.removeValue(forKey: current.id)
+                    self.refresh()
+                } else {
+                    self.errorMessage = "Flux could not save that icon's new position. Try again."
+                }
+            }
+        default: break
+        }
     }
 
     private func observeAppActivation() {
@@ -193,6 +290,7 @@ final class MenuBarIconManager: ObservableObject {
                     ?? app.localizedName ?? bundleID
                 let id = "\(bundleID)|\(index)"
                 let section = assignedSections[id]
+                    ?? macOS27Hider.section(for: bundleID)
                     ?? Self.section(for: frame, boundaries: boundaries)
                 next.append(Icon(id: id, title: title, source: app.localizedName,
                                  section: section, isMovable: true, frame: frame))
@@ -425,6 +523,11 @@ final class MenuBarIconManager: ObservableObject {
             let actualSection = Self.section(for: current.frame,
                                              boundaries: self.boundaryProvider())
             guard actualSection != expectedSection else {
+                if !self.saveLayout(for: current) {
+                    self.assignedSections.removeValue(forKey: current.id)
+                    self.refresh()
+                    self.errorMessage = "Flux moved the icon but could not save its section. Try again."
+                }
                 self.finishIconUpdate()
                 return
             }
@@ -442,6 +545,12 @@ final class MenuBarIconManager: ObservableObject {
                             target: target,
                             retryWithDrag: false)
         }
+    }
+
+    private func saveLayout(for icon: Icon) -> Bool {
+        guard ControlItem.usesMacOS27Model else { return true }
+        guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
+        return macOS27Hider.recordLayoutChange(for: String(bundleID))
     }
 
     private func refreshAfterLayout(settles: Bool) {
