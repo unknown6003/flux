@@ -435,10 +435,18 @@ func drive(statePath: String, source: String, destination: String, kind: String)
               let values = state["events"] as? [String] else { return [] }
         return Array(values.dropFirst(eventOffset))
     }
-    func waitFor(_ predicate: ([String]) -> Bool) -> Bool {
+    func waitFor(_ predicate: ([String]) -> Bool, draggingAtTarget: Bool = false) -> Bool {
         let deadline = Date().addingTimeInterval(2)
+        var nextJiggle = ProcessInfo.processInfo.systemUptime
+        var offset = 1.0
         repeat {
             if predicate(events()) { return true }
+            let now = ProcessInfo.processInfo.systemUptime
+            if draggingAtTarget && now >= nextJiggle {
+                mouse(.leftMouseDragged, [target[0] + offset, target[1]])
+                offset = -offset
+                nextJiggle = now + 0.075
+            }
             Thread.sleep(forTimeInterval: 0.02)
         } while Date() < deadline
         return false
@@ -485,7 +493,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     Thread.sleep(forTimeInterval: 0.15)
     if !command && kind != "late-command" && destination != "invalid" {
         let section = destination == "bar" ? "shown" : destination
-        guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
+        guard waitFor({ $0.contains("entered \(section) valid=true") }, draggingAtTarget: true) else {
             fail("destination never accepted the session")
         }
         trace("observed target entered section=\(section)")
