@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Observe an Always Hidden status item throughout public hide/reveal calls."""
+"""Observe two disposable status apps through public hide/reveal calls.
+
+The normal Hidden fixture needs a unique /Applications registration so macOS
+can reveal it under an allow list. The fixture is removed after the probe.
+"""
 
 import argparse
 from contextlib import ExitStack
@@ -211,7 +215,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-ref")
     parser.add_argument("--artifacts-dir", type=Path)
-    parser.add_argument("--install-normal-fixture", action="store_true",
+    parser.add_argument("--install-normal-fixture", action="store_true", required=True,
                         help="Create and remove a unique disposable fixture in /Applications")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
