@@ -151,6 +151,7 @@ jobs:
           import sys
           sys.path.insert(0, 'Scripts')
           from probe_update import run
+          run(['python3', 'Scripts/probe_icons.py', '--move-close'], seconds=180)
           result = run(['python3', 'Scripts/probe_icons.py', '--native-close',
                         '--manager-ref', '0bcc1bd270569beb7c763038991021af1b5b80c9'],
                        seconds=180, check=False)

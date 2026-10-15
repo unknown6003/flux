@@ -36,6 +36,7 @@ signal.signal(signal.SIGTERM, interrupted)
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-close", action="store_true")
+parser.add_argument("--move-close", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
 fixture_source = r'''
@@ -67,9 +68,12 @@ app.setActivationPolicy(.accessory)
 let item = NSStatusBar.system.statusItem(withLength: 28)
 item.button?.title = "FXA"
 item.button?.setAccessibilityTitle("Flux fixture A")
-let second = NSStatusBar.system.statusItem(withLength: 28)
-second.button?.title = "FXB"
-second.button?.setAccessibilityTitle("Flux fixture B")
+var second: NSStatusItem?
+if !CommandLine.arguments.contains("--single") {
+    second = NSStatusBar.system.statusItem(withLength: 28)
+    second?.button?.title = "FXB"
+    second?.button?.setAccessibilityTitle("Flux fixture B")
+}
 DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(1) }
 app.run()
 '''
@@ -101,6 +105,8 @@ func probe() {
          alwaysHidden: always.statusItem.button?.window?.frame.minX)
     }
     manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
+    let closeTest = CommandLine.arguments.contains("--native-close")
+        || CommandLine.arguments.contains("--move-close")
     let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
     func fixture() -> MenuBarIconManager.Icon? {
         manager.icons.first { $0.title == "Flux fixture A" }
@@ -112,6 +118,51 @@ func probe() {
         hidden.removeFromStatusBar()
         always.removeFromStatusBar()
         exit(0)
+    }
+    @MainActor
+    func moveAndClose() {
+        manager.refresh()
+        guard let icon = fixture(), icon.section == .hidden else { exit(1) }
+        let started = ProcessInfo.processInfo.systemUptime
+        manager.move(icon, to: .shown)
+        @MainActor
+        func closeAfterMovement() {
+            manager.refresh()
+            guard let current = fixture(), MenuBarIconManager.section(
+                for: current.frame, boundaries: manager.boundaryProvider()) == .shown else {
+                guard ProcessInfo.processInfo.systemUptime - started < 0.3 else {
+                    print("FAIL: programmatic close test did not reach Shown before verification")
+                    exit(1)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { closeAfterMovement() }
+                return
+            }
+            guard manager.isUpdatingIcons, ProcessInfo.processInfo.systemUptime - started < 0.45 else {
+                print("FAIL: programmatic close missed the pending verification interval")
+                exit(1)
+            }
+            manager.endIconManagement()
+            print("Closed management during programmatic verification after reaching actual Shown geometry")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                guard !manager.isUpdatingIcons,
+                      (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                    print("FAIL: closing management lost the pending programmatic Shown assignment")
+                    exit(1)
+                }
+                let fresh = MenuBarIconManager()
+                fresh.boundaryProvider = manager.boundaryProvider
+                fresh.refresh()
+                let icons = fresh.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+                guard icons.count == 1, icons[0].section == .shown else {
+                    print("FAIL: fresh manager lost the programmatic Shown assignment")
+                    exit(1)
+                }
+                print("PASS: closing management preserves a pending programmatic move and reloads Shown")
+                finish()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { closeAfterMovement() }
     }
     @MainActor
     func nativeMove() {
@@ -203,7 +254,7 @@ func probe() {
                 fresh.boundaryProvider = manager.boundaryProvider
                 fresh.refresh()
                 let items = fresh.icons.filter { $0.id.hasPrefix(fixtureID + "|") }
-                guard items.count == 2, items.allSatisfy({ $0.section == .shown }),
+                guard items.count == 1, items.allSatisfy({ $0.section == .shown }),
                       items.contains(where: {
                           $0.title == icon.title && MenuBarIconManager.section(
                             for: $0.frame, boundaries: manager.boundaryProvider()) == .shown
@@ -234,11 +285,12 @@ func probe() {
     func reorder(prepared: Int = 0) {
         manager.refresh()
         let items = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-        guard items.count == 2 else {
-            print("FAIL: the reorder fixture needs two readable icons")
+        let expected = closeTest ? 1 : 2
+        guard items.count == expected else {
+            print("FAIL: the reorder fixture needs \(expected) readable icons")
             exit(1)
         }
-        if prepared < 2 {
+        if prepared < expected {
             manager.move(items[prepared], to: .hidden)
             guard manager.isUpdatingIcons else {
                 print("FAIL: the section move did not publish its pending verification")
@@ -249,8 +301,7 @@ func probe() {
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
         let moving = ordered[0]
-        guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }),
-              manager.canMove(moving, toward: .towardClock) else {
+        guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }) else {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
         }
@@ -258,6 +309,11 @@ func probe() {
             nativeMove()
             return
         }
+        if CommandLine.arguments.contains("--move-close") {
+            moveAndClose()
+            return
+        }
+        guard manager.canMove(moving, toward: .towardClock) else { exit(1) }
         manager.move(moving, toward: .towardClock)
         guard manager.isUpdatingIcons else {
             print("FAIL: the arrow move did not publish its pending verification")
@@ -311,7 +367,7 @@ func probe() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
         manager.beginIconManagement()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if CommandLine.arguments.contains("--native-close") { reorder() }
+            if closeTest { reorder() }
             else { move(index: 0) }
         }
     }
@@ -359,12 +415,14 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
         "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
         "Sources/Flux/Support/AccessibilityAccess.swift"])
-    process = subprocess.Popen([str(fixture)], start_new_session=True)
+    close_test = options.native_close or options.move_close
+    process = subprocess.Popen([str(fixture)] + (["--single"] if close_test else []), start_new_session=True)
     started_at = time.time()
     try:
-        command([str(binary), str(fixture)] + (["--native-close"] if options.native_close else []), 30)
+        flags = ["--native-close"] if options.native_close else (["--move-close"] if options.move_close else [])
+        command([str(binary), str(fixture)] + flags, 30)
     except BaseException:
-        label = (options.manager_ref or "current")[:8] + ("-native" if options.native_close else "-settings")
+        label = (options.manager_ref or "current")[:8] + ("-native" if options.native_close else ("-close" if options.move_close else "-settings"))
         evidence = root / "build/icon-probe" / label
         shutil.copytree(temporary, evidence, dirs_exist_ok=True)
         reports = Path.home() / "Library/Logs/DiagnosticReports"
