@@ -13,6 +13,8 @@ final class MenuBarDragController: ObservableObject {
     private weak var manager: MenuBarIconManager?
     private weak var settingsWindow: NSWindow?
     private var observers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var moveObservation: AnyCancellable?
     private var timer: Timer?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
@@ -22,6 +24,10 @@ final class MenuBarDragController: ObservableObject {
     private var commandDown = false
     private var nativeGesture = false
     private var refreshing = false
+    private var movingIcons = false
+    private var inputSuspensionDepth = 0
+    private var refreshRequested = true
+    private var lastRefresh = -Double.infinity
     private var active: (token: String, icon: MenuBarIconManager.Icon, identity: MenuBarDragIdentity)?
 
     deinit {
@@ -29,6 +35,7 @@ final class MenuBarDragController: ObservableObject {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
         observers.forEach(NotificationCenter.default.removeObserver)
+        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         let panels = overlays + returnPanels
         DispatchQueue.main.async {
             for panel in panels {
@@ -44,6 +51,15 @@ final class MenuBarDragController: ObservableObject {
         close()
         self.manager = manager
         settingsWindow = window
+        // @Published emits before storing the property. Use its emitted value here.
+        moveObservation = manager.$isMovingIcons.sink { [weak self] moving in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.movingIcons = moving
+                if moving { self.suspendInput() }
+                else { self.resumeInput() }
+            }
+        }
         let center = NotificationCenter.default
         for name in [NSApplication.didResignActiveNotification,
                      NSApplication.willTerminateNotification] {
@@ -61,12 +77,23 @@ final class MenuBarDragController: ObservableObject {
                                              object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.stopInput(reason: "screen changed") }
         })
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshRequested = true }
+            })
+        }
     }
 
     func close() {
         stopInput(reason: "management closed")
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
+        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
+        workspaceObservers.removeAll()
+        moveObservation = nil
+        movingIcons = false
+        refreshRequested = true
         manager = nil
         settingsWindow = nil
     }
@@ -79,7 +106,7 @@ final class MenuBarDragController: ObservableObject {
             message = "Keep Settings active and allow Accessibility to drag menu bar icons."
             return
         }
-        manager?.refresh()
+        if !movingIcons { refreshIcons() }
         let mask = [CGEventType.flagsChanged, .leftMouseDown, .leftMouseUp].reduce(CGEventMask(0)) {
             $0 | (CGEventMask(1) << $1.rawValue)
         }
@@ -101,8 +128,8 @@ final class MenuBarDragController: ObservableObject {
         tap = newTap
         tapSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: newTap, enable: true)
-        guard CGEvent.tapIsEnabled(tap: newTap) else {
+        CGEvent.tapEnable(tap: newTap, enable: !inputSuspended)
+        guard inputSuspended || CGEvent.tapIsEnabled(tap: newTap) else {
             stopInput(reason: "tap not enabled")
             message = "Menu bar dragging is unavailable. Use the row handles or Move menu."
             return
@@ -128,12 +155,18 @@ final class MenuBarDragController: ObservableObject {
                     return
                 }
                 if self.isMenuBarDragging {
-                    guard let tap = self.tap, CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) else {
+                    guard let tap = self.tap, CFMachPortIsValid(tap),
+                          self.inputSuspended || CGEvent.tapIsEnabled(tap: tap) else {
                         self.stopInput(reason: "heartbeat tap lost")
                         return
                     }
                 }
-                if self.active == nil && !self.nativeGesture && NSEvent.pressedMouseButtons & 1 == 0 {
+                if !self.inputSuspended && self.active == nil && !self.nativeGesture
+                    && NSEvent.pressedMouseButtons & 1 == 0 {
+                    if self.isMenuBarDragging && (self.refreshRequested
+                        || ProcessInfo.processInfo.systemUptime - self.lastRefresh >= 3) {
+                        self.refreshIcons()
+                    }
                     self.refreshOverlays()
                 }
             }
@@ -150,12 +183,15 @@ final class MenuBarDragController: ObservableObject {
     }
 
     func refreshIcons() {
+        guard !movingIcons else { refreshRequested = true; return }
         withInputSuspended { manager?.refresh() }
+        lastRefresh = ProcessInfo.processInfo.systemUptime
+        refreshRequested = false
         refreshOverlays()
     }
 
     func accepts(_ sender: NSDraggingInfo) -> Bool {
-        guard canManage, let active,
+        guard canManage, !inputSuspended, let active,
               sender.draggingSource as? MenuBarDragSourceView != nil,
               sender.draggingSourceOperationMask.contains(.move),
               sender.draggingPasteboard.string(forType: Self.pasteboardType) == active.token else { return false }
@@ -187,7 +223,7 @@ final class MenuBarDragController: ObservableObject {
 
     fileprivate func begin(icon: MenuBarIconManager.Icon, in view: MenuBarDragSourceView,
                            mouseDown: NSEvent) -> NSDraggingSession? {
-        guard canManage, icon.isMovable, active == nil, let manager, AXIsProcessTrusted() else { return nil }
+        guard canManage, !inputSuspended, icon.isMovable, active == nil, let manager, AXIsProcessTrusted() else { return nil }
         let matches = manager.icons.filter { $0.id == icon.id }
         guard matches.count == 1, let current = matches.first, current == icon,
               let identity = withInputSuspended({ MenuBarDragIdentity(icon: current) }) else {
@@ -222,11 +258,7 @@ final class MenuBarDragController: ObservableObject {
         active = nil
         removeReturnPanels()
         if !isMenuBarDragging { timer?.invalidate(); timer = nil }
-        // The manager can still be posting its native Command-drag after a drop.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            guard let self, self.isMenuBarDragging, self.active == nil else { return }
-            self.refreshOverlays()
-        }
+        refreshOverlays()
     }
 
     private var canManage: Bool {
@@ -249,15 +281,14 @@ final class MenuBarDragController: ObservableObject {
         }
         // Never replay, consume, or transplant a foreign mouse event. Set the
         // window input policy before returning the original Command-down.
-        setPassThrough(commandDown || nativeGesture || active != nil)
+        setPassThrough(shouldPassThrough)
         if type == .leftMouseUp {
             let refreshNativePosition = nativeGesture && active == nil
             nativeGesture = false
             if refreshNativePosition {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isMenuBarDragging else { return }
-                    self.withInputSuspended { self.manager?.refresh() }
-                    self.refreshOverlays()
+                    self.refreshRequested = true
                 }
             }
         }
@@ -270,7 +301,7 @@ final class MenuBarDragController: ObservableObject {
         guard manager.isTrusted else { stopInput(reason: "manager access lost"); return }
         let icons = manager.icons.filter { $0.isMovable }
         guard icons != overlayIcons else {
-            setPassThrough(commandDown || nativeGesture || active != nil)
+            setPassThrough(shouldPassThrough)
             return
         }
         overlays.forEach { $0.orderOut(nil); $0.close() }
@@ -285,7 +316,7 @@ final class MenuBarDragController: ObservableObject {
                   }) else { continue }
             let view = makeSourceView(for: icon)
             let panel = Self.panel(frame: frame, view: view)
-            panel.ignoresMouseEvents = commandDown || nativeGesture || active != nil
+            panel.ignoresMouseEvents = shouldPassThrough
             panel.orderFrontRegardless()
             overlays.append(panel)
         }
@@ -296,21 +327,34 @@ final class MenuBarDragController: ObservableObject {
     }
 
     private func withInputSuspended<T>(_ action: () -> T) -> T {
-        setPassThrough(true)
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        inputSuspensionDepth += 1
+        suspendInput()
         defer {
-            if isMenuBarDragging {
-                if canManage, AXIsProcessTrusted(), let tap, CFMachPortIsValid(tap) {
-                    CGEvent.tapEnable(tap: tap, enable: true)
-                    if CGEvent.tapIsEnabled(tap: tap) {
-                        commandDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
-                        nativeGesture = CGEventSource.buttonState(.combinedSessionState, button: .left)
-                        setPassThrough(commandDown || nativeGesture || active != nil)
-                    } else { stopInput(reason: "tap resume failed") }
-                } else { stopInput(reason: "input resume unavailable") }
-            }
+            inputSuspensionDepth -= 1
+            resumeInput()
         }
         return action()
+    }
+
+    private var inputSuspended: Bool { movingIcons || inputSuspensionDepth > 0 }
+    private var shouldPassThrough: Bool { inputSuspended || commandDown || nativeGesture || active != nil }
+
+    private func suspendInput() {
+        setPassThrough(true)
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+    }
+
+    private func resumeInput() {
+        guard isMenuBarDragging, !inputSuspended else { return }
+        guard canManage, AXIsProcessTrusted(), let tap, CFMachPortIsValid(tap) else {
+            stopInput(reason: "input resume unavailable")
+            return
+        }
+        CGEvent.tapEnable(tap: tap, enable: true)
+        guard CGEvent.tapIsEnabled(tap: tap) else { stopInput(reason: "tap resume failed"); return }
+        commandDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
+        nativeGesture = CGEventSource.buttonState(.combinedSessionState, button: .left)
+        setPassThrough(shouldPassThrough)
     }
 
     private func showReturnPanels() {
