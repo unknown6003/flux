@@ -315,8 +315,14 @@ final class MenuBarIconManager: ObservableObject {
         defer { finishIconUpdate() }
         let report = ControlItem.usesMacOS27Model ? macOS27Hider.diagnostics
             : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())\nThe macOS 27 hiding path is not active."
+        let boundaries = boundaryProvider()
+        let moveReport = """
+
+        Move boundaries: hidden=\(String(describing: boundaries.hidden)), always=\(String(describing: boundaries.alwaysHidden))
+        Event posting allowed: \(CGPreflightPostEventAccess())
+        """
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(report, forType: .string)
+        NSPasteboard.general.setString(report + moveReport, forType: .string)
     }
 
     func refresh() {
