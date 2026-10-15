@@ -269,6 +269,9 @@ final class MenuBarDragController: ObservableObject {
 
     private func observe(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            guard !inputSuspended, let tap else { return }
+            // Explicit suspension also posts this notification, which can arrive after resume.
+            if CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) { return }
             trace?("tap lost")
             stopInput(reason: "tap disabled event \(type.rawValue)")
             message = "Menu bar dragging stopped. Turn it on again to retry."
