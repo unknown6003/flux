@@ -266,6 +266,8 @@ final class MenuBarDragController: ObservableObject {
             view.section = .shown
             view.showsReturnHint = true
             let panel = Self.panel(frame: frame, view: view)
+            panel.isOpaque = true
+            panel.backgroundColor = .black
             panel.orderFrontRegardless()
             returnPanels.append(panel)
             trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
@@ -275,6 +277,31 @@ final class MenuBarDragController: ObservableObject {
     private func removeReturnPanels() {
         returnPanels.forEach { $0.orderOut(nil); $0.close() }
         returnPanels.removeAll()
+    }
+
+    fileprivate func traceReturnHitTest(at point: NSPoint) {
+        guard trace != nil, let screen = NSScreen.screens.first else { return }
+        for panel in returnPanels where panel.frame.contains(point) {
+            let top = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0)
+            var dragWindow = 0
+            let cgPoint = CGPoint(x: point.x, y: screen.frame.maxY - point.y)
+            if let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+                for window in windows {
+                    guard window[kCGWindowOwnerPID as String] as? Int == Int(ProcessInfo.processInfo.processIdentifier),
+                          window[kCGWindowLayer as String] as? Int == 500,
+                          let number = window[kCGWindowNumber as String] as? Int,
+                          let data = window[kCGWindowBounds as String] as? [String: Any],
+                          let frame = CGRect(dictionaryRepresentation: data as CFDictionary),
+                          frame.contains(cgPoint) else { continue }
+                    dragWindow = number
+                    break
+                }
+            }
+            let belowDrag = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: dragWindow)
+            let local = panel.contentView?.convert(panel.convertPoint(fromScreen: point), from: nil) ?? .zero
+            let hit = panel.contentView?.hitTest(local)
+            trace?("return hit point=\(point) own=\(panel.windowNumber) top=\(top) drag=\(dragWindow) belowDrag=\(belowDrag) local=\(local) hit=\(String(describing: hit)) opaque=\(panel.isOpaque)")
+        }
     }
 
     private func stopInput(reason: String) {
@@ -360,6 +387,7 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, movedTo screenPoint: NSPoint) {
         controller?.trace?("native moved point=\(screenPoint)")
+        controller?.traceReturnHitTest(at: screenPoint)
     }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
