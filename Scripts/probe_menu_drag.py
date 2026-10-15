@@ -215,7 +215,7 @@ final class Probe {
         window.makeKeyAndOrderFront(nil)
         if separateDestination, let screen = NSScreen.screens.first {
             let frame = NSRect(x: min(window.frame.maxX + 20, screen.visibleFrame.maxX - 250),
-                               y: window.frame.minY + 20, width: 230, height: 64)
+                               y: screen.frame.maxY - max(NSStatusBar.system.thickness, screen.safeAreaInsets.top) - 64 - 8, width: 230, height: 64)
             let destination = OrdinaryBorderlessDestinationWindow(contentRect: frame, styleMask: [.borderless],
                                        backing: .buffered, defer: false)
             destination.title = "Ordinary drag destination control"
