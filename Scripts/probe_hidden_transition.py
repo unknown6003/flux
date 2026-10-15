@@ -42,7 +42,7 @@ MainActor.assumeIsolated {
     app.setActivationPolicy(.accessory)
     let suite = Bundle.main.bundleIdentifier!
     let cache = UserDefaults.standard
-    cache.set(["hidden": [suite], "alwaysHidden": [suite]],
+    cache.set(["hidden": [suite, CommandLine.arguments[2]], "alwaysHidden": [suite]],
               forKey: "flux.macOS27IconLayout")
     cache.set(100, forKey: "NSStatusItem Preferred Position transition-probe")
     let item = NSStatusBar.system.statusItem(withLength: 24)
@@ -58,6 +58,7 @@ MainActor.assumeIsolated {
     var region = CGRect.zero
     var captures = 0
     var maximum = 0
+    var normalPixels = 0
 
     @MainActor func finish(_ passed: Bool, _ message: String) -> Never {
         hider.apply(revealHidden: true, revealAlwaysHidden: true,
@@ -84,12 +85,13 @@ MainActor.assumeIsolated {
             finish(false, "FAIL: menu-bar capture failed")
         }
         var count = 0
+        normalPixels = 0
         for y in 0..<bitmap.pixelsHigh {
             for x in 0..<bitmap.pixelsWide {
                 if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
-                   color.redComponent > 0.7, color.blueComponent > 0.7,
-                   color.greenComponent < 0.4, color.alphaComponent > 0.9 {
-                    count += 1
+                   color.blueComponent > 0.95, color.alphaComponent > 0.9 {
+                    if color.redComponent > 0.95, color.greenComponent < 0.05 { count += 1 }
+                    if color.greenComponent > 0.95, color.redComponent < 0.05 { normalPixels += 1 }
                 }
             }
         }
@@ -119,6 +121,9 @@ MainActor.assumeIsolated {
                 samples += 1
                 if samples == 12 {
                     timer.invalidate()
+                    guard (normalPixels > 0) == (step == 0) else {
+                        finish(false, "FAIL: normal Hidden icon did not follow transition \(step)")
+                    }
                     transition(step + 1)
                 }
             }
@@ -132,22 +137,22 @@ MainActor.assumeIsolated {
               frame.minX >= 0, frame.maxX <= screen.frame.maxX else {
             finish(false, "FAIL: the temporary marker is outside the visible menu bar")
         }
-        region = CGRect(x: floor(frame.minX), y: floor(screen.frame.maxY - frame.maxY),
-                        width: ceil(frame.width), height: ceil(frame.height))
+        region = CGRect(x: screen.frame.minX, y: 0,
+                        width: screen.frame.width, height: ceil(frame.height + 10))
         let hover = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                             mouseCursorPosition: CGPoint(x: screen.frame.width * 0.3, y: 1),
                             mouseButton: .left)!
         hover.flags = []
         hover.post(tap: .cghidEventTap)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            guard visiblePixels() > 0 else {
-                finish(false, "FAIL: the visible-marker control was not captured")
+            guard visiblePixels() > 0, normalPixels > 0 else {
+                finish(false, "FAIL: both visible-marker controls were not captured")
             }
             hider.apply(revealHidden: false, revealAlwaysHidden: false,
                         chevronX: { region.maxX }, alwaysX: { region.maxX })
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                guard visiblePixels() == 0 else {
-                    finish(false, "FAIL: the Always Hidden fixture did not collapse")
+                guard visiblePixels() == 0, normalPixels == 0 else {
+                    finish(false, "FAIL: both Hidden fixtures did not collapse")
                 }
                 transition(0)
             }
@@ -158,6 +163,21 @@ MainActor.assumeIsolated {
     }
     app.run()
 }
+'''
+
+NORMAL_FIXTURE = r'''
+import AppKit
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let item = NSStatusBar.system.statusItem(withLength: 24)
+let marker = NSImage(size: NSSize(width: 18, height: 18))
+marker.lockFocus()
+NSColor.cyan.setFill()
+NSRect(x: 0, y: 0, width: 18, height: 18).fill()
+marker.unlockFocus()
+item.button?.image = marker
+DispatchQueue.main.asyncAfter(deadline: .now() + 30) { exit(1) }
+app.run()
 '''
 
 
@@ -189,12 +209,38 @@ def main():
         run(["xcrun", "swiftc", "-swift-version", "5", str(main_file),
              *map(str, dependencies), "-o", str(binary)], 120)
         run(["codesign", "--force", "--sign", "-", str(bundle)], 20)
+        normal_bundle = temporary / "FluxNormalHiddenFixture.app"
+        normal_binary = normal_bundle / "Contents/MacOS/FluxNormalHiddenFixture"
+        normal_binary.parent.mkdir(parents=True)
+        normal_id = "com.flux.transition-normal." + uuid.uuid4().hex
+        (normal_bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": normal_id,
+            "CFBundleExecutable": normal_binary.name, "CFBundlePackageType": "APPL",
+            "LSUIElement": True,
+        }))
+        normal_source = temporary / "normal.swift"
+        normal_source.write_text(NORMAL_FIXTURE)
+        run(["xcrun", "swiftc", "-swift-version", "5", str(normal_source),
+             "-o", str(normal_binary)], 120)
+        run(["codesign", "--force", "--sign", "-", str(normal_bundle)], 20)
         register = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         run([register, "-f", str(bundle)], 20)
+        run([register, "-f", str(normal_bundle)], 20)
+        normal_process = subprocess.Popen([str(normal_binary)], start_new_session=True)
         try:
-            run([str(binary), str(temporary / "sample.png")], 22)
+            run([str(binary), str(temporary / "sample.png"), normal_id], 22)
         finally:
-            run([register, "-u", str(bundle)], 20)
+            try:
+                os.killpg(normal_process.pid, signal.SIGTERM)
+                normal_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(normal_process.pid, signal.SIGKILL)
+                normal_process.wait(timeout=3)
+            except ProcessLookupError:
+                pass
+            finally:
+                run([register, "-u", str(normal_bundle)], 20)
+                run([register, "-u", str(bundle)], 20)
 
 
 if __name__ == "__main__":
