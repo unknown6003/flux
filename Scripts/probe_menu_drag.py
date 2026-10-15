@@ -960,8 +960,19 @@ def validate_native_start(state, observation):
                          (fresh[0]["frameCG"], source), (fresh[1]["frameCG"], neighbor)]:
         if len(frame) != 4 or abs(frame[0] + frame[2] / 2 - point[0]) > 2 or abs(frame[1] + frame[3] / 2 - point[1]) > 2:
             raise RuntimeError(f"INVALID native start AX/marker mismatch: frame={frame} marker={point}")
-    if (observation["ax"].get("hitPID") != observation["own"]["pid"]
-            or observation["ax"].get("hitAttributes", {}).get("AXTitle", {}).get("value") != "Flux drag fixture"):
+    hit = observation["ax"]
+    attributes = hit.get("hitAttributes", {})
+    owner = hit.get("hitOwner", {})
+    def label(value):
+        return value.strip() or None if isinstance(value, str) else None
+    title = (label(attributes.get("AXTitle", {}).get("value"))
+             or label(attributes.get("AXDescription", {}).get("value"))
+             or owner.get("name") or owner.get("bundleID"))
+    primary = any(child.get("index") == 0 and child.get("equal")
+                  for child in hit.get("hitEqualOwnerChildren", []))
+    if (hit.get("hitPID") != observation["own"]["pid"]
+            or owner.get("bundleID") != "com.flux.menu-drag-fixture"
+            or not primary or title != "Flux drag fixture"):
         raise RuntimeError("INVALID magenta marker hit does not identify the disposable primary fixture")
     target = state["nativeTarget"]
     frame = state["neighborFrame"]
