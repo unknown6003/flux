@@ -375,7 +375,22 @@ func probe() {
         target.invoke = {
             invoked = true
             print("MENU action mode=\(RunLoop.current.currentMode?.rawValue ?? "nil") frame=\(icon.frame) boundaries=\(manager.boundaryProvider())")
+            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                           kCGNullWindowID) as? [[String: Any]],
+                  windows.contains(where: {
+                      ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
+                          && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
+                  }) else {
+                print("FAIL: the native menu action had no visible popup window")
+                exit(1)
+            }
+            let beforeDown = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
             manager.move(icon, to: .shown)
+            guard manager.isUpdatingIcons,
+                  CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == beforeDown else {
+                print("FAIL: native move started before its menu window closed")
+                exit(1)
+            }
         }
         let select = Timer(timeInterval: 0.2, repeats: false) { _ in
             for down in [true, false] {

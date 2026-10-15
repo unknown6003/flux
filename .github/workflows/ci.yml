@@ -213,6 +213,8 @@ jobs:
               ('settings-reopen-baseline', 'probe_settings_reopen.py', ['--controller-ref',
                   '9ee29cac995b57a33381c5bbd74526be223aa869'], 'same-tab reopen: management reveal must be true'),
               ('settings-reopen', 'probe_settings_reopen.py', [], None),
+              ('menu-wait-baseline', 'probe_icons.py', ['--menu-context', '--manager-ref',
+                  '4ac25a1'], 'native move started before its menu window closed'),
           ]
           selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
           if selected:
