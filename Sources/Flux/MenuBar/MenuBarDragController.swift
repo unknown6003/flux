@@ -266,9 +266,10 @@ final class MenuBarDragController: ObservableObject {
             view.section = .shown
             view.showsReturnHint = true
             let panel = Self.panel(frame: frame, view: view)
+            panel.worksWhenModal = true
             panel.orderFrontRegardless()
             returnPanels.append(panel)
-            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
+            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue) worksWhenModal=\(panel.worksWhenModal) modalWindow=\(NSApp.modalWindow?.windowNumber ?? -1)")
         }
     }
 
