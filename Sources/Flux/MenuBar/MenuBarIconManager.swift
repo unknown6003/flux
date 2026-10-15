@@ -409,7 +409,8 @@ final class MenuBarIconManager: ObservableObject {
             let owner = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(owner, 0.2)
             guard let bar = elementAttribute(owner, kAXExtrasMenuBarAttribute) else { continue }
-            for (index, element) in children(of: bar).enumerated() {
+            let items = children(of: bar)
+            for (index, element) in items.enumerated() {
                 guard let frame = frame(of: element) else { continue }
                 let title = stringAttribute(element, kAXTitleAttribute)
                     ?? stringAttribute(element, kAXDescriptionAttribute)
@@ -420,7 +421,7 @@ final class MenuBarIconManager: ObservableObject {
                     ?? Self.section(for: frame, boundaries: boundaries)
                 next.append(Icon(id: id, title: title, source: app.localizedName,
                                  section: section, isMovable: true, frame: frame,
-                                 identity: identity(for: id, element: element)))
+                                 identity: identity(for: id, element: element, ownerItemCount: items.count)))
                 nextElements[id] = element
             }
         }
@@ -475,8 +476,13 @@ final class MenuBarIconManager: ObservableObject {
         return label(element, depth: 0)
     }
 
-    private func identity(for id: String, element: AXUIElement) -> UUID {
-        if let previous = elements[id], CFEqual(previous, element),
+    private func identity(for id: String, element: AXUIElement, ownerItemCount: Int? = nil) -> UUID {
+        let owner = id.split(separator: "|", maxSplits: 1).first.map(String.init)
+        let sameCount = ownerItemCount.map { count in
+            icons.filter { $0.isMovable && $0.id.hasPrefix((owner ?? id) + "|") }.count == count
+        } ?? true
+        // macOS can reuse the same remote AX object when another item takes its index.
+        if sameCount, let previous = elements[id], CFEqual(previous, element),
            let identity = icons.first(where: { $0.id == id })?.identity {
             return identity
         }
