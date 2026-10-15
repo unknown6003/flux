@@ -24,6 +24,7 @@ final class MenuBarIconManager: ObservableObject {
     @Published private(set) var icons: [Icon] = []
     @Published private(set) var isTrusted = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var isMovingIcons = false
 
     /// AppDelegate supplies the live boundaries after the status items exist.
     var boundaryProvider: () -> Boundaries = { (nil, nil) }
@@ -34,6 +35,7 @@ final class MenuBarIconManager: ObservableObject {
 
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
+    private var movingIconCount = 0
     private let trustProvider: () -> Bool
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = MacOS27Hider()
@@ -351,8 +353,11 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
+        movingIconCount += 1
+        if movingIconCount == 1 { isMovingIcons = true }
         guard let element = elements[icon.id] else {
             refresh()
+            finishMove()
             return
         }
 
@@ -366,6 +371,11 @@ final class MenuBarIconManager: ObservableObject {
                    expectedSection: expectedSection,
                    target: target,
                    retryWithDrag: usedAccessibility)
+    }
+
+    private func finishMove() {
+        movingIconCount -= 1
+        if movingIconCount == 0 { isMovingIcons = false }
     }
 
     private func setPosition(_ point: CGPoint, on element: AXUIElement) -> Bool {
@@ -392,14 +402,21 @@ final class MenuBarIconManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self else { return }
             self.refresh()
-            guard let current = self.icons.first(where: { $0.id == icon.id }) else { return }
+            guard let current = self.icons.first(where: { $0.id == icon.id }) else {
+                self.finishMove()
+                return
+            }
             let actualSection = Self.section(for: current.frame,
                                              boundaries: self.boundaryProvider())
-            guard actualSection != expectedSection else { return }
+            guard actualSection != expectedSection else {
+                self.finishMove()
+                return
+            }
             guard retryWithDrag else {
                 self.assignedSections.removeValue(forKey: icon.id)
                 self.refresh()
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
+                self.finishMove()
                 return
             }
             self.drag(icon.frame, to: CGPoint(x: target.x + icon.frame.width / 2,

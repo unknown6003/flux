@@ -90,6 +90,10 @@ func probe() {
         }
         if prepared < 2 {
             manager.move(items[prepared], to: .hidden)
+            guard manager.isMovingIcons else {
+                print("FAIL: the section move did not publish its pending verification")
+                exit(1)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reorder(prepared: prepared + 1) }
             return
         }
@@ -101,11 +105,15 @@ func probe() {
             exit(1)
         }
         manager.move(moving, toward: .towardClock)
+        guard manager.isMovingIcons else {
+            print("FAIL: the arrow move did not publish its pending verification")
+            exit(1)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             manager.refresh()
             let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
                 .sorted { $0.frame.minX < $1.frame.minX }
-            guard next.last?.title == moving.title else {
+            guard !manager.isMovingIcons, next.last?.title == moving.title else {
                 print("FAIL: the Settings arrow did not change the real icon order")
                 exit(1)
             }
@@ -123,9 +131,13 @@ func probe() {
         let section = sections[index]
         print("Moving fixture to \(section.rawValue), from \(icon.frame); boundaries=\(manager.boundaryProvider())")
         manager.move(icon, to: section)
+        guard manager.isMovingIcons else {
+            print("FAIL: the section move did not publish its pending verification")
+            exit(1)
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             manager.refresh()
-            guard let current = fixture(),
+            guard !manager.isMovingIcons, let current = fixture(),
                   MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == section,
                   current.section == section else {
                 print("FAIL: the real fixture did not move to \(section.rawValue); \(manager.errorMessage ?? "no error")")
