@@ -101,6 +101,12 @@ final class MenuBarIconManager {
 }
 
 @MainActor
+final class OrdinaryBorderlessDestinationWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+@MainActor
 final class Probe {
     let controller = MenuBarDragController()
     let manager = MenuBarIconManager()
@@ -210,7 +216,7 @@ final class Probe {
         if separateDestination, let screen = NSScreen.screens.first {
             let frame = NSRect(x: min(window.frame.maxX + 20, screen.visibleFrame.maxX - 250),
                                y: window.frame.minY + 20, width: 230, height: 200)
-            let destination = NSWindow(contentRect: frame, styleMask: [.titled, .closable],
+            let destination = OrdinaryBorderlessDestinationWindow(contentRect: frame, styleMask: [.borderless],
                                        backing: .buffered, defer: false)
             destination.title = "Ordinary drag destination control"
             destination.isReleasedWhenClosed = false
@@ -222,8 +228,11 @@ final class Probe {
             destination.contentView!.addSubview(target)
             destination.orderFront(nil)
             destinationWindow = destination
-            print("ordinary destination window=\(destination.windowNumber) frame=\(destination.frame) key=\(NSApp.keyWindow?.windowNumber ?? -1)")
+            print("ordinary destination window=\(destination.windowNumber) frame=\(destination.frame) key=\(NSApp.keyWindow?.windowNumber ?? -1) canKey=\(destination.canBecomeKey) canMain=\(destination.canBecomeMain) isKey=\(destination.isKeyWindow) isMain=\(destination.isMainWindow) level=\(destination.level.rawValue) style=\(destination.styleMask.rawValue) opaque=\(destination.isOpaque) background=\(String(describing: destination.backgroundColor)) contentFrame=\(destination.contentView!.frame) contentBounds=\(destination.contentView!.bounds) targetFrame=\(target.frame)")
             fflush(stdout)
+            guard !destination.isKeyWindow else {
+                print("BLOCKED INVALID: destination became key during orderFront"); fflush(stdout); exit(5)
+            }
         }
         let activationDeadline = ProcessInfo.processInfo.systemUptime + 8
         var retriedActivation = false
@@ -235,6 +244,12 @@ final class Probe {
         let readiness = Timer(timeInterval: 0.1, repeats: true) { readiness in
             MainActor.assumeIsolated {
             let now = ProcessInfo.processInfo.systemUptime
+            if self.destinationWindow?.isKeyWindow == true {
+                print("BLOCKED INVALID: destination became key before input readiness"); fflush(stdout)
+                self.controller.close()
+                readiness.invalidate()
+                exit(5)
+            }
             let configuration = self.screens()
             let currentConfiguration = self.signature(configuration)
             if currentConfiguration != lastConfiguration {
