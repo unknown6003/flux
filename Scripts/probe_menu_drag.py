@@ -110,14 +110,72 @@ final class Probe {
     var commits: [String] = []
     let state: String
     var timer: Timer?
+    var screenObserver: NSObjectProtocol?
+    var screenSnapshot: [String: Any] = [:]
+    var screenRecords: [[String: Any]] = []
+    var lastScreenNotification = -Double.infinity
     let busyOnly: Bool
     init(state: String, busyOnly: Bool) { self.state = state; self.busyOnly = busyOnly }
+    func screens() -> [String: Any] {
+        func rect(_ value: CGRect) -> [Double] {
+            [Double(value.minX), Double(value.minY), Double(value.width), Double(value.height)]
+        }
+        return ["statusBarHeight": Double(NSStatusBar.system.thickness),
+                "presentationOptions": NSApp.presentationOptions.rawValue,
+                "screens": NSScreen.screens.map { screen -> [String: Any] in
+            let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+            var value: [String: Any] = ["displayID": id, "frame": rect(screen.frame),
+                "visibleFrame": rect(screen.visibleFrame), "scale": Double(screen.backingScaleFactor),
+                "safeArea": [Double(screen.safeAreaInsets.top), Double(screen.safeAreaInsets.left),
+                             Double(screen.safeAreaInsets.bottom), Double(screen.safeAreaInsets.right)],
+                "cgBounds": rect(CGDisplayBounds(id)), "pixels": [CGDisplayPixelsWide(id), CGDisplayPixelsHigh(id)],
+                "active": CGDisplayIsActive(id) != 0, "main": CGDisplayIsMain(id) != 0,
+                "asleep": CGDisplayIsAsleep(id) != 0]
+            if let mode = CGDisplayCopyDisplayMode(id) {
+                value["mode"] = ["id": Double(mode.ioDisplayModeID), "width": Double(mode.width),
+                    "height": Double(mode.height), "pixelWidth": Double(mode.pixelWidth),
+                    "pixelHeight": Double(mode.pixelHeight), "refreshRate": mode.refreshRate]
+            }
+            return value
+        }]
+    }
+    func signature(_ value: Any) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "<invalid snapshot>" }
+        return text
+    }
+    func recordScreens(_ event: String, after: [String: Any]) {
+        let same = signature(screenSnapshot) == signature(after)
+        screenRecords.append(["event": event, "uptime": ProcessInfo.processInfo.systemUptime,
+                              "sameConfiguration": same, "before": screenSnapshot, "after": after,
+                              "mode": controller.isMenuBarDragging,
+                              "appActive": NSApp.isActive, "keyWindow": NSApp.keyWindow?.windowNumber ?? -1])
+        screenSnapshot = after
+        if let data = try? JSONSerialization.data(withJSONObject: screenRecords, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: state + ".screens.json"), options: .atomic)
+        }
+        print("SCREEN event=\(event) t=\(ProcessInfo.processInfo.systemUptime) sameConfiguration=\(same) mode=\(controller.isMenuBarDragging)")
+        fflush(stdout)
+    }
     func start(seconds: Double) {
         guard AXIsProcessTrusted() else {
             print("BLOCKED: probe identity lacks existing Accessibility access; no permission was requested")
             exit(3)
         }
         NSApp.setActivationPolicy(.regular)
+        recordScreens("launch", after: screens())
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.lastScreenNotification = ProcessInfo.processInfo.systemUptime
+                    self.recordScreens("notification", after: self.screens())
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.recordScreens("notification next turn", after: self.screens())
+                    }
+                }
+            }
         window = NSWindow(contentRect: NSRect(x: 100, y: 160, width: 620, height: 300),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Flux native menu drag probe"
@@ -135,23 +193,66 @@ final class Probe {
             target.addSubview(label)
             content.addSubview(target)
         }
-        controller.trace = { [weak self] value in self?.events.append(value); print(value); fflush(stdout) }
+        controller.trace = { [weak self] value in
+            self?.events.append(value)
+            if value.hasPrefix("stop reason=screen changed"), let self {
+                self.recordScreens("controller screen guard", after: self.screens())
+            }
+            print("t=\(ProcessInfo.processInfo.systemUptime) \(value)"); fflush(stdout)
+        }
         manager.onMove = { [weak self] value in self?.commits.append(value) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         let activationDeadline = ProcessInfo.processInfo.systemUptime + 8
         var retriedActivation = false
+        var stableSince = ProcessInfo.processInfo.systemUptime
+        var lastConfiguration = signature(screenSnapshot)
+        var lastFixture = ""
+        var enabledAt: Double?
+        var enabledConfiguration = ""
         let readiness = Timer(timeInterval: 0.1, repeats: true) { readiness in
             MainActor.assumeIsolated {
             let now = ProcessInfo.processInfo.systemUptime
+            let configuration = self.screens()
+            let currentConfiguration = self.signature(configuration)
+            if currentConfiguration != lastConfiguration {
+                self.recordScreens("readiness geometry changed", after: configuration)
+                lastConfiguration = currentConfiguration
+                stableSince = now
+            }
             guard now < activationDeadline else {
                 let front = NSWorkspace.shared.frontmostApplication
                 print("BLOCKED readiness deadline active=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(self.window.windowNumber) front=\(front?.processIdentifier ?? -1)")
                 fflush(stdout)
+                self.recordScreens("BLOCKED readiness deadline", after: configuration)
+                self.controller.close()
                 readiness.invalidate()
                 exit(5)
             }
+            if let enabledAt {
+                guard self.controller.isMenuBarDragging, currentConfiguration == enabledConfiguration else {
+                    self.recordScreens("BLOCKED armed readiness invalidated", after: configuration)
+                    self.controller.close()
+                    readiness.invalidate()
+                    exit(5)
+                }
+                guard now - enabledAt >= 1 else { return }
+                readiness.invalidate()
+                self.recordScreens("ready for input", after: configuration)
+                self.writeState()
+                let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
+                    MainActor.assumeIsolated {
+                        if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
+                        self.writeState()
+                    }
+                }
+                self.timer = timer
+                RunLoop.main.add(timer, forMode: .common)
+                if self.busyOnly { self.runBusyProbe() }
+                return
+            }
             guard NSApp.isActive, NSApp.keyWindow === self.window, self.window.isVisible else {
+                stableSince = now
                 if !retriedActivation && now > activationDeadline - 6 {
                     retriedActivation = true
                     print("readiness retry activation")
@@ -162,9 +263,18 @@ final class Probe {
                 return
             }
             self.manager.refresh()
-            guard let icon = self.manager.icons.first else { return }
-            readiness.invalidate()
-            print("READY active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
+            guard self.manager.icons.count == 2, let icon = self.manager.icons.first else {
+                stableSince = now
+                return
+            }
+            let fixture = self.signature(self.manager.icons.map {
+                ["id": $0.id, "title": $0.title, "frame": [Double($0.frame.minX), Double($0.frame.minY),
+                                                           Double($0.frame.width), Double($0.frame.height)]] as [String: Any]
+            })
+            if fixture != lastFixture { lastFixture = fixture; stableSince = now }
+            guard now - max(stableSince, self.lastScreenNotification) >= 2 else { return }
+            self.recordScreens("stable before enable", after: configuration)
+            print("READY stable2s active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
             print("FIXTURE labels=\(self.manager.labels)")
             fflush(stdout)
             let row = self.controller.makeSourceView(for: icon)
@@ -177,16 +287,9 @@ final class Probe {
             guard self.controller.isMenuBarDragging else {
                 print("BLOCKED: \(self.controller.message ?? "event tap unavailable")"); exit(5)
             }
-            if self.busyOnly { self.runBusyProbe() }
-            self.writeState()
-            let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
-                MainActor.assumeIsolated {
-                    if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
-                    self.writeState()
-                }
-            }
-            self.timer = timer
-            RunLoop.main.add(timer, forMode: .common)
+            enabledAt = now
+            enabledConfiguration = currentConfiguration
+            self.recordScreens("enabled awaiting quiet1s", after: self.screens())
             }
         }
         RunLoop.main.add(readiness, forMode: .common)
@@ -195,6 +298,8 @@ final class Probe {
     }
     func stop() {
         timer?.invalidate()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         controller.close()
         writeState()
         window.close()
