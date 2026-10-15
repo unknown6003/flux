@@ -215,6 +215,9 @@ jobs:
               ('settings-reopen', 'probe_settings_reopen.py', [], None),
               ('menu-wait-baseline', 'probe_icons.py', ['--menu-context', '--manager-ref',
                   '4ac25a1abe27016202533d2369ed7b8a985782fe'], 'native move started before its menu window closed'),
+              ('menu-expired-baseline', 'probe_icons.py', ['--menu-expired', '--manager-ref',
+                  'c691fe1c2b1f475eb22239e1a65662cfa7394aac'], 'an expired menu request posted native input'),
+              ('menu-expired', 'probe_icons.py', ['--menu-expired'], None),
           ]
           selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
           if selected:

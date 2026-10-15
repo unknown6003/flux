@@ -43,6 +43,7 @@ parser.add_argument("--move-refresh-failure", action="store_true")
 parser.add_argument("--move-save-retry", action="store_true")
 parser.add_argument("--move-save-failure", action="store_true")
 parser.add_argument("--menu-context", action="store_true")
+parser.add_argument("--menu-expired", action="store_true")
 parser.add_argument("--drag-context", action="store_true")
 parser.add_argument("--stale-frame", choices=["section", "arrow"],
                     help="Pass an old UI row frame to the public move action")
@@ -231,6 +232,7 @@ func probe() {
         || CommandLine.arguments.contains("--move-refresh-retry")
         || CommandLine.arguments.contains("--move-refresh-failure")
         || CommandLine.arguments.contains("--menu-context")
+        || CommandLine.arguments.contains("--menu-expired")
         || CommandLine.arguments.contains("--drag-context")
         || saveTest
         || CommandLine.arguments.contains("--native-overlap")
@@ -366,6 +368,9 @@ func probe() {
     func moveFromMenu() {
         manager.refresh()
         guard let icon = fixture(), icon.section == .hidden else { exit(1) }
+        let expires = CommandLine.arguments.contains("--menu-expired")
+        let initialLayout = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout") as NSDictionary?
+        var requestedDown: UInt32 = 0
         let target = MenuMoveAction()
         let menu = NSMenu()
         let item = NSMenuItem(title: "Move fixture to Shown", action: #selector(MenuMoveAction.performMove), keyEquivalent: "")
@@ -385,6 +390,7 @@ func probe() {
                 exit(1)
             }
             let beforeDown = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+            requestedDown = beforeDown
             manager.move(icon, to: .shown)
             guard manager.isUpdatingIcons,
                   CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == beforeDown else {
@@ -412,9 +418,38 @@ func probe() {
         target.invoke = nil
         guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
         print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
+        if expires {
+            Thread.sleep(forTimeInterval: 3.3)
+            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                           kCGNullWindowID) as? [[String: Any]],
+                  !windows.contains(where: {
+                      ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
+                          && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
+                  }) else {
+                print("FAIL: expiry control did not close the native menu")
+                exit(1)
+            }
+            print("MENU expired before queued polling resumed")
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            let expiryError = manager.errorMessage
             manager.refresh()
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+            if expires {
+                guard CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == requestedDown else {
+                    print("FAIL: an expired menu request posted native input")
+                    exit(1)
+                }
+                guard !manager.isUpdatingIcons, fixture()?.frame == icon.frame,
+                      (saved as NSDictionary?) == initialLayout,
+                      expiryError == "Close the menu, then try moving the icon again." else {
+                    print("FAIL: an expired menu request did not cancel and clear pending state")
+                    exit(1)
+                }
+                print("PASS: an expired menu request posts no input or layout change and clears pending state")
+                finish()
+                return
+            }
             guard !manager.isUpdatingIcons, let current = fixture(),
                   MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
                   current.section == .shown,
@@ -968,7 +1003,7 @@ func probe() {
             print("FAIL: the reorder fixture could not enter \(reorderSection.rawValue)")
             exit(1)
         }
-        if CommandLine.arguments.contains("--menu-context") {
+        if CommandLine.arguments.contains("--menu-context") || CommandLine.arguments.contains("--menu-expired") {
             moveFromMenu()
             return
         }
@@ -1188,7 +1223,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     close_test = (options.native_close or options.move_close or options.native_overlap
                   or options.native_geometry or options.native_refresh_retry
                   or options.move_refresh_retry or options.move_refresh_failure
-                  or options.move_save_retry or options.move_save_failure or options.menu_context or options.drag_context)
+                  or options.move_save_retry or options.move_save_failure or options.menu_context or options.menu_expired or options.drag_context)
     capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
                         or options.move_save_retry or options.move_save_failure or options.stale_frame is not None)
     geometry = temporary / "geometry"
@@ -1209,6 +1244,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--move-save-retry", options.move_save_retry),
                     ("--move-save-failure", options.move_save_failure),
                     ("--menu-context", options.menu_context),
+                    ("--menu-expired", options.menu_expired),
                     ("--drag-context", options.drag_context),
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap)]
