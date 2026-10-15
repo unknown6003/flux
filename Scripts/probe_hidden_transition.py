@@ -74,6 +74,7 @@ MainActor.assumeIsolated {
     var captures = 0
     var maximum = 0
     var normalPixels = 0
+    var normalControlPixels = 0
 
     @MainActor func finish(_ passed: Bool, _ message: String) -> Never {
         hider.apply(revealHidden: true, revealAlwaysHidden: true,
@@ -152,7 +153,9 @@ MainActor.assumeIsolated {
                 if samples == 12 {
                     timer.invalidate()
                     print("TRANSITION_END \(step) \(hider.transitionProbeState)")
-                    guard (normalPixels > 0) == (step == 0) else {
+                    let normalMatches = step == 0
+                        ? normalPixels >= max(1, normalControlPixels / 2) : normalPixels == 0
+                    guard normalMatches else {
                         finish(false, "FAIL: normal Hidden icon did not follow transition \(step)")
                     }
                     transition(step + 1)
@@ -177,6 +180,7 @@ MainActor.assumeIsolated {
         hover.post(tap: .cghidEventTap)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             let control = visiblePixels()
+            normalControlPixels = normalPixels
             print("VISIBLE_CONTROLS ALWAYS \(control) NORMAL \(normalPixels)")
             guard control > 0, normalPixels > 0 else {
                 finish(false, "FAIL: both visible-marker controls were not captured")
