@@ -745,7 +745,10 @@ final class MenuBarIconManager: ObservableObject {
         guard ControlItem.usesMacOS27Model else { return true }
         guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
         let saved = macOS27Hider.recordLayoutChange(for: String(bundleID), canCommit: canCommit)
-        if saved { nativeSaveFailures.remove(String(bundleID)) }
+        if saved {
+            nativeSaveFailures.remove(String(bundleID))
+            errorMessage = nativeSaveError ?? macOS27Hider.latestError
+        }
         return saved
     }
 

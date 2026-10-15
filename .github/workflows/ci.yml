@@ -183,6 +183,8 @@ jobs:
               ('position-save-baseline', 'probe_icons.py', ['--move-save-retry', '--manager-ref',
                   '0b947b2914e64dbfdb1854bae457fc52a6ce46f9'], 'a transient position save lost the programmatic Shown assignment'),
               ('position-save-retry', 'probe_icons.py', ['--move-save-retry'], None),
+              ('position-warning-baseline', 'probe_icons.py', ['--move-save-failure', '--manager-ref',
+                  'cb93553ab503bb5e20fb341ddb2a2c7a92c7afbf'], 'a successful retry retained the old save warning'),
               ('position-save-failure', 'probe_icons.py', ['--move-save-failure'], None),
               ('programmatic-overlap-baseline', 'probe_icons.py', ['--move-overlap', '--manager-ref',
                   '11c235b714390c5ace3c55595ae6e16a48c144cb'], 'programmatic verification saved an unfinished native sibling drag'),
