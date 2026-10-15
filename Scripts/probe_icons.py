@@ -40,6 +40,7 @@ parser.add_argument("--move-close", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-position-only", action="store_true")
+parser.add_argument("--paced-native-position", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
 fixture_source = r'''
@@ -590,6 +591,14 @@ func probe() {
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
         let moving = ordered[0]
+        if let physical = geometry("prepared-hidden") {
+            guard abs(physical.x - moving.frame.midX) <= 1,
+                  MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1, width: 2, height: 2),
+                                             boundaries: manager.boundaryProvider()) == .hidden else {
+                print("FAIL: AX position disagrees with the drawn fixture after moving to Hidden")
+                exit(1)
+            }
+        }
         guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }) else {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
@@ -689,12 +698,19 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         manager_source.write_text(subprocess.check_output(
             ["git", "show", options.manager_ref + ":" + manager_path],
             cwd=root, text=True, timeout=15))
-    if options.native_position_only:
+    if options.native_position_only or options.paced_native_position:
         code = manager_source.read_text()
         needle = "let usedAccessibility = setPosition(target, on: element)"
         assert code.count(needle) == 1
         manager_source = temporary / "MenuBarIconManager.swift"
-        manager_source.write_text(code.replace(needle, "let usedAccessibility = false"))
+        code = code.replace(needle, "let usedAccessibility = false")
+        if options.paced_native_position:
+            for needle, replacement in [
+                ("down.post(tap: .cghidEventTap)", "down.post(tap: .cghidEventTap)\n        Thread.sleep(forTimeInterval: 0.06)"),
+                ("move.post(tap: .cghidEventTap)", "move.post(tap: .cghidEventTap)\n            Thread.sleep(forTimeInterval: 0.018)")]:
+                assert code.count(needle) == 1
+                code = code.replace(needle, replacement)
+        manager_source.write_text(code)
 
     def bundle(name, bundle_id, code, dependencies):
         app = temporary / f"{name}.app"

@@ -644,10 +644,10 @@ final class MenuBarIconManager: ObservableObject {
         }
     }
 
-    private func saveLayout(for icon: Icon, canCommit: () -> Bool = { true }) -> Bool {
+    private func saveLayout(for icon: Icon) -> Bool {
         guard ControlItem.usesMacOS27Model else { return true }
         guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
-        return macOS27Hider.recordLayoutChange(for: String(bundleID), canCommit: canCommit)
+        return macOS27Hider.recordLayoutChange(for: String(bundleID))
     }
 
     private func refreshAfterLayout(settles: Bool) {
