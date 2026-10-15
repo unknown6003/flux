@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify Settings section moves against real menu-bar icon positions."""
 
+import argparse
 import os
 from pathlib import Path
 import plistlib
@@ -31,6 +32,10 @@ def interrupted(signum, _frame):
 
 signal.signal(signal.SIGTERM, interrupted)
 root = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--native-close", action="store_true")
+parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
+options = parser.parse_args()
 fixture_source = r'''
 import AppKit
 if CommandLine.arguments.count == 6 && CommandLine.arguments[1] == "--drag" {
@@ -131,46 +136,70 @@ func probe() {
         driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
         driver.arguments = ["--drag", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
                             String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
+        var releasedAt: TimeInterval?
+        let releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
+            guard event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID)
+                == Int64(driver.processIdentifier) else { return }
+            releasedAt = ProcessInfo.processInfo.systemUptime
+        }
+        @MainActor
+        func verifyRelease(until deadline: TimeInterval) {
+            guard let releasedAt else {
+                guard ProcessInfo.processInfo.systemUptime < deadline else {
+                    print("FAIL: macOS did not deliver the independent native mouse-up")
+                    exit(1)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { verifyRelease(until: deadline) }
+                return
+            }
+            if let releaseMonitor { NSEvent.removeMonitor(releaseMonitor) }
+            manager.refresh()
+            guard let actual = fixture(),
+                  MenuBarIconManager.section(for: actual.frame,
+                                            boundaries: manager.boundaryProvider()) == .shown else {
+                print("FAIL: the native Command driver did not move the real icon to Shown")
+                exit(1)
+            }
+            print("PASS: native Command crossed the real Shown boundary after delivered mouse-up")
+            if CommandLine.arguments.contains("--native-close") {
+                manager.endIconManagement()
+                let delay = ProcessInfo.processInfo.systemUptime - releasedAt
+                guard delay < 0.35 else {
+                    print("FAIL: the close test missed the 350ms verification interval: \(delay)s")
+                    exit(1)
+                }
+                print("Closed management \(delay)s after native mouse-up")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
+                guard (saved?["hidden"] as? [String])?.contains(fixtureID) == false,
+                      (saved?["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
+                    print("FAIL: the native Command move to Shown did not persist")
+                    exit(1)
+                }
+                let fresh = MenuBarIconManager()
+                fresh.boundaryProvider = manager.boundaryProvider
+                fresh.refresh()
+                let items = fresh.icons.filter { $0.id.hasPrefix(fixtureID + "|") }
+                guard items.count == 2, items.allSatisfy({ $0.section == .shown }),
+                      items.contains(where: {
+                          $0.title == icon.title && MenuBarIconManager.section(
+                            for: $0.frame, boundaries: manager.boundaryProvider()) == .shown
+                      }) else {
+                    print("FAIL: a fresh manager or actual geometry lost the native Shown move")
+                    exit(1)
+                }
+                print("PASS: native Command moved the real icon and persisted Shown across manager reload")
+                finish()
+            }
+        }
         driver.terminationHandler = { driver in
             DispatchQueue.main.async {
                 guard driver.terminationStatus == 0 else {
                     print("FAIL: the independent native Command driver failed")
                     exit(1)
                 }
-                manager.refresh()
-                guard let actual = fixture(),
-                      MenuBarIconManager.section(for: actual.frame,
-                                                boundaries: manager.boundaryProvider()) == .shown else {
-                    print("FAIL: the native Command driver did not move the real icon to Shown")
-                    exit(1)
-                }
-                print("PASS: native Command crossed the real Shown boundary")
-                if CommandLine.arguments.contains("--native-close") {
-                    manager.endIconManagement()
-                    print("Closed management immediately after the native release")
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
-                    guard (saved?["hidden"] as? [String])?.contains(fixtureID) == false,
-                          (saved?["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
-                        print("FAIL: the native Command move to Shown did not persist")
-                        exit(1)
-                    }
-                    let fresh = MenuBarIconManager()
-                    fresh.boundaryProvider = manager.boundaryProvider
-                    fresh.refresh()
-                    let items = fresh.icons.filter { $0.id.hasPrefix(fixtureID + "|") }
-                    guard items.count == 2, items.allSatisfy({ $0.section == .shown }),
-                          items.contains(where: {
-                              $0.title == icon.title && MenuBarIconManager.section(
-                                for: $0.frame, boundaries: manager.boundaryProvider()) == .shown
-                          }) else {
-                        print("FAIL: a fresh manager or actual geometry lost the native Shown move")
-                        exit(1)
-                    }
-                    print("PASS: native Command moved the real icon and persisted Shown across manager reload")
-                    finish()
-                }
+                verifyRelease(until: ProcessInfo.processInfo.systemUptime + 1)
             }
         }
         do { try driver.run() }
@@ -266,6 +295,13 @@ MainActor.assumeIsolated { probe() }
 
 with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     temporary = Path(directory)
+    manager_path = "Sources/Flux/MenuBar/MenuBarIconManager.swift"
+    manager_source = root / manager_path
+    if options.manager_ref:
+        manager_source = temporary / "MenuBarIconManager.swift"
+        manager_source.write_text(subprocess.check_output(
+            ["git", "show", options.manager_ref + ":" + manager_path],
+            cwd=root, text=True, timeout=15))
 
     def bundle(name, bundle_id, code, dependencies):
         app = temporary / f"{name}.app"
@@ -279,7 +315,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         main = sources / "main.swift"
         main.write_text(code)
         command(["swiftc", "-swift-version", "5", str(main)] +
-                [str(root / dependency) for dependency in dependencies] + ["-o", str(binary)], 120)
+                [str(manager_source if dependency == manager_path else root / dependency)
+                 for dependency in dependencies] + ["-o", str(binary)], 120)
         command(["codesign", "--force", "--sign", "-", str(app)], 20)
         return binary
 
@@ -292,6 +329,6 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/Support/AccessibilityAccess.swift"])
     process = subprocess.Popen([str(fixture)], start_new_session=True)
     try:
-        command([str(binary), str(fixture)] + sys.argv[1:], 30)
+        command([str(binary), str(fixture)] + (["--native-close"] if options.native_close else []), 30)
     finally:
         _stop(process)
