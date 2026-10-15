@@ -18,9 +18,9 @@ final class MenuBarDragController: ObservableObject {
     private var timer: Timer?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
-    private var overlays: [NSPanel] = []
+    private var overlays: [NSWindow] = []
     private var overlayIcons: [MenuBarIconManager.Icon] = []
-    private var returnPanels: [NSPanel] = []
+    private var returnPanels: [NSWindow] = []
     private var commandDown = false
     private var nativeGesture = false
     private var refreshing = false
@@ -384,7 +384,7 @@ final class MenuBarDragController: ObservableObject {
             view.controller = self
             view.section = .shown
             view.showsReturnHint = true
-            let panel = Self.panel(frame: frame, view: view)
+            let panel = Self.panel(frame: frame, view: view, returnWindow: true)
             panel.orderFrontRegardless()
             returnPanels.append(panel)
             trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
@@ -419,9 +419,15 @@ final class MenuBarDragController: ObservableObject {
         trace?("cleanup overlays=0 returns=0 tap=none")
     }
 
-    private static func panel(frame: NSRect, view: NSView) -> NSPanel {
-        let panel = MenuBarDragPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
+    private static func panel(frame: NSRect, view: NSView, returnWindow: Bool = false) -> NSWindow {
+        let panel: NSWindow
+        if returnWindow {
+            panel = MenuBarReturnWindow(contentRect: frame, styleMask: [.borderless],
+                                        backing: .buffered, defer: false)
+        } else {
+            panel = MenuBarDragPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
+        }
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -440,6 +446,11 @@ final class MenuBarDragController: ObservableObject {
 }
 
 private final class MenuBarDragPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class MenuBarReturnWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
