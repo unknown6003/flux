@@ -24,6 +24,21 @@ final class MenuBarDragController: ObservableObject {
     private var refreshing = false
     private var active: (token: String, icon: MenuBarIconManager.Icon, identity: MenuBarDragIdentity)?
 
+    deinit {
+        timer?.invalidate()
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
+        observers.forEach(NotificationCenter.default.removeObserver)
+        let panels = overlays + returnPanels
+        DispatchQueue.main.async {
+            for panel in panels {
+                panel.ignoresMouseEvents = true
+                panel.orderOut(nil)
+                panel.close()
+            }
+        }
+    }
+
     func open(manager: MenuBarIconManager, window: NSWindow) {
         guard settingsWindow !== window || self.manager !== manager else { return }
         close()
@@ -64,6 +79,7 @@ final class MenuBarDragController: ObservableObject {
             message = "Keep Settings active and allow Accessibility to drag menu bar icons."
             return
         }
+        manager?.refresh()
         let mask = [CGEventType.flagsChanged, .leftMouseDown, .leftMouseUp].reduce(CGEventMask(0)) {
             $0 | (CGEventMask(1) << $1.rawValue)
         }
@@ -94,6 +110,12 @@ final class MenuBarDragController: ObservableObject {
         commandDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
         isMenuBarDragging = true
         refreshOverlays()
+        startHeartbeat()
+        trace?("mode enabled overlays=\(overlays.count) command=\(commandDown)")
+    }
+
+    private func startHeartbeat() {
+        guard timer == nil else { return }
         let heartbeat = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -105,9 +127,11 @@ final class MenuBarDragController: ObservableObject {
                     self.stopInput(reason: "heartbeat grant lost")
                     return
                 }
-                guard let tap = self.tap, CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) else {
-                    self.stopInput(reason: "heartbeat tap lost")
-                    return
+                if self.isMenuBarDragging {
+                    guard let tap = self.tap, CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) else {
+                        self.stopInput(reason: "heartbeat tap lost")
+                        return
+                    }
                 }
                 if self.active == nil && !self.nativeGesture && NSEvent.pressedMouseButtons & 1 == 0 {
                     self.refreshOverlays()
@@ -116,7 +140,6 @@ final class MenuBarDragController: ObservableObject {
         }
         timer = heartbeat
         RunLoop.main.add(heartbeat, forMode: .common)
-        trace?("mode enabled overlays=\(overlays.count) command=\(commandDown)")
     }
 
     func makeSourceView(for icon: MenuBarIconManager.Icon) -> MenuBarDragSourceView {
@@ -136,37 +159,41 @@ final class MenuBarDragController: ObservableObject {
 
     func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection) -> Bool {
         guard accepts(sender), let pending = active, let manager, AXIsProcessTrusted() else { return false }
-        manager.refresh()
-        let matches = manager.icons.filter { $0.id == pending.icon.id }
-        guard matches.count == 1, let current = matches.first, current.isMovable,
-              current.title == pending.icon.title, current.source == pending.icon.source,
-              current.frame == pending.icon.frame,
-              pending.identity.isCurrent(for: current) else {
+        return withInputSuspended {
+            manager.refresh()
+            let matches = manager.icons.filter { $0.id == pending.icon.id }
+            guard canManage, active?.token == pending.token,
+                  matches.count == 1, let current = matches.first, current.isMovable,
+                  current.title == pending.icon.title, current.source == pending.icon.source,
+                  current.frame == pending.icon.frame,
+                  pending.identity.isCurrent(for: current) else {
+                active = nil
+                message = "That icon changed during the drag. Refresh icons and try again."
+                trace?("drop rejected identity")
+                return false
+            }
             active = nil
-            message = "That icon changed during the drag. Refresh icons and try again."
-            trace?("drop rejected identity")
-            return false
+            removeReturnPanels()
+            trace?("commit \(section.rawValue) \(current.id)")
+            manager.move(current, to: section)
+            return true
         }
-        active = nil
-        removeReturnPanels()
-        setPassThrough(true)
-        trace?("commit \(section.rawValue) \(current.id)")
-        manager.move(current, to: section)
-        return true
     }
 
     fileprivate func begin(icon: MenuBarIconManager.Icon, in view: MenuBarDragSourceView,
                            mouseDown: NSEvent) -> NSDraggingSession? {
         guard canManage, icon.isMovable, active == nil, let manager, AXIsProcessTrusted() else { return nil }
-        manager.refresh()
         let matches = manager.icons.filter { $0.id == icon.id }
         guard matches.count == 1, let current = matches.first, current == icon,
-              let identity = MenuBarDragIdentity(icon: current) else {
+              let identity = withInputSuspended({ MenuBarDragIdentity(icon: current) }) else {
             message = "That icon changed. Refresh icons and try again."
             return nil
         }
+        guard canManage, CGEventSource.buttonState(.combinedSessionState, button: .left),
+              !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) else { return nil }
         let token = UUID().uuidString
         active = (token, current, identity)
+        startHeartbeat()
         let writer = NSPasteboardItem()
         writer.setString(token, forType: Self.pasteboardType)
         let item = NSDraggingItem(pasteboardWriter: writer)
@@ -189,6 +216,7 @@ final class MenuBarDragController: ObservableObject {
         trace?("ended operation=\(operation.rawValue)")
         active = nil
         removeReturnPanels()
+        if !isMenuBarDragging { timer?.invalidate(); timer = nil }
         // The manager can still be posting its native Command-drag after a drop.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self, self.isMenuBarDragging, self.active == nil else { return }
@@ -217,14 +245,23 @@ final class MenuBarDragController: ObservableObject {
         // Never replay, consume, or transplant a foreign mouse event. Set the
         // window input policy before returning the original Command-down.
         setPassThrough(commandDown || nativeGesture || active != nil)
-        if type == .leftMouseUp { nativeGesture = false }
+        if type == .leftMouseUp {
+            let refreshNativePosition = nativeGesture && active == nil
+            nativeGesture = false
+            if refreshNativePosition {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isMenuBarDragging else { return }
+                    self.withInputSuspended { self.manager?.refresh() }
+                    self.refreshOverlays()
+                }
+            }
+        }
     }
 
     private func refreshOverlays() {
         guard !refreshing, isMenuBarDragging, canManage, let manager else { return }
         refreshing = true
         defer { refreshing = false }
-        manager.refresh()
         guard manager.isTrusted else { stopInput(reason: "manager access lost"); return }
         let icons = manager.icons.filter { $0.isMovable }
         guard icons != overlayIcons else {
@@ -253,6 +290,24 @@ final class MenuBarDragController: ObservableObject {
         for panel in overlays { panel.ignoresMouseEvents = ignore }
     }
 
+    private func withInputSuspended<T>(_ action: () -> T) -> T {
+        setPassThrough(true)
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        defer {
+            if isMenuBarDragging {
+                if canManage, AXIsProcessTrusted(), let tap, CFMachPortIsValid(tap) {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                    if CGEvent.tapIsEnabled(tap: tap) {
+                        commandDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
+                        nativeGesture = CGEventSource.buttonState(.combinedSessionState, button: .left)
+                        setPassThrough(commandDown || nativeGesture || active != nil)
+                    } else { stopInput(reason: "tap resume failed") }
+                } else { stopInput(reason: "input resume unavailable") }
+            }
+        }
+        return action()
+    }
+
     private func showReturnPanels() {
         trace?("return setup canManage=\(canManage) active=\(active != nil)")
         guard canManage, active != nil else { return }
@@ -278,8 +333,10 @@ final class MenuBarDragController: ObservableObject {
     }
 
     private func stopInput(reason: String) {
-        let front = NSWorkspace.shared.frontmostApplication
-        trace?("stop reason=\(reason) appActive=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(settingsWindow?.windowNumber ?? -1) pid=\(ProcessInfo.processInfo.processIdentifier) front=\(front?.processIdentifier ?? -1):\(front?.bundleIdentifier ?? "nil")")
+        if let trace {
+            let front = NSWorkspace.shared.frontmostApplication
+            trace("stop reason=\(reason) appActive=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(settingsWindow?.windowNumber ?? -1) pid=\(ProcessInfo.processInfo.processIdentifier) front=\(front?.processIdentifier ?? -1):\(front?.bundleIdentifier ?? "nil")")
+        }
         active = nil
         isMenuBarDragging = false
         timer?.invalidate()
