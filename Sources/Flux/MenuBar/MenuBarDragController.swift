@@ -266,9 +266,10 @@ final class MenuBarDragController: ObservableObject {
             view.section = .shown
             view.showsReturnHint = true
             let panel = Self.panel(frame: frame, view: view)
+            panel.registerForDraggedTypes([Self.pasteboardType])
             panel.orderFrontRegardless()
             returnPanels.append(panel)
-            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
+            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) viewFrame=\(view.frame) bounds=\(view.bounds) ignoresMouse=\(panel.ignoresMouseEvents) viewTypes=\(view.registeredDraggedTypes) windowTypes=\(panel.registeredDraggedTypes) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
         }
     }
 
