@@ -102,7 +102,7 @@ final class MenuBarIconManager {
 
 @MainActor
 final class OrdinaryBorderlessDestinationWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { true }
 }
 
