@@ -386,8 +386,8 @@ func probe() {
     @MainActor
     func moveFromMenu() {
         manager.refresh()
-        guard let icon = fixture(), icon.section == .hidden else { exit(1) }
         let expires = CommandLine.arguments.contains("--menu-expired")
+        guard let icon = fixture(), expires || icon.section == .hidden else { exit(1) }
         let initialLayout = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout") as NSDictionary?
         var requestedDown: UInt32 = 0
         let target = MenuMoveAction()
@@ -982,6 +982,10 @@ func probe() {
             print("FAIL: the reorder fixture needs \(expected) readable icons")
             exit(1)
         }
+        if CommandLine.arguments.contains("--menu-expired") {
+            moveFromMenu()
+            return
+        }
         let reorderSection: MenuBarSection = staleFrameKind == "arrow"
             ? MenuBarIconManager.section(for: items[0].frame, boundaries: manager.boundaryProvider()) : .hidden
         if prepared < expected && staleFrameKind != "arrow" {
@@ -1010,7 +1014,7 @@ func probe() {
             print("FAIL: the reorder fixture could not enter \(reorderSection.rawValue)")
             exit(1)
         }
-        if CommandLine.arguments.contains("--menu-context") || CommandLine.arguments.contains("--menu-expired") {
+        if CommandLine.arguments.contains("--menu-context") {
             moveFromMenu()
             return
         }
