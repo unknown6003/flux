@@ -81,6 +81,8 @@ setbuf(stdout, nil)
 func probe() {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+    guard Bundle.main.bundleIdentifier == "com.flux.icon-probe" else { exit(2) }
+    UserDefaults.standard.removePersistentDomain(forName: "com.flux.icon-probe")
     // macOS 27 keeps both dividers narrow. A drop target must still lie in Hidden.
     let compact: MenuBarIconManager.Boundaries = (hidden: 300, alwaysHidden: 297)
     guard let x = MenuBarIconManager.insertionX(for: .hidden, iconWidth: 28, boundaries: compact),
@@ -89,9 +91,10 @@ func probe() {
         print("FAIL: Move to Hidden targets another section when the dividers are adjacent")
         exit(1)
     }
-    let chevron = ControlItem(role: .chevron, autosaveName: "flux.icon-probe.chevron")
-    let hidden = ControlItem(role: .divider, autosaveName: "flux.icon-probe.hidden")
-    let always = ControlItem(role: .divider, autosaveName: "flux.icon-probe.always")
+    let runID = UUID().uuidString
+    let chevron = ControlItem(role: .chevron, autosaveName: "flux.icon-probe.\(runID).chevron")
+    let hidden = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).hidden")
+    let always = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).always")
     let manager = MenuBarIconManager()
     manager.boundaryProvider = {
         (hidden: chevron.statusItem.button?.window?.frame.minX,
