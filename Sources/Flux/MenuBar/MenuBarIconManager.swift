@@ -24,7 +24,7 @@ final class MenuBarIconManager: ObservableObject {
     @Published private(set) var icons: [Icon] = []
     @Published private(set) var isTrusted = false
     @Published private(set) var errorMessage: String?
-    @Published private(set) var isMovingIcons = false
+    @Published private(set) var isUpdatingIcons = false
 
     /// AppDelegate supplies the live boundaries after the status items exist.
     var boundaryProvider: () -> Boundaries = { (nil, nil) }
@@ -35,11 +35,15 @@ final class MenuBarIconManager: ObservableObject {
 
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
-    private var movingIconCount = 0
+    private var iconUpdateCount = 0
     private let trustProvider: () -> Bool
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = MacOS27Hider()
         hider.onStatus = { [weak self] message in self?.errorMessage = message }
+        hider.onReadState = { [weak self] reading in
+            if reading { self?.beginIconUpdate() }
+            else { self?.finishIconUpdate() }
+        }
         return hider
     }()
     private var cancellables = Set<AnyCancellable>()
@@ -57,6 +61,8 @@ final class MenuBarIconManager: ObservableObject {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 guard let self else { return }
+                self.beginIconUpdate()
+                defer { self.finishIconUpdate() }
                 _ = AccessibilityAccess.isGranted(forceRefresh: true)
                 self.refresh()
                 if ControlItem.usesMacOS27Model { self.macOS27Hider.retry() }
@@ -94,6 +100,8 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func copyMenuBarReport() {
+        beginIconUpdate()
+        defer { finishIconUpdate() }
         let report = ControlItem.usesMacOS27Model ? macOS27Hider.diagnostics
             : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())\nThe macOS 27 hiding path is not active."
         NSPasteboard.general.clearContents()
@@ -101,6 +109,8 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func refresh() {
+        beginIconUpdate()
+        defer { finishIconUpdate() }
         isTrusted = trustProvider()
         guard isTrusted else {
             icons = []
@@ -294,6 +304,8 @@ final class MenuBarIconManager: ObservableObject {
     func applyDrawerVisibility(revealHidden: Bool,
                                revealAlwaysHidden: Bool,
                                refreshBeforeApplying: Bool = true) {
+        beginIconUpdate()
+        defer { finishIconUpdate() }
         if ControlItem.usesMacOS27Model {
             macOS27Hider.apply(revealHidden: revealHidden,
                                revealAlwaysHidden: revealAlwaysHidden,
@@ -353,11 +365,10 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
-        movingIconCount += 1
-        if movingIconCount == 1 { isMovingIcons = true }
+        beginIconUpdate()
         guard let element = elements[icon.id] else {
             refresh()
-            finishMove()
+            finishIconUpdate()
             return
         }
 
@@ -373,9 +384,14 @@ final class MenuBarIconManager: ObservableObject {
                    retryWithDrag: usedAccessibility)
     }
 
-    private func finishMove() {
-        movingIconCount -= 1
-        if movingIconCount == 0 { isMovingIcons = false }
+    private func beginIconUpdate() {
+        iconUpdateCount += 1
+        if iconUpdateCount == 1 { isUpdatingIcons = true }
+    }
+
+    private func finishIconUpdate() {
+        iconUpdateCount -= 1
+        if iconUpdateCount == 0 { isUpdatingIcons = false }
     }
 
     private func setPosition(_ point: CGPoint, on element: AXUIElement) -> Bool {
@@ -403,20 +419,20 @@ final class MenuBarIconManager: ObservableObject {
             guard let self else { return }
             self.refresh()
             guard let current = self.icons.first(where: { $0.id == icon.id }) else {
-                self.finishMove()
+                self.finishIconUpdate()
                 return
             }
             let actualSection = Self.section(for: current.frame,
                                              boundaries: self.boundaryProvider())
             guard actualSection != expectedSection else {
-                self.finishMove()
+                self.finishIconUpdate()
                 return
             }
             guard retryWithDrag else {
                 self.assignedSections.removeValue(forKey: icon.id)
                 self.refresh()
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
-                self.finishMove()
+                self.finishIconUpdate()
                 return
             }
             self.drag(icon.frame, to: CGPoint(x: target.x + icon.frame.width / 2,

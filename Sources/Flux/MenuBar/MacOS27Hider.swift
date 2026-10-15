@@ -99,6 +99,7 @@ final class MacOS27Hider {
     private static let layoutKey = "flux.macOS27IconLayout"
     private(set) var hasSavedLayout = false
     var onStatus: ((String?) -> Void)?
+    var onReadState: ((Bool) -> Void)?
     private(set) var latestError: String?
     private var hidden = Set<String>()
     private var alwaysHidden = Set<String>()
@@ -247,6 +248,8 @@ final class MacOS27Hider {
                 self.scanAfterLayout(generation: generation, attempts: attempts, delay: remaining)
                 return
             }
+            self.onReadState?(true)
+            defer { self.onReadState?(false) }
             guard self.assessment.isAvailable else {
                 self.layoutScanPending = false
                 let message = "This macOS build does not provide the menu-bar hiding interface."
@@ -406,6 +409,8 @@ final class MacOS27Hider {
            Date().timeIntervalSince(cached.date) < 2 { return cached.frame }
         // Mouse movement uses the grant read during layout or lifecycle checks.
         guard lastAccessGranted else { return nil }
+        onReadState?(true)
+        defer { onReadState?(false) }
         guard let agent = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.apple.MenuBarAgent").first else { return nil }
         let app = AXUIElementCreateApplication(agent.processIdentifier)
