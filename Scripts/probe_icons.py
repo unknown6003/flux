@@ -33,6 +33,28 @@ signal.signal(signal.SIGTERM, interrupted)
 root = Path(__file__).resolve().parents[1]
 fixture_source = r'''
 import AppKit
+if CommandLine.arguments.count == 6 && CommandLine.arguments[1] == "--drag" {
+    let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
+    guard values.count == 4 else { exit(2) }
+    let start = CGPoint(x: values[0], y: values[1])
+    let target = CGPoint(x: values[2], y: values[3])
+    func post(_ type: CGEventType, _ point: CGPoint) {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type,
+                                  mouseCursorPosition: point, mouseButton: .left) else { exit(2) }
+        event.flags = .maskCommand
+        event.post(tap: .cghidEventTap)
+    }
+    post(.leftMouseDown, start)
+    Thread.sleep(forTimeInterval: 0.08)
+    for step in 1...24 {
+        let progress = CGFloat(step) / 24
+        post(.leftMouseDragged, CGPoint(x: start.x + (target.x - start.x) * progress,
+                                        y: start.y + (target.y - start.y) * progress))
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    post(.leftMouseUp, target)
+    exit(0)
+}
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let item = NSStatusBar.system.statusItem(withLength: 28)
@@ -81,6 +103,75 @@ func probe() {
         exit(0)
     }
     @MainActor
+    func nativeMove() {
+        let layoutKey = "flux.macOS27IconLayout"
+        let fixtureID = "com.flux.icon-fixture"
+        guard let layout = UserDefaults.standard.dictionary(forKey: layoutKey),
+              (layout["hidden"] as? [String])?.contains(fixtureID) == true,
+              (layout["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
+            print("FAIL: Settings moves did not persist the fixture's Hidden assignment")
+            exit(1)
+        }
+        let reloaded = MenuBarIconManager()
+        reloaded.boundaryProvider = manager.boundaryProvider
+        reloaded.refresh()
+        guard reloaded.icons.filter({ $0.id.hasPrefix(fixtureID + "|") })
+            .allSatisfy({ $0.section == .hidden }) else {
+            print("FAIL: a fresh manager lost the saved Hidden assignment")
+            exit(1)
+        }
+        manager.refresh()
+        guard let icon = fixture(),
+              let x = MenuBarIconManager.insertionX(for: .shown, iconWidth: icon.frame.width,
+                                                    boundaries: manager.boundaryProvider()) else {
+            print("FAIL: native move needs a readable fixture and Shown boundary")
+            exit(1)
+        }
+        let driver = Process()
+        driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
+        driver.arguments = ["--drag", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
+                            String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
+        driver.terminationHandler = { driver in
+            DispatchQueue.main.async {
+                guard driver.terminationStatus == 0 else {
+                    print("FAIL: the independent native Command driver failed")
+                    exit(1)
+                }
+                if CommandLine.arguments.contains("--native-close") {
+                    manager.endIconManagement()
+                    print("Closed management immediately after the native release")
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
+                    guard (saved?["hidden"] as? [String])?.contains(fixtureID) == false,
+                          (saved?["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
+                        print("FAIL: the native Command move to Shown did not persist")
+                        exit(1)
+                    }
+                    let fresh = MenuBarIconManager()
+                    fresh.boundaryProvider = manager.boundaryProvider
+                    fresh.refresh()
+                    let items = fresh.icons.filter { $0.id.hasPrefix(fixtureID + "|") }
+                    guard items.count == 2, items.allSatisfy({ $0.section == .shown }),
+                          items.contains(where: {
+                              $0.title == icon.title && MenuBarIconManager.section(
+                                for: $0.frame, boundaries: manager.boundaryProvider()) == .shown
+                          }) else {
+                        print("FAIL: a fresh manager or actual geometry lost the native Shown move")
+                        exit(1)
+                    }
+                    print("PASS: native Command moved the real icon and persisted Shown across manager reload")
+                    finish()
+                }
+            }
+        }
+        do { try driver.run() }
+        catch { print("FAIL: could not start the native Command driver: \(error)"); exit(1) }
+    }
+    manager.endProvider = { [weak manager] in
+        manager?.applyDrawerVisibility(revealHidden: false, revealAlwaysHidden: false)
+    }
+    @MainActor
     func reorder(prepared: Int = 0) {
         manager.refresh()
         let items = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
@@ -118,7 +209,7 @@ func probe() {
                 exit(1)
             }
             print("PASS: the Settings arrow changed the real icon order")
-            finish()
+            nativeMove()
         }
     }
     @MainActor
@@ -193,6 +284,6 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/Support/AccessibilityAccess.swift"])
     process = subprocess.Popen([str(fixture)], start_new_session=True)
     try:
-        command([str(binary)], 30)
+        command([str(binary), str(fixture)] + sys.argv[1:], 30)
     finally:
         _stop(process)
