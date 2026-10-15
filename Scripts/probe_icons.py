@@ -365,12 +365,64 @@ func probe() {
         exit(0)
     }
     @MainActor
+    func expiredMenuMove() {
+        manager.refresh()
+        guard let icon = fixture(), icon.section == .hidden else { exit(1) }
+        let initialLayout = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout") as NSDictionary?
+        let popup = NSPanel(contentRect: NSRect(x: 400, y: 400, width: 160, height: 48),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        popup.level = .popUpMenu
+        popup.orderFrontRegardless()
+        func menuIsVisible() -> Bool {
+            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                           kCGNullWindowID) as? [[String: Any]] else {
+                print("FAIL: expiry control could not read menu windows")
+                exit(1)
+            }
+            return windows.contains {
+                ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
+                    && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
+            }
+        }
+        guard menuIsVisible() else { print("FAIL: expiry control popup was not visible"); exit(1) }
+        let beforeDown = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+        manager.move(icon, to: .shown)
+        guard manager.isUpdatingIcons,
+              CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == beforeDown else {
+            print("FAIL: expiry control did not defer the move behind its popup")
+            exit(1)
+        }
+        popup.orderOut(nil)
+        let closeDeadline = ProcessInfo.processInfo.systemUptime + 1
+        while menuIsVisible() && ProcessInfo.processInfo.systemUptime < closeDeadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        guard !menuIsVisible() else { print("FAIL: expiry control popup did not close"); exit(1) }
+        print("MENU popup absent before main-queue stall, no native input posted")
+        Thread.sleep(forTimeInterval: 3.3)
+        print("MENU expired before queued polling resumed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            guard CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == beforeDown else {
+                print("FAIL: an expired menu request posted native input")
+                exit(1)
+            }
+            let expiryError = manager.errorMessage
+            manager.refresh()
+            let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout") as NSDictionary?
+            guard !manager.isUpdatingIcons, fixture()?.frame == icon.frame,
+                  saved == initialLayout,
+                  expiryError == "Close the menu, then try moving the icon again." else {
+                print("FAIL: an expired menu request did not cancel and clear pending state")
+                exit(1)
+            }
+            print("PASS: an expired menu request posts no input or layout change and clears pending state")
+            finish()
+        }
+    }
+    @MainActor
     func moveFromMenu() {
         manager.refresh()
         guard let icon = fixture(), icon.section == .hidden else { exit(1) }
-        let expires = CommandLine.arguments.contains("--menu-expired")
-        let initialLayout = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout") as NSDictionary?
-        var requestedDown: UInt32 = 0
         let target = MenuMoveAction()
         let menu = NSMenu()
         let item = NSMenuItem(title: "Move fixture to Shown", action: #selector(MenuMoveAction.performMove), keyEquivalent: "")
@@ -390,7 +442,6 @@ func probe() {
                 exit(1)
             }
             let beforeDown = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
-            requestedDown = beforeDown
             manager.move(icon, to: .shown)
             guard manager.isUpdatingIcons,
                   CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == beforeDown else {
@@ -418,25 +469,9 @@ func probe() {
         target.invoke = nil
         guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
         print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
-        let verify = {
-            let expiryError = manager.errorMessage
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             manager.refresh()
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-            if expires {
-                guard CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == requestedDown else {
-                    print("FAIL: an expired menu request posted native input")
-                    exit(1)
-                }
-                guard !manager.isUpdatingIcons, fixture()?.frame == icon.frame,
-                      (saved as NSDictionary?) == initialLayout,
-                      expiryError == "Close the menu, then try moving the icon again." else {
-                    print("FAIL: an expired menu request did not cancel and clear pending state")
-                    exit(1)
-                }
-                print("PASS: an expired menu request posts no input or layout change and clears pending state")
-                finish()
-                return
-            }
             guard !manager.isUpdatingIcons, let current = fixture(),
                   MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
                   current.section == .shown,
@@ -449,38 +484,6 @@ func probe() {
             }
             print("PASS: a real menu action moves the fixture and saves Shown")
             finish()
-        }
-        if expires {
-            let closeDeadline = ProcessInfo.processInfo.systemUptime + 1
-            let stall = Timer(timeInterval: 0.005, repeats: true) { timer in
-                guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                               kCGNullWindowID) as? [[String: Any]] else {
-                    print("FAIL: expiry control could not read menu windows")
-                    exit(1)
-                }
-                if windows.contains(where: {
-                    ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
-                        && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
-                }) {
-                    guard ProcessInfo.processInfo.systemUptime < closeDeadline else {
-                        print("FAIL: expiry control did not close the native menu")
-                        exit(1)
-                    }
-                    return
-                }
-                timer.invalidate()
-                guard CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == requestedDown else {
-                    print("FAIL: expiry control missed the pre-input menu-close boundary")
-                    exit(1)
-                }
-                print("MENU absent before main-queue stall, no native input posted")
-                Thread.sleep(forTimeInterval: 3.3)
-                print("MENU expired before queued polling resumed")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: verify)
-            }
-            RunLoop.main.add(stall, forMode: .common)
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: verify)
         }
     }
     @MainActor
@@ -1022,8 +1025,12 @@ func probe() {
             print("FAIL: the reorder fixture could not enter \(reorderSection.rawValue)")
             exit(1)
         }
-        if CommandLine.arguments.contains("--menu-context") || CommandLine.arguments.contains("--menu-expired") {
+        if CommandLine.arguments.contains("--menu-context") {
             moveFromMenu()
+            return
+        }
+        if CommandLine.arguments.contains("--menu-expired") {
+            expiredMenuMove()
             return
         }
         if CommandLine.arguments.contains("--drag-context") {
