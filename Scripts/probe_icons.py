@@ -161,7 +161,7 @@ setbuf(stdout, nil)
 @MainActor
 final class MenuMoveAction: NSObject {
     var invoke: (() -> Void)?
-    @objc func perform() { invoke?() }
+    @objc func performMove() { invoke?() }
 }
 
 @MainActor
@@ -337,7 +337,7 @@ func probe() {
         guard let icon = fixture(), icon.section == .hidden else { exit(1) }
         let target = MenuMoveAction()
         let menu = NSMenu()
-        let item = NSMenuItem(title: "Move fixture to Shown", action: #selector(MenuMoveAction.perform), keyEquivalent: "")
+        let item = NSMenuItem(title: "Move fixture to Shown", action: #selector(MenuMoveAction.performMove), keyEquivalent: "")
         item.target = target
         menu.addItem(item)
         var invoked = false
@@ -355,7 +355,6 @@ func probe() {
         }
         let deadline = Timer(timeInterval: 2, repeats: false) { _ in
             print("FAIL: native menu control did not invoke the selected action")
-            menu.cancelTracking()
             exit(1)
         }
         RunLoop.main.add(select, forMode: .common)
