@@ -43,6 +43,8 @@ parser.add_argument("--move-save-retry", action="store_true")
 parser.add_argument("--move-save-failure", action="store_true")
 parser.add_argument("--menu-context", action="store_true")
 parser.add_argument("--drag-context", action="store_true")
+parser.add_argument("--stale-frame", choices=["section", "arrow"],
+                    help="Pass an old UI row frame to the public move action")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
@@ -221,6 +223,17 @@ func probe() {
     let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
     func fixture() -> MenuBarIconManager.Icon? {
         manager.icons.first { $0.title == "Flux fixture A" }
+    }
+    let staleFrameKind = CommandLine.arguments.firstIndex(of: "--stale-frame").map {
+        CommandLine.arguments[$0 + 1]
+    }
+    func moveArgument(_ icon: MenuBarIconManager.Icon, kind: String) -> MenuBarIconManager.Icon {
+        guard staleFrameKind == kind, let screen = NSScreen.screens.first else { return icon }
+        let oldFrame = CGRect(x: 7, y: screen.frame.maxY - 12,
+                              width: icon.frame.width, height: icon.frame.height)
+        print("UI_SNAPSHOT id=\(icon.id) old=\(oldFrame) live=\(icon.frame) action=\(kind)")
+        return MenuBarIconManager.Icon(id: icon.id, title: icon.title, source: icon.source,
+                                      section: icon.section, isMovable: icon.isMovable, frame: oldFrame)
     }
     var captureDeadlines: [String: TimeInterval] = [:]
     @MainActor
@@ -952,7 +965,7 @@ func probe() {
             return
         }
         guard manager.canMove(moving, toward: .towardClock) else { exit(1) }
-        manager.move(moving, toward: .towardClock)
+        manager.move(moveArgument(moving, kind: "arrow"), toward: .towardClock)
         guard manager.isUpdatingIcons else {
             print("FAIL: the arrow move did not publish its pending verification")
             exit(1)
@@ -966,6 +979,8 @@ func probe() {
                     for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
                 print("Actual frames: \(next.map { ($0.title, $0.frame) }); boundaries=\(manager.boundaryProvider())")
+                manager.copyMenuBarReport()
+                print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
             }
             print("PASS: the Settings arrow changed the real icon order")
@@ -981,7 +996,7 @@ func probe() {
         }
         let section = sections[index]
         print("Moving fixture to \(section.rawValue), from \(icon.frame); boundaries=\(manager.boundaryProvider())")
-        manager.move(icon, to: section)
+        manager.move(moveArgument(icon, kind: "section"), to: section)
         guard manager.isUpdatingIcons else {
             print("FAIL: the section move did not publish its pending verification")
             exit(1)
@@ -1016,7 +1031,7 @@ func probe() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
         manager.beginIconManagement()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if closeTest { reorder() }
+            if closeTest || staleFrameKind == "arrow" { reorder() }
             else { move(index: 0) }
         }
     }
@@ -1072,7 +1087,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                   or options.move_refresh_retry or options.move_refresh_failure
                   or options.move_save_retry or options.move_save_failure or options.menu_context or options.drag_context)
     capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
-                        or options.move_save_retry or options.move_save_failure)
+                        or options.move_save_retry or options.move_save_failure or options.stale_frame is not None)
     geometry = temporary / "geometry"
     geometry.mkdir()
     fixture_flags = (["--single"] if close_test else [])
@@ -1092,6 +1107,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap)]
         flags = [flag for flag, enabled in selected if enabled]
+        if options.stale_frame:
+            flags += ["--stale-frame", options.stale_frame]
         if capture_geometry:
             flags += ["--geometry-output", str(geometry)]
         command([str(binary), str(fixture)] + flags, 30)
@@ -1100,6 +1117,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     except BaseException:
         label = (options.manager_ref or "current")[:8] + ("-overlap" if options.native_overlap else
                 ("-native" if options.native_close else ("-close" if options.move_close else "-settings")))
+        if options.stale_frame:
+            label += "-stale-" + options.stale_frame
         evidence = root / "build/icon-probe" / label
         shutil.copytree(temporary, evidence, dirs_exist_ok=True)
         reports = Path.home() / "Library/Logs/DiagnosticReports"
