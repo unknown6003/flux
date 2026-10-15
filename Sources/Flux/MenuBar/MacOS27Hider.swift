@@ -82,6 +82,7 @@ private final class MenuBarAssessment {
 
 @MainActor
 final class MacOS27Hider {
+    typealias PositionScan = (positions: [(bundleID: String, x: CGFloat)], replies: [String])
     private static let alwaysAllowed: Set<String> = [
         "com.apple.controlcenter", "com.apple.MenuBarAgent",
         "com.apple.systemuiserver", "com.apple.TextInputMenuAgent",
@@ -94,6 +95,7 @@ final class MacOS27Hider {
     private let assessment = MenuBarAssessment()
     private let trustProvider: () -> Bool
     private let defaults: UserDefaults
+    private let positionReader: () -> PositionScan
     private static let layoutKey = "flux.macOS27IconLayout"
     private(set) var hasSavedLayout = false
     var onStatus: ((String?) -> Void)?
@@ -136,9 +138,11 @@ final class MacOS27Hider {
     }
 
     init(defaults: UserDefaults = .standard,
-         trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() }) {
+         trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() },
+         positionReader: (() -> PositionScan)? = nil) {
         self.trustProvider = trustProvider
         self.defaults = defaults
+        self.positionReader = positionReader ?? Self.scanPositions
         if let layout = defaults.dictionary(forKey: Self.layoutKey),
            let hidden = layout["hidden"] as? [String],
            let alwaysHidden = layout["alwaysHidden"] as? [String] {
@@ -277,7 +281,7 @@ final class MacOS27Hider {
             }
             self.latestError = nil
             self.onStatus?(nil)
-            let scan = Self.scanPositions()
+            let scan = self.positionReader()
             let positions = scan.positions
             if !positions.isEmpty {
                 let readIDs = Set(positions.map(\.bundleID))
@@ -328,7 +332,7 @@ final class MacOS27Hider {
 
     /// Each app owns its AXExtrasMenuBar on macOS 27. One app can expose more
     /// than one icon; an icon in Shown keeps that whole app on the allow list.
-    private static func scanPositions() -> (positions: [(bundleID: String, x: CGFloat)], replies: [String]) {
+    private static func scanPositions() -> PositionScan {
         let apps = NSWorkspace.shared.runningApplications.compactMap { app
             -> (pid: pid_t, id: String)? in
             guard let id = app.bundleIdentifier,
