@@ -915,7 +915,7 @@ func probe() {
         manager?.applyDrawerVisibility(revealHidden: false, revealAlwaysHidden: false)
     }
     @MainActor
-    func reorder(prepared: Int = 0) {
+    func reorder(prepared: Int = 0, arrowPass: Int = 0) {
         manager.refresh()
         let items = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
         let expected = closeTest ? 1 : 2
@@ -935,8 +935,10 @@ func probe() {
             return
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
-        let moving = ordered[0]
-        let pixelIcon = staleFrameKind == "arrow" ? fixture() : moving
+        let moving = staleFrameKind == "arrow" ? fixture()! : ordered[0]
+        let towardClock = ordered.first?.id == moving.id
+        let direction: MenuBarIconManager.MoveDirection = towardClock ? .towardClock : .towardDrawer
+        let pixelIcon: MenuBarIconManager.Icon? = moving
         if let physical = geometry("prepared-\(reorderSection.rawValue)") {
             guard let pixelIcon, abs(physical.x - pixelIcon.frame.midX) <= 1,
                   MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1, width: 2, height: 2),
@@ -981,8 +983,8 @@ func probe() {
             moveAndClose()
             return
         }
-        guard manager.canMove(moving, toward: .towardClock) else { exit(1) }
-        manager.move(moveArgument(moving, kind: "arrow"), toward: .towardClock)
+        guard manager.canMove(moving, toward: direction) else { exit(1) }
+        manager.move(moveArgument(moving, kind: "arrow"), toward: direction)
         guard manager.isUpdatingIcons else {
             print("FAIL: the arrow move did not publish its pending verification")
             exit(1)
@@ -991,7 +993,8 @@ func probe() {
             manager.refresh()
             let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
                 .sorted { $0.frame.minX < $1.frame.minX }
-            guard !manager.isUpdatingIcons, next.last?.title == moving.title,
+            let edge = towardClock ? next.last : next.first
+            guard !manager.isUpdatingIcons, edge?.id == moving.id,
                   next.allSatisfy({ MenuBarIconManager.section(
                     for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
@@ -1010,7 +1013,11 @@ func probe() {
                 }
             }
             print("PASS: the Settings arrow changed the real icon order")
-            finish()
+            if staleFrameKind == "arrow" && arrowPass == 0 {
+                reorder(prepared: expected, arrowPass: 1)
+            } else {
+                finish()
+            }
         }
     }
     @MainActor
