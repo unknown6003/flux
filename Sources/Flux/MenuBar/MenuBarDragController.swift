@@ -97,9 +97,16 @@ final class MenuBarDragController: ObservableObject {
         let heartbeat = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                guard self.canManage, AXIsProcessTrusted(), let tap = self.tap,
-                      CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) else {
-                    self.stopInput(reason: "heartbeat management, grant, or tap lost")
+                guard self.canManage else {
+                    self.stopInput(reason: "heartbeat management inactive")
+                    return
+                }
+                guard AXIsProcessTrusted() else {
+                    self.stopInput(reason: "heartbeat grant lost")
+                    return
+                }
+                guard let tap = self.tap, CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) else {
+                    self.stopInput(reason: "heartbeat tap lost")
                     return
                 }
                 if self.active == nil && !self.nativeGesture && NSEvent.pressedMouseButtons & 1 == 0 {
