@@ -620,24 +620,33 @@ final class MenuBarIconManager: ObservableObject {
         if let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
             completedNativeMoves = completedNativeMoves.filter { $0.value.owner.bundleIdentifier != String(bundleID) }
         }
-        guard let element = elements[icon.id] else {
-            refresh()
-            finishMove()
-            return
-        }
+        let perform = { [self] in
+            guard let element = elements[icon.id] else {
+                refresh()
+                finishMove()
+                return
+            }
 
-        let target = CGPoint(x: targetX, y: icon.frame.minY)
-        lastMoveReport = "id=\(icon.id), source=\(icon.frame), target=\(CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY)), expected=\(expectedSection.rawValue), mode=\(RunLoop.current.currentMode?.rawValue ?? "none")"
-        lastMoveVerification = "pending"
-        let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
-        if !usedAccessibility {
-            drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
-                                          y: icon.frame.midY))
+            let target = CGPoint(x: targetX, y: icon.frame.minY)
+            lastMoveReport = "id=\(icon.id), source=\(icon.frame), target=\(CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY)), expected=\(expectedSection.rawValue), mode=\(RunLoop.current.currentMode?.rawValue ?? "none")"
+            lastMoveVerification = "pending"
+            let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
+            if !usedAccessibility {
+                drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
+                                              y: icon.frame.midY))
+            }
+            verifyMove(icon: icon,
+                       expectedSection: expectedSection,
+                       target: target,
+                       retryWithDrag: usedAccessibility)
         }
-        verifyMove(icon: icon,
-                   expectedSection: expectedSection,
-                   target: target,
-                   retryWithDrag: usedAccessibility)
+        if ControlItem.usesMacOS27Model {
+            RunLoop.main.perform(inModes: [.default]) {
+                MainActor.assumeIsolated { perform() }
+            }
+        } else {
+            perform()
+        }
     }
 
     private func beginIconUpdate() {
