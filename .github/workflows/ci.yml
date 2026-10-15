@@ -151,28 +151,40 @@ jobs:
           import sys
           sys.path.insert(0, 'Scripts')
           from probe_update import run
-          result = run(['python3', 'Scripts/probe_layout_scan.py', '--case', 'read-only',
-                        '--hider-ref', 'ee22f6f176bfaba0d230c1afad5622e81cb5db9f'], seconds=180, check=False)
-          print(result.stdout)
-          assert result.returncode == 1 and 'read-only layout observer started hiding without apply' in result.stdout
-          print(run(['python3', 'Scripts/probe_layout_scan.py', '--case', 'read-only'], seconds=180).stdout)
-          print(run(['python3', 'Scripts/probe_layout_scan.py', '--case', 'batch'], seconds=180).stdout)
-          result = run(['python3', 'Scripts/probe_icons.py', '--native-geometry',
-                        '--manager-ref', '66dbf21690e7d0936162744822dea44abdf342aa'], seconds=180, check=False)
-          print(result.stdout)
-          assert result.returncode == 1 and 'AX position disagrees with the drawn fixture' in result.stdout
-          print(run(['python3', 'Scripts/probe_icons.py', '--native-geometry'], seconds=180).stdout)
-          print(run(['python3', 'Scripts/probe_icons.py', '--native-overlap'], seconds=180).stdout)
-          result = run(['python3', 'Scripts/probe_icons.py', '--move-close',
-                        '--manager-ref', '195cb7063f614b878a3df82b9874b31849ac9738'],
-                       seconds=180, check=False)
-          print(result.stdout)
-          assert result.returncode == 1
-          assert 'closing management applied hiding before the pending move was verified' in result.stdout
-          print('PASS: the previous manager applies hiding before move verification')
-          print(run(['python3', 'Scripts/probe_icons.py', '--move-close'], seconds=180).stdout)
-          print(run(['python3', 'Scripts/probe_icons.py', '--native-close'], seconds=180).stdout)
-          print(run(['python3', 'Scripts/probe_icons.py'], seconds=180).stdout)
+          from pathlib import Path
+          cases = [
+              ('read-only-baseline', 'probe_layout_scan.py', ['--case', 'read-only', '--hider-ref',
+                  'ee22f6f176bfaba0d230c1afad5622e81cb5db9f'], 'read-only layout observer started hiding without apply'),
+              ('read-only', 'probe_layout_scan.py', ['--case', 'read-only'], None),
+              ('batch', 'probe_layout_scan.py', ['--case', 'batch'], None),
+              ('geometry-baseline', 'probe_icons.py', ['--native-geometry', '--manager-ref',
+                  '66dbf21690e7d0936162744822dea44abdf342aa'], 'AX position disagrees with the drawn fixture'),
+              ('geometry', 'probe_icons.py', ['--native-geometry'], None),
+              ('overlap', 'probe_icons.py', ['--native-overlap'], None),
+              ('move-close-baseline', 'probe_icons.py', ['--move-close', '--manager-ref',
+                  '195cb7063f614b878a3df82b9874b31849ac9738'],
+                  'closing management applied hiding before the pending move was verified'),
+              ('move-close', 'probe_icons.py', ['--move-close'], None),
+              ('native-close', 'probe_icons.py', ['--native-close'], None),
+              ('settings', 'probe_icons.py', [], None),
+          ]
+          output = Path('build/icon-probe')
+          output.mkdir(parents=True, exist_ok=True)
+          failed = []
+          for label, script, arguments, expected_failure in cases:
+              try:
+                  result = run(['python3', 'Scripts/' + script] + arguments, seconds=180, check=False)
+                  log = result.stdout
+                  passed = (result.returncode == 1 and expected_failure in log) if expected_failure else result.returncode == 0
+              except RuntimeError as error:
+                  log, passed = str(error), False
+              (output / (label + '.log')).write_text(log)
+              print(log, flush=True)
+              print(('PASS' if passed else 'FAIL') + ': ' + label, flush=True)
+              if not passed:
+                  failed.append(label)
+          if failed:
+              raise SystemExit('FAIL: ' + ', '.join(failed))
           PY
 
       - name: Upload icon move failure evidence
