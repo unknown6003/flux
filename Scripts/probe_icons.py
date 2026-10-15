@@ -220,6 +220,39 @@ func probe() {
         let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"), encoding: .utf8)) ?? "missing"
         let windows = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
             .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
+        if let agent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first {
+            let host = AXUIElementCreateApplication(agent.processIdentifier)
+            AXUIElementSetMessagingTimeout(host, 0.1)
+            var hostBar: CFTypeRef?
+            AXUIElementCopyAttributeValue(host, kAXExtrasMenuBarAttribute as CFString, &hostBar)
+            var records: [[String: String]] = []
+            let deadline = ProcessInfo.processInfo.systemUptime + 1
+            func visit(_ element: AXUIElement, depth: Int) {
+                guard depth < 6, records.count < 100, ProcessInfo.processInfo.systemUptime < deadline else { return }
+                var record: [String: String] = ["depth": String(depth)]
+                var ownerPID: pid_t = 0
+                AXUIElementGetPid(element, &ownerPID)
+                record["pid"] = String(ownerPID)
+                record["equalHit"] = String(hit.map { CFEqual(element, $0) } ?? false)
+                for key in [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                            kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+                    var value: CFTypeRef?
+                    let result = AXUIElementCopyAttributeValue(element, key as CFString, &value)
+                    record[key] = "\(result.rawValue):\(String(describing: value))"
+                }
+                records.append(record)
+                var children: CFTypeRef?
+                AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
+                for child in children as? [AXUIElement] ?? [] { visit(child, depth: depth + 1) }
+            }
+            if let hostBar, CFGetTypeID(hostBar) == AXUIElementGetTypeID() {
+                visit(hostBar as! AXUIElement, depth: 0)
+            }
+            if let data = try? JSONSerialization.data(withJSONObject: records, options: .prettyPrinted) {
+                try? data.write(to: output.appendingPathComponent(stage + "-host.json"), options: .atomic)
+            }
+            print("GEOMETRY_HOST \(stage) nodes=\(records.count)")
+        }
         print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own) windows=\(windows)")
         return center
     }
