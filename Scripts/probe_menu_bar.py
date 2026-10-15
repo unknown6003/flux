@@ -513,6 +513,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                   str(root / "Sources/Flux/Support/Log.swift"),
                   str(root / "Sources/Flux/Support/AccessibilityAccess.swift"),
                   str(root / "Sources/Flux/MenuBar/MenuBarGeometry.swift"),
+                  str(root / "Sources/Flux/MenuBar/MenuBarSection.swift"),
                   str(display_object),
                   "-o", str(binary)], 120)
     if status:

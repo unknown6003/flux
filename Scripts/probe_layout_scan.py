@@ -59,13 +59,28 @@ MainActor.assumeIsolated {
             print("FAIL: a no-edit refresh rewrote the saved layout")
             exit(1)
         }
+        let relaunched = MacOS27Hider(defaults: defaults, trustProvider: { true },
+                                      positionReader: { (positions, []) })
+        relaunched.apply(revealHidden: true, revealAlwaysHidden: true,
+                         chevronX: { 300 }, alwaysX: { 200 })
+        waitForRead()
+        let reloaded = layout()
+        guard reloaded.hidden == opened.hidden, reloaded.always == opened.always else {
+            defaults.removePersistentDomain(forName: suite)
+            print("FAIL: relaunch rewrote the saved layout")
+            exit(1)
+        }
         print("PASS: no-edit management and refresh preserve saved sections despite changed AX geometry")
         return
     }
     if !overlapOnly {
         apply(true, false)
         waitForRead()
-        positions = [("test.normal", 350)]
+        positions = [("test.normal", 350), ("test.always", 350)]
+        guard hider.recordLayoutChange(for: "test.normal") else {
+            print("FAIL: the explicit move could not save its layout")
+            exit(1)
+        }
         apply(false, false)
         waitForRead()
         let moved = layout()
@@ -75,7 +90,7 @@ MainActor.assumeIsolated {
             print("FAIL: a visible icon moved to Shown kept its cached Hidden assignment; reads=\(reads)")
             exit(1)
         }
-        print("PASS: cached toggles read moved positions and preserve unread Always Hidden items")
+        print("PASS: an explicit move saves its section and preserves unrelated Always Hidden items")
         if CommandLine.arguments.contains("moves") { return }
     }
 
@@ -92,6 +107,10 @@ MainActor.assumeIsolated {
                                                object: nil)
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     arrow = 300
+    guard hider.recordLayoutChange(for: "test.normal") else {
+        print("FAIL: the verified management move could not save its layout")
+        exit(1)
+    }
     waitForRead()
     let managed = layout()
     guard reads > before, managed.hidden == ["test.normal", "test.always"],
@@ -100,7 +119,7 @@ MainActor.assumeIsolated {
         print("FAIL: duplicate lifecycle calls discarded the management layout scan; reads=\(reads), before=\(before)")
         exit(1)
     }
-    print("PASS: duplicate end, retry and workspace callbacks retain a pending layout read")
+    print("PASS: duplicate end, retry and workspace callbacks preserve a verified layout edit")
     apply(true, true)
     waitForRead()
 }
@@ -119,7 +138,7 @@ def main():
         source = temporary / "main.swift"
         source.write_text(FIXTURE)
         binary = temporary / "FluxLayoutProbe"
-        files = ["MenuBar/MacOS27Hider.swift", "MenuBar/MenuBarGeometry.swift",
+        files = ["MenuBar/MacOS27Hider.swift", "MenuBar/MenuBarGeometry.swift", "MenuBar/MenuBarSection.swift",
                  "Support/Log.swift", "Support/AccessibilityAccess.swift"]
         run(["xcrun", "swiftc", "-swift-version", "5", str(source),
              *[str(root / "Sources/Flux" / path) for path in files], "-o", str(binary)], 120)

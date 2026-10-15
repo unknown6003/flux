@@ -238,7 +238,8 @@ def main():
         main_file.write_text(hider + FIXTURE)
         dependencies = [root / "Sources/Flux/Support/Log.swift",
                         root / "Sources/Flux/Support/AccessibilityAccess.swift",
-                        root / "Sources/Flux/MenuBar/MenuBarGeometry.swift"]
+                        root / "Sources/Flux/MenuBar/MenuBarGeometry.swift",
+                        root / "Sources/Flux/MenuBar/MenuBarSection.swift"]
         run(["xcrun", "swiftc", "-swift-version", "5", str(main_file),
              *map(str, dependencies), "-o", str(binary)], 120)
         run(["codesign", "--force", "--sign", "-", str(bundle)], 20)
