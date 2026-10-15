@@ -418,20 +418,7 @@ func probe() {
         target.invoke = nil
         guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
         print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
-        if expires {
-            Thread.sleep(forTimeInterval: 3.3)
-            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                           kCGNullWindowID) as? [[String: Any]],
-                  !windows.contains(where: {
-                      ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
-                          && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
-                  }) else {
-                print("FAIL: expiry control did not close the native menu")
-                exit(1)
-            }
-            print("MENU expired before queued polling resumed")
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        let verify = {
             let expiryError = manager.errorMessage
             manager.refresh()
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
@@ -462,6 +449,38 @@ func probe() {
             }
             print("PASS: a real menu action moves the fixture and saves Shown")
             finish()
+        }
+        if expires {
+            let closeDeadline = ProcessInfo.processInfo.systemUptime + 1
+            let stall = Timer(timeInterval: 0.005, repeats: true) { timer in
+                guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                               kCGNullWindowID) as? [[String: Any]] else {
+                    print("FAIL: expiry control could not read menu windows")
+                    exit(1)
+                }
+                if windows.contains(where: {
+                    ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
+                        && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
+                }) {
+                    guard ProcessInfo.processInfo.systemUptime < closeDeadline else {
+                        print("FAIL: expiry control did not close the native menu")
+                        exit(1)
+                    }
+                    return
+                }
+                timer.invalidate()
+                guard CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == requestedDown else {
+                    print("FAIL: expiry control missed the pre-input menu-close boundary")
+                    exit(1)
+                }
+                print("MENU absent before main-queue stall, no native input posted")
+                Thread.sleep(forTimeInterval: 3.3)
+                print("MENU expired before queued polling resumed")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: verify)
+            }
+            RunLoop.main.add(stall, forMode: .common)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: verify)
         }
     }
     @MainActor
