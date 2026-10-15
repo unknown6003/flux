@@ -464,6 +464,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True, help="New scratch directory for bundles and logs")
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--busy-only", action="store_true", help="Test delayed shared move state without dragging")
+    parser.add_argument("--case", default="all", choices=(
+        "all", "row-hidden", "menu-hidden", "menu-always", "row-bar", "row-hidden-escape",
+        "menu-always-escape", "row-bar-escape", "invalid", "late-command",
+        "command-held", "command-rapid", "command-down-only"), help="Run one independent native scenario")
     parser.add_argument("--controller-ref", help="Compile the production controller from this Git ref for regression proof")
     parser.add_argument("--empty-title", action="store_true", help="Require the fixture's empty AXTitle fallback")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91), metavar="25..90")
@@ -529,16 +533,19 @@ def main():
                 raise RuntimeError("shared move-state probe deadline")
             results.append("PASS delayed overlapping manager moves kept the actual event tap disabled")
         scenarios = () if args.busy_only else (
-            ("source", "hidden", "normal", "hidden"),
-            ("source", "alwaysHidden", "normal", "alwaysHidden"),
-            ("row", "bar", "normal", "shown"),
-            ("row", "hidden", "escape", None),
-            ("source", "alwaysHidden", "escape", None),
-            ("row", "bar", "escape", None),
-            ("source", "invalid", "normal", None),
-            ("source", "hidden", "late-command", None),
+            ("row-hidden", "row", "hidden", "normal", "hidden"),
+            ("menu-hidden", "source", "hidden", "normal", "hidden"),
+            ("menu-always", "source", "alwaysHidden", "normal", "alwaysHidden"),
+            ("row-bar", "row", "bar", "normal", "shown"),
+            ("row-hidden-escape", "row", "hidden", "escape", None),
+            ("menu-always-escape", "source", "alwaysHidden", "escape", None),
+            ("row-bar-escape", "row", "bar", "escape", None),
+            ("invalid", "source", "invalid", "normal", None),
+            ("late-command", "source", "hidden", "late-command", None),
         )
-        for source, destination, kind, expected in scenarios:
+        for name, source, destination, kind, expected in scenarios:
+            if args.case not in ("all", name):
+                continue
             if time.monotonic() - started > args.seconds - 15:
                 raise RuntimeError("scenario deadline; stopped all probe groups")
             before = len(state["commits"])
@@ -566,6 +573,8 @@ def main():
         # Both keys arrive before down in these cases, with no run-loop delay in rapid.
         # Reorder only a disposable item, and require actual geometry movement.
         for kind in (() if args.busy_only else ("held", "rapid", "down-only")):
+            if args.case not in ("all", f"command-{kind}"):
+                continue
             state = wait_state(state_path, probe, 2)
             if not state["mode"] or not state["taps"] or not all(state["taps"]):
                 raise RuntimeError("drag mode stopped before the native Command check")
