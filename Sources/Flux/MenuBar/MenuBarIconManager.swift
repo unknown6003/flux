@@ -464,7 +464,9 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func stringAttribute(_ element: AXUIElement, _ key: String) -> String? {
-        attribute(element, key) as? String
+        guard let text = (attribute(element, key) as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 
     private func frame(of element: AXUIElement) -> CGRect? {
