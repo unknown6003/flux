@@ -32,6 +32,8 @@ enum ControlItem {
 
 @MainActor
 final class MenuBarIconManager {
+    @Published private(set) var isMovingIcons = false
+    private(set) var pendingVerifications = 0
     struct Icon: Identifiable, Equatable {
         let id: String
         let title: String
@@ -45,6 +47,7 @@ final class MenuBarIconManager {
     var isTrusted: Bool { AXIsProcessTrusted() }
     var section: MenuBarSection = .shown
     var onMove: ((String) -> Void)?
+    var onVerification: (() -> Void)?
     func refresh() {
         icons = []
         labels = []
@@ -76,9 +79,19 @@ final class MenuBarIconManager {
         icons.sort { $0.title == "Flux drag fixture" && $1.title != "Flux drag fixture" }
     }
     func move(_ icon: Icon, to destination: MenuBarSection) {
+        beginVerification(after: 0.45)
         section = destination
         onMove?(destination.rawValue)
-        refresh()
+    }
+    func beginVerification(after delay: Double) {
+        pendingVerifications += 1
+        if pendingVerifications == 1 { isMovingIcons = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            self.onVerification?()
+            self.refresh()
+            self.pendingVerifications -= 1
+            if self.pendingVerifications == 0 { self.isMovingIcons = false }
+        }
     }
     private func read(_ item: AXUIElement, _ key: String) -> CFTypeRef? {
         var value: CFTypeRef?
@@ -97,7 +110,8 @@ final class Probe {
     var commits: [String] = []
     let state: String
     var timer: Timer?
-    init(state: String) { self.state = state }
+    let busyOnly: Bool
+    init(state: String, busyOnly: Bool) { self.state = state; self.busyOnly = busyOnly }
     func start(seconds: Double) {
         guard AXIsProcessTrusted() else {
             print("BLOCKED: probe identity lacks existing Accessibility access; no permission was requested")
@@ -163,6 +177,7 @@ final class Probe {
             guard self.controller.isMenuBarDragging else {
                 print("BLOCKED: \(self.controller.message ?? "event tap unavailable")"); exit(5)
             }
+            if self.busyOnly { self.runBusyProbe() }
             self.writeState()
             let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
                 MainActor.assumeIsolated {
@@ -188,7 +203,6 @@ final class Probe {
         exit(0)
     }
     func writeState() {
-        manager.refresh()
         if let icon = manager.icons.first { row?.icon = icon }
         guard let primary = NSScreen.screens.first else { return }
         func cg(_ point: NSPoint) -> [Double] { [Double(point.x), Double(primary.frame.maxY - point.y)] }
@@ -203,6 +217,7 @@ final class Probe {
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
+            "moving": manager.isMovingIcons, "taps": ownTapStates() ?? [],
             "labels": manager.labels,
             "buttons": NSEvent.pressedMouseButtons,
             "source": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
@@ -215,6 +230,63 @@ final class Probe {
             try? data.write(to: URL(fileURLWithPath: self.state), options: .atomic)
         }
     }
+
+    func runBusyProbe() {
+        func check(_ busy: Bool, _ phase: String) {
+            guard self.manager.isMovingIcons == busy, let taps = ownTapStates(), !taps.isEmpty,
+                  taps.allSatisfy({ $0 == !busy }) else {
+                print("FAIL busy \(phase) moving=\(self.manager.isMovingIcons) taps=\(ownTapStates() ?? [])")
+                fflush(stdout)
+                self.controller.close()
+                exit(8)
+            }
+            print("PASS busy \(phase) moving=\(busy) taps=\(taps)")
+            fflush(stdout)
+        }
+        check(false, "initially armed")
+        manager.onVerification = {
+            check(true, "before delayed AX verification")
+            Thread.sleep(forTimeInterval: 0.3)
+            check(true, "after bounded main-thread verification delay")
+        }
+        manager.beginVerification(after: 0.45)
+        check(true, "synchronous willSet emission")
+        manager.beginVerification(after: 1.25)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.controller.setMenuBarDragging(false)
+            self.controller.setMenuBarDragging(true)
+            check(true, "mode re-enabled during overlap")
+            self.controller.close()
+            self.controller.open(manager: self.manager, window: self.window)
+            self.controller.setMenuBarDragging(true)
+            check(true, "management reopened during overlap")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) {
+            guard self.manager.pendingVerifications == 1 else {
+                print("FAIL busy first verification did not leave one pending"); fflush(stdout); exit(8)
+            }
+            check(true, "first verification finished with overlap pending")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            check(false, "last verification finished")
+            self.manager.onVerification = nil
+            self.events.append("busy probe passed")
+            self.writeState()
+        }
+    }
+}
+
+func ownTapStates() -> [Bool]? {
+    var count: UInt32 = 0
+    guard CGGetEventTapList(0, nil, &count) == .success, count < 2048 else { return nil }
+    var entries = [CGEventTapInformation](repeating: CGEventTapInformation(), count: Int(count) + 8)
+    let result = entries.withUnsafeMutableBufferPointer {
+        CGGetEventTapList(UInt32($0.count), $0.baseAddress, &count)
+    }
+    guard result == .success, Int(count) <= entries.count else { return nil }
+    return entries.prefix(Int(count)).filter {
+        $0.tappingProcess == ProcessInfo.processInfo.processIdentifier
+    }.map(\.enabled)
 }
 
 @MainActor
@@ -329,7 +401,7 @@ struct Main {
                 CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
             }
         }
-        else { Probe(state: args[2]).start(seconds: Double(args[3])!) }
+        else { Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
     }
 }
 '''
@@ -381,7 +453,8 @@ def wait_scenario(path, process, offset, kind):
         state = wait_state(path, process, 1)
         events = state["events"][offset:]
         ended = [event for event in events if event.startswith("ended ")]
-        if ended or (kind == "late-command" and "source down command=false" in events and state["buttons"] == 0):
+        settled = not state["moving"] and state["buttons"] == 0
+        if settled and (ended or (kind == "late-command" and "source down command=false" in events)):
             return state, events
         time.sleep(0.05)
     raise RuntimeError(f"session settle deadline for {kind}: {events}")
@@ -391,6 +464,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="New scratch directory for bundles and logs")
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--busy-only", action="store_true", help="Test delayed shared move state without dragging")
+    parser.add_argument("--controller-ref", help="Compile the production controller from this Git ref for regression proof")
     parser.add_argument("--empty-title", action="store_true", help="Require the fixture's empty AXTitle fallback")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91), metavar="25..90")
     args = parser.parse_args()
@@ -400,6 +475,13 @@ def main():
     root = Path(__file__).resolve().parents[1]
     swift = args.output / "Probe.swift"
     swift.write_text(SWIFT)
+    controller = root / "Sources/Flux/MenuBar/MenuBarDragController.swift"
+    if args.controller_ref:
+        source = args.output / "controller-source.swift"
+        bounded(["git", "-C", str(root), "show",
+                 f"{args.controller_ref}:Sources/Flux/MenuBar/MenuBarDragController.swift"],
+                5, source)
+        controller = source
     app = args.output / "FluxMenuDragProbe.app"
     binary = app / "Contents/MacOS/FluxMenuDragProbe"
     binary.parent.mkdir(parents=True)
@@ -409,7 +491,7 @@ def main():
     }))
     bounded(["xcrun", "swiftc", "-swift-version", "5", "-parse-as-library", "-framework", "AppKit",
              "-framework", "ApplicationServices", str(swift),
-             str(root / "Sources/Flux/MenuBar/MenuBarDragController.swift"),
+             str(controller),
              str(root / "Sources/Flux/MenuBar/MenuBarSection.swift"), "-o", str(binary)],
             45, args.output / "build.log")
     fixture_app = args.output / "FluxDragFixture.app"
@@ -418,7 +500,7 @@ def main():
     info = plistlib.loads((fixture_app / "Contents/Info.plist").read_bytes())
     info.update(CFBundleIdentifier="com.flux.menu-drag-fixture", CFBundleName="Flux drag fixture", LSUIElement=True)
     (fixture_app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-    print(f"BUILT actual production controller; manager.move is a recorder: {app}", flush=True)
+    print(f"BUILT production controller from {args.controller_ref or 'working tree'}; move recorder: {app}", flush=True)
     if args.compile_only:
         return
     processes = []
@@ -427,7 +509,8 @@ def main():
         if args.empty_title:
             fixture_argv.append("--empty-title")
         for argv, name in ((fixture_argv, "fixture.log"),
-                           ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)], "probe.log")):
+                           ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)]
+                            + (["--busy-only"] if args.busy_only else []), "probe.log")):
             with (args.output / name).open("wb") as log:
                 processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         probe = processes[-1]
@@ -438,7 +521,15 @@ def main():
             raise RuntimeError(f"fixture did not expose an empty AXTitle: {state['labels']}")
         started = time.monotonic()
         results = []
-        for source, destination, kind, expected in (
+        if args.busy_only:
+            deadline = time.monotonic() + 6
+            while "busy probe passed" not in state["events"] and time.monotonic() < deadline:
+                time.sleep(0.05)
+                state = wait_state(state_path, probe, 1)
+            if "busy probe passed" not in state["events"]:
+                raise RuntimeError("shared move-state probe deadline")
+            results.append("PASS delayed overlapping manager moves kept the actual event tap disabled")
+        scenarios = () if args.busy_only else (
             ("source", "hidden", "normal", "hidden"),
             ("source", "alwaysHidden", "normal", "alwaysHidden"),
             ("row", "bar", "normal", "shown"),
@@ -447,7 +538,8 @@ def main():
             ("row", "bar", "escape", None),
             ("source", "invalid", "normal", None),
             ("source", "hidden", "late-command", None),
-        ):
+        )
+        for source, destination, kind, expected in scenarios:
             if time.monotonic() - started > args.seconds - 15:
                 raise RuntimeError("scenario deadline; stopped all probe groups")
             before = len(state["commits"])
@@ -474,9 +566,9 @@ def main():
             results.append(f"PASS {source} -> {destination} {kind}")
         # Both keys arrive before down in these cases, with no run-loop delay in rapid.
         # Reorder only a disposable item, and require actual geometry movement.
-        for kind in ("held", "rapid", "down-only"):
+        for kind in (() if args.busy_only else ("held", "rapid", "down-only")):
             state = wait_state(state_path, probe, 2)
-            if not state["mode"]:
+            if not state["mode"] or not state["taps"] or not all(state["taps"]):
                 raise RuntimeError("drag mode stopped before the native Command check")
             start = state["source"]
             events_before = len(state["events"])
@@ -484,7 +576,11 @@ def main():
             # Command gestures must reach the real fixture without a Flux session.
             bounded([str(binary), "--drive", str(state_path), "source", "native", kind],
                     4, args.output / f"command-{kind}.log")
+            position_deadline = time.monotonic() + 4
             state = wait_state(state_path, probe, 2)
+            while abs(state["source"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
+                time.sleep(0.05)
+                state = wait_state(state_path, probe, 1)
             new_events = state["events"][events_before:]
             if not state["mode"] or "tap down command=true" not in new_events:
                 raise RuntimeError(f"Command {kind} did not exercise the armed event tap")
@@ -505,7 +601,7 @@ def main():
             raise RuntimeError("mouse button remained down at cleanup")
         results.append("PASS controller close removed overlays, return targets, and event tap")
         print("\n".join(results), flush=True)
-        print("PASS controller transport only. Flux UI and real manager moves remain root checks.", flush=True)
+        print("PASS focused controller probe only. Flux UI and real manager moves remain root checks.", flush=True)
         (args.output / "result.json").write_text(json.dumps({"results": results, "state": state}, indent=2))
     finally:
         try:
