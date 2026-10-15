@@ -15,8 +15,10 @@ import plistlib
 import shutil
 import signal
 import subprocess
+import struct
 import sys
 import time
+import zlib
 
 
 SWIFT = r'''
@@ -110,14 +112,82 @@ final class Probe {
     var commits: [String] = []
     let state: String
     var timer: Timer?
+    var screenObserver: NSObjectProtocol?
+    var screenSnapshot: [String: Any] = [:]
+    var screenRecords: [[String: Any]] = []
+    var lastScreenNotification = -Double.infinity
     let busyOnly: Bool
-    init(state: String, busyOnly: Bool) { self.state = state; self.busyOnly = busyOnly }
+    let captureOffControl: Bool
+    var controlSnapshot = 0
+    init(state: String, busyOnly: Bool, captureOffControl: Bool) {
+        self.state = state; self.busyOnly = busyOnly; self.captureOffControl = captureOffControl
+    }
+    func captureIsAbsent() -> Bool {
+        guard !controller.isMenuBarDragging, let taps = ownTapStates(), taps.isEmpty else { return false }
+        return NSApp.windows.allSatisfy {
+            !($0.contentView is MenuBarDragSourceView) && !($0.contentView is MenuBarDragDestinationView)
+        }
+    }
+    func screens() -> [String: Any] {
+        func rect(_ value: CGRect) -> [Double] {
+            [Double(value.minX), Double(value.minY), Double(value.width), Double(value.height)]
+        }
+        return ["statusBarHeight": Double(NSStatusBar.system.thickness),
+                "presentationOptions": NSApp.presentationOptions.rawValue,
+                "screens": NSScreen.screens.map { screen -> [String: Any] in
+            let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+            var value: [String: Any] = ["displayID": id, "frame": rect(screen.frame),
+                "visibleFrame": rect(screen.visibleFrame), "scale": Double(screen.backingScaleFactor),
+                "safeArea": [Double(screen.safeAreaInsets.top), Double(screen.safeAreaInsets.left),
+                             Double(screen.safeAreaInsets.bottom), Double(screen.safeAreaInsets.right)],
+                "cgBounds": rect(CGDisplayBounds(id)), "pixels": [CGDisplayPixelsWide(id), CGDisplayPixelsHigh(id)],
+                "active": CGDisplayIsActive(id) != 0, "main": CGDisplayIsMain(id) != 0,
+                "asleep": CGDisplayIsAsleep(id) != 0]
+            if let mode = CGDisplayCopyDisplayMode(id) {
+                value["mode"] = ["id": Double(mode.ioDisplayModeID), "width": Double(mode.width),
+                    "height": Double(mode.height), "pixelWidth": Double(mode.pixelWidth),
+                    "pixelHeight": Double(mode.pixelHeight), "refreshRate": mode.refreshRate]
+            }
+            return value
+        }]
+    }
+    func signature(_ value: Any) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "<invalid snapshot>" }
+        return text
+    }
+    func recordScreens(_ event: String, after: [String: Any]) {
+        let same = signature(screenSnapshot) == signature(after)
+        screenRecords.append(["event": event, "uptime": ProcessInfo.processInfo.systemUptime,
+                              "sameConfiguration": same, "before": screenSnapshot, "after": after,
+                              "mode": controller.isMenuBarDragging,
+                              "appActive": NSApp.isActive, "keyWindow": NSApp.keyWindow?.windowNumber ?? -1])
+        screenSnapshot = after
+        if let data = try? JSONSerialization.data(withJSONObject: screenRecords, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: state + ".screens.json"), options: .atomic)
+        }
+        print("SCREEN event=\(event) t=\(ProcessInfo.processInfo.systemUptime) sameConfiguration=\(same) mode=\(controller.isMenuBarDragging)")
+        fflush(stdout)
+    }
     func start(seconds: Double) {
         guard AXIsProcessTrusted() else {
             print("BLOCKED: probe identity lacks existing Accessibility access; no permission was requested")
             exit(3)
         }
         NSApp.setActivationPolicy(.regular)
+        recordScreens("launch", after: screens())
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.lastScreenNotification = ProcessInfo.processInfo.systemUptime
+                    self.recordScreens("notification", after: self.screens())
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.recordScreens("notification next turn", after: self.screens())
+                    }
+                }
+            }
         window = NSWindow(contentRect: NSRect(x: 100, y: 160, width: 620, height: 300),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Flux native menu drag probe"
@@ -135,23 +205,72 @@ final class Probe {
             target.addSubview(label)
             content.addSubview(target)
         }
-        controller.trace = { [weak self] value in self?.events.append(value); print(value); fflush(stdout) }
+        controller.trace = { [weak self] value in
+            self?.events.append(value)
+            if value.hasPrefix("stop reason=screen changed"), let self {
+                self.recordScreens("controller screen guard", after: self.screens())
+            }
+            print("t=\(ProcessInfo.processInfo.systemUptime) \(value)"); fflush(stdout)
+        }
         manager.onMove = { [weak self] value in self?.commits.append(value) }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         let activationDeadline = ProcessInfo.processInfo.systemUptime + 8
         var retriedActivation = false
+        var stableSince = ProcessInfo.processInfo.systemUptime
+        var lastConfiguration = signature(screenSnapshot)
+        var lastFixture = ""
+        var enabledAt: Double?
+        var enabledConfiguration = ""
         let readiness = Timer(timeInterval: 0.1, repeats: true) { readiness in
             MainActor.assumeIsolated {
             let now = ProcessInfo.processInfo.systemUptime
+            let configuration = self.screens()
+            let currentConfiguration = self.signature(configuration)
+            if currentConfiguration != lastConfiguration {
+                self.recordScreens("readiness geometry changed", after: configuration)
+                lastConfiguration = currentConfiguration
+                stableSince = now
+            }
             guard now < activationDeadline else {
                 let front = NSWorkspace.shared.frontmostApplication
                 print("BLOCKED readiness deadline active=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(self.window.windowNumber) front=\(front?.processIdentifier ?? -1)")
                 fflush(stdout)
+                self.recordScreens("BLOCKED readiness deadline", after: configuration)
+                self.controller.close()
                 readiness.invalidate()
                 exit(5)
             }
+            if let enabledAt {
+                guard (self.captureOffControl ? self.captureIsAbsent() : self.controller.isMenuBarDragging),
+                      currentConfiguration == enabledConfiguration else {
+                    self.recordScreens("BLOCKED armed readiness invalidated", after: configuration)
+                    self.controller.close()
+                    readiness.invalidate()
+                    exit(5)
+                }
+                guard now - enabledAt >= 1 else { return }
+                readiness.invalidate()
+                self.recordScreens("ready for input", after: configuration)
+                self.writeState()
+                let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
+                    MainActor.assumeIsolated {
+                        if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
+                        if self.captureOffControl, FileManager.default.fileExists(atPath: self.state + ".refresh") {
+                            try? FileManager.default.removeItem(atPath: self.state + ".refresh")
+                            self.manager.refresh()
+                            self.controlSnapshot += 1
+                        }
+                        self.writeState()
+                    }
+                }
+                self.timer = timer
+                RunLoop.main.add(timer, forMode: .common)
+                if self.busyOnly { self.runBusyProbe() }
+                return
+            }
             guard NSApp.isActive, NSApp.keyWindow === self.window, self.window.isVisible else {
+                stableSince = now
                 if !retriedActivation && now > activationDeadline - 6 {
                     retriedActivation = true
                     print("readiness retry activation")
@@ -162,11 +281,26 @@ final class Probe {
                 return
             }
             self.manager.refresh()
-            guard let icon = self.manager.icons.first else { return }
-            readiness.invalidate()
-            print("READY active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
+            guard self.manager.icons.count == 2, let icon = self.manager.icons.first else {
+                stableSince = now
+                return
+            }
+            let fixture = self.signature(self.manager.icons.map {
+                ["id": $0.id, "title": $0.title, "frame": [Double($0.frame.minX), Double($0.frame.minY),
+                                                           Double($0.frame.width), Double($0.frame.height)]] as [String: Any]
+            })
+            if fixture != lastFixture { lastFixture = fixture; stableSince = now }
+            guard now - max(stableSince, self.lastScreenNotification) >= 2 else { return }
+            self.recordScreens("stable before enable", after: configuration)
+            print("READY stable2s active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
             print("FIXTURE labels=\(self.manager.labels)")
             fflush(stdout)
+            if self.captureOffControl {
+                self.controller.close()
+                guard self.captureIsAbsent() else {
+                    print("BLOCKED: capture-off control still has an input tap or drag window"); fflush(stdout); exit(5)
+                }
+            } else {
             let row = self.controller.makeSourceView(for: icon)
             row.showsHandle = true
             row.frame = NSRect(x: 24, y: 230, width: 140, height: 32)
@@ -177,16 +311,10 @@ final class Probe {
             guard self.controller.isMenuBarDragging else {
                 print("BLOCKED: \(self.controller.message ?? "event tap unavailable")"); exit(5)
             }
-            if self.busyOnly { self.runBusyProbe() }
-            self.writeState()
-            let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
-                MainActor.assumeIsolated {
-                    if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
-                    self.writeState()
-                }
             }
-            self.timer = timer
-            RunLoop.main.add(timer, forMode: .common)
+            enabledAt = now
+            enabledConfiguration = currentConfiguration
+            self.recordScreens("enabled awaiting quiet1s", after: self.screens())
             }
         }
         RunLoop.main.add(readiness, forMode: .common)
@@ -195,6 +323,8 @@ final class Probe {
     }
     func stop() {
         timer?.invalidate()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         controller.close()
         writeState()
         window.close()
@@ -214,18 +344,54 @@ final class Probe {
         }
         targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - 10))
         targets["invalid"] = cg(NSPoint(x: primary.frame.minX + 30, y: primary.frame.minY + 80))
-        let state: [String: Any] = [
-            "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
+        let sourceWindow = manager.icons.first.flatMap { icon in
+            NSApp.windows.first { window in
+                guard window.isVisible, let source = window.contentView as? MenuBarDragSourceView else { return false }
+                return source.icon?.id == icon.id && source.icon?.title == icon.title
+            }
+        }
+        let gripFrame = sourceWindow.map { window in
+            [Double(window.frame.minX), Double(primary.frame.maxY - window.frame.maxY),
+             Double(window.frame.width), Double(window.frame.height)]
+        } ?? []
+        let nativeSource = manager.icons.first
+        let neighbor = manager.icons.dropFirst().first
+        let nativeTarget: [Double] = nativeSource.flatMap { source in
+            neighbor.map { other in
+                [Double(source.frame.midX > other.frame.midX ? other.frame.minX - 12 : other.frame.maxX + 12),
+                 Double(source.frame.midY)]
+            }
+        } ?? []
+        var state: [String: Any] = [
+            "ready": row != nil || captureOffControl, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
             "moving": manager.isUpdatingIcons, "taps": ownTapStates() ?? [],
             "labels": manager.labels,
             "buttons": NSEvent.pressedMouseButtons,
-            "source": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "source": sourceWindow.map { center($0.frame) } ?? [],
+            "icon": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "neighbor": neighbor.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "neighborFrame": neighbor.map { [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)] } ?? [],
+            "nativeTarget": nativeTarget,
+            "gripFrame": gripFrame,
+            "iconFrame": manager.icons.first.map { [Double($0.frame.minX), Double($0.frame.minY),
+                                                    Double($0.frame.width), Double($0.frame.height)] } ?? [],
             "row": center(window.convertToScreen(root.convert(row?.frame ?? .zero, to: nil))),
             "targets": targets,
             "screens": NSScreen.screens.map { ["x": $0.frame.minX, "y": $0.frame.minY,
                                                "width": $0.frame.width, "height": $0.frame.height] }
         ]
+        if captureOffControl {
+            state["control"] = ["captureOff": captureIsAbsent(), "tapQuerySucceeded": ownTapStates() != nil,
+                "sourceWindows": NSApp.windows.filter { $0.contentView is MenuBarDragSourceView }.count,
+                "returnWindows": NSApp.windows.filter { $0.contentView is MenuBarDragDestinationView }.count,
+                "snapshot": controlSnapshot,
+                "fixtureID": manager.icons.first?.id ?? "",
+                "fixtureTitle": manager.icons.first?.title ?? "",
+                "fixtureFrame": manager.icons.first.map {
+                    [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)]
+                } ?? []] as [String: Any]
+        }
         if let data = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: self.state), options: .atomic)
         }
@@ -290,7 +456,7 @@ func ownTapStates() -> [Bool]? {
 }
 
 @MainActor
-func fixture(seconds: Double, emptyTitle: Bool) {
+func fixture(seconds: Double, emptyTitle: Bool, geometryPath: String) {
     NSApp.setActivationPolicy(.accessory)
     let a = NSStatusBar.system.statusItem(withLength: 36)
     a.button?.title = "FXD"
@@ -299,12 +465,200 @@ func fixture(seconds: Double, emptyTitle: Bool) {
     let b = NSStatusBar.system.statusItem(withLength: 36)
     b.button?.title = "FXE"
     b.button?.setAccessibilityTitle("Flux drag neighbour")
+    for (item, color) in [(a, NSColor.magenta), (b, NSColor.cyan)] {
+        let image = NSImage(size: NSSize(width: 18, height: 18))
+        image.lockFocus()
+        color.setFill()
+        NSRect(x: 0, y: 0, width: 18, height: 18).fill()
+        image.unlockFocus()
+        image.isTemplate = false
+        item.button?.image = image
+        item.button?.imagePosition = .imageOnly
+    }
+    let geometryTimer = Timer(timeInterval: 0.1, repeats: true) { _ in
+        MainActor.assumeIsolated {
+            guard FileManager.default.fileExists(atPath: geometryPath + ".request") else { return }
+            let request = (try? String(contentsOfFile: geometryPath + ".request", encoding: .utf8)) ?? ""
+            try? FileManager.default.removeItem(atPath: geometryPath + ".request")
+            func rect(_ frame: NSRect) -> [Double] {
+                [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]
+            }
+            let items: [[String: Any]] = [a, b].map { item in
+                guard let button = item.button, let window = button.window else { return ["missingWindow": true] }
+                return ["window": window.windowNumber, "windowFrameAppKit": rect(window.frame),
+                        "buttonBounds": rect(button.bounds),
+                        "buttonScreenFrameAppKit": rect(window.convertToScreen(button.convert(button.bounds, to: nil)))]
+            }
+            let value: [String: Any] = ["uptime": ProcessInfo.processInfo.systemUptime,
+                "request": request, "pid": ProcessInfo.processInfo.processIdentifier, "items": items]
+            if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: geometryPath), options: .atomic)
+            }
+        }
+    }
+    RunLoop.main.add(geometryTimer, forMode: .common)
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
         NSStatusBar.system.removeStatusItem(a)
         NSStatusBar.system.removeStatusItem(b)
         exit(0)
     }
     NSApp.run()
+}
+
+@MainActor
+func geometry(path: String, x: Double, y: Double) {
+    let started = ProcessInfo.processInfo.systemUptime
+    let manager = MenuBarIconManager()
+    manager.refresh()
+    var value: [String: Any] = ["started": started, "pointCG": [x, y], "freshIcons": manager.icons.map {
+        ["id": $0.id, "title": $0.title,
+         "frameCG": [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)]] as [String: Any]
+    }]
+    value["freshOwnerReadFinished"] = ProcessInfo.processInfo.systemUptime
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 0.15)
+    var hit: AXUIElement?
+    value["hitStarted"] = ProcessInfo.processInfo.systemUptime
+    let status = AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &hit)
+    value["hitFinished"] = ProcessInfo.processInfo.systemUptime
+    value["hitStatus"] = status.rawValue
+    if let hit {
+        AXUIElementSetMessagingTimeout(hit, 0.15)
+        var pid: pid_t = 0
+        value["pidStatus"] = AXUIElementGetPid(hit, &pid).rawValue
+        value["hitPID"] = pid
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            value["hitOwner"] = ["bundleID": app.bundleIdentifier ?? "", "name": app.localizedName ?? ""]
+        }
+        var attributes: [String: Any] = [:]
+        for name in [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                     kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+            var result: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(hit, name as CFString, &result)
+            var record: [String: Any] = ["status": error.rawValue]
+            if let result {
+                if let string = result as? String { record["value"] = string }
+                else if CFGetTypeID(result) == AXValueGetTypeID() {
+                    var point = CGPoint.zero
+                    var size = CGSize.zero
+                    if AXValueGetValue(result as! AXValue, .cgPoint, &point) { record["value"] = [point.x, point.y] }
+                    else if AXValueGetValue(result as! AXValue, .cgSize, &size) { record["value"] = [size.width, size.height] }
+                }
+            }
+            attributes[name] = record
+        }
+        value["hitAttributes"] = attributes
+        if let owner = NSRunningApplication.runningApplications(withBundleIdentifier: "com.flux.menu-drag-fixture").first {
+            value["ownerAfterHitStarted"] = ProcessInfo.processInfo.systemUptime
+            let app = AXUIElementCreateApplication(owner.processIdentifier)
+            AXUIElementSetMessagingTimeout(app, 0.15)
+            var bar: CFTypeRef?
+            value["ownerBarStatus"] = AXUIElementCopyAttributeValue(app, kAXExtrasMenuBarAttribute as CFString, &bar).rawValue
+            if let bar, CFGetTypeID(bar) == AXUIElementGetTypeID() {
+                AXUIElementSetMessagingTimeout(bar as! AXUIElement, 0.15)
+                var children: CFTypeRef?
+                value["ownerChildrenStatus"] = AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &children).rawValue
+                if let children = children as? [AXUIElement] {
+                    value["hitEqualOwnerChildren"] = children.enumerated().map {
+                        ["index": $0.offset, "equal": CFEqual(hit, $0.element)] as [String: Any]
+                    }
+                    value["ownerChildrenAfterHit"] = children.enumerated().map { pair -> [String: Any] in
+                        AXUIElementSetMessagingTimeout(pair.element, 0.15)
+                        var record: [String: Any] = ["index": pair.offset, "equalHit": CFEqual(hit, pair.element),
+                            "started": ProcessInfo.processInfo.systemUptime]
+                        for name in [kAXTitleAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+                            var result: CFTypeRef?
+                            let status = AXUIElementCopyAttributeValue(pair.element, name as CFString, &result)
+                            var attribute: [String: Any] = ["status": status.rawValue]
+                            if let result {
+                                if let text = result as? String { attribute["value"] = text }
+                                else if CFGetTypeID(result) == AXValueGetTypeID() {
+                                    var point = CGPoint.zero
+                                    var size = CGSize.zero
+                                    if AXValueGetValue(result as! AXValue, .cgPoint, &point) { attribute["value"] = [point.x, point.y] }
+                                    else if AXValueGetValue(result as! AXValue, .cgSize, &size) { attribute["value"] = [size.width, size.height] }
+                                }
+                            }
+                            record[name] = attribute
+                        }
+                        record["finished"] = ProcessInfo.processInfo.systemUptime
+                        return record
+                    }
+                }
+            }
+            value["ownerAfterHitFinished"] = ProcessInfo.processInfo.systemUptime
+        }
+    }
+    if let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] {
+        let fixturePIDs = Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.flux.menu-drag-fixture").map(\.processIdentifier))
+        let agentPIDs = Set(NSWorkspace.shared.runningApplications.filter {
+            (($0.bundleIdentifier ?? "") + ($0.localizedName ?? "")).lowercased().contains("menubaragent")
+        }.map(\.processIdentifier))
+        value["fixtureAndAgentWindows"] = windows.filter {
+            let pid = ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
+            let name = ($0[kCGWindowOwnerName as String] as? String ?? "").lowercased()
+            return fixturePIDs.contains(pid) || agentPIDs.contains(pid) || name.contains("menubaragent")
+        }
+        let hostDeadline = ProcessInfo.processInfo.systemUptime + 1
+        var hostNodes: [[String: Any]] = []
+        var hostRoots: [[String: Any]] = []
+        for pid in agentPIDs {
+            guard hostNodes.count < 100, ProcessInfo.processInfo.systemUptime < hostDeadline else { break }
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, 0.03)
+            var root: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(app, kAXExtrasMenuBarAttribute as CFString, &root)
+            hostRoots.append(["pid": pid, "status": status.rawValue])
+            guard let root, CFGetTypeID(root) == AXUIElementGetTypeID() else { continue }
+            var queue: [(AXUIElement, Int)] = [(root as! AXUIElement, 0)]
+            var visited: [AXUIElement] = []
+            while !queue.isEmpty, hostNodes.count < 100, ProcessInfo.processInfo.systemUptime < hostDeadline {
+                let (element, depth) = queue.removeFirst()
+                guard !visited.contains(where: { CFEqual($0, element) }) else { continue }
+                visited.append(element)
+                AXUIElementSetMessagingTimeout(element, 0.03)
+                var elementPID: pid_t = 0
+                let pidStatus = AXUIElementGetPid(element, &elementPID)
+                var node: [String: Any] = ["hostPID": pid, "depth": depth, "pid": elementPID,
+                    "pidStatus": pidStatus.rawValue, "equalHit": hit.map { CFEqual($0, element) } ?? false]
+                for name in [kAXRoleAttribute, kAXTitleAttribute, kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+                    var result: CFTypeRef?
+                    let status = AXUIElementCopyAttributeValue(element, name as CFString, &result)
+                    var attribute: [String: Any] = ["status": status.rawValue]
+                    if let result {
+                        if let text = result as? String { attribute["value"] = text }
+                        else if CFGetTypeID(result) == AXValueGetTypeID() {
+                            var point = CGPoint.zero
+                            var size = CGSize.zero
+                            if AXValueGetValue(result as! AXValue, .cgPoint, &point) { attribute["value"] = [point.x, point.y] }
+                            else if AXValueGetValue(result as! AXValue, .cgSize, &size) { attribute["value"] = [size.width, size.height] }
+                        }
+                    }
+                    node[name] = attribute
+                }
+                hostNodes.append(node)
+                if depth < 6 {
+                    var children: CFTypeRef?
+                    let status = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
+                    hostNodes[hostNodes.count - 1]["childrenStatus"] = status.rawValue
+                    if let children = children as? [AXUIElement] {
+                        queue.append(contentsOf: children.prefix(100 - hostNodes.count).map { ($0, depth + 1) })
+                    }
+                }
+            }
+        }
+        value["hostExtras"] = ["candidatePIDs": Array(agentPIDs), "roots": hostRoots, "nodes": hostNodes,
+            "nodeLimit": 100, "depthLimit": 6, "deadlineReached": ProcessInfo.processInfo.systemUptime >= hostDeadline]
+        value["windowsAtPoint"] = windows.filter {
+            guard let bounds = $0[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
+            return frame.contains(CGPoint(x: x, y: y))
+        }.map { ["window": $0[kCGWindowNumber as String] ?? -1, "pid": $0[kCGWindowOwnerPID as String] ?? -1,
+                 "layer": $0[kCGWindowLayer as String] ?? -1, "bounds": $0[kCGWindowBounds as String] ?? [:]] }
+    }
+    value["finished"] = ProcessInfo.processInfo.systemUptime
+    guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]) else { exit(9) }
+    do { try data.write(to: URL(fileURLWithPath: path), options: .atomic) } catch { exit(9) }
 }
 
 func drive(statePath: String, source: String, destination: String, kind: String) {
@@ -315,8 +669,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let start = state[source] as? [Double], start.count == 2,
           let targets = state["targets"] as? [String: [Double]],
-          let target = destination == "native" ? [start[0] - 75, start[1]] : targets[destination] else { exit(6) }
-    print("driver source=\(source) start=\(start) destination=\(destination) target=\(target) kind=\(kind)")
+          let target = destination == "native" ? state["nativeTarget"] as? [Double] : targets[destination],
+          target.count == 2 else { exit(6) }
+    print("driver source=\(source) start=\(start) neighbor=\(String(describing: state["neighbor"])) destination=\(destination) target=\(target) kind=\(kind)")
     fflush(stdout)
     let command = kind == "held" || kind == "rapid" || kind == "down-only"
     let eventOffset = (state["events"] as? [String] ?? []).count
@@ -390,7 +745,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
 struct Main {
     @MainActor static func main() {
         let args = CommandLine.arguments
-        if args[1] == "--fixture" { let _ = NSApplication.shared; fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title")) }
+        if args[1] == "--fixture" { let _ = NSApplication.shared; fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"), geometryPath: args[3]) }
+        else if args[1] == "--geometry" { geometry(path: args[2], x: Double(args[3])!, y: Double(args[4])!) }
         else if args[1] == "--drive" { drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5]) }
         else if args[1] == "--release" {
             if CGPreflightPostEventAccess() {
@@ -400,7 +756,7 @@ struct Main {
                 CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
             }
         }
-        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
+        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only"), captureOffControl: args.contains("--capture-off-control")).start(seconds: Double(args[3])!) }
     }
 }
 '''
@@ -429,6 +785,165 @@ def bounded(argv, seconds, log):
             raise RuntimeError(f"deadline {seconds}s: {log}") from error
         finally:
             stop(process)
+
+
+def marker_pixels(path, region):
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise RuntimeError("BLOCKED marker capture is not PNG")
+    offset, compressed = 8, bytearray()
+    while offset + 12 <= len(data):
+        size = struct.unpack(">I", data[offset:offset + 4])[0]
+        kind, value = data[offset + 4:offset + 8], data[offset + 8:offset + 8 + size]
+        if kind == b"IHDR":
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", value)
+        if kind == b"IDAT":
+            compressed.extend(value)
+        offset += size + 12
+    if depth != 8 or color not in (2, 6) or interlace or width * height > 2_000_000:
+        raise RuntimeError(f"BLOCKED unsupported marker PNG: {width}x{height} depth={depth} color={color} interlace={interlace}")
+    channels = 3 if color == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(compressed)
+    if len(raw) != (stride + 1) * height:
+        raise RuntimeError("BLOCKED truncated marker PNG")
+    previous, masks = bytearray(stride), {"magenta": set(), "cyan": set()}
+    def paeth(a, b, c):
+        p = a + b - c
+        distances = [abs(p - a), abs(p - b), abs(p - c)]
+        return (a, b, c)[distances.index(min(distances))]
+    for y in range(height):
+        method = raw[y * (stride + 1)]
+        row = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            left = row[i - channels] if i >= channels else 0
+            up, corner = previous[i], previous[i - channels] if i >= channels else 0
+            if method == 1: row[i] = (row[i] + left) & 255
+            elif method == 2: row[i] = (row[i] + up) & 255
+            elif method == 3: row[i] = (row[i] + (left + up) // 2) & 255
+            elif method == 4: row[i] = (row[i] + paeth(left, up, corner)) & 255
+            elif method != 0: raise RuntimeError(f"BLOCKED unsupported PNG filter {method}")
+        for x in range(width):
+            r, g, b = row[x * channels:x * channels + 3]
+            if channels == 4 and row[x * channels + 3] < 200:
+                continue
+            if r > 175 and b > 175 and g < 100: masks["magenta"].add((x, y))
+            if g > 175 and b > 175 and r < 100: masks["cyan"].add((x, y))
+        previous = row
+    scale_x, scale_y = width / region[2], height / region[3]
+    result = {"pixels": [width, height], "scale": [scale_x, scale_y], "regionCG": region, "markers": {}}
+    for name, remaining in masks.items():
+        candidates = []
+        while remaining:
+            stack, component = [remaining.pop()], []
+            while stack:
+                x, y = stack.pop()
+                component.append((x, y))
+                for point in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if point in remaining:
+                        remaining.remove(point)
+                        stack.append(point)
+            xs, ys = zip(*component)
+            w, h = (max(xs) - min(xs) + 1) / scale_x, (max(ys) - min(ys) + 1) / scale_y
+            if abs(w - 18) <= 3 and abs(h - 18) <= 3 and len(component) >= 200 * scale_x * scale_y:
+                candidates.append({"count": len(component), "sizePoints": [w, h],
+                    "centroidCG": [region[0] + (sum(xs) / len(xs) + 0.5) / scale_x,
+                                   region[1] + (sum(ys) / len(ys) + 0.5) / scale_y]})
+        if len(candidates) != 1:
+            raise RuntimeError(f"BLOCKED marker {name} absent or ambiguous: candidates={candidates}; capture={path}")
+        result["markers"][name] = candidates[0]
+    return result
+
+
+def observe_geometry(binary, output, state, phase):
+    screens = state["screens"]
+    if len(screens) != 1 or screens[0]["x"] != 0 or screens[0]["y"] != 0:
+        raise RuntimeError("BLOCKED marker control requires one primary display at origin")
+    region = [0, 0, int(screens[0]["width"]), min(96, int(screens[0]["height"]))]
+    started = time.monotonic()
+    fixture_path = output / "fixture-geometry.json"
+    request = f"{phase}:{started}"
+    Path(str(fixture_path) + ".request").write_text(request)
+    deadline = time.monotonic() + 1.5
+    own = None
+    while time.monotonic() < deadline:
+        try:
+            value = json.loads(fixture_path.read_text())
+            if value["request"] == request:
+                own = value
+                break
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.02)
+    if own is None:
+        raise RuntimeError("BLOCKED fixture own-window snapshot deadline")
+    png, capture_log = output / f"{phase}.png", output / f"{phase}-capture.log"
+    capture_started = time.monotonic()
+    try:
+        bounded(["/usr/sbin/screencapture", "-x", "-t", "png", "-R" + ",".join(map(str, region)), str(png)], 3, capture_log)
+    except RuntimeError as error:
+        detail = capture_log.read_text(errors="replace") if capture_log.exists() else "no capture log"
+        raise RuntimeError(f"BLOCKED native screenshot: {error}; {detail}") from error
+    capture_finished = time.monotonic()
+    pixels = marker_pixels(png, region)
+    point = pixels["markers"]["magenta"]["centroidCG"]
+    ax_path = output / f"{phase}-ax.json"
+    bounded([str(binary), "--geometry", str(ax_path), str(point[0]), str(point[1])], 3, output / f"{phase}-ax.log")
+    ax = json.loads(ax_path.read_text())
+    if len(ax["freshIcons"]) != 2:
+        raise RuntimeError(f"BLOCKED fresh owner AX inventory missing: {ax}")
+    frame = ax["freshIcons"][0]["frameCG"]
+    record = {"phase": phase, "started": started, "finished": time.monotonic(), "own": own,
+              "captureStarted": capture_started, "captureFinished": capture_finished, "screen": screens[0],
+              "pixels": pixels, "ax": ax, "cachedIconFrame": state["iconFrame"],
+              "originalDriverIconPoint": state["icon"],
+              "neighborFrame": state["neighborFrame"], "nativeTarget": state["nativeTarget"],
+              "pixelMinusFreshAXCenter": [point[0] - frame[0] - frame[2] / 2,
+                                          point[1] - frame[1] - frame[3] / 2]}
+    (output / f"{phase}-geometry.json").write_text(json.dumps(record, indent=2))
+    print("GEOMETRY " + json.dumps(record, sort_keys=True), flush=True)
+    return record
+
+
+def validate_native_start(state, observation):
+    markers = observation["pixels"]["markers"]
+    source = markers["magenta"]["centroidCG"]
+    neighbor = markers["cyan"]["centroidCG"]
+    fresh = observation["ax"]["freshIcons"]
+    for frame, point in [(state["iconFrame"], source), (state["neighborFrame"], neighbor),
+                         (fresh[0]["frameCG"], source), (fresh[1]["frameCG"], neighbor)]:
+        if len(frame) != 4 or abs(frame[0] + frame[2] / 2 - point[0]) > 2 or abs(frame[1] + frame[3] / 2 - point[1]) > 2:
+            raise RuntimeError(f"INVALID native start AX/marker mismatch: frame={frame} marker={point}")
+    if (observation["ax"].get("hitPID") != observation["own"]["pid"]
+            or observation["ax"].get("hitAttributes", {}).get("AXTitle", {}).get("value") != "Flux drag fixture"):
+        raise RuntimeError("INVALID magenta marker hit does not identify the disposable primary fixture")
+    target = state["nativeTarget"]
+    frame = state["neighborFrame"]
+    if (len(target) != 2 or state["buttons"] or abs(state["icon"][0] - source[0]) > 2
+            or abs(state["icon"][1] - source[1]) > 2 or abs(target[1] - source[1]) > 2
+            or not 0 < target[0] < state["screens"][0]["width"]
+            or not (target[0] < frame[0] if source[0] > neighbor[0] else target[0] > frame[0] + frame[2])):
+        raise RuntimeError(f"INVALID native target does not cross current neighbor: source={source} neighbor={frame} target={target}")
+    print(f"NATIVE START source={source} neighbor={neighbor} nativeTarget={target} freshAX={fresh}", flush=True)
+
+
+def record_native_pixels(before, after, output, phase):
+    a = before["pixels"]["markers"]
+    b = after["pixels"]["markers"]
+    result = {"magentaPixelDelta": [y - x for x, y in zip(a["magenta"]["centroidCG"], b["magenta"]["centroidCG"])],
+              "beforeMagenta": a["magenta"]["centroidCG"], "beforeCyan": a["cyan"]["centroidCG"],
+              "afterMagenta": b["magenta"]["centroidCG"], "afterCyan": b["cyan"]["centroidCG"],
+              "orderSwapped": ((a["magenta"]["centroidCG"][0] - a["cyan"]["centroidCG"][0])
+                               * (b["magenta"]["centroidCG"][0] - b["cyan"]["centroidCG"][0]) < 0),
+              "before": before["pixelMinusFreshAXCenter"], "after": after["pixelMinusFreshAXCenter"]}
+    (output / f"{phase}-geometry-comparison.json").write_text(json.dumps(result, indent=2))
+    print("GEOMETRY comparison " + json.dumps(result), flush=True)
+    return result
+
+
+def require_native_pixels(result):
+    if abs(result["magentaPixelDelta"][0]) < 10 or not result["orderSwapped"]:
+        raise RuntimeError(f"native fixture pixels did not move across the disposable neighbor: {result}")
 
 
 def wait_state(path, process, seconds=12):
@@ -467,7 +982,7 @@ def main():
     parser.add_argument("--case", default="all", choices=(
         "all", "row-hidden", "menu-hidden", "menu-always", "row-bar", "row-hidden-escape",
         "menu-always-escape", "row-bar-escape", "invalid", "late-command",
-        "command-held", "command-rapid", "command-down-only"), help="Run one independent native scenario")
+        "command-held", "command-rapid", "command-down-only", "command-down-only-control"), help="Run one independent native scenario")
     parser.add_argument("--controller-ref", help="Compile the production controller from this Git ref for regression proof")
     parser.add_argument("--empty-title", action="store_true", help="Require the fixture's empty AXTitle fallback")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91), metavar="25..90")
@@ -508,22 +1023,86 @@ def main():
         return
     processes = []
     try:
-        fixture_argv = [str(fixture_binary), "--fixture", str(args.seconds + 5)]
+        fixture_argv = [str(fixture_binary), "--fixture", str(args.seconds + 5), str(args.output / "fixture-geometry.json")]
         if args.empty_title:
             fixture_argv.append("--empty-title")
         for argv, name in ((fixture_argv, "fixture.log"),
                            ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)]
-                            + (["--busy-only"] if args.busy_only else []), "probe.log")):
+                            + (["--busy-only"] if args.busy_only else [])
+                            + (["--capture-off-control"] if args.case == "command-down-only-control" else []), "probe.log")):
             with (args.output / name).open("wb") as log:
                 processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         probe = processes[-1]
         state_path = args.output / "state.json"
         state = wait_state(state_path, probe)
+        if args.case != "command-down-only-control":
+            grip, icon = state["gripFrame"], state["iconFrame"]
+            if len(grip) != 4 or len(icon) != 4 or not state["source"]:
+                raise RuntimeError("production grip window was not found")
+            intersects = (grip[0] < icon[0] + icon[2] and icon[0] < grip[0] + grip[2]
+                          and grip[1] < icon[1] + icon[3] and icon[1] < grip[1] + grip[3])
+            if intersects or grip[1] < icon[1] + icon[3]:
+                raise RuntimeError(f"grip overlaps or is not below the actual icon: {grip} vs {icon}")
+            print(f"GRIP {grip}; original icon {icon}; native Command targets ICON CENTER {state['icon']}", flush=True)
         if args.empty_title and not any(label["rawTitle"] == "" and label["normalized"]
                                         for label in state["labels"]):
             raise RuntimeError(f"fixture did not expose an empty AXTitle: {state['labels']}")
         started = time.monotonic()
         results = []
+        if args.case == "command-down-only-control":
+            def snapshot():
+                previous = wait_state(state_path, probe, 1)["control"]["snapshot"]
+                Path(str(state_path) + ".refresh").touch()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    value = wait_state(state_path, probe, 1)
+                    control = value["control"]
+                    if control["snapshot"] > previous:
+                        if (value["mode"] or value["taps"] or not control["captureOff"]
+                                or not control["tapQuerySucceeded"] or control["sourceWindows"]
+                                or control["returnWindows"]):
+                            raise RuntimeError(f"capture-off control is armed: {value}")
+                        return value
+                    time.sleep(0.02)
+                raise RuntimeError("capture-off fresh AX snapshot deadline")
+
+            before_state = snapshot()
+            before_control = before_state["control"]
+            frame_before = before_control["fixtureFrame"]
+            if len(frame_before) != 4 or not before_control["fixtureTitle"] or before_state["buttons"]:
+                raise RuntimeError(f"capture-off missing original fixture frame: {before_control}")
+            print(f"CONTROL before mode={before_state['mode']} taps={before_state['taps']} {before_control}", flush=True)
+            geometry_before = observe_geometry(binary, args.output, before_state, "command-down-only-control-before")
+            validate_native_start(before_state, geometry_before)
+            event_offset = len(before_state["events"])
+            bounded([str(binary), "--drive", str(state_path), "icon", "native", "down-only"],
+                    4, args.output / "command-down-only-control.log")
+            deadline = time.monotonic() + 4
+            geometry_after = observe_geometry(binary, args.output, wait_state(state_path, probe, 2), "command-down-only-control-after")
+            movement = record_native_pixels(geometry_before, geometry_after, args.output, "command-down-only-control")
+            state = snapshot()
+            while (len(state["control"]["fixtureFrame"]) == 4
+                   and abs(state["control"]["fixtureFrame"][0] - frame_before[0]) < 10
+                   and time.monotonic() < deadline):
+                time.sleep(0.05)
+                state = snapshot()
+            after_control = state["control"]
+            frame_after = after_control["fixtureFrame"]
+            evidence = {"before": before_state, "after": state}
+            (args.output / "control.json").write_text(json.dumps(evidence, indent=2))
+            print(f"CONTROL after mode={state['mode']} taps={state['taps']} {after_control}", flush=True)
+            if state["screens"] != before_state["screens"]:
+                raise RuntimeError("capture-off display geometry changed during the control")
+            if (after_control["fixtureTitle"] != before_control["fixtureTitle"] or len(frame_after) != 4
+                    or frame_after[2:] != frame_before[2:] or frame_after[1] != frame_before[1]):
+                raise RuntimeError(f"capture-off fixture identity/size/row changed: {frame_before} -> {frame_after}")
+            if any(event.startswith(("tap down", "source down", "begin ", "native began ", "commit "))
+                   for event in state["events"][event_offset:]) or state["commits"] or state["buttons"]:
+                raise RuntimeError(f"capture-off input was captured or left held: {state}")
+            if abs(frame_after[0] - frame_before[0]) < 10:
+                raise RuntimeError(f"capture-off down-only driver did not move fixture: {frame_before} -> {frame_after}")
+            require_native_pixels(movement)
+            results.append(f"PASS capture-off down-only native frame movement {frame_before} -> {frame_after}")
         if args.busy_only:
             deadline = time.monotonic() + 6
             while "busy probe passed" not in state["events"] and time.monotonic() < deadline:
@@ -552,6 +1131,7 @@ def main():
             event_offset = len(state["events"])
             if not state["mode"]:
                 raise RuntimeError("drag mode stopped before the scenario")
+            observe_geometry(binary, args.output, state, f"{name}-before")
             bounded([str(binary), "--drive", str(state_path), source, destination, kind],
                     8, args.output / f"drive-{len(results)}.log")
             state, events = wait_scenario(state_path, probe, event_offset, kind)
@@ -578,15 +1158,20 @@ def main():
             state = wait_state(state_path, probe, 2)
             if not state["mode"] or not state["taps"] or not all(state["taps"]):
                 raise RuntimeError("drag mode stopped before the native Command check")
-            start = state["source"]
+            geometry_before = observe_geometry(binary, args.output, state, f"command-{kind}-before")
+            validate_native_start(state, geometry_before)
+            start = state["icon"]
             events_before = len(state["events"])
+            commits_before = len(state["commits"])
             # The temporary bar destination exists only in Flux sessions. Native
             # Command gestures must reach the real fixture without a Flux session.
-            bounded([str(binary), "--drive", str(state_path), "source", "native", kind],
+            bounded([str(binary), "--drive", str(state_path), "icon", "native", kind],
                     4, args.output / f"command-{kind}.log")
             position_deadline = time.monotonic() + 4
+            geometry_after = observe_geometry(binary, args.output, wait_state(state_path, probe, 2), f"command-{kind}-after")
+            movement = record_native_pixels(geometry_before, geometry_after, args.output, f"command-{kind}")
             state = wait_state(state_path, probe, 2)
-            while abs(state["source"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
+            while abs(state["icon"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
                 time.sleep(0.05)
                 state = wait_state(state_path, probe, 1)
             new_events = state["events"][events_before:]
@@ -594,8 +1179,12 @@ def main():
                 raise RuntimeError(f"Command {kind} did not exercise the armed event tap")
             if any(e.startswith("source down") or e.startswith("begin ") for e in new_events):
                 raise RuntimeError(f"Command {kind} was intercepted: {new_events}")
-            if abs(state["source"][0] - start[0]) < 10:
+            if (any(e.startswith(("native began ", "commit ", "ended ")) for e in new_events)
+                    or len(state["commits"]) != commits_before or not state["taps"] or not all(state["taps"])):
+                raise RuntimeError(f"Command {kind} lost tap or started a Flux operation: {state}")
+            if abs(state["icon"][0] - start[0]) < 10:
                 raise RuntimeError(f"Command {kind} did not move the disposable status item")
+            require_native_pixels(movement)
             results.append(f"PASS native Command {kind} bypass and fixture movement")
         Path(str(state_path) + ".stop").touch()
         try:
