@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise cached layout changes and overlapping lifecycle calls through the hider."""
 
+import argparse
 from pathlib import Path
 import sys
 import tempfile
@@ -15,9 +16,12 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let suite = "com.flux.layout-probe." + UUID().uuidString
+    print("PROBE_SUITE \(suite)")
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
-    defaults.set(["hidden": ["test.normal", "test.always"], "alwaysHidden": ["test.always"]],
+    let overlapOnly = CommandLine.arguments.contains("overlap")
+    defaults.set(["hidden": overlapOnly ? ["test.always"] : ["test.normal", "test.always"],
+                  "alwaysHidden": ["test.always"]],
                  forKey: "flux.macOS27IconLayout")
     var positions: [(bundleID: String, x: CGFloat)] = [("test.normal", 250)]
     var reads = 0
@@ -36,22 +40,27 @@ MainActor.assumeIsolated {
         hider.apply(revealHidden: revealed, revealAlwaysHidden: always,
                     chevronX: arrow, alwaysX: { 200 })
     }
-    apply(true, false)
-    waitForRead()
-    positions = [("test.normal", 350)]
-    apply(false, false)
-    waitForRead()
-    let moved = layout()
-    guard reads > 0, !moved.hidden.contains("test.normal"),
-          moved.hidden.contains("test.always"), moved.always.contains("test.always") else {
-        print("FAIL: a visible icon moved to Shown kept its cached Hidden assignment; reads=\(reads)")
-        exit(1)
+    if !overlapOnly {
+        apply(true, false)
+        waitForRead()
+        positions = [("test.normal", 350)]
+        apply(false, false)
+        waitForRead()
+        let moved = layout()
+        guard reads > 0, !moved.hidden.contains("test.normal"),
+              moved.hidden.contains("test.always"), moved.always.contains("test.always") else {
+            defaults.removePersistentDomain(forName: suite)
+            print("FAIL: a visible icon moved to Shown kept its cached Hidden assignment; reads=\(reads)")
+            exit(1)
+        }
+        print("PASS: cached toggles read moved positions and preserve unread Always Hidden items")
+        if CommandLine.arguments.contains("moves") { return }
     }
-    print("PASS: cached toggles read moved positions and preserve unread Always Hidden items")
 
-    positions = [("test.normal", 250), ("test.always", 150)]
+    positions = [("test.normal", 350), ("test.always", 150)]
     apply(true, true)
     waitForRead()
+    positions = [("test.normal", 250), ("test.always", 150)]
     var arrow: CGFloat? = nil
     let before = reads
     apply(false, false, arrow: { arrow })
@@ -65,6 +74,7 @@ MainActor.assumeIsolated {
     let managed = layout()
     guard reads > before, managed.hidden == ["test.normal", "test.always"],
           managed.always == ["test.always"] else {
+        defaults.removePersistentDomain(forName: suite)
         print("FAIL: duplicate lifecycle calls discarded the management layout scan; reads=\(reads), before=\(before)")
         exit(1)
     }
@@ -78,6 +88,9 @@ MainActor.assumeIsolated {
 def main():
     if sys.platform != "darwin":
         raise RuntimeError("layout scheduling needs native AppKit")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case", choices=("all", "moves", "overlap"), default="all")
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="flux-layout-probe-") as directory:
         temporary = Path(directory)
@@ -88,7 +101,7 @@ def main():
                  "Support/Log.swift", "Support/AccessibilityAccess.swift"]
         run(["xcrun", "swiftc", "-swift-version", "5", str(source),
              *[str(root / "Sources/Flux" / path) for path in files], "-o", str(binary)], 120)
-        run([str(binary)], 10)
+        run([str(binary), args.case], 10)
 
 
 if __name__ == "__main__":
