@@ -39,6 +39,7 @@ parser.add_argument("--native-close", action="store_true")
 parser.add_argument("--move-close", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
+parser.add_argument("--native-position-only", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
 fixture_source = r'''
@@ -647,6 +648,15 @@ func probe() {
                 exit(1)
             }
             print("PASS: Settings moved the real fixture to \(section.rawValue)")
+            if let physical = geometry("section-\(section.rawValue)") {
+                guard abs(physical.x - current.frame.midX) <= 1,
+                      MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1,
+                                                            width: 2, height: 2),
+                                                 boundaries: manager.boundaryProvider()) == section else {
+                    print("FAIL: AX position disagrees with the drawn fixture after moving to \(section.rawValue)")
+                    exit(1)
+                }
+            }
             if index + 1 < sections.count { move(index: index + 1) }
             else {
                 reorder()
@@ -679,6 +689,12 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         manager_source.write_text(subprocess.check_output(
             ["git", "show", options.manager_ref + ":" + manager_path],
             cwd=root, text=True, timeout=15))
+    if options.native_position_only:
+        code = manager_source.read_text()
+        needle = "let usedAccessibility = setPosition(target, on: element)"
+        assert code.count(needle) == 1
+        manager_source = temporary / "MenuBarIconManager.swift"
+        manager_source.write_text(code.replace(needle, "let usedAccessibility = false"))
 
     def bundle(name, bundle_id, code, dependencies):
         app = temporary / f"{name}.app"
