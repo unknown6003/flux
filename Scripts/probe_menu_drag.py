@@ -123,9 +123,18 @@ final class Probe {
         self.state = state; self.busyOnly = busyOnly; self.captureOffControl = captureOffControl
     }
     func captureIsAbsent() -> Bool {
-        guard !controller.isMenuBarDragging, let taps = ownTapStates(), taps.isEmpty else { return false }
+        guard !controller.isMenuBarDragging, let taps = ownTapStates(), taps.isEmpty,
+              returnDestinations().isEmpty else { return false }
         return NSApp.windows.allSatisfy {
             !($0.contentView is MenuBarDragSourceView) && !($0.contentView is MenuBarDragDestinationView)
+        }
+    }
+    func returnDestinations() -> [(NSWindow, MenuBarDragDestinationView)] {
+        NSApp.windows.compactMap { candidate in
+            guard candidate !== window, candidate.isVisible,
+                  let target = candidate.contentView?.subviews.compactMap({ $0 as? MenuBarDragDestinationView })
+                    .first(where: { $0.section == .shown && $0.showsReturnHint }) else { return nil }
+            return (candidate, target)
         }
     }
     func screens() -> [String: Any] {
@@ -342,7 +351,10 @@ final class Probe {
         for (i, section) in MenuBarSection.allCases.enumerated() {
             targets[section.rawValue] = cg(window.convertPoint(toScreen: NSPoint(x: 110 + i * 200, y: 90)))
         }
-        targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - 10))
+        let returnX = min(max(window.frame.maxX + 20, primary.frame.minX),
+                          max(primary.frame.minX, primary.frame.maxX - 250))
+        let returnY = primary.frame.maxY - max(NSStatusBar.system.thickness, primary.safeAreaInsets.top) - 64 - 8
+        targets["bar"] = center(NSRect(x: returnX, y: returnY, width: 230, height: 64))
         targets["invalid"] = cg(NSPoint(x: primary.frame.minX + 30, y: primary.frame.minY + 80))
         let sourceWindow = manager.icons.first.flatMap { icon in
             NSApp.windows.first { window in
@@ -377,6 +389,19 @@ final class Probe {
             "iconFrame": manager.icons.first.map { [Double($0.frame.minX), Double($0.frame.minY),
                                                     Double($0.frame.width), Double($0.frame.height)] } ?? [],
             "row": center(window.convertToScreen(root.convert(row?.frame ?? .zero, to: nil))),
+            "returnTrays": returnDestinations().map { candidate, target -> [String: Any] in
+                let targetFrame = candidate.convertToScreen(target.convert(target.bounds, to: nil))
+                let windowTop = cg(NSPoint(x: candidate.frame.minX, y: candidate.frame.maxY))
+                let targetTop = cg(NSPoint(x: targetFrame.minX, y: targetFrame.maxY))
+                return ["window": candidate.windowNumber, "attached": target.window === candidate,
+                    "registered": target.registeredDraggedTypes.contains(MenuBarDragController.pasteboardType),
+                    "types": target.registeredDraggedTypes.map(\.rawValue),
+                    "frame": windowTop + [Double(candidate.frame.width), Double(candidate.frame.height)],
+                    "targetFrame": targetTop + [Double(targetFrame.width), Double(targetFrame.height)],
+                    "level": candidate.level.rawValue, "opaque": candidate.isOpaque,
+                    "panel": candidate is NSPanel, "canKey": candidate.canBecomeKey,
+                    "canMain": candidate.canBecomeMain]
+            },
             "targets": targets,
             "screens": NSScreen.screens.map { ["x": $0.frame.minX, "y": $0.frame.minY,
                                                "width": $0.frame.width, "height": $0.frame.height] }
@@ -384,7 +409,7 @@ final class Probe {
         if captureOffControl {
             state["control"] = ["captureOff": captureIsAbsent(), "tapQuerySucceeded": ownTapStates() != nil,
                 "sourceWindows": NSApp.windows.filter { $0.contentView is MenuBarDragSourceView }.count,
-                "returnWindows": NSApp.windows.filter { $0.contentView is MenuBarDragDestinationView }.count,
+                "returnWindows": returnDestinations().count,
                 "snapshot": controlSnapshot,
                 "fixtureID": manager.icons.first?.id ?? "",
                 "fixtureTitle": manager.icons.first?.title ?? "",
@@ -681,6 +706,20 @@ func drive(statePath: String, source: String, destination: String, kind: String)
               let values = state["events"] as? [String] else { return [] }
         return Array(values.dropFirst(eventOffset))
     }
+    func registeredReturnTrays() -> [[String: Any]] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
+              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let trays = state["returnTrays"] as? [[String: Any]] else { return [] }
+        func containsTarget(_ value: Any?) -> Bool {
+            guard let frame = value as? [Double], frame.count == 4 else { return false }
+            return CGRect(x: frame[0], y: frame[1], width: frame[2], height: frame[3])
+                .contains(CGPoint(x: target[0], y: target[1]))
+        }
+        return trays.filter {
+            $0["attached"] as? Bool == true && $0["registered"] as? Bool == true
+                && containsTarget($0["frame"]) && containsTarget($0["targetFrame"])
+        }
+    }
     func waitFor(_ predicate: ([String]) -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(2)
         repeat {
@@ -726,6 +765,13 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         Thread.sleep(forTimeInterval: 0.018)
     }
     Thread.sleep(forTimeInterval: 0.15)
+    if destination == "bar" {
+        guard waitFor({ $0.contains(where: { $0.hasPrefix("native began ") }) && !registeredReturnTrays().isEmpty }) else {
+            fail("actual registered return tray does not contain the endpoint after native begin")
+        }
+        print("RETURN TRAY target=\(target) actual=\(registeredReturnTrays())")
+        fflush(stdout)
+    }
     if !command && kind != "late-command" && destination != "invalid" {
         let section = destination == "bar" ? "shown" : destination
         guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
@@ -1149,6 +1195,13 @@ def main():
             wanted = [expected] if expected else []
             if actual != wanted:
                 raise RuntimeError(f"{source} -> {destination} {kind}: commits {actual}, wanted {wanted}")
+            prepared = [event for event in events if event.startswith("prepared ")]
+            performed = [event for event in events if event.startswith("performed ")]
+            if expected and (prepared != [f"prepared {expected} valid=true"]
+                             or performed != [f"performed {expected} valid=true"]):
+                raise RuntimeError(f"native prepare/perform callbacks missing: {events}")
+            if not expected and performed:
+                raise RuntimeError(f"cancelled or invalid drag performed a drop: {events}")
             results.append(f"PASS {source} -> {destination} {kind}")
         # Both keys arrive before down in these cases, with no run-loop delay in rapid.
         # Reorder only a disposable item, and require actual geometry movement.
@@ -1192,7 +1245,7 @@ def main():
         except subprocess.TimeoutExpired as error:
             raise RuntimeError("graceful cleanup deadline") from error
         final = json.loads(state_path.read_text())
-        if final["mode"] or "cleanup overlays=0 returns=0 tap=none" not in final["events"][-1:]:
+        if final["mode"] or final["returnTrays"] or "cleanup overlays=0 returns=0 tap=none" not in final["events"][-1:]:
             raise RuntimeError("controller did not clean up its windows and tap")
         if "STOP buttons=0" not in (args.output / "probe.log").read_text():
             raise RuntimeError("mouse button remained down at cleanup")

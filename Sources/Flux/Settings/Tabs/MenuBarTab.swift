@@ -84,7 +84,7 @@ private struct MenuBarDrawer: View {
                 accessRow
             } else {
                 RowText(title: "Manage icons here",
-                        subtitle: "Drag a row handle into a section or back to the menu bar. Move to… and the arrows also work.")
+                        subtitle: "Drag a row handle into a section or onto Keep shown below the menu bar. Move to… and the arrows also work.")
                 ToggleRow(title: "Show menu bar drag grips",
                           subtitle: "Drag the small grips below app icons into a section. Command-drag icons in the menu bar to reorder them.",
                           isOn: Binding(get: { dragController.isMenuBarDragging },
