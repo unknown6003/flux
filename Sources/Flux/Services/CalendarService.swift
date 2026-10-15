@@ -95,6 +95,7 @@ final class CalendarService: ObservableObject {
 
     private let eventStore: EKEventStore
     private var isStarted = false
+    private var isStopping = false
     /// Whether `eventStore` has been reset since access was granted — see
     /// `resetStoreIfNewlyAuthorized()`.
     private var hasResetSinceAuthorization = false
@@ -146,6 +147,9 @@ final class CalendarService: ObservableObject {
     /// Tears down the change observation and the midnight-rollover task.
     /// No-op if already stopped.
     func stop() {
+        guard !isStopping else { return }
+        isStopping = true
+        defer { isStopping = false }
         // Also clears the store-reset latch. `refresh()`'s denied branch is
         // the other place that clears it, but a revoke doesn't go through
         // `refresh()` at all: the permission observer stops the service

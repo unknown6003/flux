@@ -3522,6 +3522,29 @@ enum SelfTest {
         check(AppDelegate.describe(.activity(UUID())) == AppDelegate.describe(.activity(UUID())),
               "CrashReporter breadcrumb: two different activities render identically, so the UUID can't churn the file")
 
+        do {
+            let calendar = CalendarService()
+            let now = Date(timeIntervalSince1970: 1_792_051_200)
+            calendar.injectPreviewEvents([CalendarEvent(
+                id: "stop-reentry", title: "Fixture", start: now,
+                end: now.addingTimeInterval(3600), isAllDay: false,
+                calendarColor: nil, location: nil)])
+            var clearDeliveries = 0
+            let observation = calendar.$upcoming.dropFirst().sink { events in
+                if events.isEmpty {
+                    clearDeliveries += 1
+                    if clearDeliveries < 3 { calendar.stop() }
+                }
+            }
+            calendar.stop()
+            check(clearDeliveries == 1 && calendar.upcoming.isEmpty,
+                  "CalendarService: a synchronous subscriber can stop again without recursive clearing")
+            calendar.stop()
+            check(clearDeliveries == 1,
+                  "CalendarService: repeated stop does not publish another empty agenda")
+            observation.cancel()
+        }
+
         print(allPassed ? "\n🎉 ALL CHECKS PASSED" : "\n❌ SOME CHECKS FAILED")
         exit(allPassed ? 0 : 1)
     }
