@@ -59,7 +59,7 @@ MainActor.assumeIsolated {
     var captures = 0
     var maximum = 0
 
-    func finish(_ passed: Bool, _ message: String) -> Never {
+    @MainActor func finish(_ passed: Bool, _ message: String) -> Never {
         hider.apply(revealHidden: true, revealAlwaysHidden: true,
                     chevronX: { nil }, alwaysX: { nil })
         cache.removePersistentDomain(forName: suite)
@@ -70,7 +70,7 @@ MainActor.assumeIsolated {
         exit(passed ? 0 : 1)
     }
 
-    func visiblePixels() -> Int {
+    @MainActor func visiblePixels() -> Int {
         let path = URL(fileURLWithPath: CommandLine.arguments[1])
         let capture = Process()
         capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
@@ -79,7 +79,8 @@ MainActor.assumeIsolated {
         catch { finish(false, "FAIL: capture could not start") }
         capture.waitUntilExit()
         guard capture.terminationStatus == 0,
-              let bitmap = NSBitmapImageRep(contentsOf: path) else {
+              let data = try? Data(contentsOf: path),
+              let bitmap = NSBitmapImageRep(data: data) else {
             finish(false, "FAIL: menu-bar capture failed")
         }
         var count = 0
@@ -96,7 +97,7 @@ MainActor.assumeIsolated {
         return count
     }
 
-    func transition(_ step: Int) {
+    @MainActor func transition(_ step: Int) {
         guard step < 3 else {
             finish(true, "PASS: Always Hidden stayed hidden across reveal, collapse, and retry; captures=\(captures), max pixels=\(maximum)")
         }
