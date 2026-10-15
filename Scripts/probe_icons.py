@@ -297,6 +297,22 @@ func probe() {
         }
         let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"), encoding: .utf8)) ?? "missing"
         print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own)")
+        if stage == "programmatic-shown" {
+            var point = CGPoint.zero, size = CGSize.zero
+            guard result == .success, title as? String == "Flux fixture A",
+                  NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.flux.icon-fixture",
+                  let hitPosition, let hitSize,
+                  CFGetTypeID(hitPosition) == AXValueGetTypeID(), CFGetTypeID(hitSize) == AXValueGetTypeID(),
+                  AXValueGetValue(hitPosition as! AXValue, .cgPoint, &point),
+                  AXValueGetValue(hitSize as! AXValue, .cgSize, &size),
+                  abs(center.x - point.x - size.width / 2) <= 1,
+                  abs(center.y - point.y - size.height / 2) <= 1,
+                  MenuBarIconManager.section(for: CGRect(x: center.x-1, y: center.y-1, width: 2, height: 2),
+                                             boundaries: manager.boundaryProvider()) == .shown else {
+                print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
+                exit(1)
+            }
+        }
         return center
     }
     @MainActor
@@ -342,8 +358,7 @@ func probe() {
             let exhausted = CommandLine.arguments.contains("--move-refresh-failure")
                 || CommandLine.arguments.contains("--move-save-failure")
             if failedRead || exhausted {
-                guard let physical = geometry("programmatic-shown"),
-                      abs(physical.x - current.frame.midX) <= 1 else {
+                guard geometry("programmatic-shown") != nil else {
                     print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
                     exit(1)
                 }
