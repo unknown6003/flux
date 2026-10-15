@@ -163,6 +163,7 @@ final class Probe {
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
+            "buttons": NSEvent.pressedMouseButtons,
             "source": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
             "row": center(window.convertToScreen(root.convert(row?.frame ?? .zero, to: nil))),
             "targets": targets,
@@ -200,6 +201,21 @@ func drive(statePath: String, source: String, destination: String, kind: String)
           let targets = state["targets"] as? [String: [Double]],
           let target = destination == "native" ? [start[0] - 75, start[1]] : targets[destination] else { exit(6) }
     let command = kind == "held" || kind == "rapid" || kind == "down-only"
+    let eventOffset = (state["events"] as? [String] ?? []).count
+    func events() -> [String] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
+              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let values = state["events"] as? [String] else { return [] }
+        return Array(values.dropFirst(eventOffset))
+    }
+    func waitFor(_ predicate: ([String]) -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        repeat {
+            if predicate(events()) { return true }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while Date() < deadline
+        return false
+    }
     func key(_ code: CGKeyCode, _ down: Bool, _ flags: CGEventFlags = []) {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
         event.flags = flags
@@ -210,6 +226,15 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                             mouseCursorPosition: CGPoint(x: point[0], y: point[1]), mouseButton: .left)!
         event.flags = flags
         event.post(tap: .cghidEventTap)
+    }
+    func fail(_ reason: String) -> Never {
+        print("FAIL driver \(reason): \(events())")
+        key(53, true); key(53, false)
+        Thread.sleep(forTimeInterval: 0.12)
+        mouse(.leftMouseUp, target)
+        key(55, false)
+        fflush(stdout)
+        exit(7)
     }
     mouse(.mouseMoved, start)
     Thread.sleep(forTimeInterval: 0.12)
@@ -225,10 +250,24 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let point = [start[0] + (target[0] - start[0]) * fraction,
                      start[1] + (target[1] - start[1]) * fraction]
         mouse(.leftMouseDragged, point, command || kind == "late-command" ? .maskCommand : [])
+        if step == 1 && !command && kind != "late-command" {
+            guard waitFor({ $0.contains(where: { $0.hasPrefix("begin ") }) }) else {
+                fail("source never began a session")
+            }
+        }
         Thread.sleep(forTimeInterval: 0.018)
     }
     Thread.sleep(forTimeInterval: 0.15)
-    if kind == "escape" { key(53, true); key(53, false); Thread.sleep(forTimeInterval: 0.1) }
+    if !command && kind != "late-command" && destination != "invalid" {
+        let section = destination == "bar" ? "shown" : destination
+        guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
+            fail("destination never accepted the session")
+        }
+    }
+    if kind == "escape" {
+        key(53, true); key(53, false)
+        guard waitFor({ $0.contains("ended operation=0") }) else { fail("Escape did not end the session") }
+    }
     mouse(.leftMouseUp, target, command || kind == "late-command" ? .maskCommand : [])
     key(55, false)
     Thread.sleep(forTimeInterval: 0.35)
@@ -295,6 +334,18 @@ def wait_state(path, process, seconds=8):
     raise RuntimeError(f"state readiness deadline {seconds}s: {path}")
 
 
+def wait_scenario(path, process, offset, kind):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        state = wait_state(path, process, 1)
+        events = state["events"][offset:]
+        ended = [event for event in events if event.startswith("ended ")]
+        if ended or (kind == "late-command" and "source down command=false" in events and state["buttons"] == 0):
+            return state, events
+        time.sleep(0.05)
+    raise RuntimeError(f"session settle deadline for {kind}: {events}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="New scratch directory for bundles and logs")
@@ -352,9 +403,21 @@ def main():
             if time.monotonic() - started > args.seconds - 15:
                 raise RuntimeError("scenario deadline; stopped all probe groups")
             before = len(state["commits"])
+            event_offset = len(state["events"])
+            if not state["mode"]:
+                raise RuntimeError("drag mode stopped before the scenario")
             bounded([str(binary), "--drive", str(state_path), source, destination, kind],
-                    4, args.output / f"drive-{len(results)}.log")
-            state = wait_state(state_path, probe, 2)
+                    8, args.output / f"drive-{len(results)}.log")
+            state, events = wait_scenario(state_path, probe, event_offset, kind)
+            begins = [event for event in events if event.startswith("begin ")]
+            ends = [event for event in events if event.startswith("ended ")]
+            if kind == "late-command":
+                if begins or ends:
+                    raise RuntimeError(f"late Command started a session: {events}")
+            else:
+                wanted_end = "ended operation=16" if expected else "ended operation=0"
+                if len(begins) != 1 or ends != [wanted_end]:
+                    raise RuntimeError(f"wrong session callbacks: {events}")
             actual = state["commits"][before:]
             wanted = [expected] if expected else []
             if actual != wanted:
@@ -364,6 +427,8 @@ def main():
         # Reorder only a disposable item, and require actual geometry movement.
         for kind in ("held", "rapid", "down-only"):
             state = wait_state(state_path, probe, 2)
+            if not state["mode"]:
+                raise RuntimeError("drag mode stopped before the native Command check")
             start = state["source"]
             events_before = len(state["events"])
             # The temporary bar destination exists only in Flux sessions. Native
@@ -372,6 +437,8 @@ def main():
                     4, args.output / f"command-{kind}.log")
             state = wait_state(state_path, probe, 2)
             new_events = state["events"][events_before:]
+            if not state["mode"] or "tap down command=true" not in new_events:
+                raise RuntimeError(f"Command {kind} did not exercise the armed event tap")
             if any(e.startswith("source down") or e.startswith("begin ") for e in new_events):
                 raise RuntimeError(f"Command {kind} was intercepted: {new_events}")
             if abs(state["source"][0] - start[0]) < 10:
