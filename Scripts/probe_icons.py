@@ -159,10 +159,17 @@ func probe() {
             }
             if let releaseMonitor { NSEvent.removeMonitor(releaseMonitor) }
             manager.refresh()
-            guard let actual = fixture(),
-                  MenuBarIconManager.section(for: actual.frame,
+            guard let actual = fixture() else {
+                print("FAIL: the native fixture disappeared after mouse-up")
+                exit(1)
+            }
+            guard MenuBarIconManager.section(for: actual.frame,
                                             boundaries: manager.boundaryProvider()) == .shown else {
-                print("FAIL: the native Command driver did not move the real icon to Shown")
+                if ProcessInfo.processInfo.systemUptime - releasedAt < 0.25 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { verifyRelease(until: deadline) }
+                    return
+                }
+                print("FAIL: the native Command driver did not move the real icon to Shown; actual=\(actual.frame), boundaries=\(manager.boundaryProvider())")
                 exit(1)
             }
             print("PASS: native Command changed Hidden to Shown after delivered mouse-up")
