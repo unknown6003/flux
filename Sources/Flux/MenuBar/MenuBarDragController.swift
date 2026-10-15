@@ -266,6 +266,7 @@ final class MenuBarDragController: ObservableObject {
             view.section = .shown
             view.showsReturnHint = true
             let panel = Self.panel(frame: frame, view: view)
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
             panel.orderFrontRegardless()
             returnPanels.append(panel)
             trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
