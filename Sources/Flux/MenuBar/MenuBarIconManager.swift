@@ -574,7 +574,7 @@ final class MenuBarIconManager: ObservableObject {
                 return
             }
         }
-        move(icon, toX: targetX, expectedSection: icon.section)
+        move(icon, toX: targetX, expectedSection: icon.section, allowNativeRetry: false)
     }
 
     // Kept for callers from older settings views during an update.
