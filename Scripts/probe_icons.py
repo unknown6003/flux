@@ -38,6 +38,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-close", action="store_true")
 parser.add_argument("--move-close", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
+parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
 fixture_source = r'''
@@ -79,6 +80,26 @@ app.setActivationPolicy(.accessory)
 let item = NSStatusBar.system.statusItem(withLength: 28)
 item.button?.title = "FXA"
 item.button?.setAccessibilityTitle("Flux fixture A")
+if let index = CommandLine.arguments.firstIndex(of: "--geometry-output") {
+    let output = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+    let marker = NSImage(size: NSSize(width: 18, height: 18))
+    marker.lockFocus()
+    NSColor(srgbRed: 1, green: 0, blue: 1, alpha: 1).setFill()
+    NSRect(x: 0, y: 0, width: 18, height: 18).fill()
+    marker.unlockFocus()
+    marker.isTemplate = false
+    item.button?.title = ""
+    item.button?.image = marker
+    let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
+        let value: [String: Any] = ["time": ProcessInfo.processInfo.systemUptime,
+            "pid": getpid(), "window": String(describing: item.button?.window?.frame),
+            "button": String(describing: item.button?.frame)]
+        if let data = try? JSONSerialization.data(withJSONObject: value) {
+            try? data.write(to: output, options: .atomic)
+        }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+}
 var second: NSStatusItem?
 if !CommandLine.arguments.contains("--single") {
     second = NSStatusBar.system.statusItem(withLength: 28)
@@ -90,6 +111,7 @@ app.run()
 '''
 source = r'''
 import AppKit
+import ApplicationServices
 setbuf(stdout, nil)
 
 @MainActor
@@ -119,9 +141,64 @@ func probe() {
     let closeTest = CommandLine.arguments.contains("--native-close")
         || CommandLine.arguments.contains("--move-close")
         || CommandLine.arguments.contains("--native-overlap")
+        || CommandLine.arguments.contains("--native-geometry")
     let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
     func fixture() -> MenuBarIconManager.Icon? {
         manager.icons.first { $0.title == "Flux fixture A" }
+    }
+    @MainActor
+    func geometry(_ stage: String) {
+        guard let index = CommandLine.arguments.firstIndex(of: "--geometry-output"),
+              let screen = NSScreen.screens.first else { return }
+        let output = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+        let image = output.appendingPathComponent(stage + ".png")
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", "-R0,0,\(Int(screen.frame.width)),48", image.path]
+        do { try capture.run() }
+        catch { print("FAIL: geometry capture could not start: \(error)"); exit(1) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while capture.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if capture.isRunning { kill(capture.processIdentifier, SIGKILL) }
+        capture.waitUntilExit()
+        guard capture.terminationStatus == 0, let data = try? Data(contentsOf: image),
+              let bitmap = NSBitmapImageRep(data: data), bitmap.bitsPerSample == 8,
+              !bitmap.isPlanar, [3, 4].contains(bitmap.samplesPerPixel),
+              let bytes = bitmap.bitmapData else {
+            print("FAIL: geometry capture did not produce an RGB bitmap"); exit(1)
+        }
+        let stride = bitmap.samplesPerPixel
+        let alphaFirst = bitmap.bitmapFormat.contains(.alphaFirst)
+        let offset = alphaFirst && stride == 4 ? 1 : 0
+        var count = 0, sumX = 0, sumY = 0
+        var minX = bitmap.pixelsWide, maxX = 0
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                let pixel = y * bitmap.bytesPerRow + x * stride
+                if bytes[pixel + offset] > 178, bytes[pixel + offset + 1] < 102,
+                   bytes[pixel + offset + 2] > 178 {
+                    count += 1; sumX += x; sumY += y
+                    minX = min(minX, x); maxX = max(maxX, x)
+                }
+            }
+        }
+        guard count >= 20 else { print("FAIL: geometry control marker is not visible"); exit(1) }
+        let scale = CGFloat(bitmap.pixelsWide) / screen.frame.width
+        let center = CGPoint(x: (CGFloat(sumX) / CGFloat(count) + 0.5) / scale,
+                             y: (CGFloat(sumY) / CGFloat(count) + 0.5) / scale)
+        var hit: AXUIElement?
+        let result = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
+                                                      Float(center.x), Float(center.y), &hit)
+        var pid: pid_t = 0
+        var title: CFTypeRef?
+        if let hit {
+            AXUIElementGetPid(hit, &pid)
+            AXUIElementCopyAttributeValue(hit, kAXTitleAttribute as CFString, &title)
+        }
+        let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"))) ?? "missing"
+        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) own=\(own)")
     }
     @MainActor
     func finish() {
@@ -270,6 +347,7 @@ func probe() {
         let driver = Process()
         let targetX = max(x + icon.frame.width / 2,
                           (chevron.statusItem.button?.window?.frame.maxX ?? x) + icon.frame.width)
+        geometry("before-native")
         print("Native source=\(icon.frame), targetX=\(targetX), boundaries=\(manager.boundaryProvider())")
         driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
         driver.arguments = ["--drag", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
@@ -296,6 +374,7 @@ func probe() {
                 releaseMonitor = nil
             }
             manager.refresh()
+            if CommandLine.arguments.contains("--native-geometry") { geometry("after-native") }
             guard let actual = fixture() else {
                 print("FAIL: the native fixture disappeared after mouse-up")
                 exit(1)
@@ -385,7 +464,8 @@ func probe() {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
         }
-        if CommandLine.arguments.contains("--native-close") || CommandLine.arguments.contains("--native-overlap") {
+        if CommandLine.arguments.contains("--native-close") || CommandLine.arguments.contains("--native-overlap")
+            || CommandLine.arguments.contains("--native-geometry") {
             nativeMove()
             return
         }
@@ -495,13 +575,21 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
         "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
         "Sources/Flux/Support/AccessibilityAccess.swift"])
-    close_test = options.native_close or options.move_close or options.native_overlap
-    process = subprocess.Popen([str(fixture)] + (["--single"] if close_test else []), start_new_session=True)
+    close_test = options.native_close or options.move_close or options.native_overlap or options.native_geometry
+    geometry = temporary / "geometry"
+    geometry.mkdir()
+    fixture_flags = (["--single"] if close_test else [])
+    if options.native_geometry:
+        fixture_flags += ["--geometry-output", str(geometry / "fixture.json")]
+    process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
     started_at = time.time()
     try:
         flags = (["--native-close"] if options.native_close else
-                 (["--move-close"] if options.move_close else (["--native-overlap"] if options.native_overlap else [])))
+                 (["--move-close"] if options.move_close else (["--native-overlap"] if options.native_overlap else
+                  (["--native-geometry", "--geometry-output", str(geometry)] if options.native_geometry else []))))
         command([str(binary), str(fixture)] + flags, 30)
+        if options.native_geometry:
+            shutil.copytree(geometry, root / "build/icon-probe/geometry", dirs_exist_ok=True)
     except BaseException:
         label = (options.manager_ref or "current")[:8] + ("-overlap" if options.native_overlap else
                 ("-native" if options.native_close else ("-close" if options.move_close else "-settings")))
