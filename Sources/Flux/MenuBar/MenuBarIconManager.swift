@@ -187,10 +187,55 @@ final class MenuBarIconManager: ObservableObject {
                 nextElements[id] = element
             }
         }
+        next.append(contentsOf: liveActivityIcons())
         icons = next.sorted { $0.frame.minX < $1.frame.minX }
         elements = nextElements
         errorMessage = macOS27Hider.isAvailable ? macOS27Hider.latestError
             : "Hiding is unavailable on this macOS build. Flux needs an update."
+    }
+
+    private func liveActivityIcons() -> [Icon] {
+        guard let agent = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.MenuBarAgent").first else { return [] }
+        let owner = AXUIElementCreateApplication(agent.processIdentifier)
+        AXUIElementSetMessagingTimeout(owner, 0.15)
+        guard let bar = elementAttribute(owner, kAXExtrasMenuBarAttribute) else { return [] }
+        var result: [Icon] = []
+        var visited = 0
+        func visit(_ element: AXUIElement, depth: Int) {
+            guard depth < 6, visited < 100 else { return }
+            visited += 1
+            if let identifier = stringAttribute(element, kAXIdentifierAttribute),
+               identifier.hasPrefix("live-activity-pill-"), let frame = frame(of: element) {
+                let label = activityImageLabel(in: element)
+                result.append(Icon(id: "system-activity|\(identifier)",
+                                   title: label ?? "Live Activity",
+                                   source: "Live Activity managed by macOS",
+                                   section: .shown, isMovable: false, frame: frame))
+                return
+            }
+            for child in children(of: element) { visit(child, depth: depth + 1) }
+        }
+        visit(bar, depth: 0)
+        return result
+    }
+
+    private func activityImageLabel(in element: AXUIElement) -> String? {
+        var visited = 0
+        func label(_ item: AXUIElement, depth: Int) -> String? {
+            guard depth < 5, visited < 40 else { return nil }
+            visited += 1
+            if stringAttribute(item, kAXRoleAttribute) == kAXImageRole as String,
+               let text = stringAttribute(item, kAXDescriptionAttribute),
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+            for child in children(of: item) {
+                if let text = label(child, depth: depth + 1) { return text }
+            }
+            return nil
+        }
+        return label(element, depth: 0)
     }
 
     func move(_ icon: Icon, to section: MenuBarSection) {
