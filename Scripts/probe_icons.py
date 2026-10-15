@@ -407,14 +407,29 @@ func probe() {
         window.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps: true)
         let readyDeadline = ProcessInfo.processInfo.systemUptime + 5
+        var stableSince: TimeInterval?
+        var stableFrame: NSRect?
         @MainActor func start() {
-            guard NSApp.isActive, NSApp.keyWindow === window else {
-                guard ProcessInfo.processInfo.systemUptime < readyDeadline else {
-                    print("FAIL: real manager drag window was not active and key"); exit(1)
-                }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now < readyDeadline else {
+                print("INVALID: real manager drag window did not settle active and key"); exit(5)
+            }
+            guard NSApp.isActive, NSApp.keyWindow === window, window.isVisible,
+                  !CGEventSource.buttonState(.combinedSessionState, button: .left) else {
+                stableSince = nil
+                stableFrame = nil
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { start() }
                 return
             }
+            if stableFrame != window.frame {
+                stableFrame = window.frame
+                stableSince = now
+            }
+            guard let stableSince, now - stableSince >= 2 else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { start() }
+                return
+            }
+            print("REAL_DRAG ready time=\(now) pid=\(getpid()) key=\(window.windowNumber) frame=\(window.frame)")
             controller.open(manager: manager, window: window)
             func center(_ view: NSView) -> CGPoint {
                 let p = window.convertPoint(toScreen: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
