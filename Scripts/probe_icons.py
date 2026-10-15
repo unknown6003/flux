@@ -54,6 +54,7 @@ parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
 parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
+parser.add_argument("--move-retry-overlap", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
 options = parser.parse_args()
@@ -256,6 +257,7 @@ func probe() {
         || CommandLine.arguments.contains("--drag-context")
         || saveTest
         || CommandLine.arguments.contains("--native-overlap")
+        || CommandLine.arguments.contains("--move-retry-overlap")
         || CommandLine.arguments.contains("--native-geometry")
         || CommandLine.arguments.contains("--native-refresh-retry")
     let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
@@ -758,29 +760,46 @@ func probe() {
     }
     @MainActor
     func overlappingNativeMove(from icon: MenuBarIconManager.Icon) {
+        let retryOverlap = CommandLine.arguments.contains("--move-retry-overlap")
         guard let x = MenuBarIconManager.insertionX(for: .alwaysHidden, iconWidth: icon.frame.width,
                                                     boundaries: manager.boundaryProvider()) else { exit(1) }
         let driver = Process()
-        let source = geometry("before-overlap") ?? CGPoint(x: icon.frame.midX, y: icon.frame.midY)
+        let source = retryOverlap ? CGPoint(x: icon.frame.midX, y: icon.frame.midY)
+            : (geometry("before-overlap") ?? CGPoint(x: icon.frame.midX, y: icon.frame.midY))
         driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
         driver.arguments = ["--drag-overlap", String(Double(source.x)), String(Double(source.y)),
                             String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
         var released = false
+        var beganWhilePending = false
         var monitor: Any?
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { event in
             if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(driver.processIdentifier) {
-                released = true
+                if event.type == .leftMouseDown { beganWhilePending = manager.isUpdatingIcons }
+                else { released = true }
             }
         }
         driver.terminationHandler = { driver in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (retryOverlap ? 1.5 : 0.5)) {
                 if let current = monitor { NSEvent.removeMonitor(current); monitor = nil }
                 guard driver.terminationStatus == 0, released, NSEvent.pressedMouseButtons & 1 == 0 else {
                     print("FAIL: the overlapping native driver did not deliver mouse-up")
                     exit(1)
                 }
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                geometry("after-overlap-release")
+                let physical = geometry("after-overlap-release")
+                if retryOverlap {
+                    manager.refresh()
+                    guard beganWhilePending, let current = fixture(), let physical,
+                          abs(physical.x - current.frame.midX) <= 1 else {
+                        print("FAIL: the retry overlap missed pending verification or physical geometry")
+                        exit(1)
+                    }
+                    guard MenuBarIconManager.section(for: current.frame,
+                        boundaries: manager.boundaryProvider()) == .alwaysHidden else {
+                        print("FAIL: programmatic retry undid the later native move")
+                        exit(1)
+                    }
+                }
                 let fresh = MenuBarIconManager()
                 fresh.boundaryProvider = manager.boundaryProvider
                 fresh.refresh()
@@ -1031,6 +1050,21 @@ func probe() {
             overlapProgrammaticMove(ordered)
             return
         }
+        if CommandLine.arguments.contains("--move-retry-overlap") {
+            guard let icon = fixture() else { exit(1) }
+            manager.move(icon, to: .hidden)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                manager.refresh()
+                guard manager.isUpdatingIcons, let current = fixture(),
+                      MenuBarIconManager.section(for: current.frame,
+                        boundaries: manager.boundaryProvider()) == .hidden else {
+                    print("FAIL: retry overlap missed the pending Hidden move")
+                    exit(1)
+                }
+                overlappingNativeMove(from: current)
+            }
+            return
+        }
         if CommandLine.arguments.contains("--native-close") || CommandLine.arguments.contains("--native-overlap")
             || CommandLine.arguments.contains("--native-geometry")
             || CommandLine.arguments.contains("--native-refresh-retry") {
@@ -1252,9 +1286,11 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     close_test = (options.native_close or options.move_close or options.native_overlap
                   or options.native_geometry or options.native_refresh_retry
                   or options.move_refresh_retry or options.move_refresh_failure
-                  or options.move_save_retry or options.move_save_failure or options.menu_context or options.menu_expired or options.drag_context)
+                  or options.move_save_retry or options.move_save_failure or options.menu_context or options.menu_expired or options.drag_context
+                  or options.move_retry_overlap)
     capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
-                        or options.move_save_retry or options.move_save_failure or options.stale_frame is not None)
+                        or options.move_save_retry or options.move_save_failure or options.stale_frame is not None
+                        or options.move_retry_overlap)
     geometry = temporary / "geometry"
     geometry.mkdir()
     fixture_flags = (["--single"] if close_test else [])
@@ -1276,7 +1312,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--menu-expired", options.menu_expired),
                     ("--drag-context", options.drag_context),
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
-                    ("--move-overlap", options.move_overlap)]
+                    ("--move-overlap", options.move_overlap), ("--move-retry-overlap", options.move_retry_overlap)]
         flags = [flag for flag, enabled in selected if enabled]
         if options.stale_frame:
             flags += ["--stale-frame", options.stale_frame]
