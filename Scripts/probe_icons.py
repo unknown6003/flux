@@ -223,7 +223,7 @@ func probe() {
     }, hider: hider)
     manager.boundaryProvider = {
         (hidden: chevron.statusItem.button?.window?.frame.minX,
-         alwaysHidden: always.statusItem.button?.window?.frame.minX)
+         alwaysHidden: always.statusItem.button?.window?.frame.maxX)
     }
     manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
     let closeTest = CommandLine.arguments.contains("--native-close")
