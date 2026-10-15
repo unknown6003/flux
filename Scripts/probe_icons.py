@@ -202,10 +202,25 @@ func probe() {
             AXUIElementCopyAttributeValue(hit, kAXPositionAttribute as CFString, &hitPosition)
             AXUIElementCopyAttributeValue(hit, kAXSizeAttribute as CFString, &hitSize)
         }
+        var barValue: CFTypeRef?
+        var childValue: CFTypeRef?
+        let owner = AXUIElementCreateApplication(pid)
+        AXUIElementCopyAttributeValue(owner, kAXExtrasMenuBarAttribute as CFString, &barValue)
+        var fresh: [String] = []
+        if let barValue, CFGetTypeID(barValue) == AXUIElementGetTypeID() {
+            AXUIElementCopyAttributeValue(barValue as! AXUIElement, kAXChildrenAttribute as CFString, &childValue)
+            for element in childValue as? [AXUIElement] ?? [] {
+                var position: CFTypeRef?, size: CFTypeRef?, label: CFTypeRef?
+                AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position)
+                AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size)
+                AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &label)
+                fresh.append("title=\(String(describing: label)) pos=\(String(describing: position)) size=\(String(describing: size)) equalHit=\(hit.map { CFEqual(element, $0) } ?? false)")
+            }
+        }
         let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"), encoding: .utf8)) ?? "missing"
         let windows = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
             .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
-        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) own=\(own) windows=\(windows)")
+        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own) windows=\(windows)")
         return center
     }
     @MainActor
