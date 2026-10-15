@@ -75,6 +75,16 @@ jobs:
         if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
         run: python3 Scripts/probe_icons.py
 
+      - name: Probe menu bar layout reads
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        timeout-minutes: 3
+        run: python3 Scripts/probe_layout_scan.py
+
+      - name: Probe Always Hidden transitions
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        timeout-minutes: 5
+        run: python3 Scripts/probe_hidden_transition.py --install-normal-fixture
+
       - name: Import release signing identity
         env:
           FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
@@ -125,6 +135,15 @@ jobs:
 
       - name: Render notch snapshots
         run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots all
+
+      - name: Check black notch drawer in both appearances
+        timeout-minutes: 3
+        run: |
+          ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots/expanded-light.png light expanded
+          ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots/expanded-dark.png dark expanded
+          python3 -m venv build/image-probe-env
+          build/image-probe-env/bin/python -m pip install --disable-pip-version-check --no-input --timeout 15 --retries 1 Pillow==12.3.0
+          build/image-probe-env/bin/python Scripts/probe_notch_black.py snapshots/expanded-light.png snapshots/expanded-dark.png
 
       - name: Render lock-screen light snapshot
         run: ./build/Flux.app/Contents/MacOS/Flux --snapshot-notch snapshots/lockscreen-light.png light lockscreen
