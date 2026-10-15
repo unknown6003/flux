@@ -138,10 +138,14 @@ private struct MenuBarDrawer: View {
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondaryColor)
             Button("Open Accessibility Settings") {
+                dragController.setMenuBarDragging(false)
                 iconManager.requestAccess()
             }
             .buttonStyle(.fluxProminent)
-            Button("Check access again") { iconManager.beginIconManagement() }
+            Button("Check access again") {
+                dragController.setMenuBarDragging(false)
+                iconManager.beginIconManagement()
+            }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accentInkColor)
         }
