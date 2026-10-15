@@ -37,11 +37,12 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-close", action="store_true")
 parser.add_argument("--move-close", action="store_true")
+parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
 fixture_source = r'''
 import AppKit
-if CommandLine.arguments.count == 6 && CommandLine.arguments[1] == "--drag" {
+if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap"].contains(CommandLine.arguments[1]) {
     let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
     guard values.count == 4 else { exit(2) }
     let start = CGPoint(x: values[0], y: values[1])
@@ -54,11 +55,21 @@ if CommandLine.arguments.count == 6 && CommandLine.arguments[1] == "--drag" {
     }
     post(.leftMouseDown, start)
     Thread.sleep(forTimeInterval: 0.08)
-    for step in 1...24 {
-        let progress = CGFloat(step) / 24
+    let steps = CommandLine.arguments[1] == "--drag-overlap" ? 1 : 24
+    for step in 1...steps {
+        let progress = CGFloat(step) / CGFloat(steps)
         post(.leftMouseDragged, CGPoint(x: start.x + (target.x - start.x) * progress,
                                         y: start.y + (target.y - start.y) * progress))
         Thread.sleep(forTimeInterval: 0.02)
+    }
+    if CommandLine.arguments[1] == "--drag-overlap" {
+        Thread.sleep(forTimeInterval: 0.8)
+        for down in [true, false] {
+            let escape = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)!
+            escape.flags = []
+            escape.post(tap: .cghidEventTap)
+        }
+        Thread.sleep(forTimeInterval: 0.08)
     }
     post(.leftMouseUp, target)
     exit(0)
@@ -107,6 +118,7 @@ func probe() {
     manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
     let closeTest = CommandLine.arguments.contains("--native-close")
         || CommandLine.arguments.contains("--move-close")
+        || CommandLine.arguments.contains("--native-overlap")
     let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
     func fixture() -> MenuBarIconManager.Icon? {
         manager.icons.first { $0.title == "Flux fixture A" }
@@ -169,6 +181,64 @@ func probe() {
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { closeAfterMovement() }
+    }
+    @MainActor
+    func overlappingNativeMove(from icon: MenuBarIconManager.Icon) {
+        guard let x = MenuBarIconManager.insertionX(for: .alwaysHidden, iconWidth: icon.frame.width,
+                                                    boundaries: manager.boundaryProvider()) else { exit(1) }
+        let driver = Process()
+        driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
+        driver.arguments = ["--drag-overlap", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
+                            String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
+        var released = false
+        var monitor: Any?
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
+            if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(driver.processIdentifier) {
+                released = true
+            }
+        }
+        driver.terminationHandler = { driver in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if let current = monitor { NSEvent.removeMonitor(current); monitor = nil }
+                guard driver.terminationStatus == 0, released, NSEvent.pressedMouseButtons & 1 == 0 else {
+                    print("FAIL: the overlapping native cancellation did not deliver mouse-up")
+                    exit(1)
+                }
+                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                let fresh = MenuBarIconManager()
+                fresh.boundaryProvider = manager.boundaryProvider
+                fresh.refresh()
+                let items = fresh.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
+                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false,
+                      (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false,
+                      items.count == 1, items[0].section == .shown,
+                      MenuBarIconManager.section(for: items[0].frame,
+                                                boundaries: manager.boundaryProvider()) == .shown else {
+                    print("FAIL: cancelling the second native drag lost the first completed Shown move")
+                    exit(1)
+                }
+                print("PASS: delayed callbacks preserve the completed native move after a later cancelled drag")
+                finish()
+            }
+        }
+        do { try driver.run() }
+        catch { print("FAIL: overlapping native driver launch: \(error)"); exit(1) }
+        Thread.sleep(forTimeInterval: 0.45)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+            manager.refresh()
+            guard NSEvent.pressedMouseButtons & 1 != 0, let current = fixture(),
+                  MenuBarIconManager.section(for: current.frame,
+                                            boundaries: manager.boundaryProvider()) == .alwaysHidden else {
+                print("FAIL: the overlapping native control did not hold an unfinished Always Hidden drag")
+                exit(1)
+            }
+            guard (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                print("FAIL: an older native callback saved the unfinished second drag as Always Hidden")
+                exit(1)
+            }
+            print("PASS: the held second native drag has not overwritten saved assignments")
+        }
     }
     @MainActor
     func nativeMove() {
@@ -240,6 +310,10 @@ func probe() {
                 exit(1)
             }
             print("PASS: native Command changed Hidden to Shown after delivered mouse-up")
+            if CommandLine.arguments.contains("--native-overlap") {
+                overlappingNativeMove(from: actual)
+                return
+            }
             if CommandLine.arguments.contains("--native-close") {
                 manager.endIconManagement()
                 let delay = ProcessInfo.processInfo.systemUptime - releasedAt
@@ -311,7 +385,7 @@ func probe() {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
         }
-        if CommandLine.arguments.contains("--native-close") {
+        if CommandLine.arguments.contains("--native-close") || CommandLine.arguments.contains("--native-overlap") {
             nativeMove()
             return
         }
@@ -421,14 +495,16 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
         "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
         "Sources/Flux/Support/AccessibilityAccess.swift"])
-    close_test = options.native_close or options.move_close
+    close_test = options.native_close or options.move_close or options.native_overlap
     process = subprocess.Popen([str(fixture)] + (["--single"] if close_test else []), start_new_session=True)
     started_at = time.time()
     try:
-        flags = ["--native-close"] if options.native_close else (["--move-close"] if options.move_close else [])
+        flags = (["--native-close"] if options.native_close else
+                 (["--move-close"] if options.move_close else (["--native-overlap"] if options.native_overlap else [])))
         command([str(binary), str(fixture)] + flags, 30)
     except BaseException:
-        label = (options.manager_ref or "current")[:8] + ("-native" if options.native_close else ("-close" if options.move_close else "-settings"))
+        label = (options.manager_ref or "current")[:8] + ("-overlap" if options.native_overlap else
+                ("-native" if options.native_close else ("-close" if options.move_close else "-settings")))
         evidence = root / "build/icon-probe" / label
         shutil.copytree(temporary, evidence, dirs_exist_ok=True)
         reports = Path.home() / "Library/Logs/DiagnosticReports"
