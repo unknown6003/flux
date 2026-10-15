@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from probe_tcc import _stop
 
 
@@ -54,6 +55,7 @@ parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 options = parser.parse_args()
+fixture_bundle_id = "com.flux.icon-fixture." + uuid.uuid4().hex
 fixture_source = r'''
 import AppKit
 if CommandLine.arguments.count == 8 && CommandLine.arguments[1] == "--drag-siblings" {
@@ -1152,6 +1154,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         main = sources / "main.swift"
         if "private let injectedHider:" not in manager_source.read_text():
             code = code.replace("}, hider: hider)", "})")
+        code = code.replace("com.flux.icon-fixture", fixture_bundle_id)
         main.write_text(code)
         command(["swiftc", "-swift-version", "5", str(main)] +
                 [str(manager_source if dependency == manager_path else root / dependency)
@@ -1159,7 +1162,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         command(["codesign", "--force", "--sign", "-", str(app)], 20)
         return binary
 
-    fixture = bundle("FluxIconFixture", "com.flux.icon-fixture", fixture_source, [])
+    fixture = bundle("FluxIconFixture", fixture_bundle_id, fixture_source, [])
     binary = bundle("FluxIconProbe", "com.flux.icon-probe", source, [
         "Sources/Flux/MenuBar/MenuBarIconManager.swift", "Sources/Flux/MenuBar/MacOS27Hider.swift",
         "Sources/Flux/MenuBar/ControlItem.swift", "Sources/Flux/MenuBar/MenuBarSection.swift",

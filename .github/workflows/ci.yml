@@ -210,6 +210,7 @@ jobs:
               ('removed-row-baseline', 'probe_icons.py', ['--removed-row', '--manager-ref',
                   '0e45a2291b9ac1b702d251c2c3d2c5badc4178dd'], 'a removed icon row started a move of its replacement'),
               ('removed-row', 'probe_icons.py', ['--removed-row'], None),
+              ('settings-reopen', 'probe_settings_reopen.py', [], None),
           ]
           selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
           if selected:
