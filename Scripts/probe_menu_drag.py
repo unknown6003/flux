@@ -292,6 +292,15 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         mouse(.leftMouseDragged, point, command || kind == "late-command" ? .maskCommand : [])
         Thread.sleep(forTimeInterval: 0.018)
     }
+    if let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+        for window in windows {
+            guard let data = window[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: data as CFDictionary),
+                  frame.contains(CGPoint(x: target[0], y: target[1])) else { continue }
+            print("target window=\(window[kCGWindowNumber as String] ?? "?") owner=\(window[kCGWindowOwnerName as String] ?? "?") pid=\(window[kCGWindowOwnerPID as String] ?? "?") level=\(window[kCGWindowLayer as String] ?? "?") frame=\(frame)")
+        }
+        fflush(stdout)
+    }
     Thread.sleep(forTimeInterval: 0.15)
     if !command && kind != "late-command" && destination != "invalid" {
         let section = destination == "bar" ? "shown" : destination
