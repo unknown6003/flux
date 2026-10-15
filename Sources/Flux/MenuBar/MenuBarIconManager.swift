@@ -97,7 +97,6 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func observeNativeMove(_ event: NSEvent) {
-        print("[DEBUG-native-save] t=\(ProcessInfo.processInfo.systemUptime) event=\(event.type.rawValue) flags=\(event.modifierFlags.rawValue) source=\(event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1) own=\(getpid()) point=\(String(describing: event.cgEvent?.location))")
         if event.type == .keyDown {
             if event.keyCode == 53 { nativeMove = nil }
             return
@@ -121,7 +120,6 @@ final class MenuBarIconManager: ObservableObject {
             defer { finishIconUpdate() }
             refresh()
             let matches = icons.filter { $0.isMovable && $0.frame.contains(point) }
-            print("[DEBUG-native-save] down trusted=\(isTrusted) matches=\(matches.map(\.title))")
             guard isTrusted, matches.count == 1, let icon = matches.first,
                   let element = elements[icon.id] else { return }
             AXUIElementSetMessagingTimeout(element, 0.15)
@@ -134,7 +132,6 @@ final class MenuBarIconManager: ObservableObject {
             nativeMove = NativeMove(icon: icon, element: element, owner: owner,
                                     launched: owner.launchDate, start: point, frame: frame,
                                     section: Self.section(for: frame, boundaries: boundaryProvider()))
-            print("[DEBUG-native-save] captured \(icon.title)")
         case .leftMouseDragged:
             guard let pending = nativeMove else { return }
             if hypot(cgEvent.location.x - pending.start.x, cgEvent.location.y - pending.start.y) >= 3 {
@@ -144,7 +141,6 @@ final class MenuBarIconManager: ObservableObject {
             let pending = nativeMove
             nativeMove = nil
             guard let pending, pending.dragged else { return }
-            print("[DEBUG-native-save] completed \(pending.icon.title)")
             completedNativeMove = pending
             let generation = nativeMoveGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
@@ -157,7 +153,6 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func commitNativeMove() {
-        print("[DEBUG-native-save] t=\(ProcessInfo.processInfo.systemUptime) commit pending=\(completedNativeMove?.icon.title ?? "none")")
         guard let pending = completedNativeMove else { return }
         completedNativeMove = nil
         guard !pending.owner.isTerminated,
@@ -168,7 +163,6 @@ final class MenuBarIconManager: ObservableObject {
         let matches = icons.filter {
             elements[$0.id].map { CFEqual($0, pending.element) } ?? false
         }
-        print("[DEBUG-native-save] verify trusted=\(isTrusted) matches=\(matches.map(\.title)) readable=\(macOS27Hider.canReadPosition(for: pending.owner.bundleIdentifier ?? "")) oldX=\(pending.frame.midX) new=\(matches.map { $0.frame.midX })")
         guard isTrusted, matches.count == 1, let current = matches.first,
               current.title == pending.icon.title, current.source == pending.icon.source,
               let bundleID = pending.owner.bundleIdentifier,
