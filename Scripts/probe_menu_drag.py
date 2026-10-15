@@ -390,8 +390,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
 struct Main {
     @MainActor static func main() {
         let args = CommandLine.arguments
-        let _ = NSApplication.shared
-        if args[1] == "--fixture" { fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title")) }
+        if args[1] == "--fixture" { let _ = NSApplication.shared; fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title")) }
         else if args[1] == "--drive" { drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5]) }
         else if args[1] == "--release" {
             if CGPreflightPostEventAccess() {
@@ -401,7 +400,7 @@ struct Main {
                 CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
             }
         }
-        else { Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
+        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
     }
 }
 '''
