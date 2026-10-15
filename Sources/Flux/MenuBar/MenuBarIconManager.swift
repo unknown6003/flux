@@ -552,7 +552,7 @@ final class MenuBarIconManager: ObservableObject {
         }
 
         let target = CGPoint(x: targetX, y: icon.frame.minY)
-        let usedAccessibility = setPosition(target, on: element)
+        let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
         if !usedAccessibility {
             drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
                                           y: icon.frame.midY))
@@ -671,6 +671,7 @@ final class MenuBarIconManager: ObservableObject {
                                mouseButton: .left) else { return }
         down.flags = .maskCommand
         down.post(tap: .cghidEventTap)
+        if ControlItem.usesMacOS27Model { Thread.sleep(forTimeInterval: 0.06) }
 
         for step in 1...5 {
             let progress = CGFloat(step) / 5
@@ -682,6 +683,7 @@ final class MenuBarIconManager: ObservableObject {
                                      mouseButton: .left) else { continue }
             move.flags = .maskCommand
             move.post(tap: .cghidEventTap)
+            if ControlItem.usesMacOS27Model { Thread.sleep(forTimeInterval: 0.018) }
         }
         up.flags = .maskCommand
         up.post(tap: .cghidEventTap)
