@@ -554,6 +554,56 @@ func geometry(path: String, x: Double, y: Double) {
             let name = ($0[kCGWindowOwnerName as String] as? String ?? "").lowercased()
             return fixturePIDs.contains(pid) || agentPIDs.contains(pid) || name.contains("menubaragent")
         }
+        let hostDeadline = ProcessInfo.processInfo.systemUptime + 1
+        var hostNodes: [[String: Any]] = []
+        var hostRoots: [[String: Any]] = []
+        for pid in agentPIDs {
+            guard hostNodes.count < 100, ProcessInfo.processInfo.systemUptime < hostDeadline else { break }
+            let app = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(app, 0.03)
+            var root: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(app, kAXExtrasMenuBarAttribute as CFString, &root)
+            hostRoots.append(["pid": pid, "status": status.rawValue])
+            guard let root, CFGetTypeID(root) == AXUIElementGetTypeID() else { continue }
+            var queue: [(AXUIElement, Int)] = [(root as! AXUIElement, 0)]
+            var visited: [AXUIElement] = []
+            while !queue.isEmpty, hostNodes.count < 100, ProcessInfo.processInfo.systemUptime < hostDeadline {
+                let (element, depth) = queue.removeFirst()
+                guard !visited.contains(where: { CFEqual($0, element) }) else { continue }
+                visited.append(element)
+                AXUIElementSetMessagingTimeout(element, 0.03)
+                var elementPID: pid_t = 0
+                let pidStatus = AXUIElementGetPid(element, &elementPID)
+                var node: [String: Any] = ["hostPID": pid, "depth": depth, "pid": elementPID,
+                    "pidStatus": pidStatus.rawValue, "equalHit": hit.map { CFEqual($0, element) } ?? false]
+                for name in [kAXRoleAttribute, kAXTitleAttribute, kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+                    var result: CFTypeRef?
+                    let status = AXUIElementCopyAttributeValue(element, name as CFString, &result)
+                    var attribute: [String: Any] = ["status": status.rawValue]
+                    if let result {
+                        if let text = result as? String { attribute["value"] = text }
+                        else if CFGetTypeID(result) == AXValueGetTypeID() {
+                            var point = CGPoint.zero
+                            var size = CGSize.zero
+                            if AXValueGetValue(result as! AXValue, .cgPoint, &point) { attribute["value"] = [point.x, point.y] }
+                            else if AXValueGetValue(result as! AXValue, .cgSize, &size) { attribute["value"] = [size.width, size.height] }
+                        }
+                    }
+                    node[name] = attribute
+                }
+                hostNodes.append(node)
+                if depth < 6 {
+                    var children: CFTypeRef?
+                    let status = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
+                    hostNodes[hostNodes.count - 1]["childrenStatus"] = status.rawValue
+                    if let children = children as? [AXUIElement] {
+                        queue.append(contentsOf: children.prefix(100 - hostNodes.count).map { ($0, depth + 1) })
+                    }
+                }
+            }
+        }
+        value["hostExtras"] = ["candidatePIDs": Array(agentPIDs), "roots": hostRoots, "nodes": hostNodes,
+            "nodeLimit": 100, "depthLimit": 6, "deadlineReached": ProcessInfo.processInfo.systemUptime >= hostDeadline]
         value["windowsAtPoint"] = windows.filter {
             guard let bounds = $0[kCGWindowBounds as String] as? [String: Any],
                   let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return false }
