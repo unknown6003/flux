@@ -964,7 +964,7 @@ def validate_native_start(state, observation):
     attributes = hit.get("hitAttributes", {})
     owner = hit.get("hitOwner", {})
     def label(value):
-        return value.strip() or None if isinstance(value, str) else None
+        return (value.strip() or None) if isinstance(value, str) else None
     title = (label(attributes.get("AXTitle", {}).get("value"))
              or label(attributes.get("AXDescription", {}).get("value"))
              or owner.get("name") or owner.get("bundleID"))

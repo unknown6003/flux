@@ -63,6 +63,7 @@ jobs:
           for item in plan:
               assert re.fullmatch(r'[0-9a-f]{40}', item['ref'])
               assert isinstance(item['cases'], list) and item['cases']
+              assert isinstance(item.get('empty_title', False), bool)
               assert all(re.fullmatch(r'[a-z-]+', case) for case in item['cases'])
           output = Path('build/native-drag-debug').resolve()
           output.mkdir(parents=True)
@@ -84,12 +85,13 @@ jobs:
                       try:
                           log = run(['python3', str(source / 'Scripts/probe_menu_drag.py'),
                                      '--output', str(source / case), '--case', case,
-                                     '--seconds', '25'], 130, capture=True)
+                                     '--seconds', '25'] + (['--empty-title'] if item.get('empty_title') else []),
+                                    130, capture=True)
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'
                       (source / (case + '-runner.log')).write_text(log)
-                      results.append(dict(ref=ref, case=case, result=result))
+                      results.append(dict(ref=ref, case=case, empty_title=item.get('empty_title', False), result=result))
                       (output / 'results.json').write_text(json.dumps(results, indent=2))
                       print(ref[:8], case, result, flush=True)
           if any(item['result'] != 'pass' for item in results):
