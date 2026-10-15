@@ -413,6 +413,10 @@ func fixture(seconds: Double, emptyTitle: Bool) {
 }
 
 func drive(statePath: String, source: String, destination: String, kind: String) {
+    func trace(_ message: String) {
+        print("[drop-trace] driver t=\(ProcessInfo.processInfo.systemUptime) \(message)")
+        fflush(stdout)
+    }
     print("driver pid=\(ProcessInfo.processInfo.processIdentifier)")
     fflush(stdout)
     guard CGPreflightPostEventAccess(),
@@ -451,6 +455,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         event.post(tap: .cghidEventTap)
     }
     func fail(_ reason: String) -> Never {
+        trace("failure cleanup reason=\(reason)")
         print("FAIL driver \(reason): \(events())")
         key(53, true); key(53, false)
         Thread.sleep(forTimeInterval: 0.12)
@@ -465,6 +470,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         key(55, true, .maskCommand)
         if kind == "held" { Thread.sleep(forTimeInterval: 0.25) }
     }
+    trace("posting mouseDown point=\(start) command=\(command)")
     mouse(.leftMouseDown, start, command ? .maskCommand : [])
     Thread.sleep(forTimeInterval: 0.06)
     if kind == "late-command" { key(55, true, .maskCommand) }
@@ -475,18 +481,24 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         mouse(.leftMouseDragged, point, command || kind == "late-command" ? .maskCommand : [])
         Thread.sleep(forTimeInterval: 0.018)
     }
+    trace("path posted target=\(target)")
     Thread.sleep(forTimeInterval: 0.15)
     if !command && kind != "late-command" && destination != "invalid" {
         let section = destination == "bar" ? "shown" : destination
         guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
             fail("destination never accepted the session")
         }
+        trace("observed target entered section=\(section)")
     }
     if kind == "escape" {
+        trace("posting Escape")
         key(53, true); key(53, false)
         guard waitFor({ $0.contains("ended operation=0") }) else { fail("Escape did not end the session") }
+        trace("observed cancellation end")
     }
+    trace("posting mouseUp target=\(target) command=\(command || kind == "late-command")")
     mouse(.leftMouseUp, target, command || kind == "late-command" ? .maskCommand : [])
+    trace("posted mouseUp; posting Command keyUp")
     key(55, false)
     Thread.sleep(forTimeInterval: 0.35)
 }

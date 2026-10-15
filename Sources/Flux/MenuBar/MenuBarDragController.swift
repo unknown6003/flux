@@ -198,6 +198,17 @@ final class MenuBarDragController: ObservableObject {
         return true
     }
 
+    fileprivate func traceDestination(_ phase: String, sender: NSDraggingInfo,
+                                      section: MenuBarSection, result: Bool? = nil) {
+        guard let trace else { return }
+        let sourceMatches = sender.draggingSource as? MenuBarDragSourceView != nil
+        let tokenMatches = active.map {
+            sender.draggingPasteboard.string(forType: Self.pasteboardType) == $0.token
+        } ?? false
+        let resultText = result.map { $0 ? "true" : "false" } ?? "nil"
+        trace("[drop-trace] destination \(phase) section=\(section.rawValue) result=\(resultText) sequence=\(sender.draggingSequenceNumber) mask=\(sender.draggingSourceOperationMask.rawValue) window=\(sender.draggingDestinationWindow?.windowNumber ?? -1) location=\(sender.draggingLocation) canManage=\(canManage) suspended=\(inputSuspended) updating=\(updatingIcons) depth=\(inputSuspensionDepth) active=\(active != nil) sourceMatches=\(sourceMatches) tokenMatches=\(tokenMatches) key=\(NSApp.keyWindow?.windowNumber ?? -1) buttons=\(NSEvent.pressedMouseButtons) flags=\(NSEvent.modifierFlags.rawValue)")
+    }
+
     func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection) -> Bool {
         guard accepts(sender), let pending = active, let manager, AXIsProcessTrusted() else { return false }
         return withInputSuspended {
@@ -286,6 +297,7 @@ final class MenuBarDragController: ObservableObject {
         // window input policy before returning the original Command-down.
         setPassThrough(shouldPassThrough)
         if type == .leftMouseUp {
+            trace?("[drop-trace] tap up command=\(commandDown) active=\(active != nil) location=\(event.location) flags=\(event.flags.rawValue)")
             let refreshNativePosition = nativeGesture && active == nil
             nativeGesture = false
             if refreshNativePosition {
@@ -458,7 +470,8 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) { down = nil }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        .move
+        controller?.trace?("[drop-trace] source mask context=\(context.rawValue) result=\(NSDragOperation.move.rawValue) window=\(window?.windowNumber ?? -1)")
+        return .move
     }
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
@@ -473,6 +486,7 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         down = nil
+        controller?.trace?("[drop-trace] native ended point=\(screenPoint) operation=\(operation.rawValue) buttons=\(NSEvent.pressedMouseButtons) flags=\(NSEvent.modifierFlags.rawValue)")
         controller?.ended(operation: operation)
     }
 
@@ -500,19 +514,32 @@ final class MenuBarDragDestinationView: NSView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = controller?.accepts(sender) == true
         controller?.trace?("entered \(section.rawValue) valid=\(targeted)")
+        controller?.traceDestination("entered", sender: sender, section: section, result: targeted)
         return targeted ? .move : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = controller?.accepts(sender) == true
+        controller?.traceDestination("updated", sender: sender, section: section, result: targeted)
         return targeted ? .move : []
     }
 
-    override func draggingExited(_ sender: NSDraggingInfo?) { targeted = false }
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { controller?.accepts(sender) == true }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        if let sender { controller?.traceDestination("exited", sender: sender, section: section) }
+        else { controller?.trace?("[drop-trace] destination exited section=\(section.rawValue) sender=nil") }
+        targeted = false
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let accepted = controller?.accepts(sender) == true
+        controller?.traceDestination("prepare", sender: sender, section: section, result: accepted)
+        return accepted
+    }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         targeted = false
-        return controller?.performDrop(sender, to: section) == true
+        controller?.traceDestination("perform begin", sender: sender, section: section)
+        let committed = controller?.performDrop(sender, to: section) == true
+        controller?.traceDestination("perform end", sender: sender, section: section, result: committed)
+        return committed
     }
 
     override func draw(_ dirtyRect: NSRect) {
