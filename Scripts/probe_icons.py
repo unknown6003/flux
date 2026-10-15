@@ -432,7 +432,8 @@ func probe() {
             }
             do { try driver.run() }
             catch { print("FAIL: programmatic overlap driver could not start: \(error)"); exit(1) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            Thread.sleep(forTimeInterval: 0.75)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 manager.refresh()
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
                 guard NSEvent.pressedMouseButtons & 1 != 0,
