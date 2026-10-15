@@ -551,14 +551,38 @@ final class MenuBarIconManager: ObservableObject {
             .sorted { $0.frame.minX < $1.frame.minX }
         guard let index = siblings.firstIndex(where: { $0.id == icon.id }) else { return }
         let neighbor: Icon
+        var targetX: CGFloat
         switch direction {
         case .towardDrawer:
             neighbor = siblings[siblings.index(before: index)]
-            move(icon, toX: neighbor.frame.minX - icon.frame.width - 4, expectedSection: icon.section)
+            targetX = neighbor.frame.minX - icon.frame.width - 4
         case .towardClock:
             neighbor = siblings[siblings.index(after: index)]
-            move(icon, toX: neighbor.frame.maxX + 4, expectedSection: icon.section)
+            targetX = neighbor.frame.maxX + 4
         }
+        let bounds = boundaryProvider()
+        if ControlItem.usesMacOS27Model,
+           Self.section(for: CGRect(x: targetX, y: icon.frame.minY,
+                                    width: icon.frame.width, height: icon.frame.height),
+                        boundaries: bounds) != icon.section {
+            let edge: CGFloat?
+            switch (direction, icon.section) {
+            case (.towardClock, .hidden): edge = bounds.hidden
+            case (.towardClock, .alwaysHidden): edge = bounds.alwaysHidden
+            case (.towardDrawer, .shown): edge = bounds.hidden
+            case (.towardDrawer, .hidden): edge = bounds.alwaysHidden
+            default: edge = nil
+            }
+            guard let edge else { return }
+            targetX = (neighbor.frame.midX + edge - icon.frame.width) / 2
+            guard Self.section(for: CGRect(x: targetX, y: icon.frame.minY,
+                                          width: icon.frame.width, height: icon.frame.height),
+                               boundaries: bounds) == icon.section else {
+                errorMessage = "Flux could not read this icon's current section. Refresh icons and try again."
+                return
+            }
+        }
+        move(icon, toX: targetX, expectedSection: icon.section)
     }
 
     // Kept for callers from older settings views during an update.
