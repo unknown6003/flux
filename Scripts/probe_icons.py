@@ -244,6 +244,10 @@ func probe() {
             print("FAIL: the reorder fixture could not enter Hidden")
             exit(1)
         }
+        if CommandLine.arguments.contains("--native-close") {
+            nativeMove()
+            return
+        }
         manager.move(moving, toward: .towardClock)
         guard manager.isUpdatingIcons else {
             print("FAIL: the arrow move did not publish its pending verification")
@@ -253,12 +257,15 @@ func probe() {
             manager.refresh()
             let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
                 .sorted { $0.frame.minX < $1.frame.minX }
-            guard !manager.isUpdatingIcons, next.last?.title == moving.title else {
+            guard !manager.isUpdatingIcons, next.last?.title == moving.title,
+                  next.allSatisfy({ MenuBarIconManager.section(
+                    for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
+                print("Actual frames: \(next.map { ($0.title, $0.frame) }); boundaries=\(manager.boundaryProvider())")
                 exit(1)
             }
             print("PASS: the Settings arrow changed the real icon order")
-            nativeMove()
+            finish()
         }
     }
     @MainActor
@@ -293,7 +300,10 @@ func probe() {
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
         manager.beginIconManagement()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { move(index: 0) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if CommandLine.arguments.contains("--native-close") { reorder() }
+            else { move(index: 0) }
+        }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
         print("FAIL: the icon move probe reached its deadline")

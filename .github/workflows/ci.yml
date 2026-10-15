@@ -161,6 +161,7 @@ jobs:
           assert 'native Command move to Shown did not persist' in result.stdout
           print('PASS: the previous manager loses the completed native section edit')
           run(['python3', 'Scripts/probe_icons.py', '--native-close'], seconds=180)
+          run(['python3', 'Scripts/probe_icons.py'], seconds=180)
           PY
 
       - name: Probe menu bar layout reads
