@@ -117,7 +117,17 @@ final class Probe {
     var screenRecords: [[String: Any]] = []
     var lastScreenNotification = -Double.infinity
     let busyOnly: Bool
-    init(state: String, busyOnly: Bool) { self.state = state; self.busyOnly = busyOnly }
+    let captureOffControl: Bool
+    var controlSnapshot = 0
+    init(state: String, busyOnly: Bool, captureOffControl: Bool) {
+        self.state = state; self.busyOnly = busyOnly; self.captureOffControl = captureOffControl
+    }
+    func captureIsAbsent() -> Bool {
+        guard !controller.isMenuBarDragging, let taps = ownTapStates(), taps.isEmpty else { return false }
+        return NSApp.windows.allSatisfy {
+            !($0.contentView is MenuBarDragSourceView) && !($0.contentView is MenuBarDragDestinationView)
+        }
+    }
     func screens() -> [String: Any] {
         func rect(_ value: CGRect) -> [Double] {
             [Double(value.minX), Double(value.minY), Double(value.width), Double(value.height)]
@@ -232,7 +242,8 @@ final class Probe {
                 exit(5)
             }
             if let enabledAt {
-                guard self.controller.isMenuBarDragging, currentConfiguration == enabledConfiguration else {
+                guard (self.captureOffControl ? self.captureIsAbsent() : self.controller.isMenuBarDragging),
+                      currentConfiguration == enabledConfiguration else {
                     self.recordScreens("BLOCKED armed readiness invalidated", after: configuration)
                     self.controller.close()
                     readiness.invalidate()
@@ -245,6 +256,11 @@ final class Probe {
                 let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
                     MainActor.assumeIsolated {
                         if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
+                        if self.captureOffControl, FileManager.default.fileExists(atPath: self.state + ".refresh") {
+                            try? FileManager.default.removeItem(atPath: self.state + ".refresh")
+                            self.manager.refresh()
+                            self.controlSnapshot += 1
+                        }
                         self.writeState()
                     }
                 }
@@ -279,6 +295,12 @@ final class Probe {
             print("READY stable2s active=\(NSApp.isActive) key=\(self.window.windowNumber) pid=\(ProcessInfo.processInfo.processIdentifier)")
             print("FIXTURE labels=\(self.manager.labels)")
             fflush(stdout)
+            if self.captureOffControl {
+                self.controller.close()
+                guard self.captureIsAbsent() else {
+                    print("BLOCKED: capture-off control still has an input tap or drag window"); fflush(stdout); exit(5)
+                }
+            } else {
             let row = self.controller.makeSourceView(for: icon)
             row.showsHandle = true
             row.frame = NSRect(x: 24, y: 230, width: 140, height: 32)
@@ -288,6 +310,7 @@ final class Probe {
             self.controller.setMenuBarDragging(true)
             guard self.controller.isMenuBarDragging else {
                 print("BLOCKED: \(self.controller.message ?? "event tap unavailable")"); exit(5)
+            }
             }
             enabledAt = now
             enabledConfiguration = currentConfiguration
@@ -331,14 +354,25 @@ final class Probe {
             [Double(window.frame.minX), Double(primary.frame.maxY - window.frame.maxY),
              Double(window.frame.width), Double(window.frame.height)]
         } ?? []
-        let state: [String: Any] = [
-            "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,
+        let nativeSource = manager.icons.first
+        let neighbor = manager.icons.dropFirst().first
+        let nativeTarget: [Double] = nativeSource.flatMap { source in
+            neighbor.map { other in
+                [Double(source.frame.midX > other.frame.midX ? other.frame.minX - 12 : other.frame.maxX + 12),
+                 Double(source.frame.midY)]
+            }
+        } ?? []
+        var state: [String: Any] = [
+            "ready": row != nil || captureOffControl, "pid": ProcessInfo.processInfo.processIdentifier,
             "mode": controller.isMenuBarDragging, "commits": commits, "events": events,
             "moving": manager.isUpdatingIcons, "taps": ownTapStates() ?? [],
             "labels": manager.labels,
             "buttons": NSEvent.pressedMouseButtons,
             "source": sourceWindow.map { center($0.frame) } ?? [],
             "icon": manager.icons.first.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "neighbor": neighbor.map { [Double($0.frame.midX), Double($0.frame.midY)] } ?? [],
+            "neighborFrame": neighbor.map { [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)] } ?? [],
+            "nativeTarget": nativeTarget,
             "gripFrame": gripFrame,
             "iconFrame": manager.icons.first.map { [Double($0.frame.minX), Double($0.frame.minY),
                                                     Double($0.frame.width), Double($0.frame.height)] } ?? [],
@@ -347,6 +381,17 @@ final class Probe {
             "screens": NSScreen.screens.map { ["x": $0.frame.minX, "y": $0.frame.minY,
                                                "width": $0.frame.width, "height": $0.frame.height] }
         ]
+        if captureOffControl {
+            state["control"] = ["captureOff": captureIsAbsent(), "tapQuerySucceeded": ownTapStates() != nil,
+                "sourceWindows": NSApp.windows.filter { $0.contentView is MenuBarDragSourceView }.count,
+                "returnWindows": NSApp.windows.filter { $0.contentView is MenuBarDragDestinationView }.count,
+                "snapshot": controlSnapshot,
+                "fixtureID": manager.icons.first?.id ?? "",
+                "fixtureTitle": manager.icons.first?.title ?? "",
+                "fixtureFrame": manager.icons.first.map {
+                    [Double($0.frame.minX), Double($0.frame.minY), Double($0.frame.width), Double($0.frame.height)]
+                } ?? []] as [String: Any]
+        }
         if let data = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: self.state), options: .atomic)
         }
@@ -624,8 +669,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let start = state[source] as? [Double], start.count == 2,
           let targets = state["targets"] as? [String: [Double]],
-          let target = destination == "native" ? [start[0] - 75, start[1]] : targets[destination] else { exit(6) }
-    print("driver source=\(source) start=\(start) destination=\(destination) target=\(target) kind=\(kind)")
+          let target = destination == "native" ? state["nativeTarget"] as? [Double] : targets[destination],
+          target.count == 2 else { exit(6) }
+    print("driver source=\(source) start=\(start) neighbor=\(String(describing: state["neighbor"])) destination=\(destination) target=\(target) kind=\(kind)")
     fflush(stdout)
     let command = kind == "held" || kind == "rapid" || kind == "down-only"
     let eventOffset = (state["events"] as? [String] ?? []).count
@@ -710,7 +756,7 @@ struct Main {
                 CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
             }
         }
-        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only")).start(seconds: Double(args[3])!) }
+        else { let _ = NSApplication.shared; Probe(state: args[2], busyOnly: args.contains("--busy-only"), captureOffControl: args.contains("--capture-off-control")).start(seconds: Double(args[3])!) }
     }
 }
 '''
@@ -851,11 +897,53 @@ def observe_geometry(binary, output, state, phase):
               "captureStarted": capture_started, "captureFinished": capture_finished, "screen": screens[0],
               "pixels": pixels, "ax": ax, "cachedIconFrame": state["iconFrame"],
               "originalDriverIconPoint": state["icon"],
+              "neighborFrame": state["neighborFrame"], "nativeTarget": state["nativeTarget"],
               "pixelMinusFreshAXCenter": [point[0] - frame[0] - frame[2] / 2,
                                           point[1] - frame[1] - frame[3] / 2]}
     (output / f"{phase}-geometry.json").write_text(json.dumps(record, indent=2))
     print("GEOMETRY " + json.dumps(record, sort_keys=True), flush=True)
     return record
+
+
+def validate_native_start(state, observation):
+    markers = observation["pixels"]["markers"]
+    source = markers["magenta"]["centroidCG"]
+    neighbor = markers["cyan"]["centroidCG"]
+    fresh = observation["ax"]["freshIcons"]
+    for frame, point in [(state["iconFrame"], source), (state["neighborFrame"], neighbor),
+                         (fresh[0]["frameCG"], source), (fresh[1]["frameCG"], neighbor)]:
+        if len(frame) != 4 or abs(frame[0] + frame[2] / 2 - point[0]) > 2 or abs(frame[1] + frame[3] / 2 - point[1]) > 2:
+            raise RuntimeError(f"INVALID native start AX/marker mismatch: frame={frame} marker={point}")
+    if (observation["ax"].get("hitPID") != observation["own"]["pid"]
+            or observation["ax"].get("hitAttributes", {}).get("AXTitle", {}).get("value") != "Flux drag fixture"):
+        raise RuntimeError("INVALID magenta marker hit does not identify the disposable primary fixture")
+    target = state["nativeTarget"]
+    frame = state["neighborFrame"]
+    if (len(target) != 2 or state["buttons"] or abs(state["icon"][0] - source[0]) > 2
+            or abs(state["icon"][1] - source[1]) > 2 or abs(target[1] - source[1]) > 2
+            or not 0 < target[0] < state["screens"][0]["width"]
+            or not (target[0] < frame[0] if source[0] > neighbor[0] else target[0] > frame[0] + frame[2])):
+        raise RuntimeError(f"INVALID native target does not cross current neighbor: source={source} neighbor={frame} target={target}")
+    print(f"NATIVE START source={source} neighbor={neighbor} nativeTarget={target} freshAX={fresh}", flush=True)
+
+
+def record_native_pixels(before, after, output, phase):
+    a = before["pixels"]["markers"]
+    b = after["pixels"]["markers"]
+    result = {"magentaPixelDelta": [y - x for x, y in zip(a["magenta"]["centroidCG"], b["magenta"]["centroidCG"])],
+              "beforeMagenta": a["magenta"]["centroidCG"], "beforeCyan": a["cyan"]["centroidCG"],
+              "afterMagenta": b["magenta"]["centroidCG"], "afterCyan": b["cyan"]["centroidCG"],
+              "orderSwapped": ((a["magenta"]["centroidCG"][0] - a["cyan"]["centroidCG"][0])
+                               * (b["magenta"]["centroidCG"][0] - b["cyan"]["centroidCG"][0]) < 0),
+              "before": before["pixelMinusFreshAXCenter"], "after": after["pixelMinusFreshAXCenter"]}
+    (output / f"{phase}-geometry-comparison.json").write_text(json.dumps(result, indent=2))
+    print("GEOMETRY comparison " + json.dumps(result), flush=True)
+    return result
+
+
+def require_native_pixels(result):
+    if abs(result["magentaPixelDelta"][0]) < 10 or not result["orderSwapped"]:
+        raise RuntimeError(f"native fixture pixels did not move across the disposable neighbor: {result}")
 
 
 def wait_state(path, process, seconds=12):
@@ -894,7 +982,7 @@ def main():
     parser.add_argument("--case", default="all", choices=(
         "all", "row-hidden", "menu-hidden", "menu-always", "row-bar", "row-hidden-escape",
         "menu-always-escape", "row-bar-escape", "invalid", "late-command",
-        "command-held", "command-rapid", "command-down-only"), help="Run one independent native scenario")
+        "command-held", "command-rapid", "command-down-only", "command-down-only-control"), help="Run one independent native scenario")
     parser.add_argument("--controller-ref", help="Compile the production controller from this Git ref for regression proof")
     parser.add_argument("--empty-title", action="store_true", help="Require the fixture's empty AXTitle fallback")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91), metavar="25..90")
@@ -940,25 +1028,81 @@ def main():
             fixture_argv.append("--empty-title")
         for argv, name in ((fixture_argv, "fixture.log"),
                            ([str(binary), "--probe", str(args.output / "state.json"), str(args.seconds)]
-                            + (["--busy-only"] if args.busy_only else []), "probe.log")):
+                            + (["--busy-only"] if args.busy_only else [])
+                            + (["--capture-off-control"] if args.case == "command-down-only-control" else []), "probe.log")):
             with (args.output / name).open("wb") as log:
                 processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
         probe = processes[-1]
         state_path = args.output / "state.json"
         state = wait_state(state_path, probe)
-        grip, icon = state["gripFrame"], state["iconFrame"]
-        if len(grip) != 4 or len(icon) != 4 or not state["source"]:
-            raise RuntimeError("production grip window was not found")
-        intersects = (grip[0] < icon[0] + icon[2] and icon[0] < grip[0] + grip[2]
-                      and grip[1] < icon[1] + icon[3] and icon[1] < grip[1] + grip[3])
-        if intersects or grip[1] < icon[1] + icon[3]:
-            raise RuntimeError(f"grip overlaps or is not below the actual icon: {grip} vs {icon}")
-        print(f"GRIP {grip}; original icon {icon}; native Command targets ICON CENTER {state['icon']}", flush=True)
+        if args.case != "command-down-only-control":
+            grip, icon = state["gripFrame"], state["iconFrame"]
+            if len(grip) != 4 or len(icon) != 4 or not state["source"]:
+                raise RuntimeError("production grip window was not found")
+            intersects = (grip[0] < icon[0] + icon[2] and icon[0] < grip[0] + grip[2]
+                          and grip[1] < icon[1] + icon[3] and icon[1] < grip[1] + grip[3])
+            if intersects or grip[1] < icon[1] + icon[3]:
+                raise RuntimeError(f"grip overlaps or is not below the actual icon: {grip} vs {icon}")
+            print(f"GRIP {grip}; original icon {icon}; native Command targets ICON CENTER {state['icon']}", flush=True)
         if args.empty_title and not any(label["rawTitle"] == "" and label["normalized"]
                                         for label in state["labels"]):
             raise RuntimeError(f"fixture did not expose an empty AXTitle: {state['labels']}")
         started = time.monotonic()
         results = []
+        if args.case == "command-down-only-control":
+            def snapshot():
+                previous = wait_state(state_path, probe, 1)["control"]["snapshot"]
+                Path(str(state_path) + ".refresh").touch()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    value = wait_state(state_path, probe, 1)
+                    control = value["control"]
+                    if control["snapshot"] > previous:
+                        if (value["mode"] or value["taps"] or not control["captureOff"]
+                                or not control["tapQuerySucceeded"] or control["sourceWindows"]
+                                or control["returnWindows"]):
+                            raise RuntimeError(f"capture-off control is armed: {value}")
+                        return value
+                    time.sleep(0.02)
+                raise RuntimeError("capture-off fresh AX snapshot deadline")
+
+            before_state = snapshot()
+            before_control = before_state["control"]
+            frame_before = before_control["fixtureFrame"]
+            if len(frame_before) != 4 or not before_control["fixtureTitle"] or before_state["buttons"]:
+                raise RuntimeError(f"capture-off missing original fixture frame: {before_control}")
+            print(f"CONTROL before mode={before_state['mode']} taps={before_state['taps']} {before_control}", flush=True)
+            geometry_before = observe_geometry(binary, args.output, before_state, "command-down-only-control-before")
+            validate_native_start(before_state, geometry_before)
+            event_offset = len(before_state["events"])
+            bounded([str(binary), "--drive", str(state_path), "icon", "native", "down-only"],
+                    4, args.output / "command-down-only-control.log")
+            deadline = time.monotonic() + 4
+            geometry_after = observe_geometry(binary, args.output, wait_state(state_path, probe, 2), "command-down-only-control-after")
+            movement = record_native_pixels(geometry_before, geometry_after, args.output, "command-down-only-control")
+            state = snapshot()
+            while (len(state["control"]["fixtureFrame"]) == 4
+                   and abs(state["control"]["fixtureFrame"][0] - frame_before[0]) < 10
+                   and time.monotonic() < deadline):
+                time.sleep(0.05)
+                state = snapshot()
+            after_control = state["control"]
+            frame_after = after_control["fixtureFrame"]
+            evidence = {"before": before_state, "after": state}
+            (args.output / "control.json").write_text(json.dumps(evidence, indent=2))
+            print(f"CONTROL after mode={state['mode']} taps={state['taps']} {after_control}", flush=True)
+            if state["screens"] != before_state["screens"]:
+                raise RuntimeError("capture-off display geometry changed during the control")
+            if (after_control["fixtureTitle"] != before_control["fixtureTitle"] or len(frame_after) != 4
+                    or frame_after[2:] != frame_before[2:] or frame_after[1] != frame_before[1]):
+                raise RuntimeError(f"capture-off fixture identity/size/row changed: {frame_before} -> {frame_after}")
+            if any(event.startswith(("tap down", "source down", "begin ", "native began ", "commit "))
+                   for event in state["events"][event_offset:]) or state["commits"] or state["buttons"]:
+                raise RuntimeError(f"capture-off input was captured or left held: {state}")
+            if abs(frame_after[0] - frame_before[0]) < 10:
+                raise RuntimeError(f"capture-off down-only driver did not move fixture: {frame_before} -> {frame_after}")
+            require_native_pixels(movement)
+            results.append(f"PASS capture-off down-only native frame movement {frame_before} -> {frame_after}")
         if args.busy_only:
             deadline = time.monotonic() + 6
             while "busy probe passed" not in state["events"] and time.monotonic() < deadline:
@@ -1015,20 +1159,17 @@ def main():
             if not state["mode"] or not state["taps"] or not all(state["taps"]):
                 raise RuntimeError("drag mode stopped before the native Command check")
             geometry_before = observe_geometry(binary, args.output, state, f"command-{kind}-before")
+            validate_native_start(state, geometry_before)
             start = state["icon"]
             events_before = len(state["events"])
+            commits_before = len(state["commits"])
             # The temporary bar destination exists only in Flux sessions. Native
             # Command gestures must reach the real fixture without a Flux session.
             bounded([str(binary), "--drive", str(state_path), "icon", "native", kind],
                     4, args.output / f"command-{kind}.log")
             position_deadline = time.monotonic() + 4
             geometry_after = observe_geometry(binary, args.output, wait_state(state_path, probe, 2), f"command-{kind}-after")
-            movement = {"magentaPixelDelta": [b - a for a, b in zip(
-                geometry_before["pixels"]["markers"]["magenta"]["centroidCG"],
-                geometry_after["pixels"]["markers"]["magenta"]["centroidCG"])],
-                "before": geometry_before["pixelMinusFreshAXCenter"], "after": geometry_after["pixelMinusFreshAXCenter"]}
-            (args.output / f"command-{kind}-geometry-comparison.json").write_text(json.dumps(movement, indent=2))
-            print("GEOMETRY comparison " + json.dumps(movement), flush=True)
+            movement = record_native_pixels(geometry_before, geometry_after, args.output, f"command-{kind}")
             state = wait_state(state_path, probe, 2)
             while abs(state["icon"][0] - start[0]) < 10 and time.monotonic() < position_deadline:
                 time.sleep(0.05)
@@ -1038,8 +1179,12 @@ def main():
                 raise RuntimeError(f"Command {kind} did not exercise the armed event tap")
             if any(e.startswith("source down") or e.startswith("begin ") for e in new_events):
                 raise RuntimeError(f"Command {kind} was intercepted: {new_events}")
+            if (any(e.startswith(("native began ", "commit ", "ended ")) for e in new_events)
+                    or len(state["commits"]) != commits_before or not state["taps"] or not all(state["taps"])):
+                raise RuntimeError(f"Command {kind} lost tap or started a Flux operation: {state}")
             if abs(state["icon"][0] - start[0]) < 10:
                 raise RuntimeError(f"Command {kind} did not move the disposable status item")
+            require_native_pixels(movement)
             results.append(f"PASS native Command {kind} bypass and fixture movement")
         Path(str(state_path) + ".stop").touch()
         try:
