@@ -68,6 +68,16 @@ MainActor.assumeIsolated {
     for icon in manager.icons {
         print("ICON \(icon.title) | \(icon.source ?? "") | movable=\(icon.isMovable) | \(icon.frame)")
     }
+    if CommandLine.arguments.contains("--titles-only") {
+        guard !manager.icons.isEmpty, manager.icons.allSatisfy({
+            !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) else {
+            print("FAIL: Flux displayed an empty icon title instead of its app name")
+            exit(1)
+        }
+        print("PASS: every icon has a readable title")
+        exit(0)
+    }
     guard pills.allSatisfy({ pill in manager.icons.contains {
         !$0.isMovable && $0.frame.intersects(pill) && ($0.source?.contains("Live Activity") ?? false)
     } }) else {
@@ -84,6 +94,7 @@ def main():
         raise RuntimeError("the activity probe needs a macOS desktop with a Live Activity")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-ref")
+    parser.add_argument("--titles-only", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manager_path = "Sources/Flux/MenuBar/MenuBarIconManager.swift"
@@ -110,7 +121,7 @@ def main():
              *[str(root / "Sources/Flux" / path) for path in dependencies],
              "-o", str(binary)], 120)
         run(["codesign", "--force", "--sign", "-", str(bundle)], 20)
-        run([str(binary)], 30)
+        run([str(binary)] + (["--titles-only"] if args.titles_only else []), 30)
 
 
 if __name__ == "__main__":

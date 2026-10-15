@@ -202,7 +202,7 @@ final class MenuBarIconManager: ObservableObject {
         guard let bar = elementAttribute(owner, kAXExtrasMenuBarAttribute) else { return [] }
         var result: [Icon] = []
         var visited = 0
-        func visit(_ element: AXUIElement, depth: Int) {
+        @MainActor func visit(_ element: AXUIElement, depth: Int) {
             guard depth < 6, visited < 100 else { return }
             visited += 1
             if let identifier = stringAttribute(element, kAXIdentifierAttribute),
@@ -222,7 +222,7 @@ final class MenuBarIconManager: ObservableObject {
 
     private func activityImageLabel(in element: AXUIElement) -> String? {
         var visited = 0
-        func label(_ item: AXUIElement, depth: Int) -> String? {
+        @MainActor func label(_ item: AXUIElement, depth: Int) -> String? {
             guard depth < 5, visited < 40 else { return nil }
             visited += 1
             if stringAttribute(item, kAXRoleAttribute) == kAXImageRole as String,
