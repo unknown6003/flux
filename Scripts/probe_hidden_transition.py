@@ -49,7 +49,7 @@ MainActor.assumeIsolated {
     item.autosaveName = "transition-probe"
     let marker = NSImage(size: NSSize(width: 18, height: 18))
     marker.lockFocus()
-    NSColor.magenta.setFill()
+    NSColor(srgbRed: 1, green: 0, blue: 1, alpha: 1).setFill()
     NSRect(x: 0, y: 0, width: 18, height: 18).fill()
     marker.unlockFocus()
     item.button?.image = marker
@@ -145,7 +145,9 @@ MainActor.assumeIsolated {
         hover.flags = []
         hover.post(tap: .cghidEventTap)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            guard visiblePixels() > 0, normalPixels > 0 else {
+            let control = visiblePixels()
+            print("VISIBLE_CONTROLS ALWAYS \(control) NORMAL \(normalPixels)")
+            guard control > 0, normalPixels > 0 else {
                 finish(false, "FAIL: both visible-marker controls were not captured")
             }
             hider.apply(revealHidden: false, revealAlwaysHidden: false,
@@ -172,7 +174,7 @@ app.setActivationPolicy(.accessory)
 let item = NSStatusBar.system.statusItem(withLength: 24)
 let marker = NSImage(size: NSSize(width: 18, height: 18))
 marker.lockFocus()
-NSColor.cyan.setFill()
+NSColor(srgbRed: 0, green: 1, blue: 1, alpha: 1).setFill()
 NSRect(x: 0, y: 0, width: 18, height: 18).fill()
 marker.unlockFocus()
 item.button?.image = marker
@@ -186,8 +188,11 @@ def main():
         raise RuntimeError("the transition probe needs a macOS desktop")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-ref")
+    parser.add_argument("--artifacts-dir", type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
+    artifacts = args.artifacts_dir or root / "build/transition-probe"
+    artifacts.mkdir(parents=True, exist_ok=True)
     source = root / "Sources/Flux/MenuBar/MacOS27Hider.swift"
     hider = (run(["git", "show", f"{args.baseline_ref}:Sources/Flux/MenuBar/MacOS27Hider.swift"],
                  15, capture=True) if args.baseline_ref else source.read_text())
@@ -228,7 +233,7 @@ def main():
         run([register, "-f", str(normal_bundle)], 20)
         normal_process = subprocess.Popen([str(normal_binary)], start_new_session=True)
         try:
-            run([str(binary), str(temporary / "sample.png"), normal_id], 22)
+            run([str(binary), str(artifacts / "sample.png"), normal_id], 22)
         finally:
             try:
                 os.killpg(normal_process.pid, signal.SIGTERM)
