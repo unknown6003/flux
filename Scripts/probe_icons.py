@@ -336,10 +336,17 @@ func probe() {
         do { try driver.run() }
         catch { print("FAIL: overlapping native driver launch: \(error)"); exit(1) }
         Thread.sleep(forTimeInterval: 0.75)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        let heldDeadline = ProcessInfo.processInfo.systemUptime + 0.8
+        @MainActor func verifyHeld() {
+            let pointer = CGEvent(source: nil)?.location
+            if NSEvent.pressedMouseButtons & 1 != 0,
+               let pointer, pointer.x >= x + icon.frame.width / 2 + 2,
+               ProcessInfo.processInfo.systemUptime < heldDeadline {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { verifyHeld() }
+                return
+            }
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
             manager.refresh()
-            let pointer = CGEvent(source: nil)?.location
             print("OVERLAP held buttons=\(NSEvent.pressedMouseButtons) pointer=\(String(describing: pointer)) actual=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) saved=\(String(describing: saved))")
             guard NSEvent.pressedMouseButtons & 1 != 0, let pointer,
                   let alwaysX = manager.boundaryProvider().alwaysHidden,
@@ -354,6 +361,7 @@ func probe() {
             }
             print("PASS: the held second native drag has not overwritten saved assignments")
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { verifyHeld() }
     }
     @MainActor
     func nativeMove() {

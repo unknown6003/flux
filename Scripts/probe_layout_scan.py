@@ -79,7 +79,21 @@ MainActor.assumeIsolated {
             print("FAIL: the completed native batch lost a move or an unrelated assignment")
             exit(1)
         }
+        positions = [("test.normal", 250)]
+        guard hider.recordAvailableLayoutChanges(for: ["test.normal", "test.always"], canCommit: { true }) == ["test.normal"],
+              layout().hidden == ["test.normal", "test.always", "test.kept"],
+              layout().always == ["test.kept"] else {
+            print("FAIL: an unreadable app discarded the readable app's native move")
+            exit(1)
+        }
+        positions = [("test.always", 350)]
+        guard hider.recordAvailableLayoutChanges(for: ["test.always"], canCommit: { true }) == ["test.always"],
+              layout().hidden == ["test.normal", "test.kept"], layout().always == ["test.kept"] else {
+            print("FAIL: the recovered native read lost its move or an unrelated assignment")
+            exit(1)
+        }
         print("PASS: native layout batch validates input after reads and saves all edits together")
+        print("PASS: a missing app preserves readable moves and can be saved after recovery")
         return
     }
     if CommandLine.arguments.contains("no-edit") {
@@ -190,6 +204,14 @@ def main():
                 ['git', 'show', args.hider_ref + ':Sources/Flux/MenuBar/MacOS27Hider.swift'],
                 cwd=root, text=True, timeout=15))
             paths[0] = previous
+            if "func recordAvailableLayoutChanges" not in previous.read_text():
+                source.write_text(FIXTURE + '''
+extension MacOS27Hider {
+    func recordAvailableLayoutChanges(for ids: Set<String>, canCommit: () -> Bool) -> Set<String> {
+        recordLayoutChanges(for: ids, canCommit: canCommit) ? ids : []
+    }
+}
+''')
         run(["xcrun", "swiftc", "-swift-version", "5", str(source),
              *[str(path) for path in paths], "-o", str(binary)], 120)
         if args.case == "all":

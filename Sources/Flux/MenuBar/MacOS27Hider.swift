@@ -211,23 +211,34 @@ final class MacOS27Hider {
 
     @discardableResult
     func recordLayoutChanges(for bundleIDs: Set<String>, canCommit: () -> Bool = { true }) -> Bool {
+        commitLayoutChanges(for: bundleIDs, requireAll: true, canCommit: canCommit) == bundleIDs
+    }
+
+    func recordAvailableLayoutChanges(for bundleIDs: Set<String>, canCommit: () -> Bool) -> Set<String> {
+        commitLayoutChanges(for: bundleIDs, requireAll: false, canCommit: canCommit)
+    }
+
+    private func commitLayoutChanges(for bundleIDs: Set<String>, requireAll: Bool,
+                                     canCommit: () -> Bool) -> Set<String> {
         guard !bundleIDs.isEmpty,
               bundleIDs.allSatisfy({ !$0.hasPrefix("com.apple.") && !Self.alwaysAllowed.contains($0) }),
-              let chevronX = chevronX() else { return false }
+              let chevronX = chevronX() else { return [] }
         onReadState?(true)
         defer { onReadState?(false) }
-        guard trustProvider() else { return false }
+        guard trustProvider() else { return [] }
         let positions = hasSavedLayout
             ? bundleIDs.sorted().flatMap { bundleID in
                 positionReader(bundleID).positions.filter { $0.bundleID == bundleID }
             }
             : positionReader(nil).positions
-        guard bundleIDs.isSubset(of: Set(positions.map(\.bundleID))), canCommit() else { return false }
+        let available = bundleIDs.intersection(Set(positions.map(\.bundleID)))
+        guard !available.isEmpty, (!requireAll && hasSavedLayout) || available == bundleIDs,
+              canCommit() else { return [] }
         generation += 1
         layoutScanPending = false
         updateLayout(from: positions, chevronX: chevronX)
         reconcile()
-        return true
+        return available
     }
 
     static func hiddenBundleIDs(_ positions: [(bundleID: String, x: CGFloat)],

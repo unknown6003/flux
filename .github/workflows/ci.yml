@@ -156,6 +156,8 @@ jobs:
               ('read-only-baseline', 'probe_layout_scan.py', ['--case', 'read-only', '--hider-ref',
                   'ee22f6f176bfaba0d230c1afad5622e81cb5db9f'], 'read-only layout observer started hiding without apply'),
               ('read-only', 'probe_layout_scan.py', ['--case', 'read-only'], None),
+              ('batch-read-baseline', 'probe_layout_scan.py', ['--case', 'batch', '--hider-ref',
+                  '7cdb20ae7e35312c7952b03aaf0195186b1a33a6'], 'an unreadable app discarded the readable app'),
               ('batch', 'probe_layout_scan.py', ['--case', 'batch'], None),
               ('geometry-baseline', 'probe_icons.py', ['--native-geometry', '--manager-ref',
                   '66dbf21690e7d0936162744822dea44abdf342aa'], 'AX position disagrees with the drawn fixture'),

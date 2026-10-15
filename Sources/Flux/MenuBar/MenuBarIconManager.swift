@@ -44,19 +44,21 @@ final class MenuBarIconManager: ObservableObject {
         let frame: CGRect
         let section: MenuBarSection
         var dragged = false
+        var saveAttempts = 0
     }
     private var nativeMove: NativeMove?
-    private var completedNativeMoves: [String: NativeMove] = [:]
+    private var completedNativeMoves: [UUID: NativeMove] = [:]
     private var nativeMoveGeneration = 0
     private var nativeMoveMonitor: Any?
     private var escapeMonitor: Any?
     private var iconUpdateCount = 0
     private var pendingMoveCount = 0
     private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
+    private var nativeSaveError: String?
     private let trustProvider: () -> Bool
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = MacOS27Hider()
-        hider.onStatus = { [weak self] message in self?.errorMessage = message }
+        hider.onStatus = { [weak self] message in self?.errorMessage = self?.nativeSaveError ?? message }
         hider.onReadState = { [weak self] reading in
             if reading { self?.beginIconUpdate() }
             else { self?.finishIconUpdate() }
@@ -146,10 +148,11 @@ final class MenuBarIconManager: ObservableObject {
         case .leftMouseUp:
             let pending = nativeMove
             nativeMove = nil
-            if let pending, pending.dragged, let bundleID = pending.owner.bundleIdentifier {
-                if completedNativeMoves[bundleID]?.owner.isTerminated != false {
-                    completedNativeMoves[bundleID] = pending
-                }
+            if let pending, pending.dragged,
+               !completedNativeMoves.values.contains(where: {
+                   !$0.owner.isTerminated && CFEqual($0.element, pending.element)
+               }) {
+                completedNativeMoves[UUID()] = pending
             }
             scheduleNativeMoveCommit()
         default: break
@@ -189,15 +192,17 @@ final class MenuBarIconManager: ObservableObject {
         defer { finishIconUpdate() }
         refresh()
         var changes: [String: Icon] = [:]
-        for (bundleID, pending) in completedNativeMoves {
+        var changedMoves: [UUID] = []
+        for (key, pending) in completedNativeMoves {
             guard canCommit() else { scheduleNativeMoveCommit(); return }
             let matches = icons.filter {
                 elements[$0.id].map { CFEqual($0, pending.element) } ?? false
             }
             guard !pending.owner.isTerminated, pending.owner.launchDate == pending.launched,
                   isTrusted, matches.count == 1, let current = matches.first,
-                  current.title == pending.icon.title, current.source == pending.icon.source else {
-                completedNativeMoves.removeValue(forKey: bundleID)
+                  current.title == pending.icon.title, current.source == pending.icon.source,
+                  let bundleID = pending.owner.bundleIdentifier else {
+                completedNativeMoves.removeValue(forKey: key)
                 continue
             }
             guard macOS27Hider.canReadPosition(for: bundleID) else {
@@ -206,21 +211,39 @@ final class MenuBarIconManager: ObservableObject {
             }
             guard abs(current.frame.midX - pending.frame.midX) >= 3
                     || Self.section(for: current.frame, boundaries: boundaryProvider()) != pending.section else {
-                completedNativeMoves.removeValue(forKey: bundleID)
+                completedNativeMoves.removeValue(forKey: key)
                 continue
             }
             changes[bundleID] = current
+            changedMoves.append(key)
         }
+        var failedSave = false
         if !changes.isEmpty {
-            let saved = macOS27Hider.recordLayoutChanges(for: Set(changes.keys), canCommit: canCommit)
+            let saved = macOS27Hider.recordAvailableLayoutChanges(for: Set(changes.keys), canCommit: canCommit)
             guard canCommit() else { scheduleNativeMoveCommit(); return }
-            for (bundleID, current) in changes {
-                completedNativeMoves.removeValue(forKey: bundleID)
-                if saved { assignedSections.removeValue(forKey: current.id) }
+            if !saved.isEmpty { nativeSaveError = nil }
+            assignedSections = assignedSections.filter { entry in
+                !saved.contains(where: { entry.key.hasPrefix($0 + "|") })
             }
-            if !saved { errorMessage = "Flux could not save those icons' new positions. Try again." }
+            for key in changedMoves {
+                guard var pending = completedNativeMoves[key],
+                      let bundleID = pending.owner.bundleIdentifier else { continue }
+                if saved.contains(bundleID) {
+                    completedNativeMoves.removeValue(forKey: key)
+                } else {
+                    pending.saveAttempts += 1
+                    if pending.saveAttempts < 3 {
+                        completedNativeMoves[key] = pending
+                    } else {
+                        completedNativeMoves.removeValue(forKey: key)
+                        failedSave = true
+                    }
+                }
+            }
         }
+        if failedSave { nativeSaveError = "Flux could not save an icon's new position. Try again." }
         refresh()
+        if !completedNativeMoves.isEmpty { scheduleNativeMoveCommit() }
         applyDeferredVisibility()
     }
 
@@ -370,8 +393,8 @@ final class MenuBarIconManager: ObservableObject {
         next.append(contentsOf: liveActivityIcons())
         icons = next.sorted { $0.frame.minX < $1.frame.minX }
         elements = nextElements
-        errorMessage = macOS27Hider.isAvailable ? macOS27Hider.latestError
-            : "Hiding is unavailable on this macOS build. Flux needs an update."
+        errorMessage = nativeSaveError ?? (macOS27Hider.isAvailable ? macOS27Hider.latestError
+            : "Hiding is unavailable on this macOS build. Flux needs an update.")
     }
 
     private func liveActivityIcons() -> [Icon] {
@@ -543,7 +566,7 @@ final class MenuBarIconManager: ObservableObject {
         beginIconUpdate()
         pendingMoveCount += 1
         if let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
-            completedNativeMoves.removeValue(forKey: String(bundleID))
+            completedNativeMoves = completedNativeMoves.filter { $0.value.owner.bundleIdentifier != String(bundleID) }
         }
         guard let element = elements[icon.id] else {
             refresh()
