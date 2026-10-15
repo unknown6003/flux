@@ -41,7 +41,7 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let suite = Bundle.main.bundleIdentifier!
-    let cache = UserDefaults(suiteName: suite)!
+    let cache = UserDefaults.standard
     cache.set(["hidden": [suite], "alwaysHidden": [suite]],
               forKey: "flux.macOS27IconLayout")
     cache.set(100, forKey: "NSStatusItem Preferred Position transition-probe")
