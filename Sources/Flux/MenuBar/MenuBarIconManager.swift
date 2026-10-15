@@ -472,8 +472,29 @@ final class MenuBarIconManager: ObservableObject {
         return label(element, depth: 0)
     }
 
+    private func refreshedIcon(_ icon: Icon) -> Icon? {
+        guard icon.isMovable else { return nil }
+        refresh()
+        guard let current = icons.first(where: { $0.id == icon.id && $0.isMovable }) else {
+            if isTrusted { errorMessage = "Flux could not find this icon. Refresh icons and try again." }
+            return nil
+        }
+        if ControlItem.usesMacOS27Model {
+            guard current.frame.width > 0, current.frame.height > 0,
+                  let primary = NSScreen.screens.first,
+                  NSScreen.screens.contains(where: {
+                      $0.statusItemRegion.contains(NSPoint(x: current.frame.midX,
+                                                          y: primary.frame.maxY - current.frame.midY))
+                  }) else {
+                errorMessage = "Flux could not read this icon's current position. Refresh icons and try again."
+                return nil
+            }
+        }
+        return current
+    }
+
     func move(_ icon: Icon, to section: MenuBarSection) {
-        guard icon.isMovable,
+        guard let icon = refreshedIcon(icon),
               let targetX = Self.insertionX(for: section,
                                              iconWidth: icon.frame.width,
                                              boundaries: boundaryProvider()) else {
@@ -500,7 +521,7 @@ final class MenuBarIconManager: ObservableObject {
     /// Moves an icon one place within its current section. The drawer UI owns
     /// order, so the user never has to Cmd-drag a crowded menu bar.
     func move(_ icon: Icon, toward direction: MoveDirection) {
-        guard canMove(icon, toward: direction) else { return }
+        guard let icon = refreshedIcon(icon), canMove(icon, toward: direction) else { return }
         let siblings = icons
             .filter { $0.section == icon.section }
             .sorted { $0.frame.minX < $1.frame.minX }
