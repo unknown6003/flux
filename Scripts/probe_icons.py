@@ -49,7 +49,15 @@ parser.add_argument("--native-sibling", action="store_true")
 parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
+parser.add_argument("--repeat", type=int, choices=range(1, 6), default=1,
+                    help="Repeat with a fresh fixture, stopping at the first failure")
 options = parser.parse_args()
+if options.repeat > 1:
+    for attempt in range(1, options.repeat + 1):
+        print(f"Independent icon probe {attempt}/{options.repeat}", flush=True)
+        command([sys.executable, str(Path(__file__).resolve()), *sys.argv[1:],
+                 "--repeat", "1"], 150)
+    raise SystemExit(0)
 fixture_source = r'''
 import AppKit
 if CommandLine.arguments.count == 8 && CommandLine.arguments[1] == "--drag-siblings" {

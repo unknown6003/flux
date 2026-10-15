@@ -201,6 +201,7 @@ jobs:
               ('settings', 'probe_icons.py', [], None),
               ('menu-context', 'probe_icons.py', ['--menu-context'], None),
               ('drag-context', 'probe_icons.py', ['--drag-context'], None),
+              ('settings-repeat', 'probe_icons.py', ['--repeat', '5'], None),
           ]
           selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
           if selected:
