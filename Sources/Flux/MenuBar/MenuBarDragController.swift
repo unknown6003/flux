@@ -33,23 +33,23 @@ final class MenuBarDragController: ObservableObject {
         for name in [NSApplication.didResignActiveNotification,
                      NSApplication.willTerminateNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stopInput() }
+                MainActor.assumeIsolated { self?.stopInput(reason: name.rawValue) }
             })
         }
         for name in [NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification,
                      NSWindow.didResignKeyNotification] {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stopInput() }
+                MainActor.assumeIsolated { self?.stopInput(reason: name.rawValue) }
             })
         }
         observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                              object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.stopInput() }
+            MainActor.assumeIsolated { self?.stopInput(reason: "screen changed") }
         })
     }
 
     func close() {
-        stopInput()
+        stopInput(reason: "management closed")
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         manager = nil
@@ -57,7 +57,7 @@ final class MenuBarDragController: ObservableObject {
     }
 
     func setMenuBarDragging(_ enabled: Bool) {
-        stopInput()
+        stopInput(reason: "mode toggle \(enabled)")
         message = nil
         guard enabled else { return }
         guard canManage, AXIsProcessTrusted() else {
@@ -87,7 +87,7 @@ final class MenuBarDragController: ObservableObject {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: newTap, enable: true)
         guard CGEvent.tapIsEnabled(tap: newTap) else {
-            stopInput()
+            stopInput(reason: "tap not enabled")
             message = "Menu bar dragging is unavailable. Use the row handles or Move menu."
             return
         }
@@ -99,7 +99,7 @@ final class MenuBarDragController: ObservableObject {
                 guard let self else { return }
                 guard self.canManage, AXIsProcessTrusted(), let tap = self.tap,
                       CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) else {
-                    self.stopInput()
+                    self.stopInput(reason: "heartbeat management, grant, or tap lost")
                     return
                 }
                 if self.active == nil && !self.nativeGesture && NSEvent.pressedMouseButtons & 1 == 0 {
@@ -198,7 +198,7 @@ final class MenuBarDragController: ObservableObject {
     private func observe(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             trace?("tap lost")
-            stopInput()
+            stopInput(reason: "tap disabled event \(type.rawValue)")
             message = "Menu bar dragging stopped. Turn it on again to retry."
             return
         }
@@ -218,7 +218,7 @@ final class MenuBarDragController: ObservableObject {
         refreshing = true
         defer { refreshing = false }
         manager.refresh()
-        guard manager.isTrusted else { stopInput(); return }
+        guard manager.isTrusted else { stopInput(reason: "manager access lost"); return }
         let icons = manager.icons.filter { $0.isMovable }
         guard icons != overlayIcons else {
             setPassThrough(commandDown || nativeGesture || active != nil)
@@ -270,7 +270,9 @@ final class MenuBarDragController: ObservableObject {
         returnPanels.removeAll()
     }
 
-    private func stopInput() {
+    private func stopInput(reason: String) {
+        let front = NSWorkspace.shared.frontmostApplication
+        trace?("stop reason=\(reason) appActive=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(settingsWindow?.windowNumber ?? -1) pid=\(ProcessInfo.processInfo.processIdentifier) front=\(front?.processIdentifier ?? -1):\(front?.bundleIdentifier ?? "nil")")
         active = nil
         isMenuBarDragging = false
         timer?.invalidate()

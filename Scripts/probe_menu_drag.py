@@ -194,6 +194,8 @@ func fixture(seconds: Double) {
 }
 
 func drive(statePath: String, source: String, destination: String, kind: String) {
+    print("driver pid=\(ProcessInfo.processInfo.processIdentifier)")
+    fflush(stdout)
     guard CGPreflightPostEventAccess(),
           let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
