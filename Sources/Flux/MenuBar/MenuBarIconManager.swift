@@ -46,7 +46,7 @@ final class MenuBarIconManager: ObservableObject {
         var dragged = false
     }
     private var nativeMove: NativeMove?
-    private var completedNativeMove: NativeMove?
+    private var completedNativeMoves: [String: NativeMove] = [:]
     private var nativeMoveGeneration = 0
     private var nativeMoveMonitor: Any?
     private var escapeMonitor: Any?
@@ -89,10 +89,12 @@ final class MenuBarIconManager: ObservableObject {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 if event.type == .leftMouseDown {
-                    self?.commitNativeMove()
-                    self?.nativeMoveGeneration += 1
                     self?.nativeMove = nil
-                } else if event.keyCode == 53 { self?.nativeMove = nil }
+                    self?.scheduleNativeMoveCommit()
+                } else if event.keyCode == 53 {
+                    self?.nativeMove = nil
+                    self?.scheduleNativeMoveCommit()
+                }
             }
             return event
         }
@@ -100,16 +102,18 @@ final class MenuBarIconManager: ObservableObject {
 
     private func observeNativeMove(_ event: NSEvent) {
         if event.type == .keyDown {
-            if event.keyCode == 53 { nativeMove = nil }
+            if event.keyCode == 53 {
+                nativeMove = nil
+                scheduleNativeMoveCommit()
+            }
             return
         }
         guard let cgEvent = event.cgEvent,
               cgEvent.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
         switch event.type {
         case .leftMouseDown:
-            commitNativeMove()
-            nativeMoveGeneration += 1
             nativeMove = nil
+            scheduleNativeMoveCommit()
             guard event.modifierFlags.contains(.command),
                   let primary = NSScreen.screens.first else { return }
             let point = cgEvent.location
@@ -142,41 +146,71 @@ final class MenuBarIconManager: ObservableObject {
         case .leftMouseUp:
             let pending = nativeMove
             nativeMove = nil
-            guard let pending, pending.dragged else { return }
-            completedNativeMove = pending
-            let generation = nativeMoveGeneration
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                guard let self, self.nativeMoveGeneration == generation,
-                      self.nativeMove == nil, NSEvent.pressedMouseButtons & 1 == 0 else { return }
-                self.commitNativeMove()
+            if let pending, pending.dragged, let bundleID = pending.owner.bundleIdentifier {
+                completedNativeMoves[bundleID] = pending
             }
+            scheduleNativeMoveCommit()
         default: break
         }
     }
 
-    private func commitNativeMove() {
-        guard let pending = completedNativeMove else { return }
-        completedNativeMove = nil
-        guard !pending.owner.isTerminated,
-              pending.owner.launchDate == pending.launched else { return }
+    private func scheduleNativeMoveCommit() {
+        nativeMoveGeneration += 1
+        let generation = nativeMoveGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.nativeMoveGeneration == generation else { return }
+            self.commitNativeMoves()
+        }
+    }
+
+    private func commitNativeMoves() {
+        guard !CGEventSource.buttonState(.combinedSessionState, button: .left),
+              CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown) >= 0.35,
+              CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) >= 0.35,
+              pendingMoveCount == 0 else {
+            scheduleNativeMoveCommit()
+            return
+        }
+        nativeMove = nil
+        guard !completedNativeMoves.isEmpty else {
+            applyDeferredVisibility()
+            return
+        }
+        let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+        let generation = nativeMoveGeneration
+        let canCommit = {
+            self.nativeMoveGeneration == generation
+                && !CGEventSource.buttonState(.combinedSessionState, button: .left)
+                && CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount
+        }
         beginIconUpdate()
         defer { finishIconUpdate() }
         refresh()
-        let matches = icons.filter {
-            elements[$0.id].map { CFEqual($0, pending.element) } ?? false
+        for (bundleID, pending) in completedNativeMoves {
+            guard canCommit() else { scheduleNativeMoveCommit(); return }
+            let matches = icons.filter {
+                elements[$0.id].map { CFEqual($0, pending.element) } ?? false
+            }
+            guard !pending.owner.isTerminated, pending.owner.launchDate == pending.launched,
+                  isTrusted, matches.count == 1, let current = matches.first,
+                  current.title == pending.icon.title, current.source == pending.icon.source,
+                  macOS27Hider.canReadPosition(for: bundleID) else {
+                completedNativeMoves.removeValue(forKey: bundleID)
+                continue
+            }
+            guard abs(current.frame.midX - pending.frame.midX) >= 3
+                    || Self.section(for: current.frame, boundaries: boundaryProvider()) != pending.section else {
+                completedNativeMoves.removeValue(forKey: bundleID)
+                continue
+            }
+            let saved = saveLayout(for: current, canCommit: canCommit)
+            guard canCommit() else { scheduleNativeMoveCommit(); return }
+            completedNativeMoves.removeValue(forKey: bundleID)
+            if saved { assignedSections.removeValue(forKey: current.id) }
+            else { errorMessage = "Flux could not save that icon's new position. Try again." }
         }
-        guard isTrusted, matches.count == 1, let current = matches.first,
-              current.title == pending.icon.title, current.source == pending.icon.source,
-              let bundleID = pending.owner.bundleIdentifier,
-              macOS27Hider.canReadPosition(for: bundleID),
-              abs(current.frame.midX - pending.frame.midX) >= 3
-                || Self.section(for: current.frame, boundaries: boundaryProvider()) != pending.section else { return }
-        if saveLayout(for: current) {
-            assignedSections.removeValue(forKey: current.id)
-            refresh()
-        } else {
-            errorMessage = "Flux could not save that icon's new position. Try again."
-        }
+        refresh()
+        applyDeferredVisibility()
     }
 
     private func observeAppActivation() {
@@ -218,7 +252,6 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func endIconManagement() {
-        if nativeMove == nil { commitNativeMove() }
         endProvider()
     }
 
@@ -428,14 +461,16 @@ final class MenuBarIconManager: ObservableObject {
     func applyDrawerVisibility(revealHidden: Bool,
                                revealAlwaysHidden: Bool,
                                refreshBeforeApplying: Bool = true) {
-        if ControlItem.usesMacOS27Model, pendingMoveCount > 0 {
+        if ControlItem.usesMacOS27Model,
+           pendingMoveCount > 0 || nativeMove != nil || !completedNativeMoves.isEmpty
+            || CGEventSource.buttonState(.combinedSessionState, button: .left) {
             deferredVisibility = (revealHidden, revealAlwaysHidden, refreshBeforeApplying)
+            scheduleNativeMoveCommit()
             return
         }
         beginIconUpdate()
         defer { finishIconUpdate() }
         if ControlItem.usesMacOS27Model {
-            if nativeMove == nil { commitNativeMove() }
             macOS27Hider.apply(revealHidden: revealHidden,
                                revealAlwaysHidden: revealAlwaysHidden,
                                alwaysHiddenEnabled: alwaysHiddenEnabledProvider(),
@@ -496,7 +531,9 @@ final class MenuBarIconManager: ObservableObject {
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
         beginIconUpdate()
         pendingMoveCount += 1
-        if nativeMove == nil { commitNativeMove() }
+        if let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
+            completedNativeMoves.removeValue(forKey: String(bundleID))
+        }
         guard let element = elements[icon.id] else {
             refresh()
             finishMove()
@@ -527,13 +564,18 @@ final class MenuBarIconManager: ObservableObject {
 
     private func finishMove() {
         pendingMoveCount -= 1
-        if pendingMoveCount == 0, let visibility = deferredVisibility {
+        applyDeferredVisibility()
+        finishIconUpdate()
+    }
+
+    private func applyDeferredVisibility() {
+        if pendingMoveCount == 0, nativeMove == nil, completedNativeMoves.isEmpty,
+           let visibility = deferredVisibility {
             deferredVisibility = nil
             applyDrawerVisibility(revealHidden: visibility.hidden,
                                   revealAlwaysHidden: visibility.alwaysHidden,
                                   refreshBeforeApplying: visibility.refresh)
         }
-        finishIconUpdate()
     }
 
     private func setPosition(_ point: CGPoint, on element: AXUIElement) -> Bool {
@@ -591,10 +633,10 @@ final class MenuBarIconManager: ObservableObject {
         }
     }
 
-    private func saveLayout(for icon: Icon) -> Bool {
+    private func saveLayout(for icon: Icon, canCommit: () -> Bool = { true }) -> Bool {
         guard ControlItem.usesMacOS27Model else { return true }
         guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
-        return macOS27Hider.recordLayoutChange(for: String(bundleID))
+        return macOS27Hider.recordLayoutChange(for: String(bundleID), canCommit: canCommit)
     }
 
     private func refreshAfterLayout(settles: Bool) {

@@ -56,7 +56,7 @@ if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap"].contains(Com
     }
     post(.leftMouseDown, start)
     Thread.sleep(forTimeInterval: 0.08)
-    let steps = CommandLine.arguments[1] == "--drag-overlap" ? 1 : 24
+    let steps = 24
     for step in 1...steps {
         let progress = CGFloat(step) / CGFloat(steps)
         post(.leftMouseDragged, CGPoint(x: start.x + (target.x - start.x) * progress,
@@ -147,9 +147,10 @@ func probe() {
         manager.icons.first { $0.title == "Flux fixture A" }
     }
     @MainActor
-    func geometry(_ stage: String) {
+    @discardableResult
+    func geometry(_ stage: String) -> CGPoint? {
         guard let index = CommandLine.arguments.firstIndex(of: "--geometry-output"),
-              let screen = NSScreen.screens.first else { return }
+              let screen = NSScreen.screens.first else { return nil }
         let output = URL(fileURLWithPath: CommandLine.arguments[index + 1])
         let image = output.appendingPathComponent(stage + ".png")
         let capture = Process()
@@ -205,6 +206,7 @@ func probe() {
         let windows = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
             .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
         print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) own=\(own) windows=\(windows)")
+        return center
     }
     @MainActor
     func finish() {
@@ -270,8 +272,9 @@ func probe() {
         guard let x = MenuBarIconManager.insertionX(for: .alwaysHidden, iconWidth: icon.frame.width,
                                                     boundaries: manager.boundaryProvider()) else { exit(1) }
         let driver = Process()
+        let source = geometry("before-overlap") ?? CGPoint(x: icon.frame.midX, y: icon.frame.midY)
         driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-        driver.arguments = ["--drag-overlap", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
+        driver.arguments = ["--drag-overlap", String(Double(source.x)), String(Double(source.y)),
                             String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
         var released = false
         var monitor: Any?
@@ -288,6 +291,7 @@ func probe() {
                     exit(1)
                 }
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                geometry("after-overlap-cancel")
                 let fresh = MenuBarIconManager()
                 fresh.boundaryProvider = manager.boundaryProvider
                 fresh.refresh()
@@ -306,10 +310,11 @@ func probe() {
         }
         do { try driver.run() }
         catch { print("FAIL: overlapping native driver launch: \(error)"); exit(1) }
-        Thread.sleep(forTimeInterval: 0.45)
+        Thread.sleep(forTimeInterval: 0.75)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
             manager.refresh()
+            print("OVERLAP held buttons=\(NSEvent.pressedMouseButtons) actual=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) saved=\(String(describing: saved))")
             guard NSEvent.pressedMouseButtons & 1 != 0, let current = fixture(),
                   MenuBarIconManager.section(for: current.frame,
                                             boundaries: manager.boundaryProvider()) == .alwaysHidden else {
@@ -593,7 +598,9 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     try:
         flags = (["--native-close"] if options.native_close else
                  (["--move-close"] if options.move_close else (["--native-overlap"] if options.native_overlap else
-                  (["--native-geometry", "--geometry-output", str(geometry)] if options.native_geometry else []))))
+                  (["--native-geometry"] if options.native_geometry else []))))
+        if options.native_geometry:
+            flags += ["--geometry-output", str(geometry)]
         command([str(binary), str(fixture)] + flags, 30)
         if options.native_geometry:
             shutil.copytree(geometry, root / "build/icon-probe/geometry", dirs_exist_ok=True)
