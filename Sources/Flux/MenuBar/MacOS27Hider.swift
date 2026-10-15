@@ -49,7 +49,12 @@ private final class MenuBarAssessment {
     }
 
     func restrict(to bundleIDs: [String]) {
-        guard let classes, bundleIDs != allowed else { return }
+        guard let classes else { return }
+        guard bundleIDs != allowed else {
+            pending?.invalidate()
+            pending = nil
+            return
+        }
         let allocated = (classes.configuration as AnyObject)
             .perform(NSSelectorFromString("alloc"))?.takeUnretainedValue()
         let systemItems = (0..<64).map { NSNumber(value: $0) } as NSArray
