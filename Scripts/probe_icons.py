@@ -127,9 +127,11 @@ func probe() {
         }
         manager.refresh()
         guard let icon = fixture(),
+              MenuBarIconManager.section(for: icon.frame,
+                                        boundaries: manager.boundaryProvider()) == .hidden,
               let x = MenuBarIconManager.insertionX(for: .shown, iconWidth: icon.frame.width,
                                                     boundaries: manager.boundaryProvider()) else {
-            print("FAIL: native move needs a readable fixture and Shown boundary")
+            print("FAIL: native move needs a real Hidden fixture and Shown boundary")
             exit(1)
         }
         let driver = Process()
@@ -160,7 +162,7 @@ func probe() {
                 print("FAIL: the native Command driver did not move the real icon to Shown")
                 exit(1)
             }
-            print("PASS: native Command crossed the real Shown boundary after delivered mouse-up")
+            print("PASS: native Command changed Hidden to Shown after delivered mouse-up")
             if CommandLine.arguments.contains("--native-close") {
                 manager.endIconManagement()
                 let delay = ProcessInfo.processInfo.systemUptime - releasedAt

@@ -42,6 +42,7 @@ final class MenuBarIconManager: ObservableObject {
         let launched: Date?
         let start: CGPoint
         let frame: CGRect
+        let section: MenuBarSection
         var dragged = false
     }
     private var nativeMove: NativeMove?
@@ -131,7 +132,8 @@ final class MenuBarIconManager: ObservableObject {
                   macOS27Hider.canReadPosition(for: bundleID),
                   let frame = frame(of: element), frame.contains(point) else { return }
             nativeMove = NativeMove(icon: icon, element: element, owner: owner,
-                                    launched: owner.launchDate, start: point, frame: frame)
+                                    launched: owner.launchDate, start: point, frame: frame,
+                                    section: Self.section(for: frame, boundaries: boundaryProvider()))
             print("[DEBUG-native-save] captured \(icon.title)")
         case .leftMouseDragged:
             guard let pending = nativeMove else { return }
@@ -171,7 +173,8 @@ final class MenuBarIconManager: ObservableObject {
               current.title == pending.icon.title, current.source == pending.icon.source,
               let bundleID = pending.owner.bundleIdentifier,
               macOS27Hider.canReadPosition(for: bundleID),
-              abs(current.frame.midX - pending.frame.midX) >= 3 else { return }
+              abs(current.frame.midX - pending.frame.midX) >= 3
+                || Self.section(for: current.frame, boundaries: boundaryProvider()) != pending.section else { return }
         if saveLayout(for: current) {
             assignedSections.removeValue(forKey: current.id)
             refresh()
