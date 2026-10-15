@@ -5,6 +5,7 @@ import AppKit
 struct MenuBarTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var iconManager: MenuBarIconManager
+    @StateObject private var dragController = MenuBarDragController()
 
     var body: some View {
         VStack(spacing: 18) {
@@ -17,8 +18,14 @@ struct MenuBarTab: View {
             appearanceCard
         }
         .padding(20)
+        .environmentObject(dragController)
+        .background(MenuBarDragSettingsAnchor(controller: dragController, manager: iconManager)
+            .frame(width: 0, height: 0))
         .onAppear { iconManager.beginIconManagement() }
-        .onDisappear { iconManager.endIconManagement() }
+        .onDisappear {
+            dragController.close()
+            iconManager.endIconManagement()
+        }
     }
 
     private var drawerCard: some View {
@@ -67,7 +74,9 @@ struct MenuBarTab: View {
 }
 
 private struct MenuBarDrawer: View {
+    @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var iconManager: MenuBarIconManager
+    @EnvironmentObject private var dragController: MenuBarDragController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -75,7 +84,11 @@ private struct MenuBarDrawer: View {
                 accessRow
             } else {
                 RowText(title: "Manage icons here",
-                        subtitle: "Use Move to… and the arrows below. You do not need to drag icons in the tiny menu bar.")
+                        subtitle: "Drag a row handle into a section or back to the menu bar. Move to… and the arrows also work.")
+                ToggleRow(title: "Drag icons from menu bar",
+                          subtitle: "While on, drag app icons into a section below. Plain clicks do nothing. Hold Command before dragging to move icons within the bar.",
+                          isOn: Binding(get: { dragController.isMenuBarDragging },
+                                        set: { dragController.setMenuBarDragging($0) }))
                 if ControlItem.usesMacOS27Model {
                     Text("macOS 27 lets Flux hide third-party apps. Apple system icons stay in the menu bar.")
                         .font(.caption)
@@ -86,12 +99,17 @@ private struct MenuBarDrawer: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+                if let message = dragController.message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 ForEach(MenuBarSection.allCases) { section in
                     iconSection(section)
                     if section != .alwaysHidden { RowDivider() }
                 }
                 Button {
-                    iconManager.refresh()
+                    dragController.refreshIcons()
                 } label: {
                     Label("Refresh icons", systemImage: "arrow.clockwise")
                 }
@@ -148,6 +166,16 @@ private struct MenuBarDrawer: View {
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondaryColor)
                 .padding(.leading, 15)
+            if section == .alwaysHidden && !settings.showAlwaysHiddenSection {
+                Text("Turn on Always-Hidden section below to use this drop target.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondaryColor)
+                    .padding(.leading, 15)
+            } else {
+                MenuBarIconDropZone(controller: dragController, section: section)
+                    .frame(height: 30)
+                    .padding(.leading, 15)
+            }
             if items.isEmpty {
                 Text(emptyText(for: section))
                     .font(.caption)
@@ -173,10 +201,15 @@ private struct MenuBarDrawer: View {
 
 private struct MenuBarIconRow: View {
     @EnvironmentObject private var iconManager: MenuBarIconManager
+    @EnvironmentObject private var dragController: MenuBarDragController
     let icon: MenuBarIconManager.Icon
 
     var body: some View {
         HStack(spacing: 7) {
+            if icon.isMovable {
+                MenuBarIconDragHandle(controller: dragController, icon: icon)
+                    .frame(width: 18, height: 22)
+            }
             Image(systemName: icon.section.symbolName)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Theme.textSecondaryColor)
@@ -189,7 +222,7 @@ private struct MenuBarIconRow: View {
                     Text(source)
                         .font(.caption2)
                         .foregroundStyle(Theme.textSecondaryColor)
-                        .lineLimit(1)
+                        .lineLimit(icon.isMovable ? 1 : nil)
                 }
             }
             Spacer(minLength: 2)
