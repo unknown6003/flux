@@ -221,7 +221,7 @@ final class Probe {
             destination.title = "Ordinary drag destination control"
             destination.isReleasedWhenClosed = false
             destination.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-            let target = MenuBarDragDestinationView(frame: destination.contentView!.bounds.insetBy(dx: 10, dy: 10))
+            let target = MenuBarDragDestinationView(frame: destination.contentView!.bounds)
             target.controller = controller
             target.section = .shown
             target.showsReturnHint = true
