@@ -131,6 +131,7 @@ struct NotchRootView: View {
                     updateInteractiveRect(panelWidth: proxy.size.width)
                 }
         }
+        .environment(\.colorScheme, .dark)
         .animation(springFor(viewModel.state), value: viewModel.state)
         .ignoresSafeArea()
     }
@@ -285,8 +286,7 @@ struct NotchRootView: View {
         }
     }
 
-    /// The collapsed shell covers the physical camera housing. Open states use
-    /// the selected Flux surface color below the physical notch.
+    /// The collapsed shell has no shadow against the physical camera housing.
     private var isCollapsed: Bool { viewModel.state == .collapsed }
 
     /// A soft drop shadow is what actually sells the "lifted" panel now that

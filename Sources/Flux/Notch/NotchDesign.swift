@@ -126,11 +126,9 @@ enum NotchDesign {
     static let tileRadius: CGFloat = 8
     /// A list row's hover/selection background.
     static let rowRadius: CGFloat = 8
-    /// The collapsed shell covers the physical camera housing. Its fill is
-    /// always opaque black so the software mask matches the hardware notch in
-    /// both light and dark appearance.
+    /// All shell states use opaque black to match the physical camera housing.
     static var physicalNotchFill: Color { Theme.notchCollapsedColor }
-    static var panelFill: Color { Theme.groundColor }
+    static var panelFill: Color { physicalNotchFill }
     static var primaryColor: Color { Theme.textPrimaryColor }
     static var secondaryColor: Color { Theme.textPrimaryColor.opacity(secondaryOpacity) }
     static var tertiaryColor: Color { Theme.textPrimaryColor.opacity(tertiaryOpacity) }
