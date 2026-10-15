@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 import plistlib
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from probe_tcc import _stop
 
 
@@ -73,6 +75,7 @@ app.run()
 '''
 source = r'''
 import AppKit
+setbuf(stdout, nil)
 
 @MainActor
 func probe() {
@@ -350,7 +353,24 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
         "Sources/Flux/Support/AccessibilityAccess.swift"])
     process = subprocess.Popen([str(fixture)], start_new_session=True)
+    started_at = time.time()
     try:
         command([str(binary), str(fixture)] + (["--native-close"] if options.native_close else []), 30)
+    except BaseException:
+        label = (options.manager_ref or "current")[:8] + ("-native" if options.native_close else "-settings")
+        evidence = root / "build/icon-probe" / label
+        shutil.copytree(temporary, evidence, dirs_exist_ok=True)
+        reports = Path.home() / "Library/Logs/DiagnosticReports"
+        deadline = time.monotonic() + 3
+        while True:
+            crashes = [path for path in reports.glob("FluxIconProbe*.ips")
+                       if path.stat().st_mtime >= started_at]
+            if crashes or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        for path in crashes:
+            shutil.copy2(path, evidence / path.name)
+        print(f"FAIL evidence: {evidence}", flush=True)
+        raise
     finally:
         _stop(process)
