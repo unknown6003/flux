@@ -39,20 +39,6 @@ def run(command, seconds, *, capture=False):
 FIXTURE = r'''
 import AppKit
 
-private extension MenuBarAssessment {
-    var transitionProbeState: String {
-        "allowedCount=\(active?.allowed.count ?? 0) normalAllowed=\(active?.allowed.contains(CommandLine.arguments[2]) ?? false) pending=\(pending != nil)"
-    }
-    func transitionProbeInvalidateActive() { active?.assertion.invalidate() }
-}
-
-private extension MacOS27Hider {
-    var transitionProbeState: String {
-        "hidden=\(hidden.sorted()) always=\(alwaysHidden.sorted()) \(assessment.transitionProbeState)"
-    }
-    func transitionProbeInvalidateActive() { assessment.transitionProbeInvalidateActive() }
-}
-
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
@@ -133,14 +119,9 @@ MainActor.assumeIsolated {
         }
         if step == 2 { hider.retry() }
         else {
-            if CommandLine.arguments.contains("--invalidate-before-transition") {
-                hider.transitionProbeInvalidateActive()
-            }
             hider.apply(revealHidden: step == 0, revealAlwaysHidden: false,
                         chevronX: { region.maxX }, alwaysX: { region.maxX })
         }
-        print("TRANSITION_START \(step) \(hider.transitionProbeState)")
-        print("NORMAL_OWNER \(NSRunningApplication.runningApplications(withBundleIdentifier: CommandLine.arguments[2]).map { $0.bundleIdentifier ?? "nil" })")
         var samples = 0
         let timer = Timer(timeInterval: 0.04, repeats: true) { timer in
             MainActor.assumeIsolated {
@@ -154,7 +135,6 @@ MainActor.assumeIsolated {
                 samples += 1
                 if samples == 12 {
                     timer.invalidate()
-                    print("TRANSITION_END \(step) \(hider.transitionProbeState)")
                     let normalMatches = step == 0
                         ? normalPixels >= max(1, normalControlPixels / 2) : normalPixels == 0
                     guard normalMatches else {
@@ -187,16 +167,10 @@ MainActor.assumeIsolated {
             guard control > 0, normalPixels > 0 else {
                 finish(false, "FAIL: both visible-marker controls were not captured")
             }
-            let freshReveal = CommandLine.arguments.contains("--fresh-reveal-control")
-            hider.apply(revealHidden: freshReveal, revealAlwaysHidden: false,
+            hider.apply(revealHidden: false, revealAlwaysHidden: false,
                         chevronX: { region.maxX }, alwaysX: { region.maxX })
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 let always = visiblePixels()
-                if freshReveal {
-                    print("FRESH_ALLOW_CONTROL ALWAYS \(always) NORMAL \(normalPixels) \(hider.transitionProbeState)")
-                    finish(always == 0 && normalPixels >= max(1, normalControlPixels / 2),
-                           "Fresh allow-list control finished")
-                }
                 guard always == 0, normalPixels == 0 else {
                     finish(false, "FAIL: both Hidden fixtures did not collapse")
                 }
@@ -237,8 +211,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-ref")
     parser.add_argument("--artifacts-dir", type=Path)
-    parser.add_argument("--invalidate-before-transition", action="store_true")
-    parser.add_argument("--fresh-reveal-control", action="store_true")
     parser.add_argument("--install-normal-fixture", action="store_true",
                         help="Create and remove a unique disposable fixture in /Applications")
     args = parser.parse_args()
@@ -295,9 +267,7 @@ def main():
         cleanup.callback(run, [register, "-u", str(normal_bundle)], 20)
         normal_process = subprocess.Popen([str(normal_binary)], start_new_session=True)
         try:
-            run([str(binary), str(artifacts / "sample.png"), normal_id]
-                + (["--invalidate-before-transition"] if args.invalidate_before_transition else [])
-                + (["--fresh-reveal-control"] if args.fresh_reveal_control else []), 22)
+            run([str(binary), str(artifacts / "sample.png"), normal_id], 22)
         finally:
             try:
                 os.killpg(normal_process.pid, signal.SIGTERM)
