@@ -315,7 +315,9 @@ func probe() {
                 }
             }
         }
-        if count < 20 {
+        let scale = CGFloat(bitmap.pixelsWide) / screen.frame.width
+        let fullMarkerPixels = 18 * 18 * scale * scale
+        if CGFloat(count) < fullMarkerPixels * 0.95 {
             let deadline = captureDeadlines[stage] ?? ProcessInfo.processInfo.systemUptime + 1
             captureDeadlines[stage] = deadline
             guard ProcessInfo.processInfo.systemUptime < deadline else {
@@ -327,7 +329,6 @@ func probe() {
             return geometry(stage)
         }
         captureDeadlines.removeValue(forKey: stage)
-        let scale = CGFloat(bitmap.pixelsWide) / screen.frame.width
         let center = CGPoint(x: (CGFloat(sumX) / CGFloat(count) + 0.5) / scale,
                              y: (CGFloat(sumY) / CGFloat(count) + 0.5) / scale)
         var hit: AXUIElement?
