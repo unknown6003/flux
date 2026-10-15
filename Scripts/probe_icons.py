@@ -146,6 +146,7 @@ func probe() {
     func fixture() -> MenuBarIconManager.Icon? {
         manager.icons.first { $0.title == "Flux fixture A" }
     }
+    var previousHit: AXUIElement?
     @MainActor
     @discardableResult
     func geometry(_ stage: String) -> CGPoint? {
@@ -196,6 +197,10 @@ func probe() {
         var title: CFTypeRef?
         var hitPosition: CFTypeRef?
         var hitSize: CFTypeRef?
+        var previousPosition: CFTypeRef?
+        if let previousHit {
+            AXUIElementCopyAttributeValue(previousHit, kAXPositionAttribute as CFString, &previousPosition)
+        }
         if let hit {
             AXUIElementGetPid(hit, &pid)
             AXUIElementCopyAttributeValue(hit, kAXTitleAttribute as CFString, &title)
@@ -254,6 +259,38 @@ func probe() {
             print("GEOMETRY_HOST \(stage) nodes=\(records.count)")
         }
         print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own) windows=\(windows)")
+        print("GEOMETRY_RETAINED \(stage) previousPosition=\(String(describing: previousPosition)) sameHit=\(hit.flatMap { new in previousHit.map { CFEqual(new, $0) } } ?? false)")
+        var parents: [[String: String]] = []
+        var parent = hit
+        let parentDeadline = ProcessInfo.processInfo.systemUptime + 0.75
+        for depth in 0..<3 {
+            guard let current = parent, ProcessInfo.processInfo.systemUptime < parentDeadline else { break }
+            AXUIElementSetMessagingTimeout(current, 0.03)
+            var parentValue: CFTypeRef?
+            AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parentValue)
+            guard let parentValue, CFGetTypeID(parentValue) == AXUIElementGetTypeID() else { break }
+            let next = parentValue as! AXUIElement
+            var childrenValue: CFTypeRef?
+            AXUIElementCopyAttributeValue(next, kAXChildrenAttribute as CFString, &childrenValue)
+            for item in [next] + Array((childrenValue as? [AXUIElement] ?? []).prefix(40)) {
+                guard ProcessInfo.processInfo.systemUptime < parentDeadline else { break }
+                AXUIElementSetMessagingTimeout(item, 0.03)
+                var ownerPID: pid_t = 0
+                AXUIElementGetPid(item, &ownerPID)
+                var record = ["depth": String(depth), "pid": String(ownerPID)]
+                for key in [kAXRoleAttribute, kAXTitleAttribute, kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
+                    var value: CFTypeRef?
+                    let error = AXUIElementCopyAttributeValue(item, key as CFString, &value)
+                    record[key] = "\(error.rawValue):\(String(describing: value))"
+                }
+                parents.append(record)
+            }
+            parent = next
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: parents, options: .prettyPrinted) {
+            try? data.write(to: output.appendingPathComponent(stage + "-parents.json"), options: .atomic)
+        }
+        previousHit = hit
         return center
     }
     @MainActor
@@ -406,11 +443,11 @@ func probe() {
         let driver = Process()
         let targetX = max(x + icon.frame.width / 2,
                           (chevron.statusItem.button?.window?.frame.maxX ?? x) + icon.frame.width)
-        geometry("before-native")
-        print("Native source=\(icon.frame), targetX=\(targetX), boundaries=\(manager.boundaryProvider())")
+        let physicalSource = geometry("before-native") ?? CGPoint(x: icon.frame.midX, y: icon.frame.midY)
+        print("Native source=\(icon.frame), physicalSource=\(physicalSource), targetX=\(targetX), boundaries=\(manager.boundaryProvider())")
         driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-        driver.arguments = ["--drag", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
-                            String(Double(targetX)), String(Double(icon.frame.midY))]
+        driver.arguments = ["--drag", String(Double(physicalSource.x)), String(Double(physicalSource.y)),
+                            String(Double(targetX)), String(Double(physicalSource.y))]
         var releasedAt: TimeInterval?
         var releaseMonitor: Any?
         releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
