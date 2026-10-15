@@ -45,6 +45,8 @@ final class MenuBarIconManager: ObservableObject {
         var dragged = false
     }
     private var nativeMove: NativeMove?
+    private var completedNativeMove: NativeMove?
+    private var nativeMoveGeneration = 0
     private var nativeMoveMonitor: Any?
     private var escapeMonitor: Any?
     private var iconUpdateCount = 0
@@ -81,9 +83,13 @@ final class MenuBarIconManager: ObservableObject {
             matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated { self?.observeNativeMove(event) }
         }
-        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
-                if event.keyCode == 53 { self?.nativeMove = nil }
+                if event.type == .leftMouseDown {
+                    self?.commitNativeMove()
+                    self?.nativeMoveGeneration += 1
+                    self?.nativeMove = nil
+                } else if event.keyCode == 53 { self?.nativeMove = nil }
             }
             return event
         }
@@ -98,6 +104,8 @@ final class MenuBarIconManager: ObservableObject {
               cgEvent.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
         switch event.type {
         case .leftMouseDown:
+            commitNativeMove()
+            nativeMoveGeneration += 1
             nativeMove = nil
             guard event.modifierFlags.contains(.command),
                   let primary = NSScreen.screens.first else { return }
@@ -107,12 +115,12 @@ final class MenuBarIconManager: ObservableObject {
                 $0.frame.contains(appKitPoint)
                     && appKitPoint.y >= $0.frame.maxY - max(NSStatusBar.system.thickness, $0.safeAreaInsets.top)
             }) else { return }
-            let matches = icons.filter { $0.isMovable && $0.frame.contains(point) }
-            guard matches.count == 1, let icon = matches.first,
-                  let element = elements[icon.id] else { return }
             beginIconUpdate()
             defer { finishIconUpdate() }
-            guard trustProvider() else { return }
+            refresh()
+            let matches = icons.filter { $0.isMovable && $0.frame.contains(point) }
+            guard isTrusted, matches.count == 1, let icon = matches.first,
+                  let element = elements[icon.id] else { return }
             AXUIElementSetMessagingTimeout(element, 0.15)
             var pid: pid_t = 0
             guard AXUIElementGetPid(element, &pid) == .success,
@@ -131,26 +139,38 @@ final class MenuBarIconManager: ObservableObject {
             let pending = nativeMove
             nativeMove = nil
             guard let pending, pending.dragged else { return }
+            completedNativeMove = pending
+            let generation = nativeMoveGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                guard let self, !pending.owner.isTerminated,
-                      pending.owner.launchDate == pending.launched else { return }
-                self.refresh()
-                let matches = self.icons.filter {
-                    self.elements[$0.id].map { CFEqual($0, pending.element) } ?? false
-                }
-                guard self.isTrusted, matches.count == 1, let current = matches.first,
-                      current.title == pending.icon.title, current.source == pending.icon.source,
-                      let bundleID = pending.owner.bundleIdentifier,
-                      self.macOS27Hider.canReadPosition(for: bundleID),
-                      abs(current.frame.midX - pending.frame.midX) >= 3 else { return }
-                if self.saveLayout(for: current) {
-                    self.assignedSections.removeValue(forKey: current.id)
-                    self.refresh()
-                } else {
-                    self.errorMessage = "Flux could not save that icon's new position. Try again."
-                }
+                guard let self, self.nativeMoveGeneration == generation,
+                      self.nativeMove == nil, NSEvent.pressedMouseButtons & 1 == 0 else { return }
+                self.commitNativeMove()
             }
         default: break
+        }
+    }
+
+    private func commitNativeMove() {
+        guard let pending = completedNativeMove else { return }
+        completedNativeMove = nil
+        guard !pending.owner.isTerminated,
+              pending.owner.launchDate == pending.launched else { return }
+        beginIconUpdate()
+        defer { finishIconUpdate() }
+        refresh()
+        let matches = icons.filter {
+            elements[$0.id].map { CFEqual($0, pending.element) } ?? false
+        }
+        guard isTrusted, matches.count == 1, let current = matches.first,
+              current.title == pending.icon.title, current.source == pending.icon.source,
+              let bundleID = pending.owner.bundleIdentifier,
+              macOS27Hider.canReadPosition(for: bundleID),
+              abs(current.frame.midX - pending.frame.midX) >= 3 else { return }
+        if saveLayout(for: current) {
+            assignedSections.removeValue(forKey: current.id)
+            refresh()
+        } else {
+            errorMessage = "Flux could not save that icon's new position. Try again."
         }
     }
 
@@ -193,6 +213,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func endIconManagement() {
+        if nativeMove == nil { commitNativeMove() }
         endProvider()
     }
 
@@ -405,6 +426,7 @@ final class MenuBarIconManager: ObservableObject {
         beginIconUpdate()
         defer { finishIconUpdate() }
         if ControlItem.usesMacOS27Model {
+            if nativeMove == nil { commitNativeMove() }
             macOS27Hider.apply(revealHidden: revealHidden,
                                revealAlwaysHidden: revealAlwaysHidden,
                                alwaysHiddenEnabled: alwaysHiddenEnabledProvider(),
@@ -464,6 +486,7 @@ final class MenuBarIconManager: ObservableObject {
 
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection) {
         beginIconUpdate()
+        if nativeMove == nil { commitNativeMove() }
         guard let element = elements[icon.id] else {
             refresh()
             finishIconUpdate()
@@ -601,8 +624,9 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func elementAttribute(_ element: AXUIElement, _ key: String) -> AXUIElement? {
-        guard let value = attribute(element, key) else { return nil }
-        return value as! AXUIElement
+        guard let value = attribute(element, key),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
     }
 
     private func stringAttribute(_ element: AXUIElement, _ key: String) -> String? {

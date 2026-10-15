@@ -229,13 +229,13 @@ final class MacOS27Hider {
     private static func element(_ owner: AXUIElement, _ name: String) -> AXUIElement? {
         guard let value = attribute(owner, name),
               CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return value as! AXUIElement
+        return (value as! AXUIElement)
     }
 
     private static func value(_ owner: AXUIElement, _ name: String) -> AXValue? {
         guard let value = attribute(owner, name),
               CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
-        return value as! AXValue
+        return (value as! AXValue)
     }
 
     func apply(revealHidden: Bool, revealAlwaysHidden: Bool,
