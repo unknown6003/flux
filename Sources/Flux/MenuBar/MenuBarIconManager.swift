@@ -54,7 +54,10 @@ final class MenuBarIconManager: ObservableObject {
     private var iconUpdateCount = 0
     private var pendingMoveCount = 0
     private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
-    private var nativeSaveError: String?
+    private var nativeSaveFailures = Set<String>()
+    private var nativeSaveError: String? {
+        nativeSaveFailures.isEmpty ? nil : "Flux could not save an icon's new position. Try again."
+    }
     private let trustProvider: () -> Bool
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = MacOS27Hider()
@@ -217,11 +220,10 @@ final class MenuBarIconManager: ObservableObject {
             changes[bundleID] = current
             changedMoves.append(key)
         }
-        var failedSave = false
         if !changes.isEmpty {
             let saved = macOS27Hider.recordAvailableLayoutChanges(for: Set(changes.keys), canCommit: canCommit)
             guard canCommit() else { scheduleNativeMoveCommit(); return }
-            if !saved.isEmpty { nativeSaveError = nil }
+            nativeSaveFailures.subtract(saved)
             assignedSections = assignedSections.filter { entry in
                 !saved.contains(where: { entry.key.hasPrefix($0 + "|") })
             }
@@ -236,12 +238,11 @@ final class MenuBarIconManager: ObservableObject {
                         completedNativeMoves[key] = pending
                     } else {
                         completedNativeMoves.removeValue(forKey: key)
-                        failedSave = true
+                        nativeSaveFailures.insert(bundleID)
                     }
                 }
             }
         }
-        if failedSave { nativeSaveError = "Flux could not save an icon's new position. Try again." }
         refresh()
         if !completedNativeMoves.isEmpty { scheduleNativeMoveCommit() }
         applyDeferredVisibility()
@@ -670,7 +671,9 @@ final class MenuBarIconManager: ObservableObject {
     private func saveLayout(for icon: Icon) -> Bool {
         guard ControlItem.usesMacOS27Model else { return true }
         guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
-        return macOS27Hider.recordLayoutChange(for: String(bundleID))
+        let saved = macOS27Hider.recordLayoutChange(for: String(bundleID))
+        if saved { nativeSaveFailures.remove(String(bundleID)) }
+        return saved
     }
 
     private func refreshAfterLayout(settles: Bool) {
