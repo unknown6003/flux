@@ -40,6 +40,28 @@ MainActor.assumeIsolated {
         hider.apply(revealHidden: revealed, revealAlwaysHidden: always,
                     chevronX: arrow, alwaysX: { 200 })
     }
+    if CommandLine.arguments.contains("no-edit") {
+        positions = [("test.normal", 150), ("test.always", 350)]
+        apply(true, true)
+        waitForRead()
+        let opened = layout()
+        guard opened.hidden == ["test.normal", "test.always"],
+              opened.always == ["test.always"] else {
+            defaults.removePersistentDomain(forName: suite)
+            print("FAIL: opening management without a move rewrote the saved layout; hidden=\(opened.hidden.sorted()), always=\(opened.always.sorted())")
+            exit(1)
+        }
+        hider.retry()
+        waitForRead()
+        let refreshed = layout()
+        guard refreshed.hidden == opened.hidden, refreshed.always == opened.always else {
+            defaults.removePersistentDomain(forName: suite)
+            print("FAIL: a no-edit refresh rewrote the saved layout")
+            exit(1)
+        }
+        print("PASS: no-edit management and refresh preserve saved sections despite changed AX geometry")
+        return
+    }
     if !overlapOnly {
         apply(true, false)
         waitForRead()
@@ -89,7 +111,7 @@ def main():
     if sys.platform != "darwin":
         raise RuntimeError("layout scheduling needs native AppKit")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=("all", "moves", "overlap"), default="all")
+    parser.add_argument("--case", choices=("all", "moves", "overlap", "no-edit"), default="all")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="flux-layout-probe-") as directory:
@@ -101,6 +123,8 @@ def main():
                  "Support/Log.swift", "Support/AccessibilityAccess.swift"]
         run(["xcrun", "swiftc", "-swift-version", "5", str(source),
              *[str(root / "Sources/Flux" / path) for path in files], "-o", str(binary)], 120)
+        if args.case == "all":
+            run([str(binary), "no-edit"], 10)
         run([str(binary), args.case], 10)
 
 
