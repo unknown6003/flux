@@ -55,6 +55,8 @@ final class MenuBarIconManager: ObservableObject {
     private var pendingMoveCount = 0
     private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
     private var nativeSaveFailures = Set<String>()
+    private var lastMoveReport = "none"
+    private var lastMoveVerification = "none"
     private var nativeSaveError: String? {
         nativeSaveFailures.isEmpty ? nil : "Flux could not save an icon's new position. Try again."
     }
@@ -320,6 +322,8 @@ final class MenuBarIconManager: ObservableObject {
 
         Move boundaries: hidden=\(String(describing: boundaries.hidden)), always=\(String(describing: boundaries.alwaysHidden))
         Event posting allowed: \(CGPreflightPostEventAccess())
+        Last move request: \(lastMoveReport)
+        Last move verification: \(lastMoveVerification)
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report + moveReport, forType: .string)
@@ -602,6 +606,8 @@ final class MenuBarIconManager: ObservableObject {
         }
 
         let target = CGPoint(x: targetX, y: icon.frame.minY)
+        lastMoveReport = "id=\(icon.id), source=\(icon.frame), target=\(CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY)), expected=\(expectedSection.rawValue), mode=\(RunLoop.current.currentMode?.rawValue ?? "none")"
+        lastMoveVerification = "pending"
         let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
         if !usedAccessibility {
             drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
@@ -683,6 +689,7 @@ final class MenuBarIconManager: ObservableObject {
                 return
             }
             guard let current = self.icons.first(where: { $0.id == icon.id }) else {
+                self.lastMoveVerification = "id=\(icon.id), inventory unavailable, attempt=\(readAttempts + 1)"
                 if readAttempts < 2 {
                     self.verifyMove(icon: icon, expectedSection: expectedSection,
                                     target: target, retryWithDrag: retryWithDrag,
@@ -694,6 +701,7 @@ final class MenuBarIconManager: ObservableObject {
             }
             let actualSection = Self.section(for: current.frame,
                                              boundaries: self.boundaryProvider())
+            self.lastMoveVerification = "id=\(current.id), frame=\(current.frame), actual=\(actualSection.rawValue), expected=\(expectedSection.rawValue), boundaries=\(self.boundaryProvider())"
             guard actualSection != expectedSection else {
                 if !self.saveLayout(for: current, canCommit: canCommit) {
                     guard canCommit() else {

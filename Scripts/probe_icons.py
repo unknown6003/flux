@@ -375,6 +375,8 @@ func probe() {
                   (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
                 print("FAIL: a real menu action did not move and save the fixture as Shown")
                 print("MENU actual=\(String(describing: fixture()?.frame)) boundaries=\(manager.boundaryProvider()) error=\(manager.errorMessage ?? "none")")
+                manager.copyMenuBarReport()
+                print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
             }
             print("PASS: a real menu action moves the fixture and saves Shown")
@@ -917,6 +919,8 @@ func probe() {
                   current.section == section else {
                 print("FAIL: the real fixture did not move to \(section.rawValue); \(manager.errorMessage ?? "no error")")
                 if let current = fixture() { print("Actual frame: \(current.frame); boundaries=\(manager.boundaryProvider())") }
+                manager.copyMenuBarReport()
+                print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
             }
             print("PASS: Settings moved the real fixture to \(section.rawValue)")
