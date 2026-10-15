@@ -200,15 +200,27 @@ final class MacOS27Hider {
     func apply(revealHidden: Bool, revealAlwaysHidden: Bool,
                alwaysHiddenEnabled: Bool = true,
                chevronX: @escaping () -> CGFloat?, alwaysX: @escaping () -> CGFloat?) {
+        let finishedManaging = self.revealAlwaysHidden && !revealAlwaysHidden
         self.revealHidden = revealHidden
         self.revealAlwaysHidden = revealAlwaysHidden
         self.alwaysHiddenEnabled = alwaysHiddenEnabled
         self.chevronX = chevronX
         self.alwaysX = alwaysX
-        retry()
+        if finishedManaging { rescan() }
+        else { retry() }
     }
 
     func retry() {
+        guard hasSavedLayout else {
+            rescan()
+            return
+        }
+        generation += 1
+        lastAccessGranted = trustProvider()
+        reconcile()
+    }
+
+    private func rescan() {
         generation += 1
         let current = generation
         // Release before scanning: otherwise the hidden apps have no AX items.
