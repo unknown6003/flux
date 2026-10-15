@@ -111,7 +111,7 @@ final class MenuBarDragController: ObservableObject {
             $0 | (CGEventMask(1) << $1.rawValue)
         }
         guard let newTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
-                                             options: .defaultTap, eventsOfInterest: mask,
+                                             options: .listenOnly, eventsOfInterest: mask,
                                              callback: { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
             // This tap's source is attached only to the main run loop below.
