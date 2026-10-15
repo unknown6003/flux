@@ -824,8 +824,8 @@ func probe() {
         }
         do { try driver.run() }
         catch { print("FAIL: overlapping native driver launch: \(error)"); exit(1) }
-        Thread.sleep(forTimeInterval: 0.75)
-        let heldDeadline = ProcessInfo.processInfo.systemUptime + 0.8
+        if !retryOverlap { Thread.sleep(forTimeInterval: 0.75) }
+        let heldDeadline = ProcessInfo.processInfo.systemUptime + (retryOverlap ? 1.55 : 0.8)
         @MainActor func verifyHeld() {
             let pointer = CGEvent(source: nil)?.location
             if NSEvent.pressedMouseButtons & 1 != 0,
@@ -850,7 +850,7 @@ func probe() {
             }
             print("PASS: the held second native drag has not overwritten saved assignments")
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { verifyHeld() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (retryOverlap ? 0.8 : 0.05)) { verifyHeld() }
     }
     @MainActor
     func nativeMove() {
@@ -1021,7 +1021,7 @@ func probe() {
         let moving = staleFrameKind == "arrow" ? fixture()! : ordered[0]
         let towardClock = ordered.first?.id == moving.id
         let direction: MenuBarIconManager.MoveDirection = towardClock ? .towardClock : .towardDrawer
-        let pixelIcon: MenuBarIconManager.Icon? = moving
+        let pixelIcon = fixture()
         if let physical = geometry("prepared-\(reorderSection.rawValue)") {
             guard let pixelIcon, abs(physical.x - pixelIcon.frame.midX) <= 1,
                   MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1, width: 2, height: 2),

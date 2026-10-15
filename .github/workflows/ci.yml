@@ -1,14 +1,16 @@
 name: CI
 
 # Builds Flux on a macOS runner (this repo is developed from a Linux box, so CI
-# is the only place the app compiles), runs the headless self-test, and — on
+# is the only place the app compiles), runs the headless self-test, and on
 # v* tag pushes — publishes a GitHub release with Flux.dmg attached, which is
 # the artifact UpdateChecker consumes for in-app auto-update.
 
 on:
   push:
-    branches: [main, 'notch-**']
+    branches: [main]
     tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       menu_bar_probe:
@@ -23,13 +25,17 @@ on:
         description: Limit a diagnostic run to comma-separated native icon case labels
         type: string
         default: ''
+      historical_baselines:
+        description: Also rerun historical broken versions; current checks always run
+        type: boolean
+        default: false
       drag_probe_plan:
         description: Run isolated native drag cases from exact commits instead of building
         type: string
         default: ''
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ inputs.drag_probe_plan && 'native-drag-probes' || github.ref }}
@@ -106,32 +112,44 @@ jobs:
           if-no-files-found: warn
 
   build:
+    name: macOS checks and app build
     if: ${{ !inputs.drag_probe_plan }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
     timeout-minutes: 30
     steps:
       # Pinned to an immutable commit SHA — see the note in codeql.yml. It
-      # matters more here than there: this workflow holds `contents: write`
-      # and publishes the DMG the in-app updater installs, so a repointed
+      # matters more here than there: tag builds feed the release job and
+      # publish the DMG the in-app updater installs, so a repointed
       # tag could ship arbitrary code to every Flux user.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Record checked source and profile
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          mkdir -p build
+          printf '%s\n' "$EXPECTED_SHA" > build/checked-source.txt
+          printf 'Checked source: `%s`\n\n' "$EXPECTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Current native checks are serial. Historical baselines are opt-in. PR builds use ad-hoc signing.\n' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Swift version
         run: swift --version
 
       - name: Probe automatic update scheduling
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_schedule.py
 
       - name: Probe sound keys after access recovery
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_sound.py
 
       - name: Reproduce the previous automatic update failure
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ inputs.historical_baselines && inputs.menu_bar_probe && !inputs.arrow_probe_only }}
         run: |
           python3 - <<'PY'
           import sys
@@ -146,111 +164,19 @@ jobs:
           PY
 
       - name: Probe automatic update and rollback
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_update.py
 
       - name: Probe Settings icon section moves
-        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         timeout-minutes: 11
         env:
           FLUX_ICON_PROBE_CASES: ${{ inputs.icon_probe_cases }}
-        run: |
-          python3 - <<'PY'
-          import sys
-          sys.path.insert(0, 'Scripts')
-          from probe_update import run
-          from pathlib import Path
-          import os
-          cases = [
-              ('assessment-baseline', 'probe_assessment.py', ['--baseline-ref',
-                  '08eafce418581e0e5f7e291cc6ffbcd73fdf8860'], 'late B completion must not install B'),
-              ('assessment', 'probe_assessment.py', [], None),
-              ('read-only-baseline', 'probe_layout_scan.py', ['--case', 'read-only', '--hider-ref',
-                  'ee22f6f176bfaba0d230c1afad5622e81cb5db9f'], 'read-only layout observer started hiding without apply'),
-              ('read-only', 'probe_layout_scan.py', ['--case', 'read-only'], None),
-              ('batch-read-baseline', 'probe_layout_scan.py', ['--case', 'batch', '--hider-ref',
-                  '7cdb20ae7e35312c7952b03aaf0195186b1a33a6'], 'an unreadable app discarded the readable app'),
-              ('sibling-scan-baseline', 'probe_layout_scan.py', ['--case', 'batch', '--hider-ref',
-                  '11c235b714390c5ace3c55595ae6e16a48c144cb'], 'an incomplete sibling scan changed saved visibility'),
-              ('batch', 'probe_layout_scan.py', ['--case', 'batch'], None),
-              ('geometry-baseline', 'probe_icons.py', ['--native-geometry', '--manager-ref',
-                  '66dbf21690e7d0936162744822dea44abdf342aa'], 'AX position disagrees with the drawn fixture'),
-              ('geometry', 'probe_icons.py', ['--native-geometry'], None),
-              ('inventory-baseline', 'probe_icons.py', ['--native-refresh-retry', '--manager-ref',
-                  '11c235b714390c5ace3c55595ae6e16a48c144cb'], 'a transient inventory read discarded the completed native move'),
-              ('inventory-retry', 'probe_icons.py', ['--native-refresh-retry'], None),
-              ('programmatic-inventory-baseline', 'probe_icons.py', ['--move-refresh-retry', '--manager-ref',
-                  '94927b1cac66258b2bd694e1fce74edceb1265d5'], 'a transient programmatic inventory read lost the Shown assignment'),
-              ('programmatic-inventory', 'probe_icons.py', ['--move-refresh-retry'], None),
-              ('programmatic-inventory-failure', 'probe_icons.py', ['--move-refresh-failure'], None),
-              ('position-save-baseline', 'probe_icons.py', ['--move-save-retry', '--manager-ref',
-                  '0b947b2914e64dbfdb1854bae457fc52a6ce46f9'], 'a transient position save lost the programmatic Shown assignment'),
-              ('position-save-retry', 'probe_icons.py', ['--move-save-retry'], None),
-              ('position-warning-baseline', 'probe_icons.py', ['--move-save-failure', '--manager-ref',
-                  'cb93553ab503bb5e20fb341ddb2a2c7a92c7afbf'], 'a successful retry retained the old save warning'),
-              ('position-save-failure', 'probe_icons.py', ['--move-save-failure'], None),
-              ('programmatic-overlap-baseline', 'probe_icons.py', ['--move-overlap', '--manager-ref',
-                  '11c235b714390c5ace3c55595ae6e16a48c144cb', '--hider-ref',
-                  '11c235b714390c5ace3c55595ae6e16a48c144cb'], 'programmatic verification saved an unfinished native sibling drag'),
-              ('programmatic-overlap', 'probe_icons.py', ['--move-overlap'], None),
-              ('retry-overlap-baseline', 'probe_icons.py', ['--move-retry-overlap', '--manager-ref',
-                  '6095919f8727b42def9ab2ed7f27e0d007f14010'], 'programmatic retry undid the later native move'),
-              ('retry-overlap', 'probe_icons.py', ['--move-retry-overlap'], None),
-              ('overlap', 'probe_icons.py', ['--native-overlap'], None),
-              ('sibling-baseline', 'probe_icons.py', ['--native-sibling', '--manager-ref',
-                  '7cdb20ae7e35312c7952b03aaf0195186b1a33a6'], 'an unchanged first icon discarded the second icon'),
-              ('sibling', 'probe_icons.py', ['--native-sibling'], None),
-              ('move-close-baseline', 'probe_icons.py', ['--move-close', '--manager-ref',
-                  '195cb7063f614b878a3df82b9874b31849ac9738'],
-                  'closing management applied hiding before the pending move was verified'),
-              ('move-close', 'probe_icons.py', ['--move-close'], None),
-              ('native-close', 'probe_icons.py', ['--native-close'], None),
-              ('settings', 'probe_icons.py', [], None),
-              ('menu-context', 'probe_icons.py', ['--menu-context'], None),
-              ('drag-context', 'probe_icons.py', ['--drag-context'], None),
-              ('stale-section-baseline', 'probe_icons.py', ['--stale-frame', 'section', '--manager-ref',
-                  '0d92d35c73521707bf3a8408ec67b008dd43017e'], 'the real fixture did not move to'),
-              ('stale-section', 'probe_icons.py', ['--stale-frame', 'section'], None),
-              ('stale-arrow-baseline', 'probe_icons.py', ['--stale-frame', 'arrow', '--manager-ref',
-                  '0d92d35c73521707bf3a8408ec67b008dd43017e'], 'the Settings arrow did not change the real icon order'),
-              ('stale-arrow', 'probe_icons.py', ['--stale-frame', 'arrow'], None),
-              ('removed-row-baseline', 'probe_icons.py', ['--removed-row', '--manager-ref',
-                  '0e45a2291b9ac1b702d251c2c3d2c5badc4178dd'], 'a removed icon row started a move of its replacement'),
-              ('removed-row', 'probe_icons.py', ['--removed-row'], None),
-              ('settings-reopen-baseline', 'probe_settings_reopen.py', ['--controller-ref',
-                  '9ee29cac995b57a33381c5bbd74526be223aa869'], 'same-tab reopen: management reveal must be true'),
-              ('settings-reopen', 'probe_settings_reopen.py', [], None),
-              ('menu-wait-baseline', 'probe_icons.py', ['--menu-context', '--manager-ref',
-                  '4ac25a1abe27016202533d2369ed7b8a985782fe'], 'native move started before its menu window closed'),
-              ('menu-expired-baseline', 'probe_icons.py', ['--menu-expired', '--manager-ref',
-                  'c691fe1c2b1f475eb22239e1a65662cfa7394aac'], 'an expired menu request posted native input'),
-              ('menu-expired', 'probe_icons.py', ['--menu-expired'], None),
-          ]
-          selected = set(filter(None, os.environ.get('FLUX_ICON_PROBE_CASES', '').split(',')))
-          if selected:
-              assert selected <= {case[0] for case in cases}, 'Unknown native icon case'
-              cases = [case for case in cases if case[0] in selected]
-          output = Path('build/icon-probe')
-          output.mkdir(parents=True, exist_ok=True)
-          failed = []
-          for label, script, arguments, expected_failure in cases:
-              try:
-                  result = run(['python3', 'Scripts/' + script] + arguments, seconds=180, check=False)
-                  log = result.stdout
-                  passed = (result.returncode == 1 and expected_failure in log) if expected_failure else result.returncode == 0
-              except RuntimeError as error:
-                  log, passed = str(error), False
-              (output / (label + '.log')).write_text(log)
-              print(log, flush=True)
-              print(('PASS' if passed else 'FAIL') + ': ' + label, flush=True)
-              if not passed:
-                  failed.append(label)
-          if failed:
-              raise SystemExit('FAIL: ' + ', '.join(failed))
-          PY
+          FLUX_ICON_PROBE_BASELINES: ${{ inputs.historical_baselines }}
+        run: python3 Scripts/run_icon_probes.py
 
       - name: Upload icon move failure evidence
-        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: icon-probe
@@ -258,17 +184,17 @@ jobs:
           if-no-files-found: ignore
 
       - name: Probe menu bar layout reads
-        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         timeout-minutes: 3
         run: python3 Scripts/probe_layout_scan.py
 
       - name: Probe Always Hidden transitions
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         timeout-minutes: 5
         run: python3 Scripts/probe_hidden_transition.py --install-normal-fixture
 
       - name: Probe native icon dragging and Command bypass
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         timeout-minutes: 9
         run: |
           python3 - <<'PY'
@@ -286,7 +212,7 @@ jobs:
           PY
 
       - name: Upload native drag probe logs
-        if: ${{ always() && ((inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v')) }}
+        if: ${{ always() && ((inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: menu-drag-probe
@@ -294,21 +220,22 @@ jobs:
           if-no-files-found: warn
 
       - name: Import release signing identity
+        if: ${{ github.event_name != 'pull_request' }}
         env:
           FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
           FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
         run: python3 Scripts/import_signing.py
 
       - name: Probe access across changed signed builds
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_signing.py
 
       - name: Probe menu bar visibility
-        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_menu_bar.py --dual-display
 
       - name: Upload menu bar probe images
-        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: menu-bar-probe
@@ -330,11 +257,11 @@ jobs:
           if-no-files-found: error
 
       - name: Probe real Flux arrow clicks
-        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_menu_bar.py --app-click
 
       - name: Upload Flux arrow probe images
-        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v')) }}
+        if: ${{ always() && (inputs.menu_bar_probe || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: flux-arrow-probe
@@ -381,19 +308,33 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Flux.dmg
-          path: build/Flux.dmg
+          path: |
+            build/Flux.dmg
+            build/checked-source.txt
           if-no-files-found: error
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" build/Flux.dmg \
-            --title "Flux $VERSION" \
-            --generate-notes
-
       - name: Remove temporary signing keychain
-        if: always()
+        if: ${{ always() && github.event_name != 'pull_request' }}
         run: python3 Scripts/import_signing.py --cleanup
+
+
+  publish:
+    name: Publish checked release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and publish checked DMG
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name Flux.dmg --dir build
+          test "$(cat build/checked-source.txt)" = "$GITHUB_SHA"
+          VERSION="${GITHUB_REF_NAME#v}"
+          printf 'Release artifact source: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          gh release create "$GITHUB_REF_NAME" build/Flux.dmg --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "Flux $VERSION" --generate-notes
