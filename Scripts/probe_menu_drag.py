@@ -317,7 +317,8 @@ final class Probe {
         for (i, section) in MenuBarSection.allCases.enumerated() {
             targets[section.rawValue] = cg(window.convertPoint(toScreen: NSPoint(x: 110 + i * 200, y: 90)))
         }
-        targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - 10))
+        let barHeight = max(NSStatusBar.system.thickness, primary.safeAreaInsets.top)
+        targets["bar"] = cg(NSPoint(x: primary.frame.midX + 80, y: primary.frame.maxY - barHeight - 18))
         targets["invalid"] = cg(NSPoint(x: primary.frame.minX + 30, y: primary.frame.minY + 80))
         let state: [String: Any] = [
             "ready": row != nil, "pid": ProcessInfo.processInfo.processIdentifier,

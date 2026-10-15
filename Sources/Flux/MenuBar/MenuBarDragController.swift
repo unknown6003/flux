@@ -378,7 +378,7 @@ final class MenuBarDragController: ObservableObject {
         removeReturnPanels()
         for screen in NSScreen.screens {
             let height = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-            let frame = NSRect(x: screen.frame.minX, y: screen.frame.maxY - height,
+            let frame = NSRect(x: screen.frame.minX, y: screen.frame.maxY - height * 2 - 8,
                                width: screen.frame.width, height: height)
             let view = MenuBarDragDestinationView(frame: .zero)
             view.controller = self
