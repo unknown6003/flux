@@ -29,8 +29,8 @@ final class ControlItem {
     /// Width a collapsed divider expands to. Larger than any conceivable menu
     /// bar, so left-neighbours are pushed fully off-screen behind the app menus.
     private static let collapsedWidth: CGFloat = 10_000
-    /// A revealed divider shrinks to a hairline so it doesn't waste bar space.
-    private static let revealedWidth: CGFloat = 1
+    /// Older systems need a hairline; macOS 27 keeps only the boundary position.
+    private static var revealedWidth: CGFloat { usesMacOS27Model ? 0 : 1 }
 
     /// A menu-bar `NSStatusItem`'s saved "Preferred Position" is a distance-from-the-
     /// right-edge in points, so any legitimate value is at most the screen width plus
@@ -180,6 +180,7 @@ final class ControlItem {
     var onShowMenu: (() -> Void)?
 
     private var style: MenuBarIconStyle = .chevron
+    private var dividerWidthConstraints: [NSLayoutConstraint] = []
     /// Whether the chevron currently shows its "revealed" glyph. Read-only outside
     /// the class; used by `MenuBarManager.diagnostics` and the self-test.
     private(set) var isRevealed = false
@@ -221,13 +222,14 @@ final class ControlItem {
             // Invisible: no image, empty title. It only exists to take up space.
             button.image = nil
             button.title = ""
+            setCollapsed(false)
         }
     }
 
     // MARK: Divider geometry
 
     /// On macOS 14–26, collapse or reveal the items left of this divider.
-    /// macOS 27 keeps it narrow and hides through MenuBarAgent instead.
+    /// macOS 27 removes its width and hides through MenuBarAgent instead.
     /// `NSStatusItem.length` is set directly: it isn't reliably animatable, and an instant change is both
     /// snappier and more robust than fighting the animator proxy.
     /// (No `animated:` parameter: an earlier signature took one and never
@@ -238,8 +240,29 @@ final class ControlItem {
         let target: CGFloat
         target = collapsed && !Self.usesMacOS27Model
             ? ControlItem.collapsedWidth : ControlItem.revealedWidth
-        guard abs(statusItem.length - target) > 0.5 else { return }
-        statusItem.length = target
+        setDividerLength(target)
+    }
+
+    private func setDividerLength(_ length: CGFloat) {
+        if Self.usesMacOS27Model, let button = statusItem.button,
+           let window = button.window, let content = window.contentView {
+            if length == 0 {
+                // AppKit's minimum content width leaves a padded slot for an empty item.
+                let constraints = content.constraintsAffectingLayout(for: .horizontal)
+                    .filter { $0.isActive && $0.secondItem === button.superview }
+                dividerWidthConstraints.append(contentsOf: constraints)
+                NSLayoutConstraint.deactivate(constraints)
+            } else {
+                NSLayoutConstraint.activate(dividerWidthConstraints)
+                dividerWidthConstraints.removeAll()
+            }
+            if statusItem.length != length { statusItem.length = length }
+            if length == 0, window.frame.width != 1 {
+                window.setContentSize(NSSize(width: 1, height: content.frame.height))
+            }
+        } else if statusItem.length != length {
+            statusItem.length = length
+        }
     }
 
     func setVisible(_ visible: Bool) {
@@ -286,7 +309,7 @@ final class ControlItem {
             button.title = ""
             button.toolTip = "Hold ⌘ and drag an icon to the left of here to move it into \(zone.displayName)."
             // Auto-fit to the tag so the marker is fully visible while arranging.
-            statusItem.length = NSStatusItem.variableLength
+            setDividerLength(NSStatusItem.variableLength)
         } else {
             button.image = nil
             button.title = ""
@@ -297,7 +320,7 @@ final class ControlItem {
             // that shoves the neighbouring icons sideways every time a marker is
             // taken down. The caller may override this immediately (a collapse), but
             // it must never be left to macOS to guess.
-            statusItem.length = ControlItem.revealedWidth
+            setDividerLength(ControlItem.revealedWidth)
         }
     }
 

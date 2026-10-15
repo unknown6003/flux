@@ -98,7 +98,7 @@ final class MenuBarManager {
 
     /// Public entry point for the hotkey and menu.
     func toggleReveal() {
-        guard !ControlItem.usesMacOS27Model || accessibilityTrusted() || canHideWithoutAccess() else {
+        guard !ControlItem.usesMacOS27Model || canHideWithoutAccess() || accessibilityTrusted() else {
             if let onOpenSettingsTab { onOpenSettingsTab(.menuBar) }
             else { onOpenSettings() }
             return

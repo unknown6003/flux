@@ -130,7 +130,8 @@ final class MacOS27Hider {
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
     private var clockFrameCache: (frame: CGRect, date: Date)?
-    private var lastAccessGranted = false
+    private var lastAccessGranted = AXIsProcessTrusted()
+    private var accessGeneration = 0
     private var lastCollapsedScan = "No collapsed scan has run."
     private var lastCollapsedRequest = "No collapsed hide request has run."
 
@@ -155,9 +156,9 @@ final class MacOS27Hider {
     }
 
     init(defaults: UserDefaults = .standard,
-         trustProvider: @escaping () -> Bool = { AccessibilityAccess.isGranted() },
+         trustProvider: (() -> Bool)? = nil,
          positionReader: (() -> PositionScan)? = nil) {
-        self.trustProvider = trustProvider
+        self.trustProvider = trustProvider ?? { AccessibilityAccess.isGranted() }
         self.defaults = defaults
         if let positionReader {
             self.positionReader = { _ in positionReader() }
@@ -189,6 +190,16 @@ final class MacOS27Hider {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) {
             [weak self] _ in
             Task { @MainActor in self?.updateClockHover() }
+        }
+        if trustProvider == nil {
+            let initialAccessGeneration = accessGeneration
+            Task { [weak self] in
+                let granted = await Task.detached(priority: .utility) {
+                    AccessibilityAccess.isGranted()
+                }.value
+                guard let self, self.accessGeneration == initialAccessGeneration else { return }
+                self.lastAccessGranted = granted
+            }
         }
     }
 
@@ -288,7 +299,13 @@ final class MacOS27Hider {
         self.alwaysHiddenEnabled = alwaysHiddenEnabled
         self.chevronX = chevronX
         self.alwaysX = alwaysX
-        retry()
+        if hasSavedLayout && assessment.isAvailable {
+            generation += 1
+            layoutScanPending = false
+            reconcile()
+        } else {
+            retry()
+        }
     }
 
     func retry() {
@@ -303,7 +320,7 @@ final class MacOS27Hider {
             }
             onReadState?(true)
             defer { onReadState?(false) }
-            lastAccessGranted = trustProvider()
+            refreshAccess()
             latestError = lastAccessGranted ? nil
                 : "Using the saved icon layout. Allow Accessibility to change it."
             onStatus?(latestError)
@@ -347,7 +364,7 @@ final class MacOS27Hider {
                 self.onStatus?(message)
                 return
             }
-            self.lastAccessGranted = self.trustProvider()
+            self.refreshAccess()
             guard self.lastAccessGranted else {
                 self.layoutScanPending = false
                 let message = self.hasSavedLayout
@@ -408,6 +425,11 @@ final class MacOS27Hider {
         defaults.set(["hidden": hidden.sorted(), "alwaysHidden": alwaysHidden.sorted()],
                      forKey: Self.layoutKey)
         hasSavedLayout = true
+    }
+
+    private func refreshAccess() {
+        accessGeneration += 1
+        lastAccessGranted = trustProvider()
     }
 
     private func reconcile() {
