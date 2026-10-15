@@ -39,14 +39,16 @@ import AppKit
 
 private extension MenuBarAssessment {
     var transitionProbeState: String {
-        "active=\(active?.allowed ?? []) pending=\(pending != nil)"
+        "allowedCount=\(active?.allowed.count ?? 0) normalAllowed=\(active?.allowed.contains(CommandLine.arguments[2]) ?? false) pending=\(pending != nil)"
     }
+    func transitionProbeInvalidateActive() { active?.assertion.invalidate() }
 }
 
 private extension MacOS27Hider {
     var transitionProbeState: String {
         "hidden=\(hidden.sorted()) always=\(alwaysHidden.sorted()) \(assessment.transitionProbeState)"
     }
+    func transitionProbeInvalidateActive() { assessment.transitionProbeInvalidateActive() }
 }
 
 MainActor.assumeIsolated {
@@ -97,15 +99,25 @@ MainActor.assumeIsolated {
               let bitmap = NSBitmapImageRep(data: data) else {
             finish(false, "FAIL: menu-bar capture failed")
         }
+        guard bitmap.bitsPerSample == 8, !bitmap.isPlanar,
+              [3, 4].contains(bitmap.samplesPerPixel), let bytes = bitmap.bitmapData else {
+            finish(false, "FAIL: capture did not use an 8-bit RGB bitmap")
+        }
+        let stride = bitmap.samplesPerPixel
+        let alphaFirst = bitmap.bitmapFormat.contains(.alphaFirst)
+        let rgbOffset = alphaFirst && stride == 4 ? 1 : 0
         var count = 0
         normalPixels = 0
         for y in 0..<bitmap.pixelsHigh {
             for x in 0..<bitmap.pixelsWide {
-                if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
-                   color.blueComponent > 0.7, color.alphaComponent > 0.9 {
-                    if color.redComponent > 0.7, color.greenComponent < 0.4 { count += 1 }
-                    if color.greenComponent > 0.7, color.redComponent < 0.6 { normalPixels += 1 }
-                }
+                let pixel = y * bitmap.bytesPerRow + x * stride
+                let alpha = stride == 4 ? bytes[pixel + (alphaFirst ? 0 : 3)] : 255
+                guard alpha > 229 else { continue }
+                let red = bytes[pixel + rgbOffset]
+                let green = bytes[pixel + rgbOffset + 1]
+                let blue = bytes[pixel + rgbOffset + 2]
+                if blue > 178, red > 178, green < 102 { count += 1 }
+                if blue > 178, green > 178, red < 153 { normalPixels += 1 }
             }
         }
         captures += 1
@@ -118,6 +130,9 @@ MainActor.assumeIsolated {
         }
         if step == 2 { hider.retry() }
         else {
+            if CommandLine.arguments.contains("--invalidate-before-transition") {
+                hider.transitionProbeInvalidateActive()
+            }
             hider.apply(revealHidden: step == 0, revealAlwaysHidden: false,
                         chevronX: { region.maxX }, alwaysX: { region.maxX })
         }
@@ -209,6 +224,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-ref")
     parser.add_argument("--artifacts-dir", type=Path)
+    parser.add_argument("--invalidate-before-transition", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     artifacts = args.artifacts_dir or root / "build/transition-probe"
@@ -253,7 +269,8 @@ def main():
         run([register, "-f", str(normal_bundle)], 20)
         normal_process = subprocess.Popen([str(normal_binary)], start_new_session=True)
         try:
-            run([str(binary), str(artifacts / "sample.png"), normal_id], 22)
+            run([str(binary), str(artifacts / "sample.png"), normal_id]
+                + (["--invalidate-before-transition"] if args.invalidate_before_transition else []), 22)
         finally:
             try:
                 os.killpg(normal_process.pid, signal.SIGTERM)
