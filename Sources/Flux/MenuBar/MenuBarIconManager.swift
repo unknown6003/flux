@@ -19,6 +19,7 @@ final class MenuBarIconManager: ObservableObject {
         let section: MenuBarSection
         let isMovable: Bool
         let frame: CGRect
+        var identity: UUID? = nil
     }
 
     @Published private(set) var icons: [Icon] = []
@@ -384,7 +385,8 @@ final class MenuBarIconManager: ObservableObject {
                              source: source,
                              section: section,
                              isMovable: true,
-                             frame: frame))
+                             frame: frame,
+                             identity: identity(for: id, element: element)))
             nextElements[id] = element
         }
 
@@ -417,7 +419,8 @@ final class MenuBarIconManager: ObservableObject {
                     ?? macOS27Hider.section(for: bundleID)
                     ?? Self.section(for: frame, boundaries: boundaries)
                 next.append(Icon(id: id, title: title, source: app.localizedName,
-                                 section: section, isMovable: true, frame: frame))
+                                 section: section, isMovable: true, frame: frame,
+                                 identity: identity(for: id, element: element)))
                 nextElements[id] = element
             }
         }
@@ -472,11 +475,24 @@ final class MenuBarIconManager: ObservableObject {
         return label(element, depth: 0)
     }
 
+    private func identity(for id: String, element: AXUIElement) -> UUID {
+        if let previous = elements[id], CFEqual(previous, element),
+           let identity = icons.first(where: { $0.id == id })?.identity {
+            return identity
+        }
+        return UUID()
+    }
+
     private func refreshedIcon(_ icon: Icon) -> Icon? {
         guard icon.isMovable else { return nil }
         refresh()
         guard let current = icons.first(where: { $0.id == icon.id && $0.isMovable }) else {
             if isTrusted { errorMessage = "Flux could not find this icon. Refresh icons and try again." }
+            return nil
+        }
+        guard current.title == icon.title, current.source == icon.source,
+              icon.identity == nil || current.identity == icon.identity else {
+            errorMessage = "This icon changed. Refresh icons and try again."
             return nil
         }
         if ControlItem.usesMacOS27Model {
