@@ -42,6 +42,7 @@ parser.add_argument("--move-refresh-failure", action="store_true")
 parser.add_argument("--move-save-retry", action="store_true")
 parser.add_argument("--move-save-failure", action="store_true")
 parser.add_argument("--menu-context", action="store_true")
+parser.add_argument("--drag-context", action="store_true")
 parser.add_argument("--native-overlap", action="store_true")
 parser.add_argument("--native-geometry", action="store_true")
 parser.add_argument("--native-sibling", action="store_true")
@@ -83,7 +84,7 @@ if CommandLine.arguments.count == 8 && CommandLine.arguments[1] == "--drag-sibli
     post(.leftMouseUp, target)
     exit(0)
 }
-if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap", "--drag-held-return"].contains(CommandLine.arguments[1]) {
+if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap", "--drag-held-return", "--drag-row"].contains(CommandLine.arguments[1]) {
     let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
     guard values.count == 4 else { exit(2) }
     let start = CGPoint(x: values[0], y: values[1])
@@ -91,7 +92,7 @@ if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap", "--drag-held
     func post(_ type: CGEventType, _ point: CGPoint) {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: type,
                                   mouseCursorPosition: point, mouseButton: .left) else { exit(2) }
-        event.flags = .maskCommand
+        event.flags = CommandLine.arguments[1] == "--drag-row" ? [] : .maskCommand
         event.post(tap: .cghidEventTap)
     }
     post(.leftMouseDown, start)
@@ -212,6 +213,7 @@ func probe() {
         || CommandLine.arguments.contains("--move-refresh-retry")
         || CommandLine.arguments.contains("--move-refresh-failure")
         || CommandLine.arguments.contains("--menu-context")
+        || CommandLine.arguments.contains("--drag-context")
         || saveTest
         || CommandLine.arguments.contains("--native-overlap")
         || CommandLine.arguments.contains("--native-geometry")
@@ -382,6 +384,74 @@ func probe() {
             print("PASS: a real menu action moves the fixture and saves Shown")
             finish()
         }
+    }
+    @MainActor
+    func moveFromDrag() {
+        manager.refresh()
+        guard let icon = fixture(), icon.section == .hidden,
+              let screen = NSScreen.screens.first else { exit(1) }
+        let window = NSWindow(contentRect: NSRect(x: 300, y: 180, width: 500, height: 360),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Flux real manager drag probe"
+        window.isReleasedWhenClosed = false
+        let controller = MenuBarDragController()
+        let row = controller.makeSourceView(for: icon)
+        row.frame = NSRect(x: 30, y: 260, width: 160, height: 32)
+        let destination = MenuBarDragDestinationView(frame: NSRect(x: 270, y: 60, width: 190, height: 90))
+        destination.controller = controller
+        destination.section = .shown
+        window.contentView!.addSubview(row)
+        window.contentView!.addSubview(destination)
+        var events: [String] = []
+        controller.trace = { value in events.append(value); print("REAL_DRAG \(value)") }
+        window.makeKeyAndOrderFront(nil)
+        app.activate(ignoringOtherApps: true)
+        let readyDeadline = ProcessInfo.processInfo.systemUptime + 5
+        @MainActor func start() {
+            guard NSApp.isActive, NSApp.keyWindow === window else {
+                guard ProcessInfo.processInfo.systemUptime < readyDeadline else {
+                    print("FAIL: real manager drag window was not active and key"); exit(1)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { start() }
+                return
+            }
+            controller.open(manager: manager, window: window)
+            func center(_ view: NSView) -> CGPoint {
+                let p = window.convertPoint(toScreen: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
+                return CGPoint(x: p.x, y: screen.frame.maxY - p.y)
+            }
+            let from = center(row), to = center(destination)
+            let driver = Process()
+            driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
+            driver.arguments = ["--drag-row", String(Double(from.x)), String(Double(from.y)),
+                                String(Double(to.x)), String(Double(to.y))]
+            driver.terminationHandler = { driver in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    manager.refresh()
+                    let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
+                    guard driver.terminationStatus == 0,
+                          events.contains(where: { $0.hasPrefix("native began ") }),
+                          events.contains("ended operation=16"),
+                          events.contains(where: { $0.hasPrefix("commit shown ") }),
+                          let current = fixture(), !manager.isUpdatingIcons,
+                          MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
+                          current.section == .shown,
+                          (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
+                        manager.copyMenuBarReport()
+                        print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
+                        print("FAIL: real drag callbacks did not move and save the fixture as Shown")
+                        exit(1)
+                    }
+                    controller.close()
+                    window.close()
+                    print("PASS: real drag callbacks move the actual icon and save Shown")
+                    finish()
+                }
+            }
+            do { try driver.run() }
+            catch { print("FAIL: real drag driver could not start: \(error)"); exit(1) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { start() }
     }
     @MainActor
     func moveAndClose() {
@@ -853,6 +923,10 @@ func probe() {
             moveFromMenu()
             return
         }
+        if CommandLine.arguments.contains("--drag-context") {
+            moveFromDrag()
+            return
+        }
         if CommandLine.arguments.contains("--native-sibling") {
             moveSibling(ordered)
             return
@@ -990,12 +1064,13 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         "Sources/Flux/MenuBar/MenuBarIconManager.swift", "Sources/Flux/MenuBar/MacOS27Hider.swift",
         "Sources/Flux/MenuBar/ControlItem.swift", "Sources/Flux/MenuBar/MenuBarSection.swift",
         "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
+        "Sources/Flux/MenuBar/MenuBarDragController.swift",
         "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
         "Sources/Flux/Support/AccessibilityAccess.swift"])
     close_test = (options.native_close or options.move_close or options.native_overlap
                   or options.native_geometry or options.native_refresh_retry
                   or options.move_refresh_retry or options.move_refresh_failure
-                  or options.move_save_retry or options.move_save_failure or options.menu_context)
+                  or options.move_save_retry or options.move_save_failure or options.menu_context or options.drag_context)
     capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
                         or options.move_save_retry or options.move_save_failure)
     geometry = temporary / "geometry"
@@ -1013,6 +1088,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--move-save-retry", options.move_save_retry),
                     ("--move-save-failure", options.move_save_failure),
                     ("--menu-context", options.menu_context),
+                    ("--drag-context", options.drag_context),
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap)]
         flags = [flag for flag, enabled in selected if enabled]
