@@ -146,7 +146,6 @@ func probe() {
     func fixture() -> MenuBarIconManager.Icon? {
         manager.icons.first { $0.title == "Flux fixture A" }
     }
-    var previousHit: AXUIElement?
     var captureDeadlines: [String: TimeInterval] = [:]
     @MainActor
     @discardableResult
@@ -209,10 +208,6 @@ func probe() {
         var title: CFTypeRef?
         var hitPosition: CFTypeRef?
         var hitSize: CFTypeRef?
-        var previousPosition: CFTypeRef?
-        if let previousHit {
-            AXUIElementCopyAttributeValue(previousHit, kAXPositionAttribute as CFString, &previousPosition)
-        }
         if let hit {
             AXUIElementGetPid(hit, &pid)
             AXUIElementCopyAttributeValue(hit, kAXTitleAttribute as CFString, &title)
@@ -235,106 +230,7 @@ func probe() {
             }
         }
         let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"), encoding: .utf8)) ?? "missing"
-        let windows = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? [])
-            .filter { ($0[kCGWindowOwnerPID as String] as? Int32) == pid }
-        if let agent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first {
-            let host = AXUIElementCreateApplication(agent.processIdentifier)
-            AXUIElementSetMessagingTimeout(host, 0.1)
-            var hostBar: CFTypeRef?
-            AXUIElementCopyAttributeValue(host, kAXExtrasMenuBarAttribute as CFString, &hostBar)
-            var records: [[String: String]] = []
-            let deadline = ProcessInfo.processInfo.systemUptime + 1
-            func visit(_ element: AXUIElement, depth: Int) {
-                guard depth < 6, records.count < 100, ProcessInfo.processInfo.systemUptime < deadline else { return }
-                var record: [String: String] = ["depth": String(depth)]
-                var ownerPID: pid_t = 0
-                AXUIElementGetPid(element, &ownerPID)
-                record["pid"] = String(ownerPID)
-                record["equalHit"] = String(hit.map { CFEqual(element, $0) } ?? false)
-                for key in [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
-                            kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
-                    var value: CFTypeRef?
-                    let result = AXUIElementCopyAttributeValue(element, key as CFString, &value)
-                    record[key] = "\(result.rawValue):\(String(describing: value))"
-                }
-                records.append(record)
-                var children: CFTypeRef?
-                AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
-                for child in children as? [AXUIElement] ?? [] { visit(child, depth: depth + 1) }
-            }
-            if let hostBar, CFGetTypeID(hostBar) == AXUIElementGetTypeID() {
-                visit(hostBar as! AXUIElement, depth: 0)
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: records, options: .prettyPrinted) {
-                try? data.write(to: output.appendingPathComponent(stage + "-host.json"), options: .atomic)
-            }
-            print("GEOMETRY_HOST \(stage) nodes=\(records.count)")
-        }
-        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own) windows=\(windows)")
-        print("GEOMETRY_RETAINED \(stage) previousPosition=\(String(describing: previousPosition)) sameHit=\(hit.flatMap { new in previousHit.map { CFEqual(new, $0) } } ?? false)")
-        var parents: [[String: String]] = []
-        var parent = hit
-        let parentDeadline = ProcessInfo.processInfo.systemUptime + 0.75
-        for depth in 0..<3 {
-            guard let current = parent, ProcessInfo.processInfo.systemUptime < parentDeadline else { break }
-            AXUIElementSetMessagingTimeout(current, 0.03)
-            var parentValue: CFTypeRef?
-            AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parentValue)
-            guard let parentValue, CFGetTypeID(parentValue) == AXUIElementGetTypeID() else { break }
-            let next = parentValue as! AXUIElement
-            var childrenValue: CFTypeRef?
-            AXUIElementCopyAttributeValue(next, kAXChildrenAttribute as CFString, &childrenValue)
-            for item in [next] + Array((childrenValue as? [AXUIElement] ?? []).prefix(40)) {
-                guard ProcessInfo.processInfo.systemUptime < parentDeadline else { break }
-                AXUIElementSetMessagingTimeout(item, 0.03)
-                var ownerPID: pid_t = 0
-                AXUIElementGetPid(item, &ownerPID)
-                var record = ["depth": String(depth), "pid": String(ownerPID)]
-                for key in [kAXRoleAttribute, kAXTitleAttribute, kAXIdentifierAttribute, kAXPositionAttribute, kAXSizeAttribute] {
-                    var value: CFTypeRef?
-                    let error = AXUIElementCopyAttributeValue(item, key as CFString, &value)
-                    record[key] = "\(error.rawValue):\(String(describing: value))"
-                }
-                parents.append(record)
-            }
-            parent = next
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: parents, options: .prettyPrinted) {
-            try? data.write(to: output.appendingPathComponent(stage + "-parents.json"), options: .atomic)
-        }
-        previousHit = hit
-        let scanStart = ProcessInfo.processInfo.systemUptime
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.03)
-        var scanX = screen.frame.maxX - 1
-        var queries = 0
-        var visibleFrames: [CGRect] = []
-        while scanX >= screen.frame.minX, queries < 256,
-              ProcessInfo.processInfo.systemUptime - scanStart < 1 {
-            queries += 1
-            var value: AXUIElement?
-            defer { scanX -= 8 }
-            guard AXUIElementCopyElementAtPosition(system, Float(scanX), Float(center.y), &value) == .success,
-                  let value else { continue }
-            AXUIElementSetMessagingTimeout(value, 0.03)
-            var role: CFTypeRef?, position: CFTypeRef?, size: CFTypeRef?
-            AXUIElementCopyAttributeValue(value, kAXRoleAttribute as CFString, &role)
-            guard role as? String == kAXMenuBarItemRole as String else { continue }
-            AXUIElementCopyAttributeValue(value, kAXPositionAttribute as CFString, &position)
-            AXUIElementCopyAttributeValue(value, kAXSizeAttribute as CFString, &size)
-            guard let position, let size, CFGetTypeID(position) == AXValueGetTypeID(),
-                  CFGetTypeID(size) == AXValueGetTypeID() else { continue }
-            var point = CGPoint.zero, dimensions = CGSize.zero
-            guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
-                  AXValueGetValue(size as! AXValue, .cgSize, &dimensions) else { continue }
-            let frame = CGRect(origin: point, size: dimensions)
-            guard frame.contains(CGPoint(x: scanX, y: center.y)) else { continue }
-            var ownerPID: pid_t = 0
-            AXUIElementGetPid(value, &ownerPID)
-            if ownerPID == pid, !visibleFrames.contains(frame) { visibleFrames.append(frame) }
-            scanX = min(scanX, frame.minX + 7)
-        }
-        print("GEOMETRY_SCAN \(stage) queries=\(queries) seconds=\(ProcessInfo.processInfo.systemUptime-scanStart) fixtureFrames=\(visibleFrames) marker=\(center)")
+        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own)")
         return center
     }
     @MainActor
