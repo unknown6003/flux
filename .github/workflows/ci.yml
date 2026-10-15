@@ -162,6 +162,9 @@ jobs:
           from pathlib import Path
           import os
           cases = [
+              ('assessment-baseline', 'probe_assessment.py', ['--baseline-ref',
+                  '08eafce418581e0e5f7e291cc6ffbcd73fdf8860'], 'late B completion must not install B'),
+              ('assessment', 'probe_assessment.py', [], None),
               ('read-only-baseline', 'probe_layout_scan.py', ['--case', 'read-only', '--hider-ref',
                   'ee22f6f176bfaba0d230c1afad5622e81cb5db9f'], 'read-only layout observer started hiding without apply'),
               ('read-only', 'probe_layout_scan.py', ['--case', 'read-only'], None),
