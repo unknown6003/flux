@@ -14,7 +14,7 @@ final class MenuBarDragController: ObservableObject {
     private weak var settingsWindow: NSWindow?
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var moveObservation: AnyCancellable?
+    private var updateObservation: AnyCancellable?
     private var timer: Timer?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
@@ -24,7 +24,7 @@ final class MenuBarDragController: ObservableObject {
     private var commandDown = false
     private var nativeGesture = false
     private var refreshing = false
-    private var movingIcons = false
+    private var updatingIcons = false
     private var inputSuspensionDepth = 0
     private var refreshRequested = true
     private var lastRefresh = -Double.infinity
@@ -52,11 +52,11 @@ final class MenuBarDragController: ObservableObject {
         self.manager = manager
         settingsWindow = window
         // @Published emits before storing the property. Use its emitted value here.
-        moveObservation = manager.$isMovingIcons.sink { [weak self] moving in
+        updateObservation = manager.$isUpdatingIcons.sink { [weak self] updating in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.movingIcons = moving
-                if moving { self.suspendInput() }
+                self.updatingIcons = updating
+                if updating { self.suspendInput() }
                 else { self.resumeInput() }
             }
         }
@@ -91,8 +91,8 @@ final class MenuBarDragController: ObservableObject {
         observers.removeAll()
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         workspaceObservers.removeAll()
-        moveObservation = nil
-        movingIcons = false
+        updateObservation = nil
+        updatingIcons = false
         refreshRequested = true
         manager = nil
         settingsWindow = nil
@@ -106,7 +106,7 @@ final class MenuBarDragController: ObservableObject {
             message = "Keep Settings active and allow Accessibility to drag menu bar icons."
             return
         }
-        if !movingIcons { refreshIcons() }
+        if !updatingIcons { refreshIcons() }
         let mask = [CGEventType.flagsChanged, .leftMouseDown, .leftMouseUp].reduce(CGEventMask(0)) {
             $0 | (CGEventMask(1) << $1.rawValue)
         }
@@ -183,7 +183,7 @@ final class MenuBarDragController: ObservableObject {
     }
 
     func refreshIcons() {
-        guard !movingIcons else { refreshRequested = true; return }
+        guard !updatingIcons else { refreshRequested = true; return }
         withInputSuspended { manager?.refresh() }
         lastRefresh = ProcessInfo.processInfo.systemUptime
         refreshRequested = false
@@ -336,7 +336,7 @@ final class MenuBarDragController: ObservableObject {
         return action()
     }
 
-    private var inputSuspended: Bool { movingIcons || inputSuspensionDepth > 0 }
+    private var inputSuspended: Bool { updatingIcons || inputSuspensionDepth > 0 }
     private var shouldPassThrough: Bool { inputSuspended || commandDown || nativeGesture || active != nil }
 
     private func suspendInput() {
