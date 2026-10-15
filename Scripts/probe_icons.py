@@ -909,7 +909,8 @@ func probe() {
             print("FAIL: the reorder fixture needs \(expected) readable icons")
             exit(1)
         }
-        if prepared < expected {
+        let reorderSection: MenuBarSection = staleFrameKind == "arrow" ? .shown : .hidden
+        if prepared < expected && staleFrameKind != "arrow" {
             manager.move(items[prepared], to: .hidden)
             guard manager.isUpdatingIcons else {
                 print("FAIL: the section move did not publish its pending verification")
@@ -920,16 +921,17 @@ func probe() {
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
         let moving = ordered[0]
-        if let physical = geometry("prepared-hidden") {
-            guard abs(physical.x - moving.frame.midX) <= 1,
+        let pixelIcon = staleFrameKind == "arrow" ? fixture() : moving
+        if let physical = geometry("prepared-\(reorderSection.rawValue)") {
+            guard let pixelIcon, abs(physical.x - pixelIcon.frame.midX) <= 1,
                   MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1, width: 2, height: 2),
-                                             boundaries: manager.boundaryProvider()) == .hidden else {
-                print("FAIL: AX position disagrees with the drawn fixture after moving to Hidden")
+                                             boundaries: manager.boundaryProvider()) == reorderSection else {
+                print("FAIL: AX position disagrees with the drawn fixture before reordering \(reorderSection.rawValue)")
                 exit(1)
             }
         }
-        guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }) else {
-            print("FAIL: the reorder fixture could not enter Hidden")
+        guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
+            print("FAIL: the reorder fixture could not enter \(reorderSection.rawValue)")
             exit(1)
         }
         if CommandLine.arguments.contains("--menu-context") {
@@ -976,12 +978,21 @@ func probe() {
                 .sorted { $0.frame.minX < $1.frame.minX }
             guard !manager.isUpdatingIcons, next.last?.title == moving.title,
                   next.allSatisfy({ MenuBarIconManager.section(
-                    for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }) else {
+                    for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
                 print("Actual frames: \(next.map { ($0.title, $0.frame) }); boundaries=\(manager.boundaryProvider())")
                 manager.copyMenuBarReport()
                 print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
+            }
+            if staleFrameKind == "arrow", let physical = geometry("reordered-shown") {
+                guard let current = fixture(), abs(physical.x - current.frame.midX) <= 1,
+                      MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1,
+                                                            width: 2, height: 2),
+                                                 boundaries: manager.boundaryProvider()) == .shown else {
+                    print("FAIL: the stale-row arrow disagrees with the drawn fixture")
+                    exit(1)
+                }
             }
             print("PASS: the Settings arrow changed the real icon order")
             finish()
