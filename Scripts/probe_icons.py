@@ -145,7 +145,8 @@ func probe() {
         driver.arguments = ["--drag", String(Double(icon.frame.midX)), String(Double(icon.frame.midY)),
                             String(Double(targetX)), String(Double(icon.frame.midY))]
         var releasedAt: TimeInterval?
-        let releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
+        var releaseMonitor: Any?
+        releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
             guard event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID)
                 == Int64(driver.processIdentifier) else { return }
             releasedAt = ProcessInfo.processInfo.systemUptime
@@ -160,7 +161,10 @@ func probe() {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { verifyRelease(until: deadline) }
                 return
             }
-            if let releaseMonitor { NSEvent.removeMonitor(releaseMonitor) }
+            if let monitor = releaseMonitor {
+                NSEvent.removeMonitor(monitor)
+                releaseMonitor = nil
+            }
             manager.refresh()
             guard let actual = fixture() else {
                 print("FAIL: the native fixture disappeared after mouse-up")
