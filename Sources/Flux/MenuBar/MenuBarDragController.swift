@@ -269,7 +269,7 @@ final class MenuBarDragController: ObservableObject {
             panel.registerForDraggedTypes([Self.pasteboardType])
             panel.orderFrontRegardless()
             returnPanels.append(panel)
-            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) viewFrame=\(view.frame) bounds=\(view.bounds) ignoresMouse=\(panel.ignoresMouseEvents) viewTypes=\(view.registeredDraggedTypes) windowTypes=\(panel.registeredDraggedTypes) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
+            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) viewFrame=\(view.frame) bounds=\(view.bounds) ignoresMouse=\(panel.ignoresMouseEvents) viewTypes=\(view.registeredDraggedTypes) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
         }
     }
 
