@@ -147,6 +147,7 @@ func probe() {
         manager.icons.first { $0.title == "Flux fixture A" }
     }
     var previousHit: AXUIElement?
+    var captureDeadlines: [String: TimeInterval] = [:]
     @MainActor
     @discardableResult
     func geometry(_ stage: String) -> CGPoint? {
@@ -186,7 +187,18 @@ func probe() {
                 }
             }
         }
-        guard count >= 20 else { print("FAIL: geometry control marker is not visible"); exit(1) }
+        if count < 20 {
+            let deadline = captureDeadlines[stage] ?? ProcessInfo.processInfo.systemUptime + 1
+            captureDeadlines[stage] = deadline
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                print("FAIL: geometry control marker is not visible after bounded settling")
+                exit(1)
+            }
+            print("GEOMETRY_SETTLE \(stage) pixels=\(count)")
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            return geometry(stage)
+        }
+        captureDeadlines.removeValue(forKey: stage)
         let scale = CGFloat(bitmap.pixelsWide) / screen.frame.width
         let center = CGPoint(x: (CGFloat(sumX) / CGFloat(count) + 0.5) / scale,
                              y: (CGFloat(sumY) / CGFloat(count) + 0.5) / scale)
