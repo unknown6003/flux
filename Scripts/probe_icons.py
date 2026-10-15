@@ -923,7 +923,8 @@ func probe() {
             print("FAIL: the reorder fixture needs \(expected) readable icons")
             exit(1)
         }
-        let reorderSection: MenuBarSection = staleFrameKind == "arrow" ? .shown : .hidden
+        let reorderSection: MenuBarSection = staleFrameKind == "arrow"
+            ? MenuBarIconManager.section(for: items[0].frame, boundaries: manager.boundaryProvider()) : .hidden
         if prepared < expected && staleFrameKind != "arrow" {
             manager.move(items[prepared], to: .hidden)
             guard manager.isUpdatingIcons else {
@@ -999,11 +1000,11 @@ func probe() {
                 print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
             }
-            if staleFrameKind == "arrow", let physical = geometry("reordered-shown") {
+            if staleFrameKind == "arrow", let physical = geometry("reordered-\(reorderSection.rawValue)") {
                 guard let current = fixture(), abs(physical.x - current.frame.midX) <= 1,
                       MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1,
                                                             width: 2, height: 2),
-                                                 boundaries: manager.boundaryProvider()) == .shown else {
+                                                 boundaries: manager.boundaryProvider()) == reorderSection else {
                     print("FAIL: the stale-row arrow disagrees with the drawn fixture")
                     exit(1)
                 }
