@@ -151,6 +151,11 @@ jobs:
           import sys
           sys.path.insert(0, 'Scripts')
           from probe_update import run
+          result = run(['python3', 'Scripts/probe_layout_scan.py', '--case', 'read-only',
+                        '--hider-ref', 'ee22f6f176bfaba0d230c1afad5622e81cb5db9f'], seconds=180, check=False)
+          print(result.stdout)
+          assert result.returncode == 1 and 'read-only layout observer started hiding without apply' in result.stdout
+          print(run(['python3', 'Scripts/probe_layout_scan.py', '--case', 'read-only'], seconds=180).stdout)
           print(run(['python3', 'Scripts/probe_layout_scan.py', '--case', 'batch'], seconds=180).stdout)
           result = run(['python3', 'Scripts/probe_icons.py', '--native-geometry'], seconds=180, check=False)
           print(result.stdout)

@@ -20,6 +20,11 @@ private final class MenuBarAssessment {
     private var pending: MenuBarAssessmentAssertion?
     var onStatus: ((String?) -> Void)?
 
+    deinit {
+        pending?.invalidate()
+        active?.assertion.invalidate()
+    }
+
     init() {
         guard dlopen("/System/Library/PrivateFrameworks/MenuBarClientCore.framework/MenuBarClientCore",
                      RTLD_NOW) != nil,
@@ -116,6 +121,7 @@ final class MacOS27Hider {
     private var layoutScanPending = false
     private var layoutReadyAt: TimeInterval = 0
     private var overClock = false
+    private var isManagingVisibility = false
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
     private var clockFrameCache: (frame: CGRect, date: Date)?
@@ -179,6 +185,11 @@ final class MacOS27Hider {
             [weak self] _ in
             Task { @MainActor in self?.updateClockHover() }
         }
+    }
+
+    deinit {
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        for observer in appObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
     }
 
     var isAvailable: Bool { assessment.isAvailable }
@@ -250,6 +261,7 @@ final class MacOS27Hider {
     func apply(revealHidden: Bool, revealAlwaysHidden: Bool,
                alwaysHiddenEnabled: Bool = true,
                chevronX: @escaping () -> CGFloat?, alwaysX: @escaping () -> CGFloat?) {
+        isManagingVisibility = true
         self.revealHidden = revealHidden
         self.revealAlwaysHidden = revealAlwaysHidden
         self.alwaysHiddenEnabled = alwaysHiddenEnabled
@@ -259,6 +271,7 @@ final class MacOS27Hider {
     }
 
     func retry() {
+        guard isManagingVisibility else { return }
         generation += 1
         if hasSavedLayout {
             layoutScanPending = false
@@ -377,6 +390,7 @@ final class MacOS27Hider {
     }
 
     private func reconcile() {
+        guard isManagingVisibility else { return }
         guard !overClock else {
             releaseAssessment()
             return

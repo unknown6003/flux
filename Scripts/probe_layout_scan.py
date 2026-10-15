@@ -4,6 +4,7 @@
 import argparse
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 
 from probe_hidden_transition import run
@@ -48,6 +49,16 @@ MainActor.assumeIsolated {
     @MainActor func apply(_ revealed: Bool, _ always: Bool, arrow: @escaping () -> CGFloat? = { 300 }) {
         hider.apply(revealHidden: revealed, revealAlwaysHidden: always,
                     chevronX: arrow, alwaysX: { 200 })
+    }
+    if CommandLine.arguments.contains("read-only") {
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+        waitForRead()
+        guard hider.diagnostics.contains("Active hide request: false") else {
+            print("FAIL: a read-only layout observer started hiding without apply")
+            exit(1)
+        }
+        print("PASS: a read-only layout observer leaves visibility unchanged")
+        return
     }
     if batchOnly {
         apply(true, true)
@@ -161,7 +172,8 @@ def main():
     if sys.platform != "darwin":
         raise RuntimeError("layout scheduling needs native AppKit")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=("all", "moves", "overlap", "no-edit", "batch"), default="all")
+    parser.add_argument("--case", choices=("all", "moves", "overlap", "no-edit", "batch", "read-only"), default="all")
+    parser.add_argument("--hider-ref")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="flux-layout-probe-") as directory:
@@ -171,9 +183,17 @@ def main():
         binary = temporary / "FluxLayoutProbe"
         files = ["MenuBar/MacOS27Hider.swift", "MenuBar/MenuBarGeometry.swift", "MenuBar/MenuBarSection.swift",
                  "Support/Log.swift", "Support/AccessibilityAccess.swift"]
+        paths = [root / "Sources/Flux" / path for path in files]
+        if args.hider_ref:
+            previous = temporary / "MacOS27Hider.swift"
+            previous.write_text(subprocess.check_output(
+                ['git', 'show', args.hider_ref + ':Sources/Flux/MenuBar/MacOS27Hider.swift'],
+                cwd=root, text=True, timeout=15))
+            paths[0] = previous
         run(["xcrun", "swiftc", "-swift-version", "5", str(source),
-             *[str(root / "Sources/Flux" / path) for path in files], "-o", str(binary)], 120)
+             *[str(path) for path in paths], "-o", str(binary)], 120)
         if args.case == "all":
+            run([str(binary), "read-only"], 10)
             run([str(binary), "no-edit"], 10)
             run([str(binary), "batch"], 10)
         run([str(binary), args.case], 10)
