@@ -129,6 +129,7 @@ enum PermissionStatus { case notDetermined, granted, denied, restricted, unavail
     }
     let icons: [Icon] = []
     let isTrusted = true
+    let isUpdatingIcons = false
     let canHideWithoutAccess = true
     let errorMessage: String? = nil
     private(set) var revealHidden = false
@@ -177,19 +178,23 @@ struct MenuBarDragSettingsAnchor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
     func updateNSView(_ view: NSView, context: Context) {}
 }
-struct MenuBarIconDropZone: NSViewRepresentable {
+struct MenuBarIconLane: NSViewRepresentable {
     let controller: MenuBarDragController
+    let manager: MenuBarIconManager
     let section: MenuBarSection
-    func makeNSView(context: Context) -> NSView {
-        NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 30))
-    }
-    func updateNSView(_ view: NSView, context: Context) {}
-}
-struct MenuBarIconDragHandle: NSViewRepresentable {
-    let controller: MenuBarDragController
-    let icon: MenuBarIconManager.Icon
+    let icons: [MenuBarIconManager.Icon]
+    let alwaysHiddenEnabled: Bool
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
     func updateNSView(_ view: NSView, context: Context) {}
+}
+private struct MenuBarSnapshotIconsKey: EnvironmentKey {
+    static let defaultValue: [MenuBarIconManager.Icon]? = nil
+}
+extension EnvironmentValues {
+    var menuBarSnapshotIcons: [MenuBarIconManager.Icon]? {
+        get { self[MenuBarSnapshotIconsKey.self] }
+        set { self[MenuBarSnapshotIconsKey.self] = newValue }
+    }
 }
 struct GeneralTab: View { var body: some View { Text("General") } }
 struct NotchTab: View { var body: some View { Text("Notch") } }

@@ -1,0 +1,101 @@
+{
+  "researched_at": "2026-10-16",
+  "assets": [
+    {
+      "file": "barbee-screen1.webp",
+      "bytes": 30352,
+      "sha256": "bde0c1a2cfef515b6e91f50c4388f51c357fc51779ad7f1a2d5df6c5f8632532",
+      "source_url": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/a2/7c/6f/a27c6f23-caa6-74cc-713c-057303f9aab7/1.png/1286x804bb.webp",
+      "width": 1286,
+      "height": 804
+    },
+    {
+      "file": "barbee-screen2.webp",
+      "bytes": 38458,
+      "sha256": "18afe633e5c39199dbe6636e9e21480d0f5e47de248f9fd4ff31c6cf3d4a4bb6",
+      "source_url": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource211/v4/64/5a/81/645a8160-7465-c981-2205-732bf49e2616/2.png/1286x804bb.webp",
+      "width": 1286,
+      "height": 804
+    },
+    {
+      "file": "barbee-screen3.webp",
+      "bytes": 31810,
+      "sha256": "8b4c7c0304331f1ec4bbe92aa1b0c2304f7a10438ee9cf3776bd52940d0ad63f",
+      "source_url": "https://is1-ssl.mzstatic.com/image/thumb/PurpleSource221/v4/a4/fb/c4/a4fbc41a-e535-aafc-0766-454cf3103d8e/3.png/1286x804bb.webp",
+      "width": 1286,
+      "height": 804
+    },
+    {
+      "file": "bartender6-bar.png",
+      "bytes": 410302,
+      "sha256": "56879b82351f0f6c690c636c121ca2058571048a236dc91133501b9a654228ed",
+      "source_url": "https://www.macbartender.com/Bartender6/img/BartenderBar.png",
+      "width": 1388,
+      "height": 453
+    },
+    {
+      "file": "dato-event-menu.jpg",
+      "bytes": 238201,
+      "sha256": "fe38162bba6de646f97c5436d164c335816366c083bfdf558b3c0465506607d0",
+      "source_url": "https://sindresorhus.com/dato/screenshot4.jpg",
+      "width": 2880,
+      "height": 1800
+    },
+    {
+      "file": "dato-main.jpg",
+      "bytes": 322466,
+      "sha256": "91d2c48cde65e8b204ec34d277c2dc05490b7401e18691aef3ef1ca5bb6b1e40",
+      "source_url": "https://sindresorhus.com/dato/screenshot1.jpg",
+      "width": 2880,
+      "height": 1800
+    },
+    {
+      "file": "hidden-screen1.png",
+      "bytes": 389294,
+      "sha256": "8f3ee7407b03cd103f541bbeeb9a75e292cd32f754f903849978431a25daf2a0",
+      "source_url": "https://raw.githubusercontent.com/dwarvesf/hidden/develop/img/screen1.png",
+      "width": 1424,
+      "height": 1186
+    },
+    {
+      "file": "hidden-screen2.png",
+      "bytes": 374685,
+      "sha256": "109def89f5a7dafd8ab3415d6236e3ca7d5f02faa4a927eb7add28f0529c791e",
+      "source_url": "https://raw.githubusercontent.com/dwarvesf/hidden/develop/img/screen2.png",
+      "width": 1424,
+      "height": 1186
+    },
+    {
+      "file": "hidden-tutorial.gif",
+      "bytes": 741400,
+      "sha256": "03aa88526e3a154d3633f0707f53c5c1138e8ec331ff0a38b6a15e13f26b2bab",
+      "source_url": "https://raw.githubusercontent.com/dwarvesf/hidden/develop/img/tutorial.gif",
+      "width": 600,
+      "height": 174
+    },
+    {
+      "file": "ice-bar.png",
+      "bytes": 1543207,
+      "sha256": "915a5370215dba01d525d9d0ff4f8f24ea2a20cf898cf4312c290dca5bc086b0",
+      "source_url": "https://icemenubar.app/gallery/ice-bar.png",
+      "width": 2436,
+      "height": 805
+    },
+    {
+      "file": "ice-layout.png",
+      "bytes": 2016458,
+      "sha256": "4437e61cbde37ea5f155dabfe4e511c70d7456a60bd0e6523b216800579af59b",
+      "source_url": "https://icemenubar.app/gallery/menu-bar-layout.png",
+      "width": 2416,
+      "height": 1468
+    },
+    {
+      "file": "ice-search.png",
+      "bytes": 4974357,
+      "sha256": "f37206eb84196e388bd7e8c2f43242e9b8c493f1c537cee597e6ec816deceb25",
+      "source_url": "https://icemenubar.app/gallery/menu-bar-item-search.png",
+      "width": 3456,
+      "height": 1202
+    }
+  ]
+}
