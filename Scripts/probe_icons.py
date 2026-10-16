@@ -700,10 +700,27 @@ func probe() {
         catch { print("FAIL: sibling native driver could not start: \(error)"); exit(1) }
     }
     @MainActor
+    func afterPostingDrag(_ action: @escaping () -> Void) {
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        @MainActor func poll() {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                print("FAIL: programmatic event posting did not finish before native-overlap setup")
+                exit(1)
+            }
+            if manager.probePostingDrag {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: action)
+            }
+        }
+        poll()
+    }
+
+    @MainActor
     func overlapProgrammaticMove(_ items: [MenuBarIconManager.Icon]) {
         let moving = items[0], other = items[1]
         manager.move(moving, toward: .towardClock)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        afterPostingDrag {
             manager.refresh()
             guard manager.isUpdatingIcons,
                   let current = manager.icons.first(where: { $0.title == other.title }),
@@ -1068,7 +1085,7 @@ func probe() {
         if CommandLine.arguments.contains("--move-retry-overlap") {
             guard let icon = fixture() else { exit(1) }
             manager.move(icon, to: .hidden)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            afterPostingDrag {
                 manager.refresh()
                 guard manager.isUpdatingIcons, let current = fixture(),
                       MenuBarIconManager.section(for: current.frame,
@@ -1281,6 +1298,10 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         let placement = MenuBarIconManager.Insertion(section: reorderSection,
             before: towardClock ? nil : neighbor, after: towardClock ? neighbor : nil)
         manager.move(moving, to: placement)''')
+    manager_text = manager_source.read_text()
+    posting = "isPostingDrag" if "private var isPostingDrag" in manager_text else "false"
+    manager_source = temporary / "FixtureMenuBarIconManager.swift"
+    manager_source.write_text(manager_text + "\nextension MenuBarIconManager { var probePostingDrag: Bool { " + posting + " } }\n")
     if options.trace_drag:
         text = manager_source.read_text()
         start = text.index("    private func drag(")

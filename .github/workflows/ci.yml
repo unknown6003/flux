@@ -98,6 +98,9 @@ jobs:
                           if case == 'clipboard-images':
                               command = ['python3', str(source / 'Scripts/probe_clipboard_images.py'),
                                          '--out', str(source / case)]
+                          elif case in ('physical-overlap', 'physical-retry-overlap'):
+                              command = ['python3', str(source / 'Scripts/probe_icons.py'),
+                                         '--move-overlap' if case == 'physical-overlap' else '--move-retry-overlap']
                           elif case.startswith('native-move') or case == 'native-insertion':
                               command = ['python3', str(source / 'Scripts/probe_icons.py'), '--trace-drag']
                               if case.startswith('native-move-baseline'):
