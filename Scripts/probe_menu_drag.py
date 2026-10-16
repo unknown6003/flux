@@ -357,9 +357,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
 @main struct Main {
     @MainActor static func main() {
         let args = CommandLine.arguments
-        let _ = NSApplication.shared
         switch args[1] {
-        case "--fixture": fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"))
+        case "--fixture":
+            let _ = NSApplication.shared
+            fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"))
         case "--drive": drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5])
         case "--keyboard":
             func key(_ code: CGKeyCode) {
@@ -374,7 +375,11 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                    let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    state["focusedMenu"] as? Bool == true { focused = true; break }
             }
-            guard focused else { print("FAIL: Tab did not reach an enabled Move popup"); exit(12) }
+            guard focused else {
+                print("FAIL: Tab did not reach an enabled Move popup")
+                print((try? String(contentsOfFile: args[2], encoding: .utf8)) ?? "missing state")
+                exit(12)
+            }
             key(49)
             if args[3] == "hidden" { key(4) }
             else { key(119); if args[3] == "left" { key(126) } }
@@ -398,7 +403,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             let point = CGEvent(source: nil)!.location
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
             CGEvent(keyboardEventSource: nil, virtualKey: 55, keyDown: false)?.post(tap: .cghidEventTap)
-        default: Probe(state: args[2]).start(seconds: Double(args[3])!)
+        default:
+            let _ = NSApplication.shared
+            Probe(state: args[2]).start(seconds: Double(args[3])!)
         }
     }
 }

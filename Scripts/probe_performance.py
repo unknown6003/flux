@@ -73,7 +73,7 @@ def run(command, seconds, cwd=ROOT):
 
 @contextmanager
 def native_status_fixture(directory, count=12):
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     source = directory / "main.swift"
     source.write_text(r'''
 import AppKit
@@ -96,7 +96,7 @@ MainActor.assumeIsolated {
 ''')
     app = directory / "FluxPerformanceIcons.app"
     binary = app / "Contents/MacOS/FluxPerformanceIcons"
-    binary.parent.mkdir(parents=True)
+    binary.parent.mkdir(parents=True, exist_ok=True)
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
         "CFBundleIdentifier": "com.flux.performance-fixture", "CFBundleExecutable": binary.name,
         "CFBundlePackageType": "APPL", "CFBundleName": "Flux performance icons", "LSUIElement": True,
@@ -104,6 +104,7 @@ MainActor.assumeIsolated {
     (directory / "build.log").write_text(run(["xcrun", "swiftc", str(source), "-o", str(binary)], 60) +
                                         run(["codesign", "--force", "--sign", "-", str(app)], 20))
     ready = directory / "ready.json"
+    ready.unlink(missing_ok=True)
     with (directory / "fixture.log").open("w") as log:
         process = subprocess.Popen([str(binary), str(ready), str(count)], stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
