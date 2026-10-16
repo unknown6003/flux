@@ -55,7 +55,7 @@ MainActor.assumeIsolated {
             sequence = number
             let start = ProcessInfo.processInfo.systemUptime
             delegate.perfAction(action)
-            func finishWhenReady() {
+            @MainActor func finishWhenReady() {
                 var state = delegate.perfWindowState()
                 let ready = action == "settings"
                     ? state["settingsVisible"] as? Bool == true && state["settingsKey"] as? Bool == true

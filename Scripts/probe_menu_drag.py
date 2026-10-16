@@ -49,7 +49,9 @@ final class MenuBarIconManager: ObservableObject {
     func requestAccess() { fatalError("Must not request permission") }
     func copyMenuBarReport() { fatalError("Must not write the pasteboard") }
     func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool { true }
-    func move(_ icon: Icon, toward direction: MoveDirection) { onMove?("order") }
+    func move(_ icon: Icon, toward direction: MoveDirection) {
+        onMove?(direction == .towardDrawer ? "left" : "right")
+    }
     var labels: [[String: String]] = []
     var isTrusted: Bool { AXIsProcessTrusted() }
     var section: MenuBarSection = .shown
@@ -260,6 +262,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "events": events, "commits": commits,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
+            "focusedMenu": (window.firstResponder as? NSPopUpButton)?.isEnabled == true,
             "ownTaps": ownTaps, "extraWindows": NSApp.windows.filter { $0 !== window && $0.isVisible }.count,
             "emptyTitle": manager.labels.contains { $0["rawTitle"] == "" && $0["normalized"] == "Flux drag fixture" }
         ]
@@ -354,6 +357,24 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         switch args[1] {
         case "--fixture": fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"))
         case "--drive": drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5])
+        case "--keyboard":
+            func key(_ code: CGKeyCode) {
+                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
+                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            var focused = false
+            for _ in 0..<24 {
+                key(48)
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: args[2])),
+                   let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   state["focusedMenu"] as? Bool == true { focused = true; break }
+            }
+            guard focused else { print("FAIL: Tab did not reach an enabled Move popup"); exit(12) }
+            key(49)
+            if args[3] == "hidden" { key(4) }
+            else { key(119); if args[3] == "left" { key(126) } }
+            key(36)
         case "--menu":
             let data = try! Data(contentsOf: URL(fileURLWithPath: args[2]))
             let state = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -425,7 +446,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
-                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "stale", "close"))
+                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "keyboard", "order-left", "order-right", "stale", "close"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -535,6 +556,17 @@ extension EnvironmentValues {
             results.append("PASS native Move popup requests Hidden and disables Always Hidden while off")
             Path(str(state_path) + ".show-always").touch()
             state = read_state(state_path, probe_process, lambda value: value["ready"] and not value["busy"])
+        for label, expected in (("keyboard", "hidden"), ("order-left", "left"), ("order-right", "right")):
+            if args.case not in ("all", label):
+                continue
+            before = len(state["commits"])
+            bounded([str(binary), "--keyboard", str(state_path), expected], 7,
+                    args.output / (label + ".log"))
+            state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
+            if state["commits"][before:] != [expected]:
+                raise RuntimeError(f"keyboard {label} requested {state['commits'][before:]}")
+            state = read_state(state_path, probe_process, lambda value: not value["busy"])
+            results.append(f"PASS keyboard-only Move {expected}")
         for index, kind in enumerate(("stale", "close")):
             if args.case not in ("all", kind):
                 continue
