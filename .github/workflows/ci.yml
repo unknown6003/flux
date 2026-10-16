@@ -236,6 +236,9 @@ jobs:
                    'build/menu-drag-probe', '--seconds', '55'], 170)
               run(['python3', 'Scripts/probe_menu_drag.py', '--output',
                    'build/menu-drag-probe-empty-title', '--seconds', '55', '--empty-title'], 170)
+              for case in ('disabled-populated', 'scroll'):
+                  run(['python3', 'Scripts/probe_menu_drag.py', '--case', case, '--output',
+                       'build/menu-drag-probe-' + case, '--seconds', '25'], 130)
           PY
 
       - name: Upload native drag probe logs
