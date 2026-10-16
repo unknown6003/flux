@@ -31,6 +31,7 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
     private let scroll = NSScrollView()
     private let strip = MenuBarDragDestinationView()
     private var sources: [MenuBarDragSourceView] = []
+    private var alwaysHiddenEnabled = true
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
@@ -61,15 +62,18 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         acceptsDrops = section != .alwaysHidden || alwaysHiddenEnabled
         strip.acceptsDrops = acceptsDrops
         guard !controller.isDragging else { return }
-        self.icons = icons.sorted { $0.frame.minX < $1.frame.minX }
+        self.alwaysHiddenEnabled = alwaysHiddenEnabled
+        let ordered = icons.sorted { $0.frame.minX < $1.frame.minX }
+        guard self.icons != ordered || sources.isEmpty else { needsDisplay = true; return }
         let old = Dictionary(uniqueKeysWithValues: sources.compactMap { source in source.icon.map { ($0.id, source) } })
-        sources.forEach { $0.removeFromSuperview() }
-        sources = self.icons.map { icon in
+        let next = ordered.map { icon -> MenuBarDragSourceView in
             let source = old[icon.id] ?? controller.makeSourceView(for: icon)
             source.icon = icon
-            source.canShowMenu = { [weak source, weak manager] in
-                manager?.isTrusted == true && manager?.isUpdatingIcons == false
-                    && NSApp.isActive && source?.window?.isKeyWindow == true
+            source.moveMenu = { [weak self, weak source] in
+                guard let self, let source, let icon = source.icon,
+                      self.manager?.isTrusted == true, self.manager?.isUpdatingIcons == false,
+                      NSApp.isActive, source.window?.isKeyWindow == true else { return nil }
+                return self.makeMenu(for: icon)
             }
             source.toolTip = [icon.title, icon.source, icon.isMovable ? "Click for move options" : "Fixed system icon"]
                 .compactMap { $0 }.joined(separator: " · ")
@@ -77,28 +81,14 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
             source.setAccessibilityRole(.button)
             source.setAccessibilityLabel(icon.title)
             source.setAccessibilityHelp(icon.isMovable ? "Drag to place. Press Space for move options." : "Fixed system icon")
-            let menu = NSMenu()
-            menu.autoenablesItems = false
-            for destination in MenuBarSection.allCases {
-                let item = NSMenuItem(title: destination.displayName, action: #selector(moveIcon(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = (icon, destination)
-                item.isEnabled = icon.isMovable && !manager.isUpdatingIcons && destination != icon.section
-                    && (destination != .alwaysHidden || alwaysHiddenEnabled)
-                menu.addItem(item)
-            }
-            menu.addItem(.separator())
-            for (title, direction) in [("Move left", MenuBarIconManager.MoveDirection.towardDrawer), ("Move right", .towardClock)] {
-                let item = NSMenuItem(title: title, action: #selector(reorderIcon(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = (icon, direction)
-                item.isEnabled = !manager.isUpdatingIcons && manager.canMove(icon, toward: direction)
-                menu.addItem(item)
-            }
-            source.menu = menu
-            strip.addSubview(source)
             return source
         }
+        if next != sources {
+            sources.filter { !next.contains($0) }.forEach { $0.removeFromSuperview() }
+            next.filter { $0.superview !== strip }.forEach { strip.addSubview($0) }
+        }
+        sources = next
+        self.icons = ordered
         setAccessibilityElement(false)
         setAccessibilityLabel("\(section.displayName), \(icons.count) icons. Drop between icons to place.")
         needsLayout = true
@@ -154,6 +144,28 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
             ])
         }
         super.draw(dirtyRect)
+    }
+
+    private func makeMenu(for icon: MenuBarIconManager.Icon) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for destination in MenuBarSection.allCases {
+            let item = NSMenuItem(title: destination.displayName, action: #selector(moveIcon(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = (icon, destination)
+            item.isEnabled = icon.isMovable && destination != icon.section
+                && (destination != .alwaysHidden || alwaysHiddenEnabled)
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        for (title, direction) in [("Move left", MenuBarIconManager.MoveDirection.towardDrawer), ("Move right", .towardClock)] {
+            let item = NSMenuItem(title: title, action: #selector(reorderIcon(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = (icon, direction)
+            item.isEnabled = manager?.canMove(icon, toward: direction) == true
+            menu.addItem(item)
+        }
+        return menu
     }
 
     @objc private func moveIcon(_ sender: NSMenuItem) {

@@ -55,6 +55,7 @@ parser.add_argument("--native-sibling", action="store_true")
 parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--move-retry-overlap", action="store_true")
+parser.add_argument("--insertion", action="store_true", help="Use the exact strip insertion interface for physical reorder")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
 options = parser.parse_args()
@@ -1095,7 +1096,12 @@ func probe() {
             return
         }
         guard manager.canMove(moving, toward: direction) else { exit(1) }
+        let actionStart = ProcessInfo.processInfo.systemUptime
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+            print("PERF_NATIVE_MOVE_PULSE_MS \((ProcessInfo.processInfo.systemUptime - actionStart) * 1_000)")
+        }
         manager.move(moveArgument(moving, kind: "arrow"), toward: direction)
+        print("PERF_NATIVE_MOVE_CALL_MS \((ProcessInfo.processInfo.systemUptime - actionStart) * 1_000)")
         guard manager.isUpdatingIcons else {
             print("FAIL: the arrow move did not publish its pending verification")
             exit(1)
@@ -1247,6 +1253,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     hider_path = "Sources/Flux/MenuBar/MacOS27Hider.swift"
     hider_source = root / hider_path
     manager_source = root / manager_path
+    controller_path = "Sources/Flux/MenuBar/MenuBarDragController.swift"
+    controller_source = root / controller_path
     if options.manager_ref:
         manager_source = temporary / "MenuBarIconManager.swift"
         manager_source.write_text(subprocess.check_output(
@@ -1257,6 +1265,21 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         hider_source.write_text(subprocess.check_output(
             ["git", "show", options.hider_ref + ":" + hider_path],
             cwd=root, text=True, timeout=15))
+    if "struct Insertion:" not in manager_source.read_text():
+        # Historical manager checks predate the insertion interface. Keep the
+        # prior controller used by those native fixtures, without changing it.
+        controller_source = temporary / "MenuBarDragController.swift"
+        controller_source.write_text(subprocess.check_output(
+            ["git", "show", "6fde90817068d06ecfae8eb6ec85c19e68af997b:" + controller_path],
+            cwd=root, text=True, timeout=15))
+    if options.insertion:
+        if "struct Insertion:" not in manager_source.read_text():
+            raise RuntimeError("selected manager has no insertion interface")
+        source = source.replace('manager.move(moveArgument(moving, kind: "arrow"), toward: direction)', '''
+        let neighbor = ordered.first { $0.id != moving.id }!
+        let placement = MenuBarIconManager.Insertion(section: reorderSection,
+            before: towardClock ? nil : neighbor, after: towardClock ? neighbor : nil)
+        manager.move(moving, to: placement)''')
     if options.menu_expired:
         manager_text = manager_source.read_text()
         start = manager_text.index("    private func deferMoveUntilMenuCloses(")
@@ -1283,7 +1306,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         code = code.replace("com.flux.icon-fixture", fixture_bundle_id)
         main.write_text(code)
         command(["swiftc", "-swift-version", "5", str(main)] +
-                [str({manager_path: manager_source, hider_path: hider_source}.get(dependency, root / dependency))
+                [str({manager_path: manager_source, hider_path: hider_source, controller_path: controller_source}.get(dependency, root / dependency))
                  for dependency in dependencies] + ["-o", str(binary)], 120)
         command(["codesign", "--force", "--sign", "-", str(app)], 20)
         return binary

@@ -206,7 +206,7 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
     }
     private var appImage: NSImage?
     private var down: NSEvent?
-    var canShowMenu: (() -> Bool)?
+    var moveMenu: (() -> NSMenu?)?
     override var acceptsFirstResponder: Bool { icon?.isMovable == true }
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -246,12 +246,12 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
     override func accessibilityPerformPress() -> Bool { showMoveMenu() }
 
     @discardableResult private func showMoveMenu() -> Bool {
-        guard icon?.isMovable == true, canShowMenu?() == true, let menu else { return false }
+        guard icon?.isMovable == true, let menu = moveMenu?() else { return false }
         window?.makeFirstResponder(self)
         return menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: self)
     }
 
-    override func menu(for event: NSEvent) -> NSMenu? { canShowMenu?() == true ? menu : nil }
+    override func menu(for event: NSEvent) -> NSMenu? { moveMenu?() }
 
     override func becomeFirstResponder() -> Bool {
         scrollToVisible(bounds)

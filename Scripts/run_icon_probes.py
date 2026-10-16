@@ -75,6 +75,7 @@ CASES = [
     ('menu-expired-baseline', 'probe_icons.py', ['--menu-expired', '--manager-ref',
         'c691fe1c2b1f475eb22239e1a65662cfa7394aac'], 'an expired menu request posted native input'),
     ('menu-expired', 'probe_icons.py', ['--menu-expired'], None),
+    ('insertion', 'probe_icons.py', ['--insertion'], None),
 ]
 
 

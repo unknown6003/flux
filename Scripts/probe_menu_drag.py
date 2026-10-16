@@ -307,8 +307,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                     targets["shown-before"] = center(neighbor, x: neighbor.bounds.width * 0.25)
                     targets["shown-after"] = center(neighbor, x: neighbor.bounds.width * 0.75)
                 }
-                if let first = others.first, first.visibleRect.width >= 24 {
-                    scrollTarget = center(first, x: first.bounds.width * 0.25)
+                if let first = others.first, let clip = first.enclosingScrollView?.contentView {
+                    let visible = first.bounds.intersection(first.convert(clip.bounds, from: clip))
+                    if visible.width >= 24 { scrollTarget = center(first, x: first.bounds.width * 0.25) }
                 }
             }
         }
@@ -457,7 +458,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             let all = self.views(self.window.contentView!)
             guard let source = all.compactMap({ $0 as? MenuBarDragSourceView }).first(where: {
                 $0.icon?.title == "Flux drag fixture"
-            }), let menu = source.menu,
+            }), let menu = source.moveMenu?(),
                   let item = menu.items.first(where: { $0.title == "Always Hidden" }), !item.isEnabled,
                   let hidden = menu.items.first(where: { $0.title == "Hidden" }), hidden.isEnabled else {
                 print("FAIL: disabled Always Hidden is an active Move destination"); exit(11)
