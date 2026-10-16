@@ -30,8 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var clipboardWidget = ClipboardWidget(
         monitor: clipboardMonitor, isEnabled: settings.notchClipboardEnabled)
     private let timerService = TimerService()
-    private lazy var lockScreenPresenter = LockScreenPresenter(
-        nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
+    /// Built on first enable rather than at launch: a disabled lock-screen
+    /// experiment must not pay for its geometry cache read, its appearance
+    /// subscription or its distributed observers. See
+    /// `configureLockScreenPresenter`.
+    private var lockScreenPresenter: LockScreenPresenter?
     private var notchActivityRouter: NotchActivityRouter?
 
     private lazy var settingsWindow = SettingsWindowController(
@@ -274,7 +277,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureClipboardMonitor(notchEnabled: notchOn)
         configureLockScreenPresenter(notchEnabled: notchOn)
         recomputeDuoActive()
-        if notchActivityRouter == nil {
+        // Construct the activity router only once the notch is actually on —
+        // its init builds the power/Bluetooth/volume/media-key monitors and
+        // wires their subscriptions. A disabled notch must not force any of
+        // that; the `$notchEnabled` sink calls `configureNotch` again on
+        // enable, which builds the router then.
+        if notchOn, notchActivityRouter == nil {
             notchActivityRouter = NotchActivityRouter(
                 activities: notchWindow.activities, settings: settings, arranger: arranger,
                 calendar: calendarService, permissions: permissionCenter, viewModel: notchWindow.viewModel,
@@ -305,7 +313,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureLockScreenPresenter(lockScreenExperimentEnabled: Bool? = nil,
                                               notchEnabled: Bool? = nil) {
         let experimentEnabled = lockScreenExperimentEnabled ?? settings.notchLockScreenExperimentEnabled
-        lockScreenPresenter.setEnabled((notchEnabled ?? settings.notchEnabled) && experimentEnabled)
+        let enabled = (notchEnabled ?? settings.notchEnabled) && experimentEnabled
+        if enabled, lockScreenPresenter == nil {
+            lockScreenPresenter = LockScreenPresenter(
+                nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
+        }
+        // Tear a live presenter down when the experiment is switched off, but
+        // never construct one just to tell it `false`.
+        lockScreenPresenter?.setEnabled(enabled)
     }
 
     private func observeDuoCalendar() {

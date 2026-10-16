@@ -191,6 +191,13 @@ final class ClipboardMonitor: ObservableObject {
     private let pasteboard: NSPasteboard
     private let persistenceURL: URL
     private var persistenceEnabled = false
+    /// `true` once the saved history has been read into `entries` for this
+    /// monitor's current running, persistence-enabled session. Loading is
+    /// deferred to `start()` — the first meaningful use — rather than to the
+    /// mere enabling of the setting: an app launched with clipboard history
+    /// switched off must not read, decode or rewrite the saved file at idle.
+    /// Reset when persistence is turned off so re-enabling can load again.
+    private var hasRestoredPersistedHistory = false
     private var timer: Timer?
     private var copyShortcutMonitors: [Any] = []
     private var lifecycleGeneration = 0
@@ -274,10 +281,23 @@ final class ClipboardMonitor: ObservableObject {
         persistenceEnabled = enabled
 
         if enabled {
-            restorePersistedEntries()
+            // Only load when collection is actually running; otherwise the
+            // next `start()` does it. Enabling the setting while the widget is
+            // off must not pull the saved payload into memory at launch/idle.
+            restorePersistedHistoryIfRunning()
         } else {
+            hasRestoredPersistedHistory = false
             removePersistedHistory()
         }
+    }
+
+    /// Reads the saved history exactly once per running, persistence-enabled
+    /// session — no-op unless both hold, so both `setPersistenceEnabled` and
+    /// `start()` can call it freely.
+    private func restorePersistedHistoryIfRunning() {
+        guard persistenceEnabled, timer != nil, !hasRestoredPersistedHistory else { return }
+        hasRestoredPersistedHistory = true
+        restorePersistedEntries()
     }
 
     private func restorePersistedEntries() {
@@ -414,6 +434,10 @@ final class ClipboardMonitor: ObservableObject {
         }
         poll.tolerance = 0.05
         timer = poll
+        // First meaningful use: collection is live now, so load the saved
+        // history — deferred from `setPersistenceEnabled` so an app launched
+        // with the feature off reads nothing at idle.
+        restorePersistedHistoryIfRunning()
     }
 
     func stop() {

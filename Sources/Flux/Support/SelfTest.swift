@@ -2352,12 +2352,16 @@ enum SelfTest {
 
             let restored = ClipboardMonitor(pasteboard: .general, persistenceURL: persistenceURL)
             restored.setPersistenceEnabled(true)
+            check(restored.entries.isEmpty,
+                  "ClipboardMonitor: enabling persistence while stopped does not load saved history — load is deferred to first start()")
+            restored.start()
             check(restored.entries.map(\.kind) == [.text, .url, .color],
-                  "ClipboardMonitor: reload restores text, URL, and colour entries only")
+                  "ClipboardMonitor: first start() restores text, URL, and colour entries only")
             check(restored.entries.first?.fullString == "saved text",
                   "ClipboardMonitor: reload preserves saved text for copy-back")
             check(restored.entries.last?.colorComponents == ClipboardMonitor.parseHexColor("#ff0000"),
                   "ClipboardMonitor: reload rebuilds colour swatch data")
+            restored.stop()
 
             restored.clear()
             check(!FileManager.default.fileExists(atPath: persistenceURL.path),
