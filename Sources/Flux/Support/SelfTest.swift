@@ -3523,6 +3523,36 @@ enum SelfTest {
               "CrashReporter breadcrumb: two different activities render identically, so the UUID can't churn the file")
 
         do {
+            let service = CalendarService()
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            var now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 15,
+                                                        hour: 23, minute: 59))!
+            let events = [CalendarEvent(id: "midnight-refresh", title: "Future event",
+                                        start: now.addingTimeInterval(3600),
+                                        end: now.addingTimeInterval(7200), isAllDay: false,
+                                        calendarColor: nil, location: nil)]
+            var displayedGroups: [CalendarService.DayGroups] = []
+            let observation = service.$upcoming.dropFirst().sink { events in
+                displayedGroups.append(CalendarService.groupByDay(events: events, now: now,
+                                                                   calendar: calendar))
+            }
+            service.injectPreviewEvents(events, now: now, calendar: calendar)
+            service.injectPreviewEvents(events, now: now.addingTimeInterval(30), calendar: calendar)
+            check(displayedGroups.count == 1 && displayedGroups.last?.tomorrow == events,
+                  "CalendarService: identical same-day refreshes publish the agenda once")
+            now = now.addingTimeInterval(120)
+            service.injectPreviewEvents(events, now: now, calendar: calendar)
+            check(displayedGroups.count == 2 && displayedGroups.last?.today == events
+                    && displayedGroups.last?.tomorrow.isEmpty == true && service.upcoming == events,
+                  "CalendarService: an unchanged agenda publishes at midnight so Tomorrow becomes Today")
+            service.injectPreviewEvents(events, now: now.addingTimeInterval(60), calendar: calendar)
+            check(displayedGroups.count == 2,
+                  "CalendarService: duplicate suppression resumes after the day changes")
+            observation.cancel()
+        }
+
+        do {
             let calendar = CalendarService()
             let now = Date(timeIntervalSince1970: 1_792_051_200)
             calendar.injectPreviewEvents([CalendarEvent(

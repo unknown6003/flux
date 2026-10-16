@@ -99,6 +99,7 @@ final class CalendarService: ObservableObject {
     /// Whether `eventStore` has been reset since access was granted — see
     /// `resetStoreIfNewlyAuthorized()`.
     private var hasResetSinceAuthorization = false
+    private var upcomingDay: Date?
     private var cancellables = Set<AnyCancellable>()
     /// The single deadline task that re-fetches at the next local midnight —
     /// see `scheduleMidnightRollover`'s doc comment. Mirrors
@@ -158,6 +159,7 @@ final class CalendarService: ObservableObject {
         // set, skip `eventStore.reset()`, and reproduce exactly the stale-
         // store behaviour the latch exists to prevent.
         hasResetSinceAuthorization = false
+        upcomingDay = nil
         // Cached events go too. A revoke reaches this method rather than
         // `refresh()`, so without this the agenda would keep rendering
         // calendar data the user has just withdrawn access to — for as long
@@ -173,7 +175,7 @@ final class CalendarService: ObservableObject {
 
     // MARK: - Fixture injection (dev/testing only)
 
-    /// Directly sets `upcoming`, bypassing the `EKEventStore` fetch pipeline
+    /// Publishes fixture events, bypassing the `EKEventStore` fetch pipeline
     /// entirely. Used by `NotchSnapshot` (`--snapshot-notch`) to render
     /// deterministic fixture agendas offscreen, without a real calendar
     /// permission grant or event-store fetch. Mirrors `NowPlayingService.
@@ -181,8 +183,8 @@ final class CalendarService: ObservableObject {
     /// would simply overwrite it on the next `.EKEventStoreChanged`/midnight-
     /// rollover tick, but a snapshot render never calls `start()`, so that
     /// never actually happens here.
-    func injectPreviewEvents(_ events: [CalendarEvent]) {
-        upcoming = events
+    func injectPreviewEvents(_ events: [CalendarEvent], now: Date = Date(), calendar: Calendar = .current) {
+        updateUpcoming(events, now: now, calendar: calendar)
     }
 
     /// No repeating timer: the rolling "now → end of tomorrow" fetch window
@@ -263,12 +265,21 @@ final class CalendarService: ObservableObject {
             if !upcoming.isEmpty { upcoming = [] }
             // A revoke should let a later re-grant reset the store again.
             hasResetSinceAuthorization = false
+            upcomingDay = nil
             return
         }
         resetStoreIfNewlyAuthorized()
-        let fetched = Self.fetchUpcoming(from: eventStore, now: Date())
+        let now = Date()
+        let fetched = Self.fetchUpcoming(from: eventStore, now: now)
         calendarLog.debug("Calendar refresh: \(fetched.count, privacy: .public) upcoming event(s)")
-        if upcoming != fetched { upcoming = fetched }
+        updateUpcoming(fetched, now: now)
+    }
+
+    private func updateUpcoming(_ events: [CalendarEvent], now: Date, calendar: Calendar = .current) {
+        let day = calendar.startOfDay(for: now)
+        let dayChanged = upcomingDay.map { $0 != day } ?? false
+        upcomingDay = day
+        if upcoming != events || dayChanged { upcoming = events }
     }
 
     // MARK: - Fetch (impure — talks to EventKit)

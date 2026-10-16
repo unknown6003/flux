@@ -43,7 +43,7 @@ The native command was attempted after the edits. It exited with status 2 and wr
 
 `MenuBarIconManager.refresh()` assigned the same trust flag, empty inventory, and access error on each denied refresh. Successful scans also assigned an unchanged inventory. These `@Published` writes can trigger view and subscriber work. Equality guards now skip these writes. The AX element map still refreshes on every successful scan. Update start and end signals still fire.
 
-`CalendarService.refresh()` also published an unchanged empty or fetched event list. It now checks equality first. Permission revocation still clears events and resets the store latch. Event fetches and refresh triggers are unchanged.
+`CalendarService.refresh()` also published an unchanged empty or fetched event list. It now skips equal lists within the same calendar day. A day change still publishes, so an unchanged future agenda moves from Tomorrow to Today at midnight. A regression check observes the real publisher across that boundary. Permission revocation still clears events and resets the store latch. Event fetches and refresh triggers are unchanged.
 
 `MacOS27Hider.clockFrame()` cached successful reads for two seconds. A failed read left no cache entry, so mouse movement could cause repeated AX scans. The cache now stores a failed result for the same two-second window. The existing near-clock fallback still runs when the frame is unknown. A clock that becomes readable during that window can take up to two seconds to be found.
 
