@@ -270,8 +270,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         for lane in lanes {
             targets[lane.section.rawValue] = center(lane, x: lane.bounds.width - 12, y: lane.bounds.height - 12)
             targets[lane.section.rawValue + "-header"] = center(lane, x: 30, y: 16)
-            if lane.section == .alwaysHidden, lane.visibleRect.height >= 60 {
-                scrollTarget = center(lane, x: lane.visibleRect.midX, y: lane.visibleRect.midY)
+            let visible = lane.visibleRect.intersection(lane.bounds)
+                .intersection(lane.convert(window.contentView!.bounds, from: window.contentView!))
+            if lane.section == .alwaysHidden, !visible.isNull, visible.height >= 60 {
+                scrollTarget = center(lane, x: visible.midX, y: visible.midY)
             }
         }
         var tapCount: UInt32 = 0
