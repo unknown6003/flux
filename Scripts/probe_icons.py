@@ -223,8 +223,6 @@ func probe() {
     let chevron = ControlItem(role: .chevron, autosaveName: "flux.icon-probe.\(runID).chevron")
     let hidden = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).hidden")
     let always = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).always")
-    hidden.setCollapsed(false, reservingDropSpace: true)
-    always.setCollapsed(false, reservingDropSpace: true)
     var inventoryFailures = 0
     var saveFailures = 0
     let saveTest = CommandLine.arguments.contains("--move-save-retry")
@@ -993,7 +991,13 @@ func probe() {
         do { try driver.run() }
         catch { print("FAIL: could not start the native Command driver: \(error)"); exit(1) }
     }
+    manager.beginProvider = {
+        hidden.setCollapsed(false, reservingDropSpace: true)
+        always.setCollapsed(false, reservingDropSpace: true)
+    }
     manager.endProvider = { [weak manager] in
+        hidden.setCollapsed(false)
+        always.setCollapsed(false)
         manager?.applyDrawerVisibility(revealHidden: false, revealAlwaysHidden: false)
     }
     @MainActor
