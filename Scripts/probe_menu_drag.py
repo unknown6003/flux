@@ -317,7 +317,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 }
                 if let first = others.first, let clip = first.enclosingScrollView?.contentView {
                     let visible = first.bounds.intersection(first.convert(clip.bounds, from: clip))
-                    if visible.width >= 24 { scrollTarget = center(first, x: first.bounds.width * 0.25) }
+                    let target = NSPoint(x: first.bounds.width * 0.25, y: first.bounds.midY)
+                    if visible.insetBy(dx: 2, dy: 2).contains(target) { scrollTarget = center(first, x: target.x) }
                 }
             }
         }

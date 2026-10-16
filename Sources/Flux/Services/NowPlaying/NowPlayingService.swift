@@ -30,6 +30,7 @@ final class NowPlayingService: ObservableObject {
     /// without being able to flip it itself and step on whichever widget
     /// might already own the active/inactive call.
     private(set) var isActive = false
+    private var isEnabled = true
 
     /// A cheap stand-in for the last artwork `Data` this service downsampled
     /// — `count` + `hashValue` rather than the encoded bytes themselves, so
@@ -70,8 +71,23 @@ final class NowPlayingService: ObservableObject {
     func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
-        if active {
+        if active && isEnabled {
             adapterSource.start()   // no-op if already running
+        }
+    }
+
+    /// Keep the stream warm while enabled; stop it when all media features are off.
+    func setEnabled(_ enabled: Bool) {
+        guard isEnabled != enabled else { return }
+        isEnabled = enabled
+        if enabled {
+            if isActive { adapterSource.start() }
+        } else {
+            isActive = false
+            adapterSource.stop()
+            state = nil
+            artwork = nil
+            lastArtworkFingerprint = nil
         }
     }
 
@@ -82,6 +98,7 @@ final class NowPlayingService: ObservableObject {
     /// this is a direct passthrough. A no-op while the adapter is
     /// unavailable rather than throwing; this never blocks.
     func send(_ command: NowPlayingCommand) {
+        guard isEnabled else { return }
         adapterSource.send(command)
     }
 

@@ -121,8 +121,8 @@ final class MediaRemoteAdapterSource {
             guard !data.isEmpty else { return }
             Task { @MainActor in self?.consume(data) }
         }
-        proc.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.handleTermination() }
+        proc.terminationHandler = { [weak self] terminated in
+            Task { @MainActor in self?.handleTermination(terminated) }
         }
 
         do {
@@ -163,11 +163,8 @@ final class MediaRemoteAdapterSource {
         // that restart from relaunching the helper after the owner asked for
         // it to be off.
         //
-        // The attempt count is cleared here too, but do NOT rely on that as
-        // the recovery route: nothing in the app currently calls this method
-        // at all (`NowPlayingService` deliberately leaves the stream running
-        // while inactive). Recovering an exhausted budget is
-        // `handleTermination()`'s credit-on-survival, not this.
+        // A later enable gets a new restart budget. Unexpected exits earn
+        // recovery separately through handleTermination's survival check.
         restartTask?.cancel()
         restartTask = nil
         restartAttempts = 0
@@ -332,7 +329,8 @@ final class MediaRemoteAdapterSource {
     /// stuck on "Nothing playing" until the user happened to swipe to another
     /// widget and back. A bounded, backing-off restart fixes that without
     /// turning a hard failure into a hot loop.
-    private func handleTermination() {
+    private func handleTermination(_ terminated: Process) {
+        guard process === terminated else { return }
         stdout?.fileHandleForReading.readabilityHandler = nil
         process = nil
         stdout = nil

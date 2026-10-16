@@ -1,5 +1,7 @@
 import AppKit
 import Combine
+import ImageIO
+import UniformTypeIdentifiers
 import OSLog
 
 /// Shared logging point for the clipboard subsystem (M6's Clipboard widget)
@@ -781,36 +783,27 @@ final class ClipboardMonitor: ObservableObject {
                               rawImageBytes: raw)
     }
 
-    /// A small PNG for the row glyph, from raw image bytes.
-    ///
-    /// `nonisolated` and pure so it can run off the main actor — decoding a
-    /// full-resolution screenshot is hundreds of milliseconds, and doing it
-    /// inline in `poll()` froze the whole app on every ⌃⇧⌘4.
+    /// Decodes directly to the row's pixel bound, without a full-size NSImage.
     nonisolated static func thumbnailData(fromRaw raw: Data) -> Data? {
-        guard let image = NSImage(data: raw) else { return nil }
-        return thumbnailData(from: image)
-    }
-
-    /// Drawn into a `thumbnailPixels`-bounded bitmap rather than scaling the
-    /// original on every render.
-    nonisolated private static func thumbnailData(from image: NSImage) -> Data? {
-        let source = image.size
-        guard source.width > 0, source.height > 0 else { return nil }
-        let scale = min(1, thumbnailPixels / max(source.width, source.height))
-        let target = NSSize(width: max(1, (source.width * scale).rounded()),
-                            height: max(1, (source.height * scale).rounded()))
-
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(target.width), pixelsHigh: Int(target.height),
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
-
-        NSGraphicsContext.saveGraphicsState()
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        image.draw(in: NSRect(origin: .zero, size: target),
-                   from: .zero, operation: .copy, fraction: 1)
-        return rep.representation(using: .png, properties: [:])
+        guard let source = CGImageSourceCreateWithData(raw as CFData,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else { return nil }
+        let bound = min(Int(thumbnailPixels), max(width, height))
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: bound,
+            kCGImageSourceShouldCacheImmediately: false
+        ] as CFDictionary) else { return nil }
+        let encoded = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            encoded, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return encoded as Data
     }
 
     private static func urlEntry(string: String) -> ClipboardEntry {

@@ -564,7 +564,7 @@ def run_full(out, loaded):
         "order_alternates": True, "fresh_process_per_run": True,
         "units": {"cold_latency_ms": "milliseconds", "cpu_ms": "milliseconds",
                   "ru_maxrss_bytes_after": "bytes", "footprint_bytes_after": "bytes"},
-        "series": table, "gate_failures": failures,
+        "series": table, "samples": samples, "gate_failures": failures,
         "status": "FAIL" if failures else "PASS",
         "note": "Speed is reported, never thresholded. ru_maxrss and phys_footprint are "
                 "whole-process values for one decode, not the decode alone.",

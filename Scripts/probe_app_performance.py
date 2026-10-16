@@ -131,6 +131,7 @@ extension AppDelegate {
         case "close": settingsWindow.perfClose()
         case "drawer": menuBar?.toggleReveal()
         case "collapse": notchWindow.viewModel.forceCollapse()
+        case "disable-features": settings.notchEnabled = false
         default:
             if action.hasPrefix("widget-"), let widget = WidgetID(rawValue: String(action.dropFirst(7))) {
                 notchWindow.viewModel.expand(widget)
@@ -346,6 +347,7 @@ def measure(binary, directory, seconds, cycles, profile="on"):
                         resources = sample_app(process.pid, seconds)
                         closed = command("collapse")
                         result["widgets"][widget] = {"open": opened, "runtime": resources, "collapse": closed}
+                    result["disabled_after_use"] = command("disable-features")
                     result["after_widgets"] = sample_app(process.pid, seconds)
                     result["after_widgets_resources"] = command("resources")
                 command("quit")

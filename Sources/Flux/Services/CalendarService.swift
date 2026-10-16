@@ -93,7 +93,8 @@ final class CalendarService: ObservableObject {
     /// take the list as-is.
     @Published private(set) var upcoming: [CalendarEvent] = []
 
-    private let eventStore: EKEventStore
+    private lazy var eventStore = initialEventStore ?? EKEventStore()
+    private let initialEventStore: EKEventStore?
     private var isStarted = false
     private var isStopping = false
     /// Whether `eventStore` has been reset since access was granted — see
@@ -108,12 +109,7 @@ final class CalendarService: ObservableObject {
     private var midnightRolloverTask: Task<Void, Never>?
 
     init(eventStore: EKEventStore? = nil) {
-        // `?? EKEventStore()` constructed here in the body — mirroring
-        // `NowPlayingService`'s sources and `PowerMonitor`/`DeviceMonitor`
-        // being handed to `NotchActivityRouter` the same way — for
-        // consistency with this codebase's `@MainActor`-isolated-type
-        // convention, even though `EKEventStore` itself isn't one.
-        self.eventStore = eventStore ?? EKEventStore()
+        initialEventStore = eventStore
     }
 
     deinit {

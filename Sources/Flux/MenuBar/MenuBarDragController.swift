@@ -350,8 +350,10 @@ class MenuBarDragDestinationView: NSView {
             let point = clip.convert(sender.draggingLocation, from: nil)
             var bounds = clip.bounds
             controller?.trace?("viewport point=\(point) bounds=\(bounds) location=\(sender.draggingLocation)")
-            if point.y < bounds.minY + 24 { bounds.origin.y -= 18 }
-            else if point.y > bounds.maxY - 24 { bounds.origin.y += 18 }
+            if scroll.hasVerticalScroller {
+                if point.y < bounds.minY + 24 { bounds.origin.y -= 18 }
+                else if point.y > bounds.maxY - 24 { bounds.origin.y += 18 }
+            }
             if scroll.hasHorizontalScroller {
                 if point.x < bounds.minX + 28 { bounds.origin.x -= 18 }
                 else if point.x > bounds.maxX - 28 { bounds.origin.x += 18 }

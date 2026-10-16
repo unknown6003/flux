@@ -374,6 +374,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func observeNotchSettings() {
+        Publishers.CombineLatest4(settings.$notchEnabled, settings.$notchNowPlayingEnabled,
+                                  settings.$notchLockScreenExperimentEnabled, settings.$notchLockScreenNowPlayingEnabled)
+            .map { notch, widget, lockScreen, lockMedia in notch && (widget || (lockScreen && lockMedia)) }
+            .removeDuplicates()
+            .sink { [weak self] enabled in self?.nowPlayingService.setEnabled(enabled) }
+            .store(in: &cancellables)
+
         settings.$notchEnabled
             .dropFirst()
             .sink { [weak self] enabled in self?.configureNotch(notchEnabled: enabled) }

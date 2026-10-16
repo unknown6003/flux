@@ -2767,6 +2767,19 @@ enum SelfTest {
             alertSuite.removePersistentDomain(forName: alertSuiteName)
         }
 
+        do {
+            let media = NowPlayingService()
+            media.injectPreviewState(nil, artwork: NSImage(size: NSSize(width: 8, height: 8)))
+            media.setEnabled(false)
+            check(media.artwork == nil && !media.isActive,
+                  "Now Playing: disabling media releases cached artwork and active state")
+            media.setActive(true)
+            media.setEnabled(false)
+            check(media.isActive,
+                  "Now Playing: a disabled presentation records demand without starting media")
+            media.setActive(false)
+        }
+
         // --- M6: SettingsStore — fresh-install defaults for every new key,
         // including the widget-order extension (mirror/clipboard appended
         // after calendar). Mirrors the "Hotkey" section's own
