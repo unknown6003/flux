@@ -289,6 +289,8 @@ jobs:
           ./build/Flux.app/Contents/MacOS/Flux --snapshot settings-snapshots/settings-light.png light general
           ./build/Flux.app/Contents/MacOS/Flux --snapshot settings-snapshots/settings-dark.png dark general
           ./build/Flux.app/Contents/MacOS/Flux --snapshot settings-snapshots/lock-screen-dark.png dark lockScreen
+          ./build/Flux.app/Contents/MacOS/Flux --snapshot settings-snapshots/menu-bar-light.png light menuBar
+          ./build/Flux.app/Contents/MacOS/Flux --snapshot settings-snapshots/menu-bar-dark.png dark menuBar
 
       - name: Upload notch snapshots artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

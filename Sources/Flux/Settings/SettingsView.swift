@@ -60,7 +60,7 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             SettingsSidebar(selection: $selectedTab)
-                .frame(width: 224)
+                .frame(width: 168)
 
             Rectangle()
                 .fill(Theme.settingsDividerColor)

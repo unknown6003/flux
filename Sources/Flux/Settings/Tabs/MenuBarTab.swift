@@ -1,51 +1,107 @@
 import SwiftUI
 import AppKit
 
-/// Menu-bar behavior and the drawer used to manage real icons.
 struct MenuBarTab: View {
     @EnvironmentObject private var settings: SettingsStore
     @EnvironmentObject private var iconManager: MenuBarIconManager
+    @Environment(\.menuBarSnapshotIcons) private var snapshotIcons
     @StateObject private var dragController = MenuBarDragController()
 
     var body: some View {
-        VStack(spacing: 18) {
-            if iconManager.isTrusted {
-                MenuBarPreview(showAlwaysHidden: settings.showAlwaysHiddenSection)
-                    .padding(.horizontal, 4)
+        VStack(alignment: .leading, spacing: 16) {
+            if iconManager.isTrusted || snapshotIcons != nil {
+                layoutEditor
+            } else {
+                accessCard
             }
-            drawerCard
-            behaviorCard
-            appearanceCard
+            DisclosureGroup("Menu bar options") {
+                VStack(spacing: 16) {
+                    behaviorCard
+                    appearanceCard
+                }
+                .padding(.top, 12)
+            }
+            .font(.body)
         }
         .padding(20)
-        .environmentObject(dragController)
         .background(MenuBarDragSettingsAnchor(controller: dragController, manager: iconManager)
             .frame(width: 0, height: 0))
-        .onAppear { iconManager.beginIconManagement() }
+        .onAppear { if snapshotIcons == nil { iconManager.beginIconManagement() } }
         .onDisappear {
             dragController.close()
-            iconManager.endIconManagement()
+            if snapshotIcons == nil { iconManager.endIconManagement() }
         }
     }
 
-    private var drawerCard: some View {
-        FluxCard(title: "Menu Bar Drawer") {
-            MenuBarDrawer()
+    private var layoutEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Organise icons").font(.headline)
+                Spacer()
+                Button { dragController.refreshIcons() } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(iconManager.isUpdatingIcons)
+                Menu {
+                    Button("Copy menu bar report") { iconManager.copyMenuBarReport() }
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Menu bar help")
+            }
+            Text("Drag an icon to a section, or use its Move menu. Command-drag in the menu bar to change its order.")
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondaryColor)
+            if let message = iconManager.errorMessage ?? dragController.message {
+                Text(message).font(.caption).foregroundStyle(.orange)
+            }
+            ForEach(MenuBarSection.allCases.filter { $0 != .alwaysHidden || settings.showAlwaysHiddenSection }) { section in
+                MenuBarIconLane(controller: dragController, manager: iconManager, section: section,
+                                icons: (snapshotIcons ?? iconManager.icons).filter { $0.section == section },
+                                alwaysHiddenEnabled: settings.showAlwaysHiddenSection)
+            }
+            Toggle("Always Hidden section", isOn: $settings.showAlwaysHiddenSection)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .font(.caption)
+            if ControlItem.usesMacOS27Model {
+                Text("Apple system icons stay in the menu bar.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondaryColor)
+            }
+        }
+    }
+
+    private var accessCard: some View {
+        FluxCard(title: "Organise icons") {
+            VStack(alignment: .leading, spacing: 12) {
+                RowText(title: "Allow icon management",
+                        subtitle: iconManager.canHideWithoutAccess
+                            ? "Your saved layout still works. Allow Accessibility to read and move icons."
+                            : "Flux needs Accessibility to read and move menu bar icons.")
+                Button("Open Accessibility Settings") { iconManager.requestAccess() }
+                    .buttonStyle(.fluxProminent)
+                Button("Check access again") { iconManager.beginIconManagement() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accentInkColor)
+                DisclosureGroup("Access is on, but icons are missing") {
+                    Text("Quit Flux. Remove its old entry in Accessibility Settings, then add \(Bundle.main.bundleURL.path) and turn it on.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondaryColor)
+                }
+            }
+            .padding(14)
         }
     }
 
     private var behaviorCard: some View {
         FluxCard(title: "Behavior") {
-            ToggleRow(title: "Always-Hidden section",
-                      subtitle: "Keep this section available in the Settings drawer.",
-                      isOn: $settings.showAlwaysHiddenSection)
-            RowDivider()
             ToggleRow(title: "Compact menu-bar spacing",
-                      subtitle: "Tightens the gap around every icon. Full effect after your next login.",
+                      subtitle: "Full effect after your next login.",
                       isOn: $settings.compactMenuBarSpacing)
             RowDivider()
             ToggleRow(title: "Auto re-hide",
-                      subtitle: "Hide the drawer again after you reveal it.",
+                      subtitle: "Hide revealed icons after a delay.",
                       isOn: $settings.autoRehide)
             if settings.autoRehide {
                 RowDivider()
@@ -56,282 +112,17 @@ struct MenuBarTab: View {
 
     private var appearanceCard: some View {
         FluxCard(title: "Appearance") {
-            VStack(alignment: .leading, spacing: 10) {
-                RowText(title: "Menu bar icon",
-                        subtitle: "The glyph Flux shows in your menu bar.")
-                Picker("", selection: $settings.iconStyle) {
-                    ForEach(MenuBarIconStyle.allCases) { style in
-                        Text(style.displayName).tag(style)
-                    }
+            HStack {
+                Text("Menu bar icon")
+                Spacer()
+                Picker("Menu bar icon", selection: $settings.iconStyle) {
+                    ForEach(MenuBarIconStyle.allCases) { style in Text(style.displayName).tag(style) }
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
+                .frame(maxWidth: 230)
             }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 14)
-        }
-    }
-}
-
-private struct MenuBarDrawer: View {
-    @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var iconManager: MenuBarIconManager
-    @EnvironmentObject private var dragController: MenuBarDragController
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if !iconManager.isTrusted {
-                accessRow
-            } else {
-                RowText(title: "Manage icons here",
-                        subtitle: "Drag a row handle into a section or onto Keep shown below the menu bar. Move to… and the arrows also work.")
-                ToggleRow(title: "Show menu bar drag grips",
-                          subtitle: "Drag the small grips below app icons into a section. Command-drag icons in the menu bar to reorder them.",
-                          isOn: Binding(get: { dragController.isMenuBarDragging },
-                                        set: { dragController.setMenuBarDragging($0) }))
-                if ControlItem.usesMacOS27Model {
-                    Text("macOS 27 lets Flux hide third-party apps. Apple system icons stay in the menu bar.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondaryColor)
-                }
-                if let errorMessage = iconManager.errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if let message = dragController.message {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                ForEach(MenuBarSection.allCases) { section in
-                    iconSection(section)
-                    if section != .alwaysHidden { RowDivider() }
-                }
-                Button {
-                    dragController.refreshIcons()
-                } label: {
-                    Label("Refresh icons", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accentInkColor)
-            }
-            Button("Copy menu bar report") {
-                iconManager.copyMenuBarReport()
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.accentInkColor)
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 14)
-    }
-
-    private var accessRow: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            RowText(title: "Allow icon management",
-                    subtitle: ControlItem.usesMacOS27Model
-                        ? (iconManager.canHideWithoutAccess
-                            ? "Hide and reveal still work with your saved layout. Allow Accessibility to read or move icons."
-                            : "Allow Accessibility once so Flux can save your icon layout. Hide and reveal can then work without this access.")
-                        : "Flux uses Accessibility to read and move menu-bar icons. It opens System Settings instead of showing a prompt.")
-            Text("If Flux is already on, quit Flux and remove its old entry with the minus button. Add \(Bundle.main.bundleURL.path) with the plus button and turn it on.")
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondaryColor)
-            Button("Open Accessibility Settings") {
-                dragController.setMenuBarDragging(false)
-                iconManager.requestAccess()
-            }
-            .buttonStyle(.fluxProminent)
-            Button("Check access again") {
-                dragController.setMenuBarDragging(false)
-                iconManager.beginIconManagement()
-            }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.accentInkColor)
-        }
-    }
-
-    @ViewBuilder
-    private func iconSection(_ section: MenuBarSection) -> some View {
-        let items = iconManager.icons.filter { $0.section == section }
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(Theme.zoneColor(section))
-                    .frame(width: 8, height: 8)
-                Text(section.displayName)
-                    .font(.body.weight(.semibold))
-                Spacer(minLength: 0)
-                Text("\(items.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(Theme.textSecondaryColor)
-            }
-            Text(section.subtitle)
-                .font(.caption)
-                .foregroundStyle(Theme.textSecondaryColor)
-                .padding(.leading, 15)
-            if section == .alwaysHidden && !settings.showAlwaysHiddenSection {
-                Text("Turn on Always-Hidden section below to use this drop target.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondaryColor)
-                    .padding(.leading, 15)
-            } else {
-                MenuBarIconDropZone(controller: dragController, section: section)
-                    .frame(height: 30)
-                    .padding(.leading, 15)
-            }
-            if items.isEmpty {
-                Text(emptyText(for: section))
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondaryColor)
-                    .padding(.leading, 15)
-                    .padding(.top, 2)
-            } else {
-                ForEach(items) { icon in
-                    MenuBarIconRow(icon: icon)
-                }
-            }
-        }
-    }
-
-    private func emptyText(for section: MenuBarSection) -> String {
-        switch section {
-        case .shown: return "No icons are visible."
-        case .hidden: return "No hidden icons."
-        case .alwaysHidden: return "No always-hidden icons."
-        }
-    }
-}
-
-private struct MenuBarIconRow: View {
-    @EnvironmentObject private var iconManager: MenuBarIconManager
-    @EnvironmentObject private var dragController: MenuBarDragController
-    let icon: MenuBarIconManager.Icon
-
-    var body: some View {
-        HStack(spacing: 7) {
-            if icon.isMovable {
-                MenuBarIconDragHandle(controller: dragController, icon: icon)
-                    .frame(width: 18, height: 22)
-            }
-            Image(systemName: icon.section.symbolName)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Theme.textSecondaryColor)
-                .frame(width: 17)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(icon.title)
-                    .foregroundStyle(Theme.textPrimaryColor)
-                    .lineLimit(1)
-                if let source = icon.source {
-                    Text(source)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.textSecondaryColor)
-                        .lineLimit(icon.isMovable ? 1 : nil)
-                }
-            }
-            Spacer(minLength: 2)
-            if icon.isMovable {
-                Button {
-                    dragController.setMenuBarDragging(false)
-                    iconManager.move(icon, toward: .towardDrawer)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .disabled(!iconManager.canMove(icon, toward: .towardDrawer))
-                .accessibilityLabel("Move \(icon.title) toward the drawer")
-
-                Button {
-                    dragController.setMenuBarDragging(false)
-                    iconManager.move(icon, toward: .towardClock)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .disabled(!iconManager.canMove(icon, toward: .towardClock))
-                .accessibilityLabel("Move \(icon.title) toward the clock")
-
-                Menu {
-                    ForEach(MenuBarSection.allCases) { section in
-                        Button {
-                            dragController.setMenuBarDragging(false)
-                            iconManager.move(icon, to: section)
-                        } label: {
-                            Label(section.displayName, systemImage: section.symbolName)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .frame(width: 24, height: 22)
-                }
-                .menuStyle(.borderlessButton)
-                .accessibilityLabel("Move \(icon.title) to another section")
-            }
-        }
-        .foregroundStyle(Theme.accentInkColor)
-        .padding(.vertical, 5)
-    }
-}
-
-private struct MenuBarPreview: View {
-    let showAlwaysHidden: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                if showAlwaysHidden {
-                    zone(count: 2, tint: Theme.zoneColor(.alwaysHidden))
-                    boundary
-                }
-                zone(count: 3, tint: Theme.zoneColor(.hidden))
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accentInkColor)
-                zone(count: 2, tint: Theme.zoneColor(.shown))
-                Image(systemName: "clock")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.textSecondaryColor)
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Theme.surfaceRaisedColor)
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Theme.hairlineColor))
-            )
-
-            HStack(spacing: 14) {
-                legend(.shown)
-                legend(.hidden)
-                if showAlwaysHidden { legend(.alwaysHidden) }
-            }
-            .font(.caption2)
-            .foregroundStyle(Theme.textSecondaryColor)
-        }
-    }
-
-    private var boundary: some View {
-        Rectangle()
-            .fill(Theme.zoneColor(.alwaysHidden))
-            .frame(width: 1, height: 17)
-    }
-
-    private func zone(count: Int, tint: Color) -> some View {
-        HStack(spacing: 6) {
-            ForEach(0..<count, id: \.self) { _ in
-                Circle().fill(tint).frame(width: 11, height: 11)
-            }
-        }
-    }
-
-    private func legend(_ section: MenuBarSection) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(Theme.zoneColor(section)).frame(width: 8, height: 8)
-            Text(section.displayName)
+            .padding(14)
         }
     }
 }

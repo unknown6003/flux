@@ -6,173 +6,57 @@ import Combine
 final class MenuBarDragController: ObservableObject {
     static let pasteboardType = NSPasteboard.PasteboardType("com.bdwy.flux.menu-bar-icon")
 
-    @Published private(set) var isMenuBarDragging = false
     @Published private(set) var message: String?
     var trace: ((String) -> Void)?
 
     private weak var manager: MenuBarIconManager?
     private weak var settingsWindow: NSWindow?
     private var observers: [NSObjectProtocol] = []
-    private var workspaceObservers: [NSObjectProtocol] = []
     private var updateObservation: AnyCancellable?
-    private var timer: Timer?
-    private var tap: CFMachPort?
-    private var tapSource: CFRunLoopSource?
-    private var overlays: [NSPanel] = []
-    private var overlayIcons: [MenuBarIconManager.Icon] = []
-    private var returnPanels: [NSWindow] = []
-    private var commandDown = false
-    private var nativeGesture = false
-    private var refreshing = false
     private var updatingIcons = false
-    private var inputSuspensionDepth = 0
-    private var refreshRequested = true
-    private var lastRefresh = -Double.infinity
     private var active: (token: String, icon: MenuBarIconManager.Icon, identity: MenuBarDragIdentity)?
 
-    deinit {
-        timer?.invalidate()
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
-        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
-        observers.forEach(NotificationCenter.default.removeObserver)
-        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
-        let panels = overlays.map { $0 as NSWindow } + returnPanels
-        DispatchQueue.main.async {
-            for panel in panels {
-                panel.ignoresMouseEvents = true
-                panel.orderOut(nil)
-                panel.close()
-            }
-        }
-    }
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
     func open(manager: MenuBarIconManager, window: NSWindow) {
         guard settingsWindow !== window || self.manager !== manager else { return }
         close()
         self.manager = manager
         settingsWindow = window
-        // @Published emits before storing the property. Use its emitted value here.
         updateObservation = manager.$isUpdatingIcons.sink { [weak self] updating in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.updatingIcons = updating
-                if updating { self.suspendInput() }
-                else { self.resumeInput() }
-            }
+            MainActor.assumeIsolated { self?.updatingIcons = updating }
         }
         let center = NotificationCenter.default
-        for name in [NSApplication.didResignActiveNotification,
-                     NSApplication.willTerminateNotification] {
+        for name in [NSApplication.didResignActiveNotification, NSApplication.willTerminateNotification,
+                     NSApplication.didChangeScreenParametersNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stopInput(reason: name.rawValue) }
+                MainActor.assumeIsolated { self?.cancel() }
             })
         }
         for name in [NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification,
                      NSWindow.didResignKeyNotification] {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stopInput(reason: name.rawValue) }
-            })
-        }
-        observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
-                                             object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.stopInput(reason: "screen changed") }
-        })
-        let workspace = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            workspaceObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshRequested = true }
+                MainActor.assumeIsolated { self?.cancel() }
             })
         }
     }
 
     func close() {
-        stopInput(reason: "management closed")
+        cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
-        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
-        workspaceObservers.removeAll()
         updateObservation = nil
         updatingIcons = false
-        refreshRequested = true
         manager = nil
         settingsWindow = nil
     }
 
-    func setMenuBarDragging(_ enabled: Bool) {
-        stopInput(reason: "mode toggle \(enabled)")
-        message = nil
-        guard enabled else { return }
-        guard canManage, AXIsProcessTrusted() else {
-            message = "Keep Settings active and allow Accessibility to drag menu bar icons."
-            return
-        }
-        if !updatingIcons { refreshIcons() }
-        let mask = [CGEventType.flagsChanged, .leftMouseDown, .leftMouseUp].reduce(CGEventMask(0)) {
-            $0 | (CGEventMask(1) << $1.rawValue)
-        }
-        guard let newTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
-                                             options: .defaultTap, eventsOfInterest: mask,
-                                             callback: { _, type, event, context in
-            guard let context else { return Unmanaged.passUnretained(event) }
-            // This tap's source is attached only to the main run loop below.
-            MainActor.assumeIsolated {
-                let controller = Unmanaged<MenuBarDragController>.fromOpaque(context).takeUnretainedValue()
-                controller.observe(type: type, event: event)
-            }
-            return Unmanaged.passUnretained(event)
-        }, userInfo: Unmanaged.passUnretained(self).toOpaque()),
-              let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, newTap, 0) else {
-            message = "Menu bar dragging is unavailable. Use the row handles or Move menu."
-            return
-        }
-        tap = newTap
-        tapSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: newTap, enable: !inputSuspended)
-        guard inputSuspended || CGEvent.tapIsEnabled(tap: newTap) else {
-            stopInput(reason: "tap not enabled")
-            message = "Menu bar dragging is unavailable. Use the row handles or Move menu."
-            return
-        }
-        commandDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
-        isMenuBarDragging = true
-        refreshOverlays()
-        startHeartbeat()
-        trace?("mode enabled overlays=\(overlays.count) command=\(commandDown)")
-    }
+    var isDragging: Bool { active != nil }
 
-    private func startHeartbeat() {
-        guard timer == nil else { return }
-        let heartbeat = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                guard self.canManage else {
-                    self.stopInput(reason: "heartbeat management inactive")
-                    return
-                }
-                guard AXIsProcessTrusted() else {
-                    self.stopInput(reason: "heartbeat grant lost")
-                    return
-                }
-                if self.isMenuBarDragging {
-                    guard let tap = self.tap, CFMachPortIsValid(tap),
-                          self.inputSuspended || CGEvent.tapIsEnabled(tap: tap) else {
-                        self.stopInput(reason: "heartbeat tap lost")
-                        return
-                    }
-                }
-                if !self.inputSuspended && self.active == nil && !self.nativeGesture
-                    && NSEvent.pressedMouseButtons & 1 == 0 {
-                    if self.isMenuBarDragging && (self.refreshRequested
-                        || ProcessInfo.processInfo.systemUptime - self.lastRefresh >= 3) {
-                        self.refreshIcons()
-                    }
-                    self.refreshOverlays()
-                }
-            }
-        }
-        timer = heartbeat
-        RunLoop.main.add(heartbeat, forMode: .common)
+    func refreshIcons() {
+        guard active == nil, !updatingIcons else { return }
+        message = nil
+        manager?.refresh()
     }
 
     func makeSourceView(for icon: MenuBarIconManager.Icon) -> MenuBarDragSourceView {
@@ -182,16 +66,8 @@ final class MenuBarDragController: ObservableObject {
         return view
     }
 
-    func refreshIcons() {
-        guard !updatingIcons else { refreshRequested = true; return }
-        withInputSuspended { manager?.refresh() }
-        lastRefresh = ProcessInfo.processInfo.systemUptime
-        refreshRequested = false
-        refreshOverlays()
-    }
-
     func accepts(_ sender: NSDraggingInfo) -> Bool {
-        guard canManage, !inputSuspended, let active,
+        guard canManage, !updatingIcons, let active,
               sender.draggingSource as? MenuBarDragSourceView != nil,
               sender.draggingSourceOperationMask.contains(.move),
               sender.draggingPasteboard.string(forType: Self.pasteboardType) == active.token else { return false }
@@ -200,277 +76,87 @@ final class MenuBarDragController: ObservableObject {
 
     func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection) -> Bool {
         guard accepts(sender), let pending = active, let manager, AXIsProcessTrusted() else { return false }
-        return withInputSuspended {
-            manager.refresh()
-            let matches = manager.icons.filter { $0.id == pending.icon.id }
-            guard canManage, active?.token == pending.token,
-                  matches.count == 1, let current = matches.first, current.isMovable,
-                  current.title == pending.icon.title, current.source == pending.icon.source,
-                  current.frame == pending.icon.frame,
-                  pending.identity.isCurrent(for: current) else {
-                active = nil
-                message = "That icon changed during the drag. Refresh icons and try again."
-                trace?("drop rejected identity")
-                return false
-            }
-            active = nil
-            removeReturnPanels()
-            trace?("commit \(section.rawValue) \(current.id)")
-            manager.move(current, to: section)
-            return true
+        manager.refresh()
+        let matches = manager.icons.filter { $0.id == pending.icon.id }
+        guard canManage, active?.token == pending.token, matches.count == 1,
+              let current = matches.first, current.isMovable,
+              current.title == pending.icon.title, current.source == pending.icon.source,
+              current.frame == pending.icon.frame, pending.identity.isCurrent(for: current) else {
+            cancel()
+            message = "That icon changed during the drag. Refresh icons and try again."
+            trace?("drop rejected identity")
+            return false
         }
+        cancel()
+        message = nil
+        trace?("commit \(section.rawValue) \(current.id)")
+        manager.move(current, to: section)
+        return true
     }
 
     fileprivate func begin(icon: MenuBarIconManager.Icon, in view: MenuBarDragSourceView,
                            mouseDown: NSEvent) -> NSDraggingSession? {
-        guard canManage, !inputSuspended, icon.isMovable, active == nil, let manager, AXIsProcessTrusted() else { return nil }
+        guard canManage, !updatingIcons, icon.isMovable, active == nil,
+              let manager, AXIsProcessTrusted() else { return nil }
         let matches = manager.icons.filter { $0.id == icon.id }
         guard matches.count == 1, let current = matches.first, current == icon,
-              let identity = withInputSuspended({ MenuBarDragIdentity(icon: current) }) else {
+              let identity = MenuBarDragIdentity(icon: current) else {
             message = "That icon changed. Refresh icons and try again."
             return nil
         }
-        guard canManage, CGEventSource.buttonState(.combinedSessionState, button: .left),
+        guard canManage, !updatingIcons,
+              CGEventSource.buttonState(.combinedSessionState, button: .left),
               !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) else { return nil }
+        message = nil
         let token = UUID().uuidString
         active = (token, current, identity)
-        startHeartbeat()
         let writer = NSPasteboardItem()
         writer.setString(token, forType: Self.pasteboardType)
         let item = NSDraggingItem(pasteboardWriter: writer)
-        let image = NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: current.title)!
-        item.setDraggingFrame(NSRect(x: 0, y: 0, width: 28, height: 24), contents: image)
-        setPassThrough(true)
+        let image = view.bitmapImageRepForCachingDisplay(in: view.bounds).map { bitmap -> NSImage in
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let image = NSImage(size: view.bounds.size)
+            image.addRepresentation(bitmap)
+            return image
+        } ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: current.title)!
+        item.setDraggingFrame(view.bounds, contents: image)
         let session = view.beginDraggingSession(with: [item], event: mouseDown, source: view)
         session.animatesToStartingPositionsOnCancelOrFail = true
-        trace?("return scheduled")
-        // Defer until AppKit has registered the source. These windows receive drops only.
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.active?.token == token else { return }
-            self.showReturnPanels()
-        }
         trace?("begin window=\(mouseDown.windowNumber) source=\(view.window?.windowNumber ?? -1)")
         return session
     }
 
     fileprivate func ended(operation: NSDragOperation) {
         trace?("ended operation=\(operation.rawValue)")
-        active = nil
-        removeReturnPanels()
-        if !isMenuBarDragging { timer?.invalidate(); timer = nil }
-        refreshOverlays()
+        cancel()
     }
+
+    private func cancel() { active = nil }
 
     private var canManage: Bool {
         guard let settingsWindow, let manager else { return false }
         return manager.isTrusted && NSApp.isActive && settingsWindow.isVisible
             && !settingsWindow.isMiniaturized && NSApp.keyWindow === settingsWindow
     }
-
-    private func observe(type: CGEventType, event: CGEvent) {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            guard !inputSuspended, let tap else { return }
-            // Explicit suspension also posts this notification, which can arrive after resume.
-            if CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) { return }
-            trace?("tap lost")
-            stopInput(reason: "tap disabled event \(type.rawValue)")
-            message = "Menu bar dragging stopped. Turn it on again to retry."
-            return
-        }
-        commandDown = event.flags.contains(.maskCommand)
-        if type == .leftMouseDown {
-            nativeGesture = commandDown
-            trace?("tap down command=\(commandDown)")
-        }
-        // Never replay, consume, or transplant a foreign mouse event. Set the
-        // window input policy before returning the original Command-down.
-        setPassThrough(shouldPassThrough)
-        if type == .leftMouseUp {
-            let refreshNativePosition = nativeGesture && active == nil
-            nativeGesture = false
-            if refreshNativePosition {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isMenuBarDragging else { return }
-                    self.refreshRequested = true
-                }
-            }
-        }
-    }
-
-    private func refreshOverlays() {
-        guard !refreshing, isMenuBarDragging, canManage, let manager else { return }
-        refreshing = true
-        defer { refreshing = false }
-        guard manager.isTrusted else { stopInput(reason: "manager access lost"); return }
-        let icons = manager.icons.filter { $0.isMovable }
-        guard icons != overlayIcons else {
-            setPassThrough(shouldPassThrough)
-            return
-        }
-        overlays.forEach { $0.orderOut(nil); $0.close() }
-        overlays.removeAll()
-        overlayIcons = icons
-        let iconFrames = manager.icons.compactMap { Self.appKitFrame(for: $0.frame) }
-        for icon in icons {
-            guard let frame = Self.appKitFrame(for: icon.frame),
-                  let screen = NSScreen.screens.first(where: { screen in
-                      let strip = NSRect(x: screen.frame.minX, y: screen.frame.maxY - NSStatusBar.system.thickness - 16,
-                                         width: screen.frame.width, height: NSStatusBar.system.thickness + 16)
-                      return strip.contains(frame) && frame.width > 1
-                  }) else { continue }
-            let view = makeSourceView(for: icon)
-            view.showsHandle = true
-            view.isMenuBarGrip = true
-            view.toolTip = "Drag \(icon.title) into Hidden or Always Hidden"
-            view.setAccessibilityElement(true)
-            view.setAccessibilityRole(.image)
-            view.setAccessibilityLabel("Drag \(icon.title) from its menu bar grip")
-            let gripWidth = min(frame.width, 24)
-            let barBottom = screen.frame.maxY - max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-            let gripFrame = NSRect(x: frame.midX - gripWidth / 2, y: min(frame.minY, barBottom) - 18,
-                                   width: gripWidth, height: 16)
-            guard !iconFrames.contains(where: { $0.intersects(gripFrame) }),
-                  screen.frame.contains(gripFrame) else { continue }
-            let panel = Self.panel(frame: gripFrame, view: view)
-            panel.ignoresMouseEvents = shouldPassThrough
-            panel.orderFrontRegardless()
-            overlays.append(panel)
-        }
-    }
-
-    private func setPassThrough(_ ignore: Bool) {
-        for panel in overlays { panel.ignoresMouseEvents = ignore }
-    }
-
-    private func withInputSuspended<T>(_ action: () -> T) -> T {
-        inputSuspensionDepth += 1
-        suspendInput()
-        defer {
-            inputSuspensionDepth -= 1
-            resumeInput()
-        }
-        return action()
-    }
-
-    private var inputSuspended: Bool { updatingIcons || inputSuspensionDepth > 0 }
-    private var shouldPassThrough: Bool { inputSuspended || commandDown || nativeGesture || active != nil }
-
-    private func suspendInput() {
-        setPassThrough(true)
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-    }
-
-    private func resumeInput() {
-        guard isMenuBarDragging, !inputSuspended else { return }
-        guard canManage, AXIsProcessTrusted(), let tap, CFMachPortIsValid(tap) else {
-            stopInput(reason: "input resume unavailable")
-            return
-        }
-        CGEvent.tapEnable(tap: tap, enable: true)
-        guard CGEvent.tapIsEnabled(tap: tap) else { stopInput(reason: "tap resume failed"); return }
-        commandDown = CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand)
-        nativeGesture = CGEventSource.buttonState(.combinedSessionState, button: .left)
-        setPassThrough(shouldPassThrough)
-    }
-
-    private func showReturnPanels() {
-        trace?("return setup canManage=\(canManage) active=\(active != nil)")
-        guard canManage, active != nil, let settingsWindow else { return }
-        removeReturnPanels()
-        for screen in NSScreen.screens {
-            let barHeight = max(NSStatusBar.system.thickness, screen.safeAreaInsets.top)
-            let x = min(max(settingsWindow.frame.maxX + 20, screen.frame.minX),
-                        max(screen.frame.minX, screen.frame.maxX - 250))
-            let frame = NSRect(x: x, y: screen.frame.maxY - barHeight - 64 - 8, width: 230, height: 64)
-            guard screen.frame.contains(frame) else { continue }
-            let panel = MenuBarReturnWindow(contentRect: frame, styleMask: [.borderless],
-                                            backing: .buffered, defer: false)
-            panel.isReleasedWhenClosed = false
-            panel.isOpaque = true
-            panel.backgroundColor = .windowBackgroundColor
-            panel.hidesOnDeactivate = true
-            panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-            let view = MenuBarDragDestinationView(frame: panel.contentView!.bounds.insetBy(dx: 10, dy: 10))
-            view.controller = self
-            view.section = .shown
-            view.showsReturnHint = true
-            view.autoresizingMask = [.width, .height]
-            view.toolTip = "Drop here to keep this icon visible"
-            view.setAccessibilityElement(true)
-            view.setAccessibilityRole(.group)
-            view.setAccessibilityLabel("Keep shown. Drop here to keep this icon visible.")
-            panel.contentView!.addSubview(view)
-            panel.orderFrontRegardless()
-            returnPanels.append(panel)
-            trace?("return created window=\(panel.windowNumber) frame=\(panel.frame) visible=\(panel.isVisible) level=\(panel.level.rawValue)")
-        }
-    }
-
-    private func removeReturnPanels() {
-        returnPanels.forEach { $0.orderOut(nil); $0.close() }
-        returnPanels.removeAll()
-    }
-
-    private func stopInput(reason: String) {
-        if let trace {
-            let front = NSWorkspace.shared.frontmostApplication
-            trace("stop reason=\(reason) appActive=\(NSApp.isActive) key=\(NSApp.keyWindow?.windowNumber ?? -1) settings=\(settingsWindow?.windowNumber ?? -1) pid=\(ProcessInfo.processInfo.processIdentifier) front=\(front?.processIdentifier ?? -1):\(front?.bundleIdentifier ?? "nil")")
-        }
-        active = nil
-        isMenuBarDragging = false
-        timer?.invalidate()
-        timer = nil
-        setPassThrough(true)
-        overlays.forEach { $0.orderOut(nil); $0.close() }
-        overlays.removeAll()
-        overlayIcons.removeAll()
-        removeReturnPanels()
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
-        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
-        tapSource = nil
-        tap = nil
-        nativeGesture = false
-        commandDown = false
-        trace?("cleanup overlays=0 returns=0 tap=none")
-    }
-
-    private static func panel(frame: NSRect, view: NSView) -> NSPanel {
-        let panel = MenuBarDragPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
-                                     backing: .buffered, defer: false)
-        panel.isReleasedWhenClosed = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.hidesOnDeactivate = true
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.contentView = view
-        return panel
-    }
-
-    private static func appKitFrame(for frame: CGRect) -> CGRect? {
-        guard let primary = NSScreen.screens.first, !frame.isEmpty, !frame.isInfinite, !frame.isNull else { return nil }
-        return CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
-    }
-}
-
-private final class MenuBarDragPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
-private final class MenuBarReturnWindow: NSWindow {
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { true }
 }
 
 @MainActor
 final class MenuBarDragSourceView: NSView, NSDraggingSource {
     weak var controller: MenuBarDragController?
-    var icon: MenuBarIconManager.Icon?
+    var icon: MenuBarIconManager.Icon? {
+        didSet {
+            if oldValue?.id != icon?.id {
+                appImage = icon.flatMap { icon in
+                    let bundleID = String(icon.id.split(separator: "|").first ?? "")
+                    return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.icon
+                }
+            }
+            needsDisplay = true
+        }
+    }
+    var showsLabel = false
+    private var appImage: NSImage?
     var showsHandle = false { didSet { needsDisplay = true } }
-    var isMenuBarGrip = false
     private var down: NSEvent?
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -510,21 +196,28 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
         controller?.ended(operation: operation)
     }
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if icon?.isMovable == true { addCursorRect(bounds, cursor: .openHand) }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard showsHandle else { return }
-        if isMenuBarGrip {
-            let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
-            NSColor.windowBackgroundColor.setFill()
-            shape.fill()
-            NSColor.separatorColor.setStroke()
-            shape.stroke()
-            NSColor.labelColor.setStroke()
-            let lines = NSBezierPath()
-            for y in [bounds.midY - 3, bounds.midY, bounds.midY + 3] {
-                lines.move(to: NSPoint(x: bounds.midX - 5, y: y))
-                lines.line(to: NSPoint(x: bounds.midX + 5, y: y))
-            }
-            lines.stroke()
+        if showsLabel, let icon {
+            let image = appImage ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: nil)
+            image?.draw(in: NSRect(x: 9, y: bounds.midY - 11, width: 22, height: 22))
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byTruncatingTail
+            let title = NSRect(x: 40, y: bounds.midY - 1, width: max(0, bounds.width - 50), height: 17)
+            (icon.title as NSString).draw(in: title, withAttributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
+            ])
+            let subtitle = NSRect(x: 40, y: bounds.midY - 16, width: title.width, height: 14)
+            ((icon.source ?? "Menu bar item") as NSString).draw(in: subtitle, withAttributes: [
+                .font: NSFont.systemFont(ofSize: 10),
+                .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph
+            ])
             return
         }
         NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag icon")?
@@ -533,10 +226,9 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 }
 
 @MainActor
-final class MenuBarDragDestinationView: NSView {
+class MenuBarDragDestinationView: NSView {
     weak var controller: MenuBarDragController?
     var section: MenuBarSection = .shown
-    var showsReturnHint = false
     private var targeted = false { didSet { needsDisplay = true } }
 
     override init(frame frameRect: NSRect) {
@@ -571,19 +263,13 @@ final class MenuBarDragDestinationView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard targeted || showsReturnHint else { return }
-        NSColor.controlAccentColor.withAlphaComponent(targeted ? 0.24 : 0.10).setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6).fill()
-        if showsReturnHint {
-            let text = "Keep shown" as NSString
-            text.draw(at: NSPoint(x: 12, y: bounds.midY + 2),
-                      withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-                                       .foregroundColor: NSColor.labelColor])
-            let hint = "Drop here to keep this icon visible" as NSString
-            hint.draw(at: NSPoint(x: 12, y: bounds.midY - 13),
-                      withAttributes: [.font: NSFont.systemFont(ofSize: 10),
-                                       .foregroundColor: NSColor.secondaryLabelColor])
-        }
+        guard targeted else { return }
+        NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9).fill()
+        NSColor.controlAccentColor.setStroke()
+        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9)
+        border.lineWidth = 2
+        border.stroke()
     }
 }
 

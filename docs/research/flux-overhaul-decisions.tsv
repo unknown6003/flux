@@ -1,0 +1,2 @@
+ts	phase	decision	why	evidence	result
+2026-10-16T03:35:13Z	frame	Use Settings lanes and native Command-drag; remove floating grips	The two modes already have separate owners; extra overlays add state and polling	Sources/Flux/MenuBar/MenuBarDragController.swift; Sources/Flux/MenuBar/MenuBarIconManager.swift	open
