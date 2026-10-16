@@ -1334,9 +1334,11 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         if capture_geometry:
             flags += ["--geometry-output", str(geometry)]
         command([str(binary), str(fixture)] + flags, 30)
+        _stop(process)
         if capture_geometry:
             shutil.copytree(geometry, root / "build/icon-probe/geometry", dirs_exist_ok=True)
     except BaseException:
+        _stop(process)
         label = (options.manager_ref or "current")[:8] + ("-overlap" if options.native_overlap else
                 ("-native" if options.native_close else ("-close" if options.move_close else "-settings")))
         if options.stale_frame:
