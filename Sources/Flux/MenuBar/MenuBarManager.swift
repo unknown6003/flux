@@ -143,8 +143,8 @@ final class MenuBarManager {
         let showAlwaysHidden = revealAlwaysHidden && settings.showAlwaysHiddenSection
         let hiddenCollapsed = !showHidden
         let alwaysHiddenCollapsed = settings.showAlwaysHiddenSection && !showAlwaysHidden
-        hiddenDivider.setCollapsed(hiddenCollapsed)
-        alwaysHiddenDivider.setCollapsed(alwaysHiddenCollapsed)
+        hiddenDivider.setCollapsed(hiddenCollapsed, reservingDropSpace: managingIcons)
+        alwaysHiddenDivider.setCollapsed(alwaysHiddenCollapsed, reservingDropSpace: managingIcons)
         chevron.setChevron(revealed: isAnyRevealed)
         updateOutsideClickMonitor(active: isAnyRevealed && !managingIcons)
         onDrawerStateChanged?(showHidden, showAlwaysHidden)

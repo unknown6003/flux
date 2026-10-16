@@ -235,11 +235,14 @@ final class ControlItem {
     /// (No `animated:` parameter: an earlier signature took one and never
     /// read it, so five call sites were threading through a value that could
     /// not possibly do anything.)
-    func setCollapsed(_ collapsed: Bool) {
+    func setCollapsed(_ collapsed: Bool, reservingDropSpace: Bool = false) {
         guard role == .divider else { return }
         let target: CGFloat
-        target = collapsed && !Self.usesMacOS27Model
-            ? ControlItem.collapsedWidth : ControlItem.revealedWidth
+        if Self.usesMacOS27Model {
+            target = reservingDropSpace ? 1 : Self.revealedWidth
+        } else {
+            target = collapsed ? ControlItem.collapsedWidth : Self.revealedWidth
+        }
         setDividerLength(target)
     }
 
