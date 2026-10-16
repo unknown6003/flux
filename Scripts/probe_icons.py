@@ -912,8 +912,8 @@ func probe() {
                 NSEvent.removeMonitor(monitor)
                 releaseMonitor = nil
             }
-            manager.refresh()
             if CommandLine.arguments.contains("--native-geometry") { geometry("after-native") }
+            manager.refresh()
             guard let actual = fixture() else {
                 print("FAIL: the native fixture disappeared after mouse-up")
                 exit(1)
