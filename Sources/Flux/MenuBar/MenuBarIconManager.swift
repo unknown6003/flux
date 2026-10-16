@@ -54,6 +54,7 @@ final class MenuBarIconManager: ObservableObject {
     private var nativeMoveMonitor: Any?
     private var escapeMonitor: Any?
     private var iconUpdateCount = 0
+    private var iconManagementGeneration = 0
     private var pendingMoveCount = 0
     private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
     private var nativeSaveFailures = Set<String>()
@@ -303,6 +304,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func beginIconManagement() {
+        iconManagementGeneration += 1
         guard !ControlItem.usesMacOS27Model || trustProvider() else {
             refresh()
             return
@@ -312,10 +314,17 @@ final class MenuBarIconManager: ObservableObject {
         applyDrawerVisibility(revealHidden: true,
                               revealAlwaysHidden: true,
                               refreshBeforeApplying: false)
-        refreshAfterLayout(settles: true)
+        let generation = iconManagementGeneration
+        for delay in [0.15, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.iconManagementGeneration == generation else { return }
+                self.refresh()
+            }
+        }
     }
 
     func endIconManagement() {
+        iconManagementGeneration += 1
         endProvider()
     }
 
@@ -907,15 +916,6 @@ final class MenuBarIconManager: ObservableObject {
             errorMessage = nativeSaveError ?? macOS27Hider.latestError
         }
         return saved
-    }
-
-    private func refreshAfterLayout(settles: Bool) {
-        let delays: [TimeInterval] = settles ? [0.15, 0.5] : [0]
-        for delay in delays {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.refresh()
-            }
-        }
     }
 
     private func drag(_ frame: CGRect, to target: CGPoint) {

@@ -5,7 +5,7 @@ Uses real AppDelegate, Settings window and services. Only a file-command driver
 is added to temporary source copies. Both builds use the current bundled media
 helper. Automatic updates and login registration are off in private probe domains.
 CPU and RSS cover the main process. Camera, real media and hardware feature loads
-are not simulated. Window timing ends after a main-loop turn and display flush;
+are not simulated. Window timing waits for the real key window and a display flush;
 it is not GPU presentation time. Native icon/drag correctness has separate probes.
 """
 import argparse
@@ -55,8 +55,15 @@ MainActor.assumeIsolated {
             sequence = number
             let start = ProcessInfo.processInfo.systemUptime
             delegate.perfAction(action)
-            DispatchQueue.main.async {
+            func finishWhenReady() {
                 var state = delegate.perfWindowState()
+                let ready = action == "settings"
+                    ? state["settingsVisible"] as? Bool == true && state["settingsKey"] as? Bool == true
+                    : action != "close" || state["settingsVisible"] as? Bool == false
+                if !ready && ProcessInfo.processInfo.systemUptime - start < 10 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { finishWhenReady() }
+                    return
+                }
                 state["sequence"] = number
                 state["action"] = action
                 state["milliseconds"] = (ProcessInfo.processInfo.systemUptime - start) * 1_000
@@ -64,6 +71,7 @@ MainActor.assumeIsolated {
                 reply(state)
                 if action == "quit" { app.terminate(nil) }
             }
+            DispatchQueue.main.async { finishWhenReady() }
         }
     }
     commands.setCancelHandler { close(descriptor) }
