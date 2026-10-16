@@ -317,7 +317,6 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         try! JSONSerialization.data(withJSONObject: value).write(to: URL(fileURLWithPath: state), options: .atomic)
     }
     func start(seconds: Double) {
-        guard AXIsProcessTrusted() else { print("BLOCKED: existing AX access is required"); exit(3) }
         NSApp.setActivationPolicy(.regular)
         manager.onMove = { [weak self] section in self?.commits.append(section) }
         settings.showAlwaysHiddenSection = true
@@ -332,10 +331,23 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         window.autorecalculatesKeyViewLoop = true
         window.title = "Flux Settings drag probe"
         let root = ScrollView { MenuBarTab().environmentObject(settings).environmentObject(manager) }
-        window.contentView = NSHostingView(rootView: root)
         window.setFrameTopLeftPoint(NSPoint(x: usable.midX - window.frame.width / 2, y: usable.maxY - 8))
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        let fixtureDeadline = ProcessInfo.processInfo.systemUptime + 8
+        @MainActor func installWhenFixtureReady() {
+            self.manager.refresh()
+            guard self.manager.isTrusted, !self.manager.icons.isEmpty else {
+                guard ProcessInfo.processInfo.systemUptime < fixtureDeadline else {
+                    print("BLOCKED: fixture AX inventory unavailable, trusted=\(self.manager.isTrusted)")
+                    exit(3)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { installWhenFixtureReady() }
+                return
+            }
+            self.window.contentView = NSHostingView(rootView: root)
+            self.window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        DispatchQueue.main.async { installWhenFixtureReady() }
         timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
