@@ -261,6 +261,12 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let lanes = all.compactMap { $0 as? MenuBarIconLaneView }
         let sources = all.compactMap { $0 as? MenuBarDragSourceView }
         let source = sources.first { $0.icon?.title == "Flux drag fixture" }
+        var ancestors: [String] = []
+        var ancestor = lanes.first?.superview
+        while let view = ancestor, ancestors.count < 30 {
+            ancestors.append(String(describing: type(of: view)))
+            ancestor = view.superview
+        }
         if let controller = lanes.first?.controller, !configured {
             controller.trace = { [weak self] event in self?.events.append(event) }
             configured = true
@@ -288,6 +294,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "sourceWidth": Double(source?.bounds.width ?? 0), "targets": targets,
             "scrollEdge": [Double(window.frame.midX), Double(NSScreen.screens.first!.frame.maxY - window.frame.minY - 12)],
             "scrollTarget": scrollTarget,
+            "laneAncestors": ancestors,
+            "nativeScrollViews": all.filter { $0 is NSScrollView }.count,
             "sourceIDs": sources.compactMap { $0.icon?.id }.sorted(),
             "managerIDs": manager.icons.map(\.id).sorted(),
             "menu": lanes.flatMap(\.subviews).compactMap { $0 as? NSPopUpButton }.first(where: \.isEnabled).map { center($0) } ?? [],

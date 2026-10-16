@@ -259,12 +259,17 @@ class MenuBarDragDestinationView: NSView {
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = acceptsDrops && controller?.accepts(sender) == true
-        if targeted, let window,
-           let event = NSEvent.mouseEvent(with: .leftMouseDragged, location: sender.draggingLocation,
+        if targeted, let window, let clip = enclosingScrollView?.contentView {
+            let viewport = clip.convert(clip.bounds, to: nil)
+            var point = sender.draggingLocation
+            if point.y < viewport.minY + 24 { point.y = viewport.minY - 20 }
+            else if point.y > viewport.maxY - 24 { point.y = viewport.maxY + 20 }
+            if let event = NSEvent.mouseEvent(with: .leftMouseDragged, location: point,
                                          modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                          windowNumber: window.windowNumber, context: nil,
                                          eventNumber: 0, clickCount: 0, pressure: 1) {
-            autoscroll(with: event)
+                autoscroll(with: event)
+            }
         }
         return targeted ? .move : []
     }
