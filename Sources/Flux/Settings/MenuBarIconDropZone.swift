@@ -100,21 +100,21 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         needsDisplay = true
     }
 
-    private func slot(at point: NSPoint) -> (icons: [MenuBarIconManager.Icon], index: Int) {
+    private func slot(at point: NSPoint) -> (views: [MenuBarDragSourceView], index: Int) {
         let available = sources.filter { $0.icon?.id != controller?.draggedIconID }
         let index = available.firstIndex { point.x < $0.frame.midX } ?? available.count
-        return (available.compactMap(\.icon), index)
+        return (available, index)
     }
 
     private func insertion(at point: NSPoint) -> MenuBarIconManager.Insertion {
-        let (icons, index) = slot(at: point)
+        let (views, index) = slot(at: point)
+        let icons = views.compactMap(\.icon)
         return .init(section: section, before: index < icons.count ? icons[index] : nil,
                      after: index > 0 ? icons[index - 1] : nil)
     }
 
     private func marker(at point: NSPoint) -> CGFloat {
-        let available = sources.filter { $0.icon?.id != controller?.draggedIconID }
-        let index = slot(at: point).index
+        let (available, index) = slot(at: point)
         if index < available.count { return available[index].frame.minX }
         return available.last?.frame.maxX ?? strip.bounds.width - 18
     }

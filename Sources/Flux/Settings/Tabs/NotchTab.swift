@@ -130,7 +130,7 @@ struct NotchTab: View {
             }
             RowDivider()
             ToggleRow(title: "Clipboard",
-                      subtitle: "Keep a short history of what you copy. Off by default; turn it on to opt in.",
+                      subtitle: "Keep a short history of what you copy. Turn this off to stop collection.",
                       isOn: $settings.notchClipboardEnabled)
             RowDivider()
             ToggleRow(title: "Save clipboard history",

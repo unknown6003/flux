@@ -320,7 +320,7 @@ final class SettingsStore: ObservableObject {
     /// Plays a short, low "Pop" system click (falling back to Glass/Tink) the
     /// moment `LockScreenPresenter` observes `"com.apple.screenIsUnlocked"`.
     /// Defaults to `true` once the user opts into the experimental lock-screen
-    /// surface; the master lock-screen switch itself remains off by default.
+    /// surface; the master lock-screen switch is enabled for new profiles.
     @Published var notchLockScreenUnlockSoundEnabled: Bool {
         didSet { defaults.set(notchLockScreenUnlockSoundEnabled, forKey: Keys.notchLockScreenUnlockSoundEnabled) }
     }

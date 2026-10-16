@@ -54,7 +54,7 @@ enum LockScreenWidgetPositionLogic {
     }
 }
 
-/// EXPERIMENTAL — default OFF, gated by `flux.notch.lockScreenExperiment`
+/// EXPERIMENTAL — enabled for new profiles, gated by `flux.notch.lockScreenExperiment`
 /// (the wiring agent's `setEnabled(_:)` call, in `AppDelegate.
 /// configureLockScreenPresenter()` — this class has no opinion of its own
 /// about the default or the key name, and that master flag remains the ONE
