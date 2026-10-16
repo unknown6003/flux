@@ -335,7 +335,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let fixtureDeadline = ProcessInfo.processInfo.systemUptime + 8
         @MainActor func installWhenFixtureReady() {
             self.manager.refresh()
-            guard self.manager.isTrusted, !self.manager.icons.isEmpty else {
+            guard self.manager.isTrusted, self.manager.icons.contains(where: {
+                $0.isMovable && $0.id.hasPrefix("com.flux.menu-drag-fixture|")
+                    && $0.title == "Flux drag fixture" && $0.frame.width > 0 && $0.frame.height > 0
+            }) else {
                 guard ProcessInfo.processInfo.systemUptime < fixtureDeadline else {
                     print("BLOCKED: fixture AX inventory unavailable, trusted=\(self.manager.isTrusted)")
                     exit(3)
