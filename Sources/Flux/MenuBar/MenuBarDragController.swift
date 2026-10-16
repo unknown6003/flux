@@ -241,6 +241,7 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 class MenuBarDragDestinationView: NSView {
     weak var controller: MenuBarDragController?
     var section: MenuBarSection = .shown
+    var acceptsDrops = true
     private var targeted = false { didSet { needsDisplay = true } }
 
     override init(frame frameRect: NSRect) {
@@ -251,13 +252,13 @@ class MenuBarDragDestinationView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        targeted = controller?.accepts(sender) == true
+        targeted = acceptsDrops && controller?.accepts(sender) == true
         controller?.trace?("entered \(section.rawValue) valid=\(targeted)")
         return targeted ? .move : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        targeted = controller?.accepts(sender) == true
+        targeted = acceptsDrops && controller?.accepts(sender) == true
         if targeted, let event = NSApp.currentEvent { autoscroll(with: event) }
         return targeted ? .move : []
     }
@@ -266,13 +267,13 @@ class MenuBarDragDestinationView: NSView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) { targeted = false }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let accepted = controller?.accepts(sender) == true
+        let accepted = acceptsDrops && controller?.accepts(sender) == true
         controller?.trace?("prepared \(section.rawValue) valid=\(accepted)")
         return accepted
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         targeted = false
-        let committed = controller?.performDrop(sender, to: section) == true
+        let committed = acceptsDrops && controller?.performDrop(sender, to: section) == true
         controller?.trace?("performed \(section.rawValue) valid=\(committed)")
         return committed
     }

@@ -60,7 +60,10 @@ struct MenuBarTab: View {
             if let message = iconManager.errorMessage ?? dragController.message {
                 Text(message).font(.caption).foregroundStyle(.orange)
             }
-            ForEach(MenuBarSection.allCases.filter { $0 != .alwaysHidden || settings.showAlwaysHiddenSection }) { section in
+            ForEach(MenuBarSection.allCases.filter {
+                $0 != .alwaysHidden || settings.showAlwaysHiddenSection
+                    || (snapshotIcons ?? iconManager.icons).contains { $0.section == .alwaysHidden }
+            }) { section in
                 MenuBarIconLane(controller: dragController, manager: iconManager, section: section,
                                 icons: (snapshotIcons ?? iconManager.icons).filter { $0.section == section },
                                 alwaysHiddenEnabled: settings.showAlwaysHiddenSection)

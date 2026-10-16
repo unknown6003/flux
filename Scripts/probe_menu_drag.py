@@ -4,7 +4,7 @@
 The manager records requests and reads identity from a disposable AX status item.
 This proves real UI routing, cancellation, target size and fallback actions.
 probe_icons.py separately proves physical moves and saved layout with the real manager.
-No TCC writes, installed app changes or private preferences. Requires macOS desktop.
+Requires macOS desktop. Disposable CI restores its keyboard navigation setting.
 """
 import argparse
 from contextlib import contextmanager
@@ -42,6 +42,7 @@ final class MenuBarIconManager: ObservableObject {
     @Published var icons: [Icon] = []
     var stale = false
     var extra = false
+    var extraRows = 0
     var assignments: [String: MenuBarSection] = [:]
     let canHideWithoutAccess = false
     let errorMessage: String? = nil
@@ -90,6 +91,10 @@ final class MenuBarIconManager: ObservableObject {
             icons.append(Icon(id: "fixed|0", title: "New fixed item", source: "System", section: .shown,
                               isMovable: false, frame: .zero))
         }
+        icons += (0..<extraRows).map { index in
+            Icon(id: "fixed|\(index)", title: "Other item \(index)", source: "System", section: .shown,
+                 isMovable: false, frame: .zero)
+        }
         icons.sort { $0.title == "Flux drag fixture" && $1.title != "Flux drag fixture" }
     }
     func move(_ icon: Icon, to destination: MenuBarSection) {
@@ -136,7 +141,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let start = state[source] as? [Double], start.count == 2,
           let targets = state["targets"] as? [String: [Double]],
-          let target = destination == "native" ? state["nativeTarget"] as? [Double] : targets[destination],
+          var target = kind == "scroll" ? state["scrollEdge"] as? [Double] : targets[destination],
           target.count == 2 else { exit(6) }
     print("driver source=\(source) start=\(start) neighbor=\(String(describing: state["neighbor"])) destination=\(destination) target=\(target) kind=\(kind)")
     fflush(stdout)
@@ -192,10 +197,28 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         mouse(.leftMouseDragged, point, command || kind == "late-command" ? .maskCommand : [])
         Thread.sleep(forTimeInterval: 0.018)
     }
+    if kind == "scroll" {
+        let deadline = Date().addingTimeInterval(8)
+        var revealed = false
+        while Date() < deadline {
+            mouse(.leftMouseDragged, target)
+            Thread.sleep(forTimeInterval: 0.08)
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: statePath)),
+               let current = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let visibleTarget = current["scrollTarget"] as? [Double], visibleTarget.count == 2 {
+                target = visibleTarget
+                revealed = true
+                break
+            }
+        }
+        guard revealed else { fail("drag did not scroll to the offscreen Always Hidden lane") }
+        mouse(.leftMouseDragged, target)
+    }
     Thread.sleep(forTimeInterval: 0.15)
     if !command && kind != "late-command" && kind != "busy" && destination != "invalid" {
         let section = destination.replacingOccurrences(of: "-header", with: "")
-        guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
+        let valid = kind != "disabled"
+        guard waitFor({ $0.contains("entered \(section) valid=\(valid)") }) else {
             fail("destination never accepted the session")
         }
     }
@@ -243,9 +266,13 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             configured = true
         }
         var targets: [String: [Double]] = ["invalid": [30, 650]]
+        var scrollTarget: [Double] = []
         for lane in lanes {
             targets[lane.section.rawValue] = center(lane, x: lane.bounds.width - 12, y: lane.bounds.height - 12)
             targets[lane.section.rawValue + "-header"] = center(lane, x: 30, y: 16)
+            if lane.section == .alwaysHidden, lane.visibleRect.height >= 60 {
+                scrollTarget = center(lane, x: lane.visibleRect.midX, y: lane.visibleRect.midY)
+            }
         }
         var tapCount: UInt32 = 0
         guard CGGetEventTapList(0, nil, &tapCount) == .success, tapCount < 2048 else { exit(10) }
@@ -257,9 +284,11 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "ready": configured && source != nil && lanes.count == 3 && NSApp.isActive && window.isKeyWindow,
             "row": source.map { center($0, x: $0.bounds.width * 0.7) } ?? [],
             "sourceWidth": Double(source?.bounds.width ?? 0), "targets": targets,
+            "scrollEdge": [Double(window.frame.midX), Double(NSScreen.screens.first!.frame.maxY - window.frame.minY - 12)],
+            "scrollTarget": scrollTarget,
             "sourceIDs": sources.compactMap { $0.icon?.id }.sorted(),
             "managerIDs": manager.icons.map(\.id).sorted(),
-            "menu": lanes.first(where: { $0.section == .shown })?.subviews.compactMap { $0 as? NSPopUpButton }.first.map { center($0) } ?? [],
+            "menu": lanes.flatMap(\.subviews).compactMap { $0 as? NSPopUpButton }.first(where: \.isEnabled).map { center($0) } ?? [],
             "events": events, "commits": commits,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
@@ -278,6 +307,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         NSApp.setActivationPolicy(.regular)
         manager.onMove = { [weak self] section in self?.commits.append(section) }
         settings.showAlwaysHiddenSection = true
+        if CommandLine.arguments.contains("--scroll") { manager.extraRows = 40 }
+        if CommandLine.arguments.contains("--disabled-populated") {
+            manager.assignments["com.flux.menu-drag-fixture|0"] = .alwaysHidden
+        }
         window = NSWindow(contentRect: NSRect(x: 80, y: 90, width: 620, height: 670),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -335,8 +368,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         settings.showAlwaysHiddenSection = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             let all = self.views(self.window.contentView!)
-            guard let lane = all.compactMap({ $0 as? MenuBarIconLaneView }).first(where: { $0.section == .shown }),
-                  let popup = lane.subviews.compactMap({ $0 as? NSPopUpButton }).first,
+            guard let popup = all.compactMap({ $0 as? NSPopUpButton }).first(where: {
+                $0.isEnabled && $0.superview is MenuBarIconLaneView
+            }),
                   let menu = popup.menu,
                   let item = menu.items.first(where: { $0.title == "Always Hidden" }), !item.isEnabled,
                   let hidden = menu.items.first(where: { $0.title == "Hidden" }), hidden.isEnabled else {
@@ -478,7 +512,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
-                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "keyboard", "order-left", "order-right", "stale", "close"))
+                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "keyboard", "order-left", "order-right", "stale", "close"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -532,7 +566,8 @@ extension EnvironmentValues {
         try:
             for argv, name in (([str(fixture_binary), "--fixture", str(args.seconds + 5)] +
                                  (["--empty-title"] if args.empty_title else []), "fixture.log"),
-                               ([str(binary), "--probe", str(state_path), str(args.seconds)], "probe.log")):
+                               ([str(binary), "--probe", str(state_path), str(args.seconds)] +
+                                (["--" + args.case] if args.case in ("disabled-populated", "scroll") else []), "probe.log")):
                 with (args.output / name).open("wb") as log:
                     processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
             probe_process = processes[-1]
@@ -542,6 +577,15 @@ extension EnvironmentValues {
             if args.empty_title and not state["emptyTitle"]:
                 raise RuntimeError("empty AX title fallback was not exercised")
             started = time.monotonic()
+            if args.case == "scroll":
+                if state["scrollTarget"]:
+                    raise RuntimeError("scroll fixture did not put the destination below the viewport")
+                bounded([str(binary), "--drive", str(state_path), "row", "alwaysHidden", "scroll"], 13,
+                        args.output / "scroll.log")
+                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
+                if state["commits"] != ["alwaysHidden"]:
+                    raise RuntimeError("offscreen lane drop did not request Always Hidden exactly once")
+                results.append("PASS drag scrolls a 41-item editor to an offscreen destination")
             scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
                          ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
                          ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
@@ -574,14 +618,21 @@ extension EnvironmentValues {
                     if "fixed|0" not in state["sourceIDs"]:
                         raise RuntimeError("inventory did not change during the cancelled drag")
                 results.append(f"PASS text-area drag to {target}, {kind}")
-            if args.case in ("all", "menu"):
+            if args.case in ("all", "menu", "disabled-populated"):
                 # Return to Shown before checking the actual native fallback menu.
-                bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
-                        args.output / "restore.log")
-                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
+                if args.case != "disabled-populated":
+                    bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
+                            args.output / "restore.log")
+                    state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
                 before = len(state["commits"])
                 Path(str(state_path) + ".menu").touch()
                 state = read_state(state_path, probe_process, lambda value: "menu ready" in value["events"])
+                if args.case == "disabled-populated":
+                    bounded([str(binary), "--drive", str(state_path), "row", "alwaysHidden", "disabled"], 8,
+                            args.output / "disabled-drop.log")
+                    state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["buttons"])
+                    if len(state["commits"]) != before or "com.flux.menu-drag-fixture|0" not in state["sourceIDs"]:
+                        raise RuntimeError("disabled populated lane accepted a drop or lost its item")
                 bounded([str(binary), "--menu", str(state_path)], 5, args.output / "menu-click.log")
                 state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
                 if state["commits"][before:] != ["hidden"]:

@@ -39,6 +39,7 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         self.controller = controller
         self.manager = manager
         self.section = section
+        acceptsDrops = section != .alwaysHidden || alwaysHiddenEnabled
         guard !controller.isDragging else { return }
         let changed = self.icons != icons || self.alwaysHiddenEnabled != alwaysHiddenEnabled || subviews.isEmpty
         self.icons = icons
@@ -109,7 +110,7 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9).fill()
         Theme.zone(section).setFill()
         NSBezierPath(ovalIn: NSRect(x: 12, y: 14, width: 7, height: 7)).fill()
-        (section.displayName as NSString).draw(at: NSPoint(x: 26, y: 9), withAttributes: [
+        ((section.displayName + (acceptsDrops ? "" : " (off)")) as NSString).draw(at: NSPoint(x: 26, y: 9), withAttributes: [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: Theme.textPrimary
         ])
         ("\(icons.count)" as NSString).draw(at: NSPoint(x: bounds.width - 28, y: 9), withAttributes: [
