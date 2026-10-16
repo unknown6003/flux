@@ -48,8 +48,6 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
             subviews.forEach { $0.removeFromSuperview() }
             for icon in icons {
                 let source = controller.makeSourceView(for: icon)
-                source.showsHandle = true
-                source.showsLabel = true
                 source.toolTip = icon.isMovable ? "Drag \(icon.title) to another section" : icon.source
                 source.setAccessibilityElement(true)
                 source.setAccessibilityRole(.image)

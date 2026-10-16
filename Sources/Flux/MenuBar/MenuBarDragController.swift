@@ -172,9 +172,7 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
             needsDisplay = true
         }
     }
-    var showsLabel = false
     private var appImage: NSImage?
-    var showsHandle = false { didSet { needsDisplay = true } }
     private var down: NSEvent?
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -220,28 +218,23 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard showsHandle else { return }
-        if showsLabel, let icon {
-            let image = appImage ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: nil)
-            image?.draw(in: NSRect(x: 9, y: bounds.midY - 11, width: 22, height: 22))
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingTail
-            let subtitle = icon.source.flatMap { $0.isEmpty || $0 == icon.title ? nil : $0 }
-            let title = NSRect(x: 40, y: bounds.midY - (subtitle == nil ? 8 : 1), width: max(0, bounds.width - 50), height: 17)
-            (icon.title as NSString).draw(in: title, withAttributes: [
-                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
+        guard let icon else { return }
+        let image = appImage ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: nil)
+        image?.draw(in: NSRect(x: 9, y: bounds.midY - 11, width: 22, height: 22))
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let subtitle = icon.source.flatMap { $0.isEmpty || $0 == icon.title ? nil : $0 }
+        let title = NSRect(x: 40, y: bounds.midY - (subtitle == nil ? 8 : 1), width: max(0, bounds.width - 50), height: 17)
+        (icon.title as NSString).draw(in: title, withAttributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
+        ])
+        if let subtitle {
+            (subtitle as NSString).draw(in: NSRect(x: 40, y: bounds.midY - 16, width: title.width, height: 14), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 10),
+                .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph
             ])
-            if let subtitle {
-                (subtitle as NSString).draw(in: NSRect(x: 40, y: bounds.midY - 16, width: title.width, height: 14), withAttributes: [
-                    .font: NSFont.systemFont(ofSize: 10),
-                    .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph
-                ])
-            }
-            return
         }
-        NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag icon")?
-            .draw(in: bounds.insetBy(dx: 3, dy: 5))
     }
 }
 
