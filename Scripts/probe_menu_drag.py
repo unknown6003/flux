@@ -261,6 +261,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let lanes = all.compactMap { $0 as? MenuBarIconLaneView }
         let sources = all.compactMap { $0 as? MenuBarDragSourceView }
         let source = sources.first { $0.icon?.title == "Flux drag fixture" }
+        let clip = source?.enclosingScrollView?.contentView
         var ancestors: [String] = []
         var ancestor = lanes.first?.superview
         while let view = ancestor, ancestors.count < 30 {
@@ -292,7 +293,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "ready": configured && source != nil && lanes.count == 3 && NSApp.isActive && window.isKeyWindow,
             "row": source.map { center($0, x: $0.bounds.width * 0.7) } ?? [],
             "sourceWidth": Double(source?.bounds.width ?? 0), "targets": targets,
-            "scrollEdge": [Double(window.frame.midX), Double(NSScreen.screens.first!.frame.maxY - window.frame.minY - 12)],
+            "scrollEdge": clip.map { center($0, y: $0.isFlipped ? $0.bounds.maxY - 12 : $0.bounds.minY + 12) } ?? [],
             "scrollTarget": scrollTarget,
             "laneAncestors": ancestors,
             "nativeScrollViews": all.filter { $0 is NSScrollView }.count,
