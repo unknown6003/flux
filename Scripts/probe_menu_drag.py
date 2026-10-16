@@ -7,6 +7,7 @@ probe_icons.py separately proves physical moves and saved layout with the real m
 No TCC writes, installed app changes or private preferences. Requires macOS desktop.
 """
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ import signal
 import subprocess
 import sys
 import time
-from probe_settings_reopen import DEPENDENCIES
+from probe_settings_reopen import DEPENDENCIES, run
 
 SWIFT = r'''
 import AppKit
@@ -263,6 +264,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
             "focusedMenu": (window.firstResponder as? NSPopUpButton)?.isEnabled == true,
+            "keyboardAccess": NSApp.isFullKeyboardAccessEnabled,
+            "firstResponder": String(describing: window.firstResponder).prefix(300).description,
             "ownTaps": ownTaps, "extraWindows": NSApp.windows.filter { $0 !== window && $0.isVisible }.count,
             "emptyTitle": manager.labels.contains { $0["rawTitle"] == "" && $0["normalized"] == "Flux drag fixture" }
         ]
@@ -276,6 +279,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         window = NSWindow(contentRect: NSRect(x: 80, y: 90, width: 620, height: 670),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.autorecalculatesKeyViewLoop = true
         window.title = "Flux Settings drag probe"
         let root = ScrollView { MenuBarTab().environmentObject(settings).environmentObject(manager) }
         window.contentView = NSHostingView(rootView: root)
@@ -441,6 +445,25 @@ def read_state(path, process, predicate=lambda value: value.get("ready"), second
     raise RuntimeError(f"state deadline: {value}")
 
 
+@contextmanager
+def keyboard_navigation():
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        yield
+        return
+    domain = plistlib.loads(run(["/usr/bin/defaults", "export", "-g", "-"], 10).encode())
+    before = domain.get("AppleKeyboardUIMode")
+    if before is not None and (type(before) is not int or before not in range(4)):
+        raise RuntimeError("unexpected keyboard navigation preference; no change made")
+    run(["/usr/bin/defaults", "write", "-g", "AppleKeyboardUIMode", "-int", "3"], 10)
+    try:
+        yield
+    finally:
+        if before is None:
+            run(["/usr/bin/defaults", "delete", "-g", "AppleKeyboardUIMode"], 10)
+        else:
+            run(["/usr/bin/defaults", "write", "-g", "AppleKeyboardUIMode", "-int", str(before)], 10)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -496,105 +519,106 @@ extension EnvironmentValues {
     state_path = args.output / "state.json"
     processes = []
     results = []
-    try:
-        for argv, name in (([str(fixture_binary), "--fixture", str(args.seconds + 5)] +
-                             (["--empty-title"] if args.empty_title else []), "fixture.log"),
-                           ([str(binary), "--probe", str(state_path), str(args.seconds)], "probe.log")):
-            with (args.output / name).open("wb") as log:
-                processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
-        probe_process = processes[-1]
-        state = read_state(state_path, probe_process)
-        if state["sourceWidth"] < 180 or state["ownTaps"] or state["extraWindows"]:
-            raise RuntimeError(f"wrong drag area or unexpected global capture: {state}")
-        if args.empty_title and not state["emptyTitle"]:
-            raise RuntimeError("empty AX title fallback was not exercised")
-        started = time.monotonic()
-        scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
-                     ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
-                     ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
-                     ("busy", "hidden", "busy", None), ("inventory-cancel", "hidden", "inventory-cancel", None)]
-        for index, (label, target, kind, expected) in enumerate(scenarios):
-            if args.case not in ("all", label):
-                continue
-            if kind == "busy":
-                Path(str(state_path) + ".busy").touch()
-                state = read_state(state_path, probe_process, lambda value: value["busy"])
-            if time.monotonic() - started > args.seconds - 15:
-                raise RuntimeError("scenario deadline")
-            before = len(state["commits"])
-            offset = len(state["events"])
-            bounded([str(binary), "--drive", str(state_path), "row", target, kind], 8,
-                    args.output / f"drive-{index}.log")
-            state = read_state(state_path, probe_process,
-                               lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
-            events = state["events"][offset:]
-            begins = [event for event in events if event.startswith("begin ")]
-            if len(begins) != (0 if kind in ("late-command", "busy") else 1):
-                raise RuntimeError(f"{target}/{kind}: wrong drag callback count: {events}")
-            actual = state["commits"][before:]
-            if actual != ([expected] if expected else []):
-                raise RuntimeError(f"{target}/{kind}: commits={actual}; events={state['events'][offset:]}")
-            if state["ownTaps"] or state["extraWindows"]:
-                raise RuntimeError("Settings drag installed global capture or an extra window")
-            if kind == "inventory-cancel":
-                state = read_state(state_path, probe_process, lambda value: value["sourceIDs"] == value["managerIDs"])
-                if "fixed|0" not in state["sourceIDs"]:
-                    raise RuntimeError("inventory did not change during the cancelled drag")
-            results.append(f"PASS text-area drag to {target}, {kind}")
-        if args.case in ("all", "menu"):
-            # Return to Shown before checking the actual native fallback menu.
-            bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
-                    args.output / "restore.log")
-            state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
-            before = len(state["commits"])
-            Path(str(state_path) + ".menu").touch()
-            state = read_state(state_path, probe_process, lambda value: "menu ready" in value["events"])
-            bounded([str(binary), "--menu", str(state_path)], 5, args.output / "menu-click.log")
-            state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
-            if state["commits"][before:] != ["hidden"]:
-                raise RuntimeError("Move menu did not request Hidden")
-            results.append("PASS native Move popup requests Hidden and disables Always Hidden while off")
-            Path(str(state_path) + ".show-always").touch()
-            state = read_state(state_path, probe_process, lambda value: value["ready"] and not value["busy"])
-        for label, expected in (("keyboard", "hidden"), ("order-left", "left"), ("order-right", "right")):
-            if args.case not in ("all", label):
-                continue
-            before = len(state["commits"])
-            bounded([str(binary), "--keyboard", str(state_path), expected], 7,
-                    args.output / (label + ".log"))
-            state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
-            if state["commits"][before:] != [expected]:
-                raise RuntimeError(f"keyboard {label} requested {state['commits'][before:]}")
-            state = read_state(state_path, probe_process, lambda value: not value["busy"])
-            results.append(f"PASS keyboard-only Move {expected}")
-        for index, kind in enumerate(("stale", "close")):
-            if args.case not in ("all", kind):
-                continue
-            before = len(state["commits"])
-            offset = len(state["events"])
-            bounded([str(binary), "--drive", str(state_path), "row", "shown", kind], 8,
-                    args.output / f"reject-{kind}.log")
-            state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["buttons"])
-            events = state["events"][offset:]
-            if len(state["commits"]) != before or len([event for event in events if event.startswith("begin ")]) != 1:
-                raise RuntimeError(f"{kind} drag was not exercised or committed a move: {events}")
-            results.append(f"PASS {kind} drag made no move")
-            if kind == "stale":
-                Path(str(state_path) + ".reset").touch()
-                state = read_state(state_path, probe_process)
-        Path(str(state_path) + ".stop").touch()
-        probe_process.wait(timeout=3)
-        if probe_process.returncode or "STOP buttons=0" not in (args.output / "probe.log").read_text():
-            raise RuntimeError("probe did not stop with mouse buttons released")
-        print("\n".join(results))
-        (args.output / "result.json").write_text(json.dumps({"results": results, "state": state}, indent=2))
-    finally:
+    with keyboard_navigation():
         try:
-            bounded([str(binary), "--release"], 3, args.output / "release.log")
-        except (RuntimeError, OSError):
-            pass
-        for process in reversed(processes):
-            stop(process)
+            for argv, name in (([str(fixture_binary), "--fixture", str(args.seconds + 5)] +
+                                 (["--empty-title"] if args.empty_title else []), "fixture.log"),
+                               ([str(binary), "--probe", str(state_path), str(args.seconds)], "probe.log")):
+                with (args.output / name).open("wb") as log:
+                    processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
+            probe_process = processes[-1]
+            state = read_state(state_path, probe_process)
+            if state["sourceWidth"] < 180 or state["ownTaps"] or state["extraWindows"]:
+                raise RuntimeError(f"wrong drag area or unexpected global capture: {state}")
+            if args.empty_title and not state["emptyTitle"]:
+                raise RuntimeError("empty AX title fallback was not exercised")
+            started = time.monotonic()
+            scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
+                         ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
+                         ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
+                         ("busy", "hidden", "busy", None), ("inventory-cancel", "hidden", "inventory-cancel", None)]
+            for index, (label, target, kind, expected) in enumerate(scenarios):
+                if args.case not in ("all", label):
+                    continue
+                if kind == "busy":
+                    Path(str(state_path) + ".busy").touch()
+                    state = read_state(state_path, probe_process, lambda value: value["busy"])
+                if time.monotonic() - started > args.seconds - 15:
+                    raise RuntimeError("scenario deadline")
+                before = len(state["commits"])
+                offset = len(state["events"])
+                bounded([str(binary), "--drive", str(state_path), "row", target, kind], 8,
+                        args.output / f"drive-{index}.log")
+                state = read_state(state_path, probe_process,
+                                   lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
+                events = state["events"][offset:]
+                begins = [event for event in events if event.startswith("begin ")]
+                if len(begins) != (0 if kind in ("late-command", "busy") else 1):
+                    raise RuntimeError(f"{target}/{kind}: wrong drag callback count: {events}")
+                actual = state["commits"][before:]
+                if actual != ([expected] if expected else []):
+                    raise RuntimeError(f"{target}/{kind}: commits={actual}; events={state['events'][offset:]}")
+                if state["ownTaps"] or state["extraWindows"]:
+                    raise RuntimeError("Settings drag installed global capture or an extra window")
+                if kind == "inventory-cancel":
+                    state = read_state(state_path, probe_process, lambda value: value["sourceIDs"] == value["managerIDs"])
+                    if "fixed|0" not in state["sourceIDs"]:
+                        raise RuntimeError("inventory did not change during the cancelled drag")
+                results.append(f"PASS text-area drag to {target}, {kind}")
+            if args.case in ("all", "menu"):
+                # Return to Shown before checking the actual native fallback menu.
+                bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
+                        args.output / "restore.log")
+                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
+                before = len(state["commits"])
+                Path(str(state_path) + ".menu").touch()
+                state = read_state(state_path, probe_process, lambda value: "menu ready" in value["events"])
+                bounded([str(binary), "--menu", str(state_path)], 5, args.output / "menu-click.log")
+                state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
+                if state["commits"][before:] != ["hidden"]:
+                    raise RuntimeError("Move menu did not request Hidden")
+                results.append("PASS native Move popup requests Hidden and disables Always Hidden while off")
+                Path(str(state_path) + ".show-always").touch()
+                state = read_state(state_path, probe_process, lambda value: value["ready"] and not value["busy"])
+            for label, expected in (("keyboard", "hidden"), ("order-left", "left"), ("order-right", "right")):
+                if args.case not in ("all", label):
+                    continue
+                before = len(state["commits"])
+                bounded([str(binary), "--keyboard", str(state_path), expected], 7,
+                        args.output / (label + ".log"))
+                state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
+                if state["commits"][before:] != [expected]:
+                    raise RuntimeError(f"keyboard {label} requested {state['commits'][before:]}")
+                state = read_state(state_path, probe_process, lambda value: not value["busy"])
+                results.append(f"PASS keyboard-only Move {expected}")
+            for index, kind in enumerate(("stale", "close")):
+                if args.case not in ("all", kind):
+                    continue
+                before = len(state["commits"])
+                offset = len(state["events"])
+                bounded([str(binary), "--drive", str(state_path), "row", "shown", kind], 8,
+                        args.output / f"reject-{kind}.log")
+                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["buttons"])
+                events = state["events"][offset:]
+                if len(state["commits"]) != before or len([event for event in events if event.startswith("begin ")]) != 1:
+                    raise RuntimeError(f"{kind} drag was not exercised or committed a move: {events}")
+                results.append(f"PASS {kind} drag made no move")
+                if kind == "stale":
+                    Path(str(state_path) + ".reset").touch()
+                    state = read_state(state_path, probe_process)
+            Path(str(state_path) + ".stop").touch()
+            probe_process.wait(timeout=3)
+            if probe_process.returncode or "STOP buttons=0" not in (args.output / "probe.log").read_text():
+                raise RuntimeError("probe did not stop with mouse buttons released")
+            print("\n".join(results))
+            (args.output / "result.json").write_text(json.dumps({"results": results, "state": state}, indent=2))
+        finally:
+            try:
+                bounded([str(binary), "--release"], 3, args.output / "release.log")
+            except (RuntimeError, OSError):
+                pass
+            for process in reversed(processes):
+                stop(process)
 
 
 if __name__ == "__main__":

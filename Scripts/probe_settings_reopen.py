@@ -261,6 +261,7 @@ import SwiftUI
         print("FAIL: production controller did not create a Settings hosting window")
         exit(2)
     }
+    check(window.autorecalculatesKeyViewLoop, "dynamic native controls join the keyboard focus loop")
     var nativeCloses = 0
     let closeObserver = NotificationCenter.default.addObserver(
         forName: NSWindow.willCloseNotification, object: window, queue: .main

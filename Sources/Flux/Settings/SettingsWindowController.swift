@@ -125,6 +125,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
+        window.autorecalculatesKeyViewLoop = true
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
