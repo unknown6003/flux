@@ -199,6 +199,9 @@ final class MacOS27Hider {
                 }.value
                 guard let self, self.accessGeneration == initialAccessGeneration else { return }
                 self.lastAccessGranted = granted
+                if !granted && self.hasSavedLayout {
+                    Log.menuBar.info("Using saved icon layout without Accessibility access")
+                }
             }
         }
     }
