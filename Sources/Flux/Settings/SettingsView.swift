@@ -27,31 +27,31 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
+final class SettingsSelection: ObservableObject {
+    @Published var tab: SettingsTab
+    init(tab: SettingsTab = .general) { self.tab = tab }
+}
+
+@MainActor
 struct SettingsView: View {
     static let designSize = CGSize(width: 760, height: 620)
 
-    @EnvironmentObject private var settings: SettingsStore
-    @EnvironmentObject private var arranger: MenuBarArranger
-    @EnvironmentObject private var nowPlaying: NowPlayingService
-
+    @ObservedObject private var selection: SettingsSelection
     var scrolls: Bool
-    var initialTab: SettingsTab
-    var onTabChange: ((SettingsTab) -> Void)?
 
-    @State private var selectedTab: SettingsTab
-
-    init(scrolls: Bool = true,
-         initialTab: SettingsTab = .general,
-         onTabChange: ((SettingsTab) -> Void)? = nil) {
+    init(scrolls: Bool = true, selection: SettingsSelection) {
         self.scrolls = scrolls
-        self.initialTab = initialTab
-        self.onTabChange = onTabChange
-        _selectedTab = State(initialValue: initialTab)
+        self.selection = selection
+    }
+
+    @MainActor init(scrolls: Bool = true, initialTab: SettingsTab = .general) {
+        self.init(scrolls: scrolls, selection: SettingsSelection(tab: initialTab))
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            SettingsSidebar(selection: $selectedTab)
+            SettingsSidebar(selection: $selection.tab)
                 .frame(width: 168)
 
             Rectangle()
@@ -59,7 +59,7 @@ struct SettingsView: View {
                 .frame(width: 1)
 
             VStack(spacing: 0) {
-                SettingsDetailHeader(tab: selectedTab)
+                SettingsDetailHeader(tab: selection.tab)
 
                 Rectangle()
                     .fill(Theme.settingsDividerColor)
@@ -78,9 +78,6 @@ struct SettingsView: View {
         )
         .tint(Theme.accentColor)
         .foregroundStyle(Theme.textPrimaryColor)
-        .onChange(of: selectedTab) { _, newValue in
-            onTabChange?(newValue)
-        }
         // The AppKit window uses a transparent full-size titlebar. Without
         // opting out here, SwiftUI honors the titlebar safe-area inset and
         // leaves an unpainted strip above the rounded settings surface while
@@ -103,7 +100,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var tabContent: some View {
-        switch selectedTab {
+        switch selection.tab {
         case .general: GeneralTab()
         case .menuBar: MenuBarTab()
         case .notch: NotchTab()

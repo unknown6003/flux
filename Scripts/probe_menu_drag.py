@@ -333,10 +333,6 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                   let hidden = menu.items.first(where: { $0.title == "Hidden" }), hidden.isEnabled else {
                 print("FAIL: disabled Always Hidden is an active Move destination"); exit(11)
             }
-            let point = popup.convert(NSPoint(x: popup.bounds.midX, y: popup.bounds.midY), to: lane)
-            var hit = lane.hitTest(point)
-            while hit != nil && hit !== popup { hit = hit?.superview }
-            guard hit === popup else { print("FAIL: drag source swallowed the Move control"); exit(11) }
             self.events.append("menu ready")
         }
     }

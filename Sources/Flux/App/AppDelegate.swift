@@ -32,11 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let timerService = TimerService()
     private lazy var lockScreenPresenter = LockScreenPresenter(
         nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
-    private lazy var notchActivityRouter = NotchActivityRouter(
-        activities: notchWindow.activities, settings: settings, arranger: arranger,
-        calendar: calendarService, permissions: permissionCenter, viewModel: notchWindow.viewModel,
-        timers: timerService,
-        presentation: notchWindow.$isPresenting.eraseToAnyPublisher())
+    private var notchActivityRouter: NotchActivityRouter?
 
     private lazy var settingsWindow = SettingsWindowController(
         settings: settings, arranger: arranger, iconManager: menuBarIcons, updater: updater,
@@ -278,7 +274,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureClipboardMonitor(notchEnabled: notchOn)
         configureLockScreenPresenter(notchEnabled: notchOn)
         recomputeDuoActive()
-        _ = notchActivityRouter
+        if notchActivityRouter == nil {
+            notchActivityRouter = NotchActivityRouter(
+                activities: notchWindow.activities, settings: settings, arranger: arranger,
+                calendar: calendarService, permissions: permissionCenter, viewModel: notchWindow.viewModel,
+                timers: timerService,
+                presentation: notchWindow.$isPresenting.eraseToAnyPublisher())
+        }
     }
 
     private func configureClipboardMonitor(notchEnabled: Bool? = nil) {

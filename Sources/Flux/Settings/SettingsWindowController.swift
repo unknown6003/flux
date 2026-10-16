@@ -17,7 +17,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    private var currentTab: SettingsTab = .general
+    private let selection = SettingsSelection()
 
     init(settings: SettingsStore, arranger: MenuBarArranger, iconManager: MenuBarIconManager, updater: UpdateChecker,
          nowPlaying: NowPlayingService, permissions: PermissionCenter,
@@ -43,7 +43,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private static let contentSize = SettingsView.designSize
 
     func show() {
-        let resumesIconManagement = currentTab == .menuBar && window?.isVisible == false
+        let resumesIconManagement = selection.tab == .menuBar && window?.isVisible == false
         updater.clearStaleOutcome()
         if window == nil {
             window = makeWindow()
@@ -94,19 +94,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show(tab: SettingsTab) {
-        if currentTab != tab {
-            currentTab = tab
-            if let window {
-                window.contentViewController = makeContentController()
-            }
-        }
+        if selection.tab != tab { selection.tab = tab }
         show()
     }
 
     private func makeContentController() -> NSViewController {
-        let root = SettingsView(initialTab: currentTab, onTabChange: { [weak self] tab in
-            self?.currentTab = tab
-        })
+        let root = SettingsView(selection: selection)
         .environmentObject(settings)
         .environmentObject(arranger)
         .environmentObject(iconManager)

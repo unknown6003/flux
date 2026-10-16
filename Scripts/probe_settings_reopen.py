@@ -19,8 +19,8 @@ It does not click the sidebar. Failures from reopen remain failures even if the
 discriminator restores management. Baseline failure is evidence, not an assumed
 result: SwiftUI may deliver fresh appearance callbacks on a given macOS version.
 
---controller-ref reads only the controller from git, without a checkout or source
-rewrite. All view/dependency sources remain those in the current working tree.
+--controller-ref reads the controller and its matching SettingsView from git,
+without a checkout or source rewrite. The editor and dependency scaffold stay current.
 Native compile/runtime checks cannot run on Linux; --help works on any platform.
 """
 
@@ -299,8 +299,12 @@ import SwiftUI
         // Public tab requests are a separate discriminator after measuring reopen.
         controller.show(tab: .general)
         state("\(cycle) leave Menu Bar", false)
+        check(window.contentViewController.map { ObjectIdentifier($0) } == hostingID,
+              "\(cycle): hosting controller retained after General request")
         controller.show(tab: .menuBar)
         state("\(cycle) reenter Menu Bar", true)
+        check(window.contentViewController.map { ObjectIdentifier($0) } == hostingID,
+              "\(cycle): hosting controller retained after Menu Bar request")
         close("\(cycle) final close")
     }
 
@@ -335,7 +339,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--controller-ref", metavar="BASE",
-                        help="compile the unchanged controller at this git commit/ref")
+                        help="compile the unchanged controller and matching root view at this git ref")
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.exit(2, "FAIL: native compile/runtime requires a macOS 14+ desktop\n")
@@ -358,11 +362,16 @@ def main():
         main_swift = work / "main.swift"
         main_swift.write_text(PROBE)
         binary = work / "SettingsReopenProbe"
+        sources = [ROOT / path for path in SOURCES]
+        if args.controller_ref:
+            old_view = work / "SettingsView.swift"
+            old_view.write_text(run(["git", "show", f"{ref}:Sources/Flux/Settings/SettingsView.swift"], 10))
+            sources[0] = old_view
         output = run(["xcrun", "swiftc", "-swift-version", "5", "-Onone",
                       "-target", f"{platform.machine()}-apple-macosx14.0",
                       "-module-cache-path", str(work / "module-cache"),
                       "-o", str(binary), str(controller),
-                      *[str(ROOT / path) for path in SOURCES],
+                      *map(str, sources),
                       str(dependencies), str(main_swift)], 90)
         if output:
             print(output, end="", flush=True)
