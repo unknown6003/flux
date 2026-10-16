@@ -1,2 +1,5 @@
 ts	phase	decision	why	evidence	result
 2026-10-16T03:35:13Z	frame	Use Settings lanes and native Command-drag; remove floating grips	The two modes already have separate owners; extra overlays add state and polling	Sources/Flux/MenuBar/MenuBarDragController.swift; Sources/Flux/MenuBar/MenuBarIconManager.swift	open
+2026-10-16T03:49:12Z	checks	First native app build and new Settings snapshots passed; fix clipped Move label	Inspect the actual artifact before trusting layout	https://github.com/unknown6003/flux/actions/runs/38846595550	verified
+2026-10-16T03:49:12Z	review	Publish drag completion to refresh inventory after cancellation	Independent review found stale native source views after an update during a drag	6c3ead7; Scripts/probe_menu_drag.py	open
+2026-10-16T03:49:12Z	performance	Measure full app idle, Settings, reopen and drawer in paired native source builds	Injected cache timings do not prove app CPU or memory gains	Scripts/probe_app_performance.py	open
