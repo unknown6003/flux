@@ -8,7 +8,7 @@ Constraints: keep native icon move timing, saved layouts and privacy access inta
 
 ## Native CI evidence
 
-The paired runtime check passed on macOS 27.0.1 arm64 at `ce3d377` in [run 38847975225](https://github.com/unknown6003/flux/actions/runs/38847975225). The raw result is retained in `flux-performance-first-pair.json`.
+The paired runtime check passed on macOS 27.0.1 arm64 at `ce3d377` in [run 38847975225](https://github.com/unknown6003/flux/actions/runs/38847975225). `flux-performance-first-pair.json` retains source hashes, counts and timing summaries. Full samples are in that run's performance artifact.
 
 - Thirty controlled failed-clock lookups made thirty AX-boundary attempts in the baseline and one in the candidate, in all three alternating rounds. The fixture injects a 2 ms delay. This proves 97% fewer attempts during that burst, not a whole-app speedup. Expiry retries and successful cache reads also passed.
 - One hundred unchanged denied-access refreshes published inventory, trust and error one hundred times each in the baseline and zero times in the candidate. Both retained two hundred busy-state publications. Stale inventory still clears on denial.
@@ -17,7 +17,11 @@ The paired runtime check passed on macOS 27.0.1 arm64 at `ce3d377` in [run 38847
 
 [Run 38849139917](https://github.com/unknown6003/flux/actions/runs/38849139917) completed both alternating full-app resource rounds at `0104341`, including fifty Settings open, General, Menu Bar and close cycles per round. The candidate retained its hosting controller in all one hundred cycles. The baseline replaced it in all one hundred. CPU and RSS samples cover the main process only. The tab timing gate in that version checked window readiness but did not prove the requested content had rendered. Those tab timings must not be used as a latency claim.
 
-The current full-app probe adds the same native rendered-tab marker to both temporary source builds. It requires the requested tab's visible, completed layout and a display flush. A deliberately skipped General navigation must fail this gate after ten seconds. This proof and the twelve-icon workload must pass before final numbers are reported.
+The full-app probe adds the same native rendered-tab marker to both temporary source builds. It requires the requested tab's visible, completed layout and a display flush. In [run 38851309392](https://github.com/unknown6003/flux/actions/runs/38851309392) at `c6e6481`, all four deliberately skipped General actions failed the gate after ten seconds and retained the Menu Bar marker. Both builds read all twelve real fixture icons. Each completed one hundred open, General, Menu Bar and close cycles across two alternating rounds.
+
+In that run, median return to Menu Bar was 159.65 ms in the baseline and 81.14 ms in the candidate. General was 73.34 ms and 47.98 ms. Window-open p95 was worse, 92.45 ms and 146.48 ms. These data support faster measured tab changes, not a general claim that all Settings actions are faster. The candidate retained its host through all cycles. The baseline replaced it. The later updater probe failed while creating a test DMG, so the overall run is not a release pass.
+
+The current script also records CPU consumed during the whole repeated Settings workload. Samples taken immediately after close can include pending scans, so they must not be described as long-term idle savings. Final release evidence must come from the checked release head. It must retain all raw samples and the fixed `f286253` baseline.
 
 Hardware feature loads, real media playback, helper-process costs, GPU presentation, long sessions and slow third-party AX servers remain outside these measurements. The source still has a 150 ms timed native Command-drag sequence. It needs separate tracing before its timing can change.
 
