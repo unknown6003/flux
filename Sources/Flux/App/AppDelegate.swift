@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let nowPlayingService = NowPlayingService()
     private lazy var nowPlayingWidget = NowPlayingWidget(
         service: nowPlayingService, isEnabled: settings.notchNowPlayingEnabled)
-    private let shelfStore = ShelfStore()
+    private let shelfStore = ShelfStore(deferLoad: true)
     private lazy var shelfWidget = ShelfWidget(
         store: shelfStore, isEnabled: settings.notchShelfEnabled)
     private let permissionCenter = PermissionCenter()

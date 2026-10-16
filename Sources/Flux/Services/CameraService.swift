@@ -74,15 +74,19 @@ final class CameraService: ObservableObject {
 
     private var storedPreviewLayer: AVCaptureVideoPreviewLayer?
 
-    /// Whether a usable camera device exists on this Mac at all — resolved
-    /// once, eagerly, at `init` (device presence doesn't change without a
-    /// relaunch on any real Mac hardware, unlike TCC permission, which is
-    /// `PermissionCenter`'s job to track, not this type's). `MirrorWidget`'s
-    /// expanded view reads this to show a "no camera found" state instead of
-    /// an indefinitely-starting preview.
-    private(set) var isAvailable: Bool
+    /// Whether a usable camera device exists on this Mac at all. Resolved once,
+    /// lazily, on first read or `start()` — so a build with the Mirror feature
+    /// off never enumerates capture hardware. `MirrorWidget`'s expanded view
+    /// reads this to show a "no camera found" state instead of an
+    /// indefinitely-starting preview.
+    var isAvailable: Bool {
+        loadDeviceOnce()
+        return device != nil
+    }
 
-    private let device: AVCaptureDevice?
+    private var device: AVCaptureDevice?
+    private var hasLoadedDevice = false
+    private let forcedUnavailable: Bool
 
     /// Guards the one-time `session` configuration. **Queue-confined**: only
     /// ever read or written from `sessionQueue`. That's what keeps
@@ -120,12 +124,7 @@ final class CameraService: ObservableObject {
     private var sessionNotificationObservers: [NSObjectProtocol] = []
 
     init() {
-        let device = Self.discoverDefaultDevice()
-        self.device = device
-        self.isAvailable = device != nil
-        if !isAvailable {
-            cameraLog.notice("CameraService: no built-in camera device found — Mirror widget will show its unavailable state")
-        }
+        self.forcedUnavailable = false
         observeSessionNotifications()
     }
 
@@ -141,19 +140,24 @@ final class CameraService: ObservableObject {
     /// `AVCaptureDevice.DiscoverySession` at all, so a snapshot render can
     /// never accidentally probe/claim real capture hardware.
     init(forcingUnavailable: Bool) {
+        self.forcedUnavailable = forcingUnavailable
         if forcingUnavailable {
-            self.device = nil
-            self.isAvailable = false
             cameraLog.notice("CameraService: constructed with forcingUnavailable — isAvailable is false regardless of real hardware (preview/snapshot use only)")
-        } else {
-            let device = Self.discoverDefaultDevice()
-            self.device = device
-            self.isAvailable = device != nil
-            if !isAvailable {
-                cameraLog.notice("CameraService: no built-in camera device found — Mirror widget will show its unavailable state")
-            }
         }
         observeSessionNotifications()
+    }
+
+    /// Resolves the built-in camera once, on first use — the one place this
+    /// service touches capture hardware, and skipped entirely for the
+    /// `forcingUnavailable` snapshot seam.
+    private func loadDeviceOnce() {
+        guard !hasLoadedDevice else { return }
+        hasLoadedDevice = true
+        guard !forcedUnavailable else { return }
+        device = Self.discoverDefaultDevice()
+        if device == nil {
+            cameraLog.notice("CameraService: no built-in camera device found — Mirror widget will show its unavailable state")
+        }
     }
 
     deinit {
