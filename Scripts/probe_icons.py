@@ -998,6 +998,13 @@ func probe() {
     manager.endProvider = { [weak manager] in
         hidden.setCollapsed(false)
         always.setCollapsed(false)
+        if ControlItem.usesMacOS27Model {
+            guard [hidden, always].allSatisfy({ $0.statusItem.button?.window?.frame.width == 1 }) else {
+                print("FAIL: closing icon management left divider padding in the menu bar")
+                exit(1)
+            }
+            print("SPACING: closing icon management restored compact divider windows")
+        }
         manager?.applyDrawerVisibility(revealHidden: false, revealAlwaysHidden: false)
     }
     @MainActor
