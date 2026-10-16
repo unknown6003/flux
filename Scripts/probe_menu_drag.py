@@ -250,6 +250,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     var timer: Timer?
     var configured = false
     var menuChecked = false
+    var menuObservers: [NSObjectProtocol] = []
     init(state: String) { self.state = state }
     func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap { views($0) } }
     func center(_ view: NSView, x: CGFloat? = nil, y: CGFloat? = nil) -> [Double] {
@@ -311,6 +312,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             } ?? false,
             "keyboardAccess": NSApp.isFullKeyboardAccessEnabled,
             "firstResponder": String(describing: window.firstResponder).prefix(300).description,
+            "frontmost": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none",
+            "applicationActive": NSApp.isActive, "keyWindow": window.isKeyWindow,
             "ownTaps": ownTaps, "extraWindows": NSApp.windows.filter { $0 !== window && $0.isVisible }.count,
             "emptyTitle": manager.labels.contains { $0["rawTitle"] == "" && $0["normalized"] == "Flux drag fixture" }
         ]
@@ -318,6 +321,15 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     }
     func start(seconds: Double) {
         NSApp.setActivationPolicy(.regular)
+        for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
+            menuObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let menu = note.object as? NSMenu else { return }
+                    self.events.append("menu tracking \(name.rawValue) items=\(menu.items.map(\.title))")
+                    self.writeState()
+                }
+            })
+        }
         manager.onMove = { [weak self] section in self?.commits.append(section) }
         settings.showAlwaysHiddenSection = true
         if CommandLine.arguments.contains("--scroll") { manager.extraRows = 40 }
@@ -465,12 +477,16 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             let state = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
             let point = state["menu"] as! [Double]
             let location = CGPoint(x: point[0], y: point[1])
+            print("menu driver point=\(point) frontmost=\(state["frontmost"] ?? "unknown")")
+            fflush(stdout)
             for type in [CGEventType.leftMouseDown, .leftMouseUp] {
                 CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: location, mouseButton: .left)?.post(tap: .cghidEventTap)
                 Thread.sleep(forTimeInterval: 0.1)
             }
             Thread.sleep(forTimeInterval: 0.2)
             for code in [CGKeyCode(4), 36] {
+                print("menu driver key=\(code)")
+                fflush(stdout)
                 CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
                 CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
                 Thread.sleep(forTimeInterval: 0.1)
@@ -727,6 +743,13 @@ extension MenuBarDragController {
             print("\n".join(results))
             (args.output / "result.json").write_text(json.dumps({"results": results, "state": state}, indent=2))
         finally:
+            if error := sys.exc_info()[1]:
+                (args.output / "failure.log").write_text(str(error))
+                try:
+                    bounded(["/usr/sbin/screencapture", "-x", str(args.output / "failure.png")],
+                            10, args.output / "capture.log")
+                except (RuntimeError, OSError):
+                    pass
             try:
                 bounded([str(binary), "--release"], 3, args.output / "release.log")
             except (RuntimeError, OSError):

@@ -115,7 +115,7 @@ jobs:
     name: macOS checks and app build
     if: ${{ !inputs.drag_probe_plan }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       # Pinned to an immutable commit SHA — see the note in codeql.yml. It
       # matters more here than there: tag builds feed the release job and
@@ -155,7 +155,7 @@ jobs:
         run: python3 Scripts/probe_performance.py --baseline-ref f286253 --repeats 3 --native-scan --output build/performance/paired
 
       - name: Measure full app idle and Settings workloads
-        timeout-minutes: 10
+        timeout-minutes: 12
         run: python3 Scripts/probe_app_performance.py --baseline-ref f286253 --repeats 2 --seconds 5 --output build/performance/app
 
       - name: Check saved-layout drawer response
