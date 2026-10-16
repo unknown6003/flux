@@ -646,11 +646,6 @@ final class MenuBarIconManager: ObservableObject {
         move(icon, toX: targetX, expectedSection: icon.section, allowNativeRetry: false)
     }
 
-    // Kept for callers from older settings views during an update.
-    func setSection(_ section: MenuBarSection, for icon: Icon) {
-        move(icon, to: section)
-    }
-
     /// Applies the drawer's visibility. macOS 27 needs MenuBarAgent's app-level
     /// restriction; older systems keep the divider geometry.
     func applyDrawerVisibility(revealHidden: Bool,

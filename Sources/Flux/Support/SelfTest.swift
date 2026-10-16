@@ -946,11 +946,11 @@ enum SelfTest {
         }
         let deferredExpiry = ShelfStore(directory: shelfDirExpiry, deferLoad: true)
         deferredExpiry.expiryInterval = 60
-        check(deferredExpiry.items.isEmpty && FileManager.default.fileExists(atPath: shelfStaleItem.storedURL(in: shelfDirExpiry).path),
-              "Shelf: setting expiry does not load or remove files before first use")
-        deferredExpiry.loadIfNeeded()
         check(deferredExpiry.items.isEmpty && !FileManager.default.fileExists(atPath: shelfStaleItem.storedURL(in: shelfDirExpiry).path),
-              "Shelf: the first deferred load applies its configured expiry")
+              "Shelf: enabling expiry loads and sweeps a deferred shelf before it is opened")
+        deferredExpiry.loadIfNeeded()
+        check(deferredExpiry.items.isEmpty,
+              "Shelf: repeated deferred loading cannot restore expired files")
         writeShelfStoredFile(for: shelfStaleItem, in: shelfDirExpiry, contents: "stale")
         if let data = try? JSONEncoder().encode([shelfStaleItem]) {
             try? data.write(to: shelfDirExpiry.appendingPathComponent("manifest.json"))

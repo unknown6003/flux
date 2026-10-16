@@ -38,12 +38,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ARTIFACT = "probe_clipboard_images_compact.py"
+ARTIFACT = "probe_clipboard_images.py"
 REPO = Path(__file__).resolve().parents[1]
 SOURCE_REL = "Sources/Flux/Services/ClipboardMonitor.swift"
 BASELINE_REF = "6fde90817068d06ecfae8eb6ec85c19e68af997b"
 FLAGS = ["-O", "-swift-version", "5"]
-TIMEOUTS = {"git": 60, "compile": 300, "generate": 180, "measure": 60, "validate": 60}
+TIMEOUTS = {"git": 15, "compile": 60, "generate": 20, "measure": 10, "validate": 10}
 BOUND = 64  # ClipboardMonitor.thumbnailPixels
 
 # EXIF orientation 6 = rotate 90 degrees clockwise for display.
@@ -254,20 +254,14 @@ enum ProposalThumbnail {
             sourceWidth = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
             sourceHeight = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
         }
-        let bound = max(1, Int(maxPixel))
-        let image: CGImage?
-        if max(sourceWidth, sourceHeight) > bound {
-            image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: bound,
-                kCGImageSourceShouldCacheImmediately: false
-            ] as CFDictionary)
-        } else {
-            image = CGImageSourceCreateImageAtIndex(source, 0, [
-                kCGImageSourceShouldCacheImmediately: false
-            ] as CFDictionary)
-        }
+        guard sourceWidth > 0, sourceHeight > 0 else { return nil }
+        let bound = max(1, min(Int(maxPixel), max(sourceWidth, sourceHeight)))
+        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: bound,
+            kCGImageSourceShouldCacheImmediately: false
+        ] as CFDictionary)
         guard let thumbnail = image else { return nil }
         let encoded = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
@@ -375,9 +369,9 @@ let stride = context.bytesPerRow
 
 func sample(_ fx: Double, _ fy: Double) -> [Int] {
     let x = min(width - 1, max(0, Int(Double(width) * fx)))
-    // CoreGraphics origin is bottom-left; report in top-left terms.
+    // Rows in this decoded bitmap begin at the image top.
     let y = min(height - 1, max(0, Int(Double(height) * fy)))
-    let offset = stride * (height - 1 - y) + x * 4
+    let offset = stride * y + x * 4
     return [Int(raw[offset]), Int(raw[offset + 1]), Int(raw[offset + 2]), Int(raw[offset + 3])]
 }
 

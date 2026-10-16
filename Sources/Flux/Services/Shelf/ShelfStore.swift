@@ -62,7 +62,7 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    /// Storage directory — created on init if missing.
+    /// Storage directory, created on the first load if missing.
     let directory: URL
 
     private let fileManager = FileManager.default
@@ -78,11 +78,6 @@ final class ShelfStore: ObservableObject {
     init(directory: URL? = nil, deferLoad: Bool = false) {
         self.directory = directory ?? Self.defaultDirectory()
 
-        do {
-            try fileManager.createDirectory(at: self.directory, withIntermediateDirectories: true)
-        } catch {
-            shelfLog.error("Failed to create shelf directory at \(self.directory.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
-        }
 
         // Deliberately no eager thumbnail generation here — see the
         // `thumbnails` dict's own doc comment. A `deferLoad` store (the app's
@@ -95,6 +90,13 @@ final class ShelfStore: ObservableObject {
     func loadIfNeeded() {
         guard !hasLoaded else { return }
         hasLoaded = true
+
+        do {
+            try fileManager.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        } catch {
+            shelfLog.error("Failed to create shelf directory at \(self.directory.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+
 
         let loaded = Self.loadManifest(at: manifestURL)
         let reconciled = Self.reconcile(loaded, directory: directory, fileManager: fileManager)
