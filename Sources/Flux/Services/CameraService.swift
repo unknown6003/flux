@@ -41,12 +41,21 @@ final class CameraService: ObservableObject {
     /// `observeSessionNotifications()`).
     @Published private(set) var isRunning = false
 
-    /// The live session. Exposed as a plain `let` (rather than behind an
-    /// accessor) since the preview layer below needs a stable reference to
-    /// bind to for this instance's entire lifetime — the same way
-    /// `ShelfStore.directory` is exposed directly rather than through a
-    /// getter.
-    let session = AVCaptureSession()
+    /// The live session, created once on first use and reused for this
+    /// instance's whole lifetime — a Mirror-off build never allocates one.
+    var session: AVCaptureSession { storedSession ?? makeSession() }
+
+    private var storedSession: AVCaptureSession?
+
+    /// Creates the one stable session on the main actor and registers the
+    /// observers against it.
+    private func makeSession() -> AVCaptureSession {
+        loadDeviceOnce()
+        let session = AVCaptureSession()
+        storedSession = session
+        observeSessionNotifications(session: session)
+        return session
+    }
 
     /// The ONE preview layer for this service's session, created on first use
     /// and reused for this instance's whole lifetime.
@@ -123,9 +132,8 @@ final class CameraService: ObservableObject {
     /// them; nothing else ever reads this array.
     private var sessionNotificationObservers: [NSObjectProtocol] = []
 
-    init() {
-        self.forcedUnavailable = false
-        observeSessionNotifications()
+    convenience init() {
+        self.init(forcingUnavailable: false)
     }
 
     /// Preview/testing seam (M8 fix): constructs a service that reports
@@ -144,7 +152,6 @@ final class CameraService: ObservableObject {
         if forcingUnavailable {
             cameraLog.notice("CameraService: constructed with forcingUnavailable — isAvailable is false regardless of real hardware (preview/snapshot use only)")
         }
-        observeSessionNotifications()
     }
 
     /// Resolves the built-in camera once, on first use — the one place this
@@ -172,8 +179,10 @@ final class CameraService: ObservableObject {
         for observer in sessionNotificationObservers {
             center.removeObserver(observer)
         }
-        if session.isRunning {
-            session.stopRunning()
+        // Only tear down a session that actually exists — never force the
+        // getter from `deinit`.
+        if let storedSession, storedSession.isRunning {
+            storedSession.stopRunning()
         }
     }
 
@@ -294,7 +303,9 @@ final class CameraService: ObservableObject {
     /// per this type's own perf/privacy contract above.
     func stop() {
         wantsRunning = false
-        let session = session
+        // An unused service (no session yet) has nothing to stop — don't
+        // allocate one just to tell it so.
+        guard let session = storedSession else { return }
         sessionQueue.async { [weak self] in
             if session.isRunning {
                 session.stopRunning()
@@ -354,7 +365,7 @@ final class CameraService: ObservableObject {
     /// notifications is an arbitrary background thread per Apple's own
     /// documentation) so every handler below can touch `isRunning` — a
     /// `@Published`, main-actor-isolated property — directly and safely.
-    private func observeSessionNotifications() {
+    private func observeSessionNotifications(session: AVCaptureSession) {
         let center = NotificationCenter.default
 
         // `AVCaptureSessionInterruptionReasonKey`/`AVCaptureSession.InterruptionReason`

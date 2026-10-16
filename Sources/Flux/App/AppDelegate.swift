@@ -271,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.setEnabled(.calendar, settings.notchCalendarEnabled)
         notchWindow.registry.setEnabled(.mirror, settings.notchMirrorEnabled)
         notchWindow.registry.setEnabled(.clipboard, settings.notchClipboardEnabled)
-        shelfStore.expiryInterval = settings.notchShelfExpiryInterval
+        applyShelfExpiry(notchEnabled: notchOn)
         configureNotchOverflowCoexistence(notchEnabled: notchOn)
         configureNotchHotkey(notchEnabled: notchOn)
         configureClipboardMonitor(notchEnabled: notchOn)
@@ -289,6 +289,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 timers: timerService,
                 presentation: notchWindow.$isPresenting.eraseToAnyPublisher())
         }
+    }
+
+    /// Expiry is configured only while notch+shelf are on, so a disabled shelf
+    /// never reads the manifest. Assigning a non-nil interval loads and sweeps.
+    private func applyShelfExpiry(notchEnabled: Bool? = nil, shelfEnabled: Bool? = nil) {
+        let active = (notchEnabled ?? settings.notchEnabled) && (shelfEnabled ?? settings.notchShelfEnabled)
+        if active { shelfStore.expiryInterval = settings.notchShelfExpiryInterval }
     }
 
     private func configureClipboardMonitor(notchEnabled: Bool? = nil) {
@@ -409,7 +416,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchShelfEnabled
             .dropFirst()
-            .sink { [weak self] value in self?.notchWindow.registry.setEnabled(.shelf, value) }
+            .sink { [weak self] value in
+                self?.notchWindow.registry.setEnabled(.shelf, value)
+                self?.applyShelfExpiry(shelfEnabled: value)
+            }
             .store(in: &cancellables)
 
         settings.$notchCalendarEnabled
@@ -464,8 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$notchShelfExpiryDays
             .dropFirst()
             .sink { [weak self] _ in
-                guard let self else { return }
-                self.shelfStore.expiryInterval = self.settings.notchShelfExpiryInterval
+                self?.applyShelfExpiry()
             }
             .store(in: &cancellables)
 

@@ -24,10 +24,9 @@ let shelfLog = Logger(subsystem: "com.flux.menubar", category: "shelf")
 @MainActor
 final class ShelfStore: ObservableObject {
     /// Newest-added first — re-sorted after every mutation so callers never
-    /// have to think about insertion order. Reading triggers the one-time disk
-    /// load, so a store created with `deferLoad` never scans until first use.
-    var items: [ShelfItem] { ensureLoaded(); return storedItems }
-    @Published private var storedItems: [ShelfItem] = []
+    /// have to think about insertion order. A `deferLoad` store stays empty
+    /// until `loadIfNeeded()`, the caller's first meaningful use.
+    @Published private(set) var items: [ShelfItem] = []
     /// Populated asynchronously as `QLThumbnailGenerator` (or its
     /// `NSWorkspace` icon fallback) finishes for each item. Absence of a key
     /// just means "not ready yet" — callers should show a placeholder.
@@ -73,7 +72,7 @@ final class ShelfStore: ObservableObject {
     /// `generateThumbnail(for:)`.
     private var thumbnailRequests: Set<UUID> = []
 
-    /// Set once the one-time disk load has run — see `ensureLoaded()`.
+    /// Set once the one-time disk load has run — see `loadIfNeeded()`.
     private var hasLoaded = false
 
     init(directory: URL? = nil, deferLoad: Bool = false) {
@@ -86,22 +85,20 @@ final class ShelfStore: ObservableObject {
         }
 
         // Deliberately no eager thumbnail generation here — see the
-        // `thumbnails` dict's own doc comment. `deferLoad` is the app's launch
-        // path: hold the manifest read, reconcile, stray scan and expiry sweep
-        // until the shelf is first used (a shelf nobody opens costs nothing).
-        if !deferLoad { ensureLoaded() }
+        // `thumbnails` dict's own doc comment. A `deferLoad` store (the app's
+        // launch path) holds its manifest read and sweep until `loadIfNeeded()`.
+        if !deferLoad { loadIfNeeded() }
     }
 
-    /// One-time disk load: manifest read, reconcile, stray scan, and the
-    /// expiry sweep. Runs from `init` unless deferred, and from every entry
-    /// point via the `items` accessor.
-    private func ensureLoaded() {
+    /// One-time disk load: manifest read, reconcile, stray scan, expiry sweep;
+    /// called at the shelf's first meaningful use.
+    func loadIfNeeded() {
         guard !hasLoaded else { return }
         hasLoaded = true
 
         let loaded = Self.loadManifest(at: manifestURL)
         let reconciled = Self.reconcile(loaded, directory: directory, fileManager: fileManager)
-        storedItems = reconciled.sorted { $0.addedAt > $1.addedAt }
+        items = reconciled.sorted { $0.addedAt > $1.addedAt }
         Self.logStrayEntries(knownDirectoryNames: Set(reconciled.map { $0.id.uuidString }),
                               directory: directory, fileManager: fileManager)
 
@@ -157,7 +154,7 @@ final class ShelfStore: ObservableObject {
     /// collision-proof against every other add, in flight or not.
     @discardableResult
     func add(urls: [URL]) -> AddResult {
-        ensureLoaded()
+        loadIfNeeded()
         sweepExpired()
 
         var added: [ShelfItem] = []
@@ -196,8 +193,8 @@ final class ShelfStore: ObservableObject {
 
         guard !added.isEmpty else { return AddResult(added: [], queued: queued.count) }
 
-        storedItems.append(contentsOf: added)
-        storedItems.sort { $0.addedAt > $1.addedAt }
+        items.append(contentsOf: added)
+        items.sort { $0.addedAt > $1.addedAt }
         saveManifest()
 
         for item in added {
@@ -254,8 +251,8 @@ final class ShelfStore: ObservableObject {
             }
             await MainActor.run {
                 guard let self else { return }
-                self.storedItems.append(item)
-                self.storedItems.sort { $0.addedAt > $1.addedAt }
+                self.items.append(item)
+                self.items.sort { $0.addedAt > $1.addedAt }
                 self.saveManifest()
                 self.generateThumbnail(for: item)
             }
@@ -269,9 +266,9 @@ final class ShelfStore: ObservableObject {
     /// logged but doesn't stop the manifest entry from being dropped — the
     /// user asked for it gone either way.
     func remove(_ id: UUID) {
-        ensureLoaded()
-        guard let index = storedItems.firstIndex(where: { $0.id == id }) else { return }
-        let item = storedItems[index]
+        loadIfNeeded()
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let item = items[index]
 
         do {
             try fileManager.removeItem(at: item.storedDirectoryURL(in: directory))
@@ -279,17 +276,17 @@ final class ShelfStore: ObservableObject {
             shelfLog.error("Failed to delete stored file for \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
 
-        storedItems.remove(at: index)
+        items.remove(at: index)
         thumbnails[id] = nil
         saveManifest()
     }
 
     func removeAll() {
-        ensureLoaded()
-        for item in storedItems {
+        loadIfNeeded()
+        for item in items {
             try? fileManager.removeItem(at: item.storedDirectoryURL(in: directory))
         }
-        storedItems.removeAll()
+        items.removeAll()
         thumbnails.removeAll()
         saveManifest()
     }
@@ -320,10 +317,10 @@ final class ShelfStore: ObservableObject {
     /// deletes every expired item's stored file and thumbnail as it goes,
     /// then persists exactly once at the end.
     func sweepExpired() {
-        // A deferred store sweeps on its first load instead — see `ensureLoaded()`.
-        guard hasLoaded, let expiryInterval else { return }
+        loadIfNeeded()
+        guard let expiryInterval else { return }
         let cutoff = Date().addingTimeInterval(-expiryInterval)
-        let expired = storedItems.filter { $0.addedAt < cutoff }
+        let expired = items.filter { $0.addedAt < cutoff }
         guard !expired.isEmpty else { return }
 
         for item in expired {
@@ -336,7 +333,7 @@ final class ShelfStore: ObservableObject {
         }
 
         let expiredIDs = Set(expired.map(\.id))
-        storedItems.removeAll { expiredIDs.contains($0.id) }
+        items.removeAll { expiredIDs.contains($0.id) }
         saveManifest()
     }
 
@@ -358,7 +355,7 @@ final class ShelfStore: ObservableObject {
     /// `manifest.json` behind.
     private func saveManifest() {
         do {
-            let data = try JSONEncoder().encode(storedItems)
+            let data = try JSONEncoder().encode(items)
             try data.write(to: manifestURL, options: .atomic)
         } catch {
             shelfLog.error("Failed to save shelf manifest: \(error.localizedDescription, privacy: .public)")
@@ -408,6 +405,7 @@ final class ShelfStore: ObservableObject {
     /// single `willPresent()` would itself become the perf problem this
     /// laziness exists to avoid.
     func ensureThumbnails() {
+        loadIfNeeded()
         if items.count > 100 {
             shelfLog.notice("Shelf has \(self.items.count) items — only generating thumbnails for the 100 newest")
         }
