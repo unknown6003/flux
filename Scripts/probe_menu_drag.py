@@ -109,10 +109,17 @@ final class MenuBarIconManager: ObservableObject {
         }
         icons.sort { $0.title == "Flux drag fixture" && $1.title != "Flux drag fixture" }
     }
-    func move(_ icon: Icon, to insertion: Insertion) {
+    @discardableResult
+    func move(_ icon: Icon, to insertion: Insertion, accepting: @escaping (Icon) -> Bool = { _ in true }) -> Bool {
+        refresh()
+        guard let current = icons.first(where: { $0.id == icon.id }),
+              current.title == icon.title, current.source == icon.source, accepting(current),
+              insertion.matches(icons.filter { $0.section == insertion.section && $0.id != icon.id }
+                .sorted { $0.frame.minX < $1.frame.minX }) else { return false }
         insertions.append(["source": icon.id, "section": insertion.section.rawValue,
                            "before": insertion.before?.id ?? "", "after": insertion.after?.id ?? ""])
         move(icon, to: insertion.section)
+        return true
     }
     func move(_ icon: Icon, to destination: MenuBarSection) {
         beginVerification(after: 0.45)

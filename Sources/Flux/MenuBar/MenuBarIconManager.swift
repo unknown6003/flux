@@ -68,6 +68,8 @@ final class MenuBarIconManager: ObservableObject {
     private var iconUpdateCount = 0
     private var iconManagementGeneration = 0
     private var pendingMoveCount = 0
+    private var isPostingDrag = false
+    private static let dragQueue = DispatchQueue(label: "com.flux.icon-drag", qos: .userInitiated)
     private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
     private var nativeSaveFailures = Set<String>()
     private var lastMoveReport = "none"
@@ -552,6 +554,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func move(_ icon: Icon, to section: MenuBarSection) {
+        guard !isPostingDrag else { return }
         if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: section) }) { return }
         guard let icon = refreshedIcon(icon),
               let targetX = Self.insertionX(for: section,
@@ -563,15 +566,18 @@ final class MenuBarIconManager: ObservableObject {
         move(icon, toX: targetX, expectedSection: section)
     }
 
-    func move(_ icon: Icon, to insertion: Insertion) {
-        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: insertion) }) { return }
+    @discardableResult
+    func move(_ icon: Icon, to insertion: Insertion,
+              accepting: @escaping (Icon) -> Bool = { _ in true }) -> Bool {
+        guard !isPostingDrag else { return false }
+        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: insertion, accepting: accepting) }) { return true }
         guard insertion.section != .alwaysHidden || alwaysHiddenEnabledProvider(),
-              let icon = refreshedIcon(icon) else { return }
+              let icon = refreshedIcon(icon), accepting(icon) else { return false }
         let siblings = icons.filter { $0.section == insertion.section && $0.id != icon.id }
             .sorted { $0.frame.minX < $1.frame.minX }
         guard insertion.matches(siblings) else {
             errorMessage = "The destination changed. Refresh icons and try again."
-            return
+            return false
         }
         let targetX: CGFloat?
         if let next = insertion.before {
@@ -585,10 +591,11 @@ final class MenuBarIconManager: ObservableObject {
             targetX = Self.insertionX(for: insertion.section, iconWidth: icon.frame.width,
                                      boundaries: boundaryProvider())
         }
-        guard let targetX else { return }
+        guard let targetX else { return false }
         assignedSections[icon.id] = insertion.section
         move(icon, toX: targetX, expectedSection: insertion.section,
              allowNativeRetry: false, insertion: insertion)
+        return true
     }
 
     func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool {
@@ -608,6 +615,7 @@ final class MenuBarIconManager: ObservableObject {
     /// Moves an icon one place within its current section. The drawer UI owns
     /// order, so the user never has to Cmd-drag a crowded menu bar.
     func move(_ icon: Icon, toward direction: MoveDirection) {
+        guard !isPostingDrag else { return }
         if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, toward: direction) }) { return }
         guard let icon = refreshedIcon(icon), canMove(icon, toward: direction) else { return }
         let siblings = icons
@@ -785,15 +793,16 @@ final class MenuBarIconManager: ObservableObject {
         lastMoveReport = "id=\(icon.id), source=\(icon.frame), target=\(CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY)), expected=\(expectedSection.rawValue), mode=\(RunLoop.current.currentMode?.rawValue ?? "none")"
         lastMoveVerification = "pending"
         let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
-        if !usedAccessibility {
-            drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2,
-                                          y: icon.frame.midY))
+        let verify: @MainActor () -> Void = { [weak self] in
+            self?.verifyMove(icon: icon, expectedSection: expectedSection, target: target,
+                             retryWithDrag: usedAccessibility || (ControlItem.usesMacOS27Model && allowNativeRetry),
+                             inputGeneration: inputGeneration, insertion: insertion)
         }
-        verifyMove(icon: icon,
-                   expectedSection: expectedSection,
-                   target: target,
-                   retryWithDrag: usedAccessibility || (ControlItem.usesMacOS27Model && allowNativeRetry),
-                   inputGeneration: inputGeneration, insertion: insertion)
+        if usedAccessibility { verify() }
+        else {
+            drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY),
+                 completion: verify)
+        }
     }
 
     private func beginIconUpdate() {
@@ -935,11 +944,10 @@ final class MenuBarIconManager: ObservableObject {
                 return
             }
             self.drag(icon.frame, to: CGPoint(x: target.x + icon.frame.width / 2,
-                                               y: icon.frame.midY))
-            self.verifyMove(icon: icon,
-                            expectedSection: expectedSection,
-                            target: target,
-                            retryWithDrag: false, inputGeneration: inputGeneration, insertion: insertion)
+                                               y: icon.frame.midY)) { [weak self] in
+                self?.verifyMove(icon: icon, expectedSection: expectedSection, target: target,
+                                 retryWithDrag: false, inputGeneration: inputGeneration, insertion: insertion)
+            }
         }
     }
 
@@ -965,34 +973,39 @@ final class MenuBarIconManager: ObservableObject {
         return saved
     }
 
-    private func drag(_ frame: CGRect, to target: CGPoint) {
+    private func drag(_ frame: CGRect, to target: CGPoint, completion: @escaping @MainActor () -> Void) {
         let start = CGPoint(x: frame.midX, y: frame.midY)
-        guard let down = CGEvent(mouseEventSource: nil,
-                                 mouseType: .leftMouseDown,
-                                 mouseCursorPosition: start,
-                                 mouseButton: .left),
-              let up = CGEvent(mouseEventSource: nil,
-                               mouseType: .leftMouseUp,
-                               mouseCursorPosition: target,
-                               mouseButton: .left) else { return }
-        down.flags = .maskCommand
-        down.post(tap: .cghidEventTap)
-        if ControlItem.usesMacOS27Model { Thread.sleep(forTimeInterval: 0.06) }
-
-        for step in 1...5 {
-            let progress = CGFloat(step) / 5
-            let point = CGPoint(x: start.x + (target.x - start.x) * progress,
-                                y: start.y + (target.y - start.y) * progress)
-            guard let move = CGEvent(mouseEventSource: nil,
-                                     mouseType: .leftMouseDragged,
-                                     mouseCursorPosition: point,
-                                     mouseButton: .left) else { continue }
-            move.flags = .maskCommand
-            move.post(tap: .cghidEventTap)
-            if ControlItem.usesMacOS27Model { Thread.sleep(forTimeInterval: 0.018) }
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: start, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
+                               mouseCursorPosition: target, mouseButton: .left) else {
+            completion()
+            return
         }
-        up.flags = .maskCommand
-        up.post(tap: .cghidEventTap)
+        let paced = ControlItem.usesMacOS27Model
+        isPostingDrag = true
+        Self.dragQueue.async { [weak self] in
+            down.flags = .maskCommand
+            down.post(tap: .cghidEventTap)
+            if paced { Thread.sleep(forTimeInterval: 0.06) }
+            for step in 1...5 {
+                let progress = CGFloat(step) / 5
+                let point = CGPoint(x: start.x + (target.x - start.x) * progress,
+                                    y: start.y + (target.y - start.y) * progress)
+                if let move = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged,
+                                      mouseCursorPosition: point, mouseButton: .left) {
+                    move.flags = .maskCommand
+                    move.post(tap: .cghidEventTap)
+                }
+                if paced { Thread.sleep(forTimeInterval: 0.018) }
+            }
+            up.flags = .maskCommand
+            up.post(tap: .cghidEventTap)
+            DispatchQueue.main.async {
+                self?.isPostingDrag = false
+                completion()
+            }
+        }
     }
 
     private func isFluxItem(identifier: String?, title: String, source: String?) -> Bool {

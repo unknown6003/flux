@@ -112,6 +112,18 @@ final class MenuBarDragController: ObservableObject {
     func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection,
                      insertion: MenuBarIconManager.Insertion? = nil) -> Bool {
         guard accepts(sender), let pending = active, let manager, AXIsProcessTrusted() else { return false }
+        if let insertion {
+            guard insertion.section == section else { return false }
+            let accepted = manager.move(pending.icon, to: insertion) { [weak self] current in
+                guard let self else { return false }
+                return self.canManage && self.active?.token == pending.token
+                    && current.frame == pending.icon.frame && pending.identity.isCurrent(for: current)
+            }
+            cancel()
+            message = accepted ? nil : "That icon or destination changed. Refresh icons and try again."
+            trace?(accepted ? "commit \(section.rawValue) \(pending.icon.id)" : "drop rejected identity or destination")
+            return accepted
+        }
         manager.refresh()
         let matches = manager.icons.filter { $0.id == pending.icon.id }
         guard canManage, active?.token == pending.token, matches.count == 1,
@@ -123,20 +135,10 @@ final class MenuBarDragController: ObservableObject {
             trace?("drop rejected identity")
             return false
         }
-        if let insertion {
-            let siblings = manager.icons.filter { $0.section == section && $0.id != current.id }
-                .sorted { $0.frame.minX < $1.frame.minX }
-            guard insertion.section == section, insertion.matches(siblings) else {
-                cancel()
-                message = "The destination changed during the drag. Try again."
-                return false
-            }
-        }
         cancel()
         message = nil
         trace?("commit \(section.rawValue) \(current.id)")
-        if let insertion { manager.move(current, to: insertion) }
-        else { manager.move(current, to: section) }
+        manager.move(current, to: section)
         return true
     }
 

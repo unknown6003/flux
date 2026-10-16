@@ -702,7 +702,7 @@ func probe() {
     func overlapProgrammaticMove(_ items: [MenuBarIconManager.Icon]) {
         let moving = items[0], other = items[1]
         manager.move(moving, toward: .towardClock)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             manager.refresh()
             guard manager.isUpdatingIcons,
                   let current = manager.icons.first(where: { $0.title == other.title }),
@@ -1067,7 +1067,7 @@ func probe() {
         if CommandLine.arguments.contains("--move-retry-overlap") {
             guard let icon = fixture() else { exit(1) }
             manager.move(icon, to: .hidden)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 manager.refresh()
                 guard manager.isUpdatingIcons, let current = fixture(),
                       MenuBarIconManager.section(for: current.frame,
