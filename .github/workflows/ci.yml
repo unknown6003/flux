@@ -157,11 +157,11 @@ jobs:
 
       - name: Compare baseline and current runtime work
         timeout-minutes: 6
-        run: python3 Scripts/probe_performance.py --baseline-ref f286253 --repeats 3 --native-scan --output build/performance/paired
+        run: python3 Scripts/probe_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 3 --native-scan --output build/performance/paired
 
       - name: Measure full app idle and Settings workloads
         timeout-minutes: 12
-        run: python3 Scripts/probe_app_performance.py --baseline-ref f286253 --repeats 2 --seconds 5 --output build/performance/app
+        run: python3 Scripts/probe_app_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 2 --seconds 5 --output build/performance/app
 
       - name: Check saved-layout drawer response
         timeout-minutes: 4

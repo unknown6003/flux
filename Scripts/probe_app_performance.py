@@ -40,6 +40,18 @@ MainActor.assumeIsolated {
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
     var sequence = -1
+    func memory() -> [String: Any] {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return status == KERN_SUCCESS
+            ? ["physical_footprint_bytes": info.phys_footprint, "resident_bytes": info.resident_size]
+            : ["memory_read_error": status]
+    }
     func reply(_ values: [String: Any]) {
         try! JSONSerialization.data(withJSONObject: values).write(
             to: directory.appendingPathComponent("state.json"), options: .atomic)
@@ -75,6 +87,7 @@ MainActor.assumeIsolated {
                 state["actionReady"] = ready
                 state["milliseconds"] = (ProcessInfo.processInfo.systemUptime - start) * 1_000
                 state["pid"] = getpid()
+                state["memory"] = memory()
                 reply(state)
                 if action == "quit" { app.terminate(nil) }
             }
@@ -84,7 +97,7 @@ MainActor.assumeIsolated {
     commands.setCancelHandler { close(descriptor) }
     commands.resume()
     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-        reply(["ready": true, "pid": getpid(), "sequence": -1,
+        reply(["ready": true, "pid": getpid(), "sequence": -1, "memory": memory(),
                "screens": NSScreen.screens.count,
                "notchedDisplay": NSScreen.screens.contains { $0.safeAreaInsets.top > 0 }])
     }
@@ -242,6 +255,7 @@ def measure(binary, directory, seconds, cycles):
                     raise RuntimeError(f"{action} did not reach its rendered window state: {state}")
                 return state
             result = {"desktop": ready, "idle": sample_process(process.pid, seconds)}
+            result["idle_resources"] = command("resources")
             result["settings_open"] = command("settings")
             if not result["settings_open"]["settingsVisible"] or not result["settings_open"]["settingsKey"]:
                 raise RuntimeError("real Menu Bar Settings window did not open")
@@ -280,6 +294,7 @@ def measure(binary, directory, seconds, cycles):
             result["settings_workload"] = {**process_interval(cycle_start, read_process(process.pid)), "cycles": cycles,
                                            "boundary": "main-process CPU during scripted open, General, Menu Bar and close cycles"}
             result["after_cycles"] = sample_process(process.pid, seconds)
+            result["after_cycles_resources"] = command("resources")
             result["drawer_calls"] = [command("drawer") for _ in range(100)]
             command("quit")
             process.wait(timeout=5)
@@ -292,7 +307,7 @@ def measure(binary, directory, seconds, cycles):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline-ref", default="f286253")
+    parser.add_argument("--baseline-ref", default="6fde90817068d06ecfae8eb6ec85c19e68af997b")
     parser.add_argument("--output", type=Path, default=ROOT / "build/performance/app")
     parser.add_argument("--seconds", type=int, choices=range(3, 31), default=5)
     parser.add_argument("--cycles", type=int, choices=range(1, 101), default=50)
