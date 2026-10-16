@@ -66,7 +66,10 @@ final class MenuBarIconManager: ObservableObject {
     private let injectedHider: MacOS27Hider?
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = injectedHider ?? MacOS27Hider()
-        hider.onStatus = { [weak self] message in self?.errorMessage = self?.nativeSaveError ?? message }
+        hider.onStatus = { [weak self] message in
+            guard let self else { return }
+            self.updateErrorMessage(self.nativeSaveError ?? message)
+        }
         hider.onReadState = { [weak self] reading in
             if reading { self?.beginIconUpdate() }
             else { self?.finishIconUpdate() }
@@ -336,11 +339,12 @@ final class MenuBarIconManager: ObservableObject {
     func refresh() {
         beginIconUpdate()
         defer { finishIconUpdate() }
-        isTrusted = trustProvider()
+        let trusted = trustProvider()
+        if isTrusted != trusted { isTrusted = trusted }
         guard isTrusted else {
-            icons = []
+            updateInventory([])
             elements.removeAll()
-            errorMessage = "Allow Accessibility access to manage menu-bar icons."
+            updateErrorMessage("Allow Accessibility access to manage menu-bar icons.")
             return
         }
 
@@ -354,15 +358,15 @@ final class MenuBarIconManager: ObservableObject {
             ?? NSWorkspace.shared.runningApplications.first(where: {
                 $0.localizedName == "SystemUIServer"
             }) else {
-            icons = []
-            errorMessage = "Flux could not find the macOS menu bar."
+            updateInventory([])
+            updateErrorMessage("Flux could not find the macOS menu bar.")
             return
         }
 
         let app = AXUIElementCreateApplication(systemUI.processIdentifier)
         guard let menuBar = elementAttribute(app, kAXMenuBarAttribute) else {
-            icons = []
-            errorMessage = "Flux could not read the macOS menu bar."
+            updateInventory([])
+            updateErrorMessage("Flux could not read the macOS menu bar.")
             return
         }
 
@@ -393,9 +397,17 @@ final class MenuBarIconManager: ObservableObject {
             nextElements[id] = element
         }
 
-        icons = next.sorted { $0.frame.minX < $1.frame.minX }
+        updateInventory(next.sorted { $0.frame.minX < $1.frame.minX })
         elements = nextElements
-        errorMessage = nil
+        updateErrorMessage(nil)
+    }
+
+    private func updateInventory(_ next: [Icon]) {
+        if icons != next { icons = next }
+    }
+
+    private func updateErrorMessage(_ message: String?) {
+        if errorMessage != message { errorMessage = message }
     }
 
     /// MenuBarAgent owns the drawn bar on macOS 27, but each app exposes its
@@ -429,10 +441,10 @@ final class MenuBarIconManager: ObservableObject {
             }
         }
         next.append(contentsOf: liveActivityIcons())
-        icons = next.sorted { $0.frame.minX < $1.frame.minX }
+        updateInventory(next.sorted { $0.frame.minX < $1.frame.minX })
         elements = nextElements
-        errorMessage = nativeSaveError ?? (macOS27Hider.isAvailable ? macOS27Hider.latestError
-            : "Hiding is unavailable on this macOS build. Flux needs an update.")
+        updateErrorMessage(nativeSaveError ?? (macOS27Hider.isAvailable ? macOS27Hider.latestError
+            : "Hiding is unavailable on this macOS build. Flux needs an update."))
     }
 
     private func liveActivityIcons() -> [Icon] {

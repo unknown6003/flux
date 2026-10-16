@@ -260,7 +260,7 @@ final class CalendarService: ObservableObject {
 
     private func refresh() {
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
-            upcoming = []
+            if !upcoming.isEmpty { upcoming = [] }
             // A revoke should let a later re-grant reset the store again.
             hasResetSinceAuthorization = false
             return
@@ -268,7 +268,7 @@ final class CalendarService: ObservableObject {
         resetStoreIfNewlyAuthorized()
         let fetched = Self.fetchUpcoming(from: eventStore, now: Date())
         calendarLog.debug("Calendar refresh: \(fetched.count, privacy: .public) upcoming event(s)")
-        upcoming = fetched
+        if upcoming != fetched { upcoming = fetched }
     }
 
     // MARK: - Fetch (impure — talks to EventKit)

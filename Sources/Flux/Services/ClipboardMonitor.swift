@@ -407,13 +407,8 @@ final class ClipboardMonitor: ObservableObject {
         // handles Cmd-C/Cmd-X; this remains the fallback for every other
         // pasteboard producer.
         //
-        // `tolerance` is set deliberately. `changeCount` is a Mach IPC
-        // round-trip to `pbs`, not the local integer read an earlier comment
-        // here claimed, and an untoleranced 2.9Hz timer defeats both timer
-        // coalescing and App Nap — which is a real cost for an app that
-        // advertises ~0% at idle. A 0.15s tolerance lets the system batch
-        // these wakeups against others without materially widening the miss
-        // window.
+        // `changeCount` calls the pasteboard server. Give the 5 Hz fallback
+        // a 50 ms tolerance so macOS can group its wakeups with other work.
         let poll = Timer.scheduledTimer(withTimeInterval: 0.20, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }

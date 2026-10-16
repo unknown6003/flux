@@ -129,7 +129,7 @@ final class MacOS27Hider {
     private var isManagingVisibility = false
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
-    private var clockFrameCache: (frame: CGRect, date: Date)?
+    private var clockFrameCache: (frame: CGRect?, date: Date)?
     private var lastAccessGranted = AXIsProcessTrusted()
     private var accessGeneration = 0
     private var lastCollapsedScan = "No collapsed scan has run."
@@ -536,6 +536,8 @@ final class MacOS27Hider {
            Date().timeIntervalSince(cached.date) < 2 { return cached.frame }
         // Mouse movement uses the grant read during layout or lifecycle checks.
         guard lastAccessGranted else { return nil }
+        // A missing clock must not trigger an AX scan on every mouse move.
+        clockFrameCache = (nil, Date())
         onReadState?(true)
         defer { onReadState?(false) }
         guard let agent = NSRunningApplication.runningApplications(
