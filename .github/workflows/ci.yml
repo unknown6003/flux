@@ -59,6 +59,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, re, sys, time
+          from contextlib import nullcontext
           from pathlib import Path
           sys.path.insert(0, 'Scripts')
           from probe_hidden_transition import run
@@ -76,7 +77,7 @@ jobs:
           output.mkdir(parents=True)
           results = []
           deadline = time.monotonic() + 480
-          with accessibility_grant('com.flux.menu-drag-probe'), screen_capture_grant('com.flux.menu-drag-probe'):
+          with accessibility_grant('com.flux.menu-drag-probe'):
               for item in plan:
                   ref = item['ref']
                   source = output / ref[:8]
@@ -107,7 +108,8 @@ jobs:
                               command = ['python3', str(source / 'Scripts/probe_menu_drag.py'),
                                          '--output', str(source / case), '--case', case,
                                          '--seconds', '55' if case == 'all' else '25'] + (['--empty-title'] if item.get('empty_title') else [])
-                          log = run(command, budget, capture=True)
+                          with screen_capture_grant('com.flux.menu-drag-probe') if case == 'glyphs' else nullcontext():
+                              log = run(command, budget, capture=True)
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'
@@ -255,14 +257,15 @@ jobs:
           sys.path.insert(0, 'Scripts')
           from probe_hidden_transition import run
           from probe_tcc import accessibility_grant, screen_capture_grant
-          with accessibility_grant('com.flux.menu-drag-probe'), screen_capture_grant('com.flux.menu-drag-probe'):
+          with accessibility_grant('com.flux.menu-drag-probe'):
               run(['python3', 'Scripts/probe_menu_drag.py', '--output',
                    'build/menu-drag-probe', '--seconds', '55'], 170)
-              run(['python3', 'Scripts/probe_menu_drag.py', '--output',
-                   'build/menu-drag-probe-empty-title', '--seconds', '55', '--empty-title'], 170)
-              for case in ('disabled-populated', 'scroll', 'glyphs'):
-                  run(['python3', 'Scripts/probe_menu_drag.py', '--case', case, '--output',
-                       'build/menu-drag-probe-' + case, '--seconds', '25'], 130)
+              with screen_capture_grant('com.flux.menu-drag-probe'):
+                  run(['python3', 'Scripts/probe_menu_drag.py', '--output',
+                       'build/menu-drag-probe-empty-title', '--seconds', '55', '--empty-title'], 170)
+                  for case in ('disabled-populated', 'scroll', 'glyphs'):
+                      run(['python3', 'Scripts/probe_menu_drag.py', '--case', case, '--output',
+                           'build/menu-drag-probe-' + case, '--seconds', '25'], 130)
           PY
 
       - name: Upload native drag probe logs

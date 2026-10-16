@@ -1288,7 +1288,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         body = text[start:end]
         for event in ("down", "move", "up"):
             post = event + ".post(tap: .cghidEventTap)"
-            body = body.replace(post, post + '\n            print("TRACE_NATIVE_' + event.upper() + ' \(ProcessInfo.processInfo.systemUptime)")')
+            body = body.replace(post, post + '\n            print("TRACE_NATIVE_' + event.upper() + ' \\(ProcessInfo.processInfo.systemUptime)")')
         manager_source = temporary / "TracedMenuBarIconManager.swift"
         manager_source.write_text(text[:start] + body + text[end:])
     if options.menu_expired:
