@@ -70,6 +70,7 @@ jobs:
               assert re.fullmatch(r'[0-9a-f]{40}', item['ref'])
               assert isinstance(item['cases'], list) and item['cases']
               assert isinstance(item.get('empty_title', False), bool)
+              assert isinstance(item.get('prepare_update', False), bool)
               assert all(re.fullmatch(r'[a-z-]+', case) for case in item['cases'])
           output = Path('build/native-drag-debug').resolve()
           output.mkdir(parents=True)
@@ -84,6 +85,10 @@ jobs:
                   run(['git', 'archive', '--format=tar', '--output', str(archive), ref,
                        'Scripts', 'Sources/Flux'], 15)
                   run(['tar', '-xf', str(archive), '-C', str(source)], 15)
+                  if item.get('prepare_update'):
+                      log = run(['python3', str(source / 'Scripts/probe_update.py')],
+                                180, capture=True)
+                      (source / 'update-prelude.log').write_text(log)
                   for case in item['cases']:
                       budget = 180 if case == 'all' else 130
                       if time.monotonic() + budget > deadline:
