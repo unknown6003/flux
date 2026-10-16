@@ -30,6 +30,7 @@ import Darwin
 AccessibilityAccess.exitIfRequested()
 MainActor.assumeIsolated {
     let directory = URL(fileURLWithPath: CommandLine.arguments[1])
+    UserDefaults.standard.removePersistentDomain(forName: Bundle.main.bundleIdentifier!)
     UserDefaults.standard.set(false, forKey: "flux.automaticUpdateChecks")
     UserDefaults.standard.set(false, forKey: "flux.launchAtLogin")
     UserDefaults.standard.set(false, forKey: "flux.autoRehide")

@@ -401,9 +401,9 @@ def bounded(argv, seconds, log):
         try:
             code = process.wait(timeout=seconds)
             if code:
-                raise RuntimeError(f"exit {code}: {log}")
+                raise RuntimeError(f"exit {code}: {log}\n{log.read_text(errors='replace')[-6000:]}")
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError(f"deadline {seconds}s: {log}") from error
+            raise RuntimeError(f"deadline {seconds}s: {log}\n{log.read_text(errors='replace')[-6000:]}") from error
         finally:
             stop(process)
 
