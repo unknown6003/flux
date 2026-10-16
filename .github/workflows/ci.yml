@@ -85,13 +85,14 @@ jobs:
                        'Scripts', 'Sources/Flux'], 15)
                   run(['tar', '-xf', str(archive), '-C', str(source)], 15)
                   for case in item['cases']:
-                      if time.monotonic() + 130 > deadline:
+                      budget = 180 if case == 'all' else 130
+                      if time.monotonic() + budget > deadline:
                           raise RuntimeError('native drag plan reached its overall deadline')
                       try:
                           log = run(['python3', str(source / 'Scripts/probe_menu_drag.py'),
                                      '--output', str(source / case), '--case', case,
-                                     '--seconds', '25'] + (['--empty-title'] if item.get('empty_title') else []),
-                                    130, capture=True)
+                                     '--seconds', '55' if case == 'all' else '25'] + (['--empty-title'] if item.get('empty_title') else []),
+                                    budget, capture=True)
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'
