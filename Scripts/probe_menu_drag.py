@@ -251,6 +251,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     var configured = false
     var menuChecked = false
     var menuObservers: [NSObjectProtocol] = []
+    var trackingMenu: NSMenu?
     init(state: String) { self.state = state }
     func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap { views($0) } }
     func center(_ view: NSView, x: CGFloat? = nil, y: CGFloat? = nil) -> [Double] {
@@ -314,6 +315,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "firstResponder": String(describing: window.firstResponder).prefix(300).description,
             "frontmost": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none",
             "applicationActive": NSApp.isActive, "keyWindow": window.isKeyWindow,
+            "menuTracking": trackingMenu != nil,
+            "highlightedItem": trackingMenu?.highlightedItem?.title ?? "",
             "ownTaps": ownTaps, "extraWindows": NSApp.windows.filter { $0 !== window && $0.isVisible }.count,
             "emptyTitle": manager.labels.contains { $0["rawTitle"] == "" && $0["normalized"] == "Flux drag fixture" }
         ]
@@ -325,6 +328,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             menuObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 MainActor.assumeIsolated {
                     guard let self, let menu = note.object as? NSMenu else { return }
+                    guard menu.items.contains(where: { $0.title == "Always Hidden" }) else { return }
+                    self.trackingMenu = name == NSMenu.didBeginTrackingNotification ? menu : nil
                     self.events.append("menu tracking \(name.rawValue) items=\(menu.items.map(\.title))")
                     self.writeState()
                 }
@@ -442,6 +447,25 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     }
 }
 
+func menuState(_ path: String, _ predicate: ([String: Any]) -> Bool) {
+    let deadline = Date().addingTimeInterval(2)
+    repeat {
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any], predicate(state) { return }
+        Thread.sleep(forTimeInterval: 0.02)
+    } while Date() < deadline
+    print("FAIL: native menu state deadline")
+    fflush(stdout)
+    exit(13)
+}
+
+func menuKey(_ code: CGKeyCode) {
+    for down in [true, false] {
+        CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)?.post(tap: .cghidEventTap)
+    }
+    Thread.sleep(forTimeInterval: 0.1)
+}
+
 @main struct Main {
     @MainActor static func main() {
         let args = CommandLine.arguments
@@ -451,14 +475,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"))
         case "--drive": drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5])
         case "--keyboard":
-            func key(_ code: CGKeyCode) {
-                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
-                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
-                Thread.sleep(forTimeInterval: 0.1)
-            }
             var focused = false
             for _ in 0..<24 {
-                key(48)
+                menuKey(48)
                 if let data = try? Data(contentsOf: URL(fileURLWithPath: args[2])),
                    let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    state["focusedMenu"] as? Bool == true { focused = true; break }
@@ -468,10 +487,13 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 print((try? String(contentsOfFile: args[2], encoding: .utf8)) ?? "missing state")
                 exit(12)
             }
-            key(49)
-            if args[3] == "hidden" { key(4) }
-            else { key(119); if args[3] == "left" { key(126) } }
-            key(36)
+            menuKey(49)
+            menuState(args[2]) { $0["menuTracking"] as? Bool == true }
+            if args[3] == "hidden" { menuKey(4) }
+            else { menuKey(119); if args[3] == "left" { menuKey(126) } }
+            let expected = args[3] == "hidden" ? "Hidden" : "Move " + args[3]
+            menuState(args[2]) { $0["highlightedItem"] as? String == expected }
+            menuKey(36)
         case "--menu":
             let data = try! Data(contentsOf: URL(fileURLWithPath: args[2]))
             let state = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -483,14 +505,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: location, mouseButton: .left)?.post(tap: .cghidEventTap)
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            Thread.sleep(forTimeInterval: 0.2)
-            for code in [CGKeyCode(4), 36] {
-                print("menu driver key=\(code)")
-                fflush(stdout)
-                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
-                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
-                Thread.sleep(forTimeInterval: 0.1)
-            }
+            menuState(args[2]) { $0["menuTracking"] as? Bool == true }
+            menuKey(4)
+            menuState(args[2]) { $0["highlightedItem"] as? String == "Hidden" }
+            menuKey(36)
         case "--release":
             let point = CGEvent(source: nil)!.location
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
@@ -699,7 +717,7 @@ extension MenuBarDragController {
                     state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["buttons"])
                     if len(state["commits"]) != before or "com.flux.menu-drag-fixture|0" not in state["sourceIDs"]:
                         raise RuntimeError("disabled populated lane accepted a drop or lost its item")
-                bounded([str(binary), "--menu", str(state_path)], 5, args.output / "menu-click.log")
+                bounded([str(binary), "--menu", str(state_path)], 8, args.output / "menu-click.log")
                 state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
                 if state["commits"][before:] != ["hidden"]:
                     raise RuntimeError("Move menu did not request Hidden")
