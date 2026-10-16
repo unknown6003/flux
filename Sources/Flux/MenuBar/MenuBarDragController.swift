@@ -35,18 +35,25 @@ final class MenuBarDragController: ObservableObject {
         for name in [NSApplication.didResignActiveNotification, NSApplication.willTerminateNotification,
                      NSApplication.didChangeScreenParametersNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.cancel() }
+                MainActor.assumeIsolated {
+                    self?.trace?("cancel notification=\(name.rawValue)")
+                    self?.cancel()
+                }
             })
         }
         for name in [NSWindow.willCloseNotification, NSWindow.didMiniaturizeNotification,
                      NSWindow.didResignKeyNotification] {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.cancel() }
+                MainActor.assumeIsolated {
+                    self?.trace?("cancel notification=\(name.rawValue)")
+                    self?.cancel()
+                }
             })
         }
     }
 
     func close() {
+        trace?("close settings")
         cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
@@ -70,6 +77,7 @@ final class MenuBarDragController: ObservableObject {
     }
 
     func accepts(_ sender: NSDraggingInfo) -> Bool {
+        trace?("accept managed=\(canManage) busy=\(updatingIcons) active=\(active != nil) source=\(sender.draggingSource is MenuBarDragSourceView) token=\(sender.draggingPasteboard.string(forType: Self.pasteboardType) == active?.token)")
         guard canManage, !updatingIcons, let active,
               sender.draggingSource as? MenuBarDragSourceView != nil,
               sender.draggingSourceOperationMask.contains(.move),
