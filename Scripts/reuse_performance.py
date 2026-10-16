@@ -40,7 +40,7 @@ def main():
            'Resources', 'Scripts').strip():
         raise ValueError('Untracked product or benchmark inputs exist')
     # The measured commands omit --suite, so they do not call these native fixtures.
-    if changed - {'Scripts/probe_icons.py', 'Scripts/probe_settings_reopen.py',
+    if changed - {'Scripts/probe_icons.py', 'Scripts/probe_settings_reopen.py', 'Scripts/probe_menu_drag.py',
                   'Scripts/reuse_performance.py'}:
         raise ValueError('Product, build or benchmark inputs changed: ' + ', '.join(sorted(changed)))
     workflow = Path('.github/workflows/ci.yml').read_text()

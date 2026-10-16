@@ -365,6 +365,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "menu": source.map { center($0) } ?? [],
             "insertions": manager.insertions,
             "sourceID": source?.icon?.id ?? "",
+            "sourceSection": source?.icon?.section.rawValue ?? "",
             "neighborID": sources.first { $0.icon?.title == "Second fixture" }?.icon?.id ?? "",
             "events": events, "commits": commits,
             "moving": lanes.first?.controller?.isDragging == true,
@@ -397,12 +398,6 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         manager.onMove = { [weak self] section in self?.commits.append(section) }
         settings.showAlwaysHiddenSection = true
         if CommandLine.arguments.contains("--scroll") { manager.extraRows = 40 }
-        if CommandLine.arguments.contains("--disabled-populated") {
-            manager.refresh()
-            if let icon = manager.icons.first(where: { $0.title == "Flux drag fixture" }) {
-                manager.assignments[icon.id] = .alwaysHidden
-            }
-        }
         let usable = NSScreen.main!.visibleFrame
         window = NSWindow(contentRect: NSRect(x: 80, y: 90, width: 620, height: min(620, usable.height - 40)),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -414,7 +409,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let fixtureDeadline = ProcessInfo.processInfo.systemUptime + 8
         @MainActor func installWhenFixtureReady() {
             self.manager.refresh()
-            guard self.manager.isTrusted, self.manager.icons.contains(where: {
+            guard self.manager.isTrusted, let icon = self.manager.icons.first(where: {
                 $0.isMovable && $0.id.hasPrefix("com.flux.menu-drag-fixture|")
                     && $0.title == "Flux drag fixture" && $0.frame.width > 0 && $0.frame.height > 0
             }) else {
@@ -424,6 +419,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { installWhenFixtureReady() }
                 return
+            }
+            if CommandLine.arguments.contains("--disabled-populated") {
+                self.manager.assignments[icon.id] = .alwaysHidden
+                self.manager.refresh()
             }
             self.window.contentView = NSHostingView(rootView: root)
             self.window.makeKeyAndOrderFront(nil)
@@ -750,6 +749,8 @@ extension MenuBarDragController {
                 raise RuntimeError(f"wrong drag area or unexpected global capture: {state}")
             if args.empty_title and not state["emptyTitle"]:
                 raise RuntimeError("empty AX title fallback was not exercised")
+            if args.case == "disabled-populated" and state["sourceSection"] != "alwaysHidden":
+                raise RuntimeError("disabled-lane fixture was not populated before the toggle")
             started = time.monotonic()
             if args.case == "scroll":
                 if state["scrollTarget"]:
