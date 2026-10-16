@@ -139,7 +139,6 @@ final class MenuBarDragController: ObservableObject {
         guard canManage, !updatingIcons,
               CGEventSource.buttonState(.combinedSessionState, button: .left),
               !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) else { return nil }
-        message = nil
         let token = UUID().uuidString
         active = (token, current, identity)
         isDragging = true
