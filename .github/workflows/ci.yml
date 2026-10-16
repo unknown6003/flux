@@ -139,6 +139,36 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: Import release signing identity
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
+          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
+        run: python3 Scripts/import_signing.py
+
+      - name: Build app + DMG
+        run: ./Scripts/build_dmg.sh
+
+      - name: Compare baseline and current runtime work
+        timeout-minutes: 6
+        run: python3 Scripts/probe_performance.py --baseline-ref f286253 --repeats 3 --native-scan --output build/performance/paired
+
+      - name: Measure full app idle and Settings workloads
+        timeout-minutes: 10
+        run: python3 Scripts/probe_app_performance.py --baseline-ref f286253 --repeats 2 --seconds 5 --output build/performance/app
+
+      - name: Check saved-layout drawer response
+        timeout-minutes: 4
+        run: python3 Scripts/probe_drawer_response.py
+
+      - name: Upload performance measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: performance
+          path: build/performance/
+          if-no-files-found: warn
+
       - name: Probe automatic update scheduling
         if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_schedule.py
@@ -216,13 +246,6 @@ jobs:
           path: build/menu-drag-probe*/
           if-no-files-found: warn
 
-      - name: Import release signing identity
-        if: ${{ github.event_name != 'pull_request' }}
-        env:
-          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
-          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
-        run: python3 Scripts/import_signing.py
-
       - name: Probe access across changed signed builds
         if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
         run: python3 Scripts/probe_signing.py
@@ -237,29 +260,6 @@ jobs:
         with:
           name: menu-bar-probe
           path: build/menu-bar-probe/
-          if-no-files-found: warn
-
-      - name: Build app + DMG
-        run: ./Scripts/build_dmg.sh
-
-      - name: Compare baseline and current runtime work
-        timeout-minutes: 6
-        run: python3 Scripts/probe_performance.py --baseline-ref f286253 --repeats 3 --native-scan --output build/performance/paired
-
-      - name: Measure full app idle and Settings workloads
-        timeout-minutes: 10
-        run: python3 Scripts/probe_app_performance.py --baseline-ref f286253 --repeats 2 --seconds 5 --output build/performance/app
-
-      - name: Check saved-layout drawer response
-        timeout-minutes: 4
-        run: python3 Scripts/probe_drawer_response.py
-
-      - name: Upload performance measurements
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: performance
-          path: build/performance/
           if-no-files-found: warn
 
       - name: Self-test
