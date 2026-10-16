@@ -218,16 +218,18 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
             image?.draw(in: NSRect(x: 9, y: bounds.midY - 11, width: 22, height: 22))
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            let title = NSRect(x: 40, y: bounds.midY - 1, width: max(0, bounds.width - 50), height: 17)
+            let subtitle = icon.source.flatMap { $0.isEmpty || $0 == icon.title ? nil : $0 }
+            let title = NSRect(x: 40, y: bounds.midY - (subtitle == nil ? 8 : 1), width: max(0, bounds.width - 50), height: 17)
             (icon.title as NSString).draw(in: title, withAttributes: [
                 .font: NSFont.systemFont(ofSize: 12, weight: .medium),
                 .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
             ])
-            let subtitle = NSRect(x: 40, y: bounds.midY - 16, width: title.width, height: 14)
-            ((icon.source ?? "Menu bar item") as NSString).draw(in: subtitle, withAttributes: [
-                .font: NSFont.systemFont(ofSize: 10),
-                .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph
-            ])
+            if let subtitle {
+                (subtitle as NSString).draw(in: NSRect(x: 40, y: bounds.midY - 16, width: title.width, height: 14), withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 10),
+                    .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph
+                ])
+            }
             return
         }
         NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Drag icon")?
@@ -256,8 +258,11 @@ class MenuBarDragDestinationView: NSView {
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = controller?.accepts(sender) == true
+        if targeted, let event = NSApp.currentEvent { autoscroll(with: event) }
         return targeted ? .move : []
     }
+
+    override func wantsPeriodicDraggingUpdates() -> Bool { true }
 
     override func draggingExited(_ sender: NSDraggingInfo?) { targeted = false }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {

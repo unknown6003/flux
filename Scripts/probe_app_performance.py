@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 
-from probe_performance import ROOT, run, sample_process, stop_group
+from probe_performance import ROOT, native_status_fixture, run, sample_process, stop_group
 
 FIXTURE = r'''
 import AppKit
@@ -95,7 +95,11 @@ extension AppDelegate {
         default: break
         }
     }
-    func perfWindowState() -> [String: Any] { settingsWindow.perfState() }
+    func perfWindowState() -> [String: Any] {
+        var state = settingsWindow.perfState()
+        state["fixtureIcons"] = menuBarIcons.icons.filter { $0.id.hasPrefix("com.flux.performance-fixture|") }.count
+        return state
+    }
 }
 '''
 WINDOW_ACCESS = r'''
@@ -178,6 +182,8 @@ def measure(binary, directory, seconds, cycles):
             result["settings_open"] = command("settings")
             if not result["settings_open"]["settingsVisible"] or not result["settings_open"]["settingsKey"]:
                 raise RuntimeError("real Menu Bar Settings window did not open")
+            if result["settings_open"]["fixtureIcons"] != 12:
+                raise RuntimeError("Settings did not load all 12 real menu bar fixture icons")
             result["settings"] = sample_process(process.pid, seconds)
             result["close"] = command("close")
             if result["close"]["settingsVisible"]:
@@ -238,6 +244,7 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="flux-app-perf-") as temporary, ExitStack() as stack:
             scratch = Path(temporary)
+            report["status_fixture"] = stack.enter_context(native_status_fixture(output / "fixture"))
             binaries = {}
             for label, ref in (("baseline", baseline), ("candidate", candidate)):
                 binaries[label], bundle_id = build(ref, label, output, scratch)

@@ -14,7 +14,7 @@ including compilation. Those times are not UI latency measurements.
 """
 
 import argparse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import math
@@ -69,6 +69,53 @@ def run(command, seconds, cwd=ROOT):
     if process.returncode:
         raise RuntimeError(f"exit {process.returncode}: {command[0]}\n{output}")
     return output
+
+
+@contextmanager
+def native_status_fixture(directory, count=12):
+    directory.mkdir(parents=True)
+    source = directory / "main.swift"
+    source.write_text(r'''
+import AppKit
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let items = (0..<Int(CommandLine.arguments[2])!).map { index -> NSStatusItem in
+        let item = NSStatusBar.system.statusItem(withLength: 24)
+        item.button?.title = "F\(index)"
+        item.button?.setAccessibilityTitle("Performance item \(index)")
+        return item
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        let value = ["pid": Int(getpid()), "icons": items.count]
+        try! JSONSerialization.data(withJSONObject: value).write(
+            to: URL(fileURLWithPath: CommandLine.arguments[1]), options: .atomic)
+    }
+    withExtendedLifetime(items) { app.run() }
+}
+''')
+    app = directory / "FluxPerformanceIcons.app"
+    binary = app / "Contents/MacOS/FluxPerformanceIcons"
+    binary.parent.mkdir(parents=True)
+    (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleIdentifier": "com.flux.performance-fixture", "CFBundleExecutable": binary.name,
+        "CFBundlePackageType": "APPL", "CFBundleName": "Flux performance icons", "LSUIElement": True,
+    }))
+    (directory / "build.log").write_text(run(["xcrun", "swiftc", str(source), "-o", str(binary)], 60) +
+                                        run(["codesign", "--force", "--sign", "-", str(app)], 20))
+    ready = directory / "ready.json"
+    with (directory / "fixture.log").open("w") as log:
+        process = subprocess.Popen([str(binary), str(ready), str(count)], stdin=subprocess.DEVNULL,
+                                   stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline and process.poll() is None:
+                time.sleep(0.03)
+            if not ready.exists():
+                raise RuntimeError("native status fixture did not become ready")
+            yield json.loads(ready.read_text())
+        finally:
+            stop_group(process)
 
 
 def read_sources(ref=None):
@@ -206,7 +253,9 @@ MainActor.assumeIsolated {
             native.$icons.dropFirst().sink { _ in publications += 1 }.store(in: &tokens)
             samples = []
             for _ in 0..<10 { samples.append(timeMS { native.refresh() }) }
-            result["native_inventory_scan"] = ["calls": 10, "milliseconds": samples,
+            let fixtureIcons = native.icons.filter { $0.id.hasPrefix("com.flux.performance-fixture|") }.count
+            require(fixtureIcons == 12, "native inventory did not read all 12 real fixture icons")
+            result["native_inventory_scan"] = ["calls": 10, "milliseconds": samples, "fixture_icons": fixtureIcons,
                 "icons": native.icons.count, "icons_publications": publications,
                 "boundary": "synchronous AX inventory refresh; no input events"]
         } else {
@@ -437,7 +486,8 @@ def main():
             if args.native_scan and os.environ.get("GITHUB_ACTIONS") == "true":
                 from probe_tcc import accessibility_grant
                 grant = accessibility_grant("com.flux.performance-probe")
-            with grant:
+            with grant, (native_status_fixture(output / "fixture") if args.native_scan else nullcontext()) as fixture:
+                report["status_fixture"] = fixture
                 for iteration in range(args.repeats):
                     order = ("baseline", "candidate") if iteration % 2 == 0 else ("candidate", "baseline")
                     for label in order:
