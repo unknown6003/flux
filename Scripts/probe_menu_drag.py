@@ -263,7 +263,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "events": events, "commits": commits,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
-            "focusedMenu": (window.firstResponder as? NSPopUpButton)?.isEnabled == true,
+            "focusedMenu": (window.firstResponder as? NSPopUpButton).map {
+                $0.isEnabled && $0.superview is MenuBarIconLaneView
+            } ?? false,
             "keyboardAccess": NSApp.isFullKeyboardAccessEnabled,
             "firstResponder": String(describing: window.firstResponder).prefix(300).description,
             "ownTaps": ownTaps, "extraWindows": NSApp.windows.filter { $0 !== window && $0.isVisible }.count,
