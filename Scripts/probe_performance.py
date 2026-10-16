@@ -319,27 +319,35 @@ def cpu_seconds(value):
     return total + (int(days) * 86_400 if days else 0)
 
 
+def read_process(pid):
+    fields = run(["/bin/ps", "-p", str(pid), "-o", "time=,rss=,lstart="], 5).split()
+    if len(fields) != 7:
+        raise RuntimeError(f"PID {pid} exited or ps returned unexpected fields")
+    return {"cpu_seconds": cpu_seconds(fields[0]), "rss_kib": int(fields[1]),
+            "started": " ".join(fields[2:]), "at": time.monotonic()}
+
+
+def process_interval(before, after):
+    if before["started"] != after["started"]:
+        raise RuntimeError("sampled PID was reused")
+    elapsed = after["at"] - before["at"]
+    cpu = after["cpu_seconds"] - before["cpu_seconds"]
+    if elapsed <= 0 or cpu < 0:
+        raise RuntimeError("invalid process timing interval")
+    return {"elapsed_seconds": elapsed, "cpu_seconds": cpu, "cpu_percent_one_core": cpu / elapsed * 100}
+
+
 def sample_process(pid, seconds):
     executable = run(["/bin/ps", "-p", str(pid), "-o", "comm="], 5).strip()
-    def read():
-        fields = run(["/bin/ps", "-p", str(pid), "-o", "time=,rss=,lstart="], 5).split()
-        if len(fields) != 7:
-            raise RuntimeError(f"PID {pid} exited or ps returned unexpected fields")
-        return {"cpu_seconds": cpu_seconds(fields[0]), "rss_kib": int(fields[1]),
-                "started": " ".join(fields[2:]), "at": time.monotonic()}
-
-    samples = [read()]
+    samples = [read_process(pid)]
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         time.sleep(min(0.5, max(0, deadline - time.monotonic())))
-        sample = read()
+        sample = read_process(pid)
         if sample["started"] != samples[0]["started"]:
             raise RuntimeError("sampled PID was reused")
         samples.append(sample)
-    elapsed = samples[-1]["at"] - samples[0]["at"]
-    cpu = samples[-1]["cpu_seconds"] - samples[0]["cpu_seconds"]
-    result = {"pid": pid, "executable": executable, "elapsed_seconds": elapsed, "cpu_seconds": cpu,
-              "cpu_percent_one_core": cpu / elapsed * 100,
+    result = {"pid": pid, "executable": executable, **process_interval(samples[0], samples[-1]),
               "rss_kib_median": statistics.median(s["rss_kib"] for s in samples),
               "rss_kib_max": max(s["rss_kib"] for s in samples), "samples": samples,
               "boundary": "target PID only; excludes helper processes and GPU",

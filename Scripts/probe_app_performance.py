@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 
-from probe_performance import ROOT, native_status_fixture, run, sample_process, stop_group
+from probe_performance import ROOT, native_status_fixture, process_interval, read_process, run, sample_process, stop_group
 
 FIXTURE = r'''
 import AppKit
@@ -261,6 +261,7 @@ def measure(binary, directory, seconds, cycles):
             result["settings_reopened"] = sample_process(process.pid, seconds)
             command("close")
             result["settings_cycles"] = []
+            cycle_start = read_process(process.pid)
             for cycle in range(cycles):
                 opened = command("settings")
                 general = command("general")
@@ -276,6 +277,8 @@ def measure(binary, directory, seconds, cycles):
                                                   "return_menu_bar_ms": returned["milliseconds"],
                                                   "rendered_tabs": [opened["renderedTabs"], general["renderedTabs"], returned["renderedTabs"]],
                                                   "hosting_retained": len({opened["hostingID"], general["hostingID"], returned["hostingID"]}) == 1})
+            result["settings_workload"] = {**process_interval(cycle_start, read_process(process.pid)), "cycles": cycles,
+                                           "boundary": "main-process CPU during scripted open, General, Menu Bar and close cycles"}
             result["after_cycles"] = sample_process(process.pid, seconds)
             result["drawer_calls"] = [command("drawer") for _ in range(100)]
             command("quit")
