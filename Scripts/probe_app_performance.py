@@ -57,7 +57,7 @@ MainActor.assumeIsolated {
             delegate.perfAction(action)
             @MainActor func finishWhenReady() {
                 var state = delegate.perfWindowState()
-                let ready = action == "settings"
+                let ready = (action == "settings" || action == "general")
                     ? state["settingsVisible"] as? Bool == true && state["settingsKey"] as? Bool == true
                     : action != "close" || state["settingsVisible"] as? Bool == false
                 if !ready && ProcessInfo.processInfo.systemUptime - start < 10 {
@@ -89,6 +89,7 @@ extension AppDelegate {
     func perfAction(_ action: String) {
         switch action {
         case "settings": settingsWindow.show(tab: .menuBar)
+        case "general": settingsWindow.show(tab: .general)
         case "close": settingsWindow.perfClose()
         case "drawer": menuBar?.toggleReveal()
         default: break
@@ -103,7 +104,8 @@ extension SettingsWindowController {
     func perfState() -> [String: Any] {
         window?.displayIfNeeded()
         return ["settingsVisible": window?.isVisible == true,
-                "settingsKey": window?.isKeyWindow == true]
+                "settingsKey": window?.isKeyWindow == true,
+                "hostingID": window?.contentViewController.map { String(describing: ObjectIdentifier($0)) } ?? "none"]
     }
 }
 '''
@@ -188,11 +190,18 @@ def measure(binary, directory, seconds, cycles):
             result["settings_cycles"] = []
             for cycle in range(cycles):
                 opened = command("settings")
+                general = command("general")
+                returned = command("settings")
+                if directory.name.startswith("candidate") and len({opened["hostingID"], general["hostingID"], returned["hostingID"]}) != 1:
+                    raise RuntimeError("a candidate tab request replaced the retained hosting controller")
                 closed = command("close")
                 if not opened["settingsVisible"] or closed["settingsVisible"]:
                     raise RuntimeError(f"Settings lifecycle failed at cycle {cycle + 1}")
                 result["settings_cycles"].append({"cycle": cycle + 1, "open_ms": opened["milliseconds"],
-                                                  "close_ms": closed["milliseconds"]})
+                                                  "close_ms": closed["milliseconds"],
+                                                  "general_ms": general["milliseconds"],
+                                                  "return_menu_bar_ms": returned["milliseconds"],
+                                                  "hosting_retained": len({opened["hostingID"], general["hostingID"], returned["hostingID"]}) == 1})
             result["after_cycles"] = sample_process(process.pid, seconds)
             result["drawer_calls"] = [command("drawer") for _ in range(100)]
             command("quit")
