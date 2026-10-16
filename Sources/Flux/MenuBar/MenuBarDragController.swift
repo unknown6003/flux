@@ -148,7 +148,10 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
             if oldValue?.id != icon?.id {
                 appImage = icon.flatMap { icon in
                     let bundleID = String(icon.id.split(separator: "|").first ?? "")
-                    return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.icon
+                    if let image = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.icon { return image }
+                    return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map {
+                        NSWorkspace.shared.icon(forFile: $0.path)
+                    }
                 }
             }
             needsDisplay = true

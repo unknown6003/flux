@@ -57,6 +57,7 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
                 let menu = NSPopUpButton(frame: .zero, pullsDown: true)
                 menu.bezelStyle = .rounded
                 menu.controlSize = .small
+                menu.font = .systemFont(ofSize: 11)
                 menu.addItem(withTitle: icon.isMovable ? "Move" : "Fixed")
                 if icon.isMovable {
                     for destination in MenuBarSection.allCases {
@@ -98,8 +99,8 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         for index in icons.indices {
             let x = 10 + CGFloat(index % columns) * (width + 8)
             let y = 46 + CGFloat(index / columns) * 54
-            subviews[index * 2].frame = NSRect(x: x, y: y, width: max(0, width - 58), height: 48)
-            subviews[index * 2 + 1].frame = NSRect(x: x + width - 58, y: y + 12, width: 58, height: 24)
+            subviews[index * 2].frame = NSRect(x: x, y: y, width: max(0, width - 76), height: 48)
+            subviews[index * 2 + 1].frame = NSRect(x: x + width - 76, y: y + 12, width: 76, height: 24)
         }
     }
 
