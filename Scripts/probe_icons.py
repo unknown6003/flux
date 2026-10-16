@@ -55,6 +55,7 @@ parser.add_argument("--native-sibling", action="store_true")
 parser.add_argument("--native-refresh-retry", action="store_true")
 parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--move-retry-overlap", action="store_true")
+parser.add_argument("--trace-drag", action="store_true", help="Record actual event-post completion times in a temporary manager copy")
 parser.add_argument("--insertion", action="store_true", help="Use the exact strip insertion interface for physical reorder")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
@@ -1280,6 +1281,16 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         let placement = MenuBarIconManager.Insertion(section: reorderSection,
             before: towardClock ? nil : neighbor, after: towardClock ? neighbor : nil)
         manager.move(moving, to: placement)''')
+    if options.trace_drag:
+        text = manager_source.read_text()
+        start = text.index("    private func drag(")
+        end = text.index("    private func isFluxItem", start)
+        body = text[start:end]
+        for event in ("down", "move", "up"):
+            post = event + ".post(tap: .cghidEventTap)"
+            body = body.replace(post, post + '\n            print("TRACE_NATIVE_' + event.upper() + ' \(ProcessInfo.processInfo.systemUptime)")')
+        manager_source = temporary / "TracedMenuBarIconManager.swift"
+        manager_source.write_text(text[:start] + body + text[end:])
     if options.menu_expired:
         manager_text = manager_source.read_text()
         start = manager_text.index("    private func deferMoveUntilMenuCloses(")

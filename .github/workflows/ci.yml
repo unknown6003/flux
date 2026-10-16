@@ -97,10 +97,12 @@ jobs:
                           if case == 'clipboard-images':
                               command = ['python3', str(source / 'Scripts/probe_clipboard_images.py'),
                                          '--out', str(source / case)]
-                          elif case in ('native-move', 'native-move-baseline'):
-                              command = ['python3', str(source / 'Scripts/probe_icons.py')]
-                              if case == 'native-move-baseline':
+                          elif case.startswith('native-move') or case == 'native-insertion':
+                              command = ['python3', str(source / 'Scripts/probe_icons.py'), '--trace-drag']
+                              if case.startswith('native-move-baseline'):
                                   command += ['--manager-ref', '6fde90817068d06ecfae8eb6ec85c19e68af997b']
+                              elif case == 'native-insertion':
+                                  command += ['--insertion']
                           else:
                               command = ['python3', str(source / 'Scripts/probe_menu_drag.py'),
                                          '--output', str(source / case), '--case', case,
@@ -128,7 +130,7 @@ jobs:
     name: macOS checks and app build
     if: ${{ !inputs.drag_probe_plan }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       # Pinned to an immutable commit SHA — see the note in codeql.yml. It
       # matters more here than there: tag builds feed the release job and
@@ -172,7 +174,7 @@ jobs:
         run: python3 Scripts/probe_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 3 --native-scan --output build/performance/paired
 
       - name: Measure full app idle and Settings workloads
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: python3 Scripts/probe_app_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 2 --seconds 5 --output build/performance/app
 
       - name: Check disabled feature startup IO

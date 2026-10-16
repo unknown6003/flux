@@ -29,8 +29,14 @@ final class MenuBarIconImages: ObservableObject {
         let token = generation
         job?.cancel()
         job = nil
+        let previous = Dictionary(inventory.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let retained = Set(icons.filter { icon in
+            guard let old = previous[icon.id] else { return false }
+            return old.identity == icon.identity && old.title == icon.title && old.source == icon.source
+        }.map(\.id))
+        let cached = images.filter { retained.contains($0.key) }
+        if cached.count != images.count { images = cached }
         inventory = icons
-        if !images.isEmpty { images = [:] }
         if isOpen {
             let granted = CGPreflightScreenCaptureAccess()
             if hasAccess != granted { hasAccess = granted }
@@ -39,9 +45,9 @@ final class MenuBarIconImages: ObservableObject {
             if !images.isEmpty { images = [:] }
             return
         }
-        let scales = Dictionary(uniqueKeysWithValues: NSScreen.screens.compactMap { screen in
+        let scales = Dictionary(NSScreen.screens.compactMap { screen in
             screen.displayID.map { ($0, screen.backingScaleFactor) }
-        })
+        }, uniquingKeysWith: { first, _ in first })
         job = Task { [weak self] in
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -60,8 +66,10 @@ final class MenuBarIconImages: ObservableObject {
                     configuration.height = Int(ceil(height * scale))
                     configuration.showsCursor = false
                     configuration.capturesAudio = false
-                    let image = try await SCScreenshotManager.captureImage(
-                        contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: configuration)
+                    let filter = SCContentFilter(display: display, excludingApplications: content.applications.filter {
+                        $0.bundleIdentifier == Bundle.main.bundleIdentifier
+                    }, exceptingWindows: [])
+                    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
                     try Task.checkCancellation()
                     for item in items {
                         let crop = CGRect(x: (item.frame.minX - display.frame.minX) * scale,
@@ -73,12 +81,12 @@ final class MenuBarIconImages: ObservableObject {
                     }
                 }
                 guard let self, self.generation == token, self.isOpen else { return }
-                self.images = result
+                self.images.merge(result) { _, current in current }
                 self.message = nil
                 self.job = nil
             } catch {
                 guard let self, self.generation == token, self.isOpen else { return }
-                self.message = "Menu bar images are unavailable. App icons are shown."
+                self.message = "Menu bar images could not refresh."
                 self.job = nil
             }
         }
@@ -87,7 +95,7 @@ final class MenuBarIconImages: ObservableObject {
             self.generation += 1
             self.job?.cancel()
             self.job = nil
-            self.message = "Menu bar images are unavailable. App icons are shown."
+            self.message = "Menu bar images could not refresh."
         }
     }
 

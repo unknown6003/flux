@@ -39,6 +39,7 @@ final class MenuBarIconManager: ObservableObject {
         let section: MenuBarSection
         let isMovable: Bool
         let frame: CGRect
+        var identity: UUID? = nil
     }
     struct Insertion: Equatable {
         let section: MenuBarSection
@@ -280,6 +281,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     var menuChecked = false
     var menuObservers: [NSObjectProtocol] = []
     var trackingMenu: NSMenu?
+    var occluder: NSPanel?
     init(state: String) { self.state = state }
     func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap { views($0) } }
     func center(_ view: NSView, x: CGFloat? = nil, y: CGFloat? = nil) -> [Double] {
@@ -332,10 +334,22 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             guard let icon = source.icon, icon.isMovable,
                   let image = source.menuBarImage, let data = image.tiffRepresentation,
                   let bitmap = NSBitmapImageRep(data: data) else { return nil }
+            var redSamples = 0
+            for x in [0.1, 0.5, 0.9] {
+                for y in [0.1, 0.5, 0.9] {
+                    if let color = bitmap.colorAt(x: Int(Double(bitmap.pixelsWide - 1) * x),
+                                                  y: Int(Double(bitmap.pixelsHigh - 1) * y))?.usingColorSpace(.deviceRGB),
+                       color.redComponent > 0.8 && color.greenComponent < 0.2 && color.blueComponent < 0.2 {
+                        redSamples += 1
+                    }
+                }
+            }
             let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            return ["id": icon.id, "digest": digest, "width": bitmap.pixelsWide, "height": bitmap.pixelsHigh]
+            return ["id": icon.id, "digest": digest, "width": bitmap.pixelsWide, "height": bitmap.pixelsHigh,
+                    "redSamples": redSamples]
         }
-        let value: [String: Any] = ["glyphs": glyphs,
+        let value: [String: Any] = ["glyphs": glyphs, "captures": ProbeImages.completed,
+            "occluding": occluder?.isVisible == true,
 
             "ready": configured && source != nil && lanes.count == 3 && NSApp.isActive && window.isKeyWindow,
             "row": source.map { center($0, x: $0.bounds.width * 0.7) } ?? [],
@@ -463,6 +477,24 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                         }
                         NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
                         self.events.append(kind + " notified")
+                    }
+                }
+                if FileManager.default.fileExists(atPath: self.state + ".occlude") {
+                    try? FileManager.default.removeItem(atPath: self.state + ".occlude")
+                    let frame = NSScreen.main!.frame
+                    let panel = NSPanel(contentRect: NSRect(x: frame.minX, y: frame.maxY - 80,
+                                                            width: frame.width, height: 80),
+                                        styleMask: .borderless, backing: .buffered, defer: false)
+                    panel.backgroundColor = .red
+                    panel.isOpaque = true
+                    panel.ignoresMouseEvents = true
+                    panel.hidesOnDeactivate = false
+                    panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue - 1)
+                    panel.orderFrontRegardless()
+                    self.occluder = panel
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        ProbeImages.current?.refresh(self.manager.icons, force: true)
+                        self.events.append("recapture cached=\(ProbeImages.current?.images.count ?? 0)")
                     }
                 }
                 if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
@@ -680,8 +712,17 @@ extension MenuBarDragController {
     func probeChangedDisplay() { displayGeometry = [] }
 }
 ''')
+    captures = args.output / "MenuBarIconImages.swift"
+    captures.write_text((root / "Sources/Flux" / sources[1]).read_text()
+        .replace("isOpen = true", "isOpen = true; ProbeImages.current = self", 1)
+        .replace("self.message = nil", "self.message = nil; ProbeImages.completed += 1", 1) + """
+@MainActor enum ProbeImages {
+    static weak var current: MenuBarIconImages?
+    static var completed = 0
+}
+""")
     bounded(["xcrun", "swiftc", "-swift-version", "5", "-parse-as-library", str(swift), str(stub),
-             str(controller), *[str(root / "Sources/Flux" / path) for path in sources[1:]], "-o", str(binary)],
+             str(controller), str(captures), *[str(root / "Sources/Flux" / path) for path in sources[2:]], "-o", str(binary)],
             90, args.output / "build.log")
     if args.compile_only:
         return
@@ -727,6 +768,14 @@ extension MenuBarDragController {
                 if len({value["digest"] for value in glyphs}) != 2 or any(
                         not 36 <= value["width"] <= 144 or not 16 <= value["height"] <= 128 for value in glyphs):
                     raise RuntimeError(f"wrong captured menu bar glyphs: {glyphs}")
+                before = state["captures"]
+                Path(str(state_path) + ".occlude").touch()
+                state = read_state(state_path, probe_process, lambda value: value["occluding"] and value["captures"] > before)
+                if any(value["redSamples"] > 2 for value in state["glyphs"]) or len(state["glyphs"]) != 2:
+                    raise RuntimeError("glyph capture included Flux's opaque overlay")
+                if "recapture cached=2" not in state["events"]:
+                    raise RuntimeError("glyph refresh blanked valid cached images")
+                results.append("PASS glyph capture excludes an opaque Flux overlay and retains matching cache during refresh")
                 Path(str(state_path) + ".close").touch()
                 state = read_state(state_path, probe_process, lambda value: not value["glyphs"])
                 results.append("PASS actual distinct menu bar glyphs load and their cache clears when Settings closes")
