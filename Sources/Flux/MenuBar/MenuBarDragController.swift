@@ -16,6 +16,21 @@ final class MenuBarDragController: ObservableObject {
     private var updateObservation: AnyCancellable?
     private var updatingIcons = false
     private var active: (token: String, icon: MenuBarIconManager.Icon, identity: MenuBarDragIdentity)?
+    private struct DisplayGeometry: Equatable {
+        let id: UInt32
+        let frame: CGRect
+        let scale: CGFloat
+        let safeArea: [CGFloat]
+    }
+    private var displayGeometry: [DisplayGeometry] = []
+
+    private static func currentDisplayGeometry() -> [DisplayGeometry] {
+        NSScreen.screens.map {
+            DisplayGeometry(id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0,
+                            frame: $0.frame, scale: $0.backingScaleFactor,
+                            safeArea: [$0.safeAreaInsets.top, $0.safeAreaInsets.left, $0.safeAreaInsets.bottom, $0.safeAreaInsets.right])
+        }
+    }
 
     deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
@@ -24,6 +39,7 @@ final class MenuBarDragController: ObservableObject {
         close()
         self.manager = manager
         settingsWindow = window
+        displayGeometry = Self.currentDisplayGeometry()
         updateObservation = manager.$isUpdatingIcons.sink { [weak self] updating in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -36,6 +52,11 @@ final class MenuBarDragController: ObservableObject {
                      NSApplication.didChangeScreenParametersNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
+                    if name == NSApplication.didChangeScreenParametersNotification, let self {
+                        let current = Self.currentDisplayGeometry()
+                        guard current != self.displayGeometry else { return }
+                        self.displayGeometry = current
+                    }
                     self?.trace?("cancel notification=\(name.rawValue)")
                     self?.cancel()
                 }

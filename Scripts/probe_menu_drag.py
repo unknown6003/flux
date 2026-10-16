@@ -228,7 +228,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
     }
     if kind == "stale" { FileManager.default.createFile(atPath: statePath + ".stale", contents: Data()) }
     if kind == "close" { FileManager.default.createFile(atPath: statePath + ".close", contents: Data()) }
-    if kind == "stale" || kind == "close" { Thread.sleep(forTimeInterval: 0.15) }
+    if kind.hasPrefix("screen-") { FileManager.default.createFile(atPath: statePath + "." + kind, contents: Data()) }
+    if kind == "stale" || kind == "close" || kind.hasPrefix("screen-") { Thread.sleep(forTimeInterval: 0.15) }
     if kind == "escape" || kind == "inventory-cancel" {
         key(53, true); key(53, false)
         guard waitFor({ $0.contains("ended operation=0") }) else { fail("Escape did not end the session") }
@@ -367,6 +368,16 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 if FileManager.default.fileExists(atPath: self.state + ".close") {
                     try? FileManager.default.removeItem(atPath: self.state + ".close")
                     self.window.performClose(nil)
+                }
+                for kind in ["screen-unchanged", "screen-change"] {
+                    if FileManager.default.fileExists(atPath: self.state + "." + kind) {
+                        try? FileManager.default.removeItem(atPath: self.state + "." + kind)
+                        if kind == "screen-change" {
+                            self.views(self.window.contentView!).compactMap { ($0 as? MenuBarIconLaneView)?.controller }.first?.probeChangedDisplay()
+                        }
+                        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+                        self.events.append(kind + " notified")
+                    }
                 }
                 if FileManager.default.fileExists(atPath: self.state + ".stop") { self.stop() }
                 self.writeState()
@@ -526,7 +537,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
-                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "keyboard", "order-left", "order-right", "stale", "close"))
+                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -561,8 +572,14 @@ extension EnvironmentValues {
     sources = ["MenuBar/MenuBarDragController.swift", "MenuBar/MenuBarSection.swift",
                "MenuBar/MenuBarIconStyle.swift", "Settings/Tabs/MenuBarTab.swift",
                "Settings/MenuBarIconDropZone.swift", "Settings/SettingsRows.swift", "Support/Theme.swift"]
+    controller = args.output / "MenuBarDragController.swift"
+    controller.write_text((root / "Sources/Flux" / sources[0]).read_text() + '''
+extension MenuBarDragController {
+    func probeChangedDisplay() { displayGeometry = [] }
+}
+''')
     bounded(["xcrun", "swiftc", "-swift-version", "5", "-parse-as-library", str(swift), str(stub),
-             *[str(root / "Sources/Flux" / path) for path in sources], "-o", str(binary)],
+             str(controller), *[str(root / "Sources/Flux" / path) for path in sources[1:]], "-o", str(binary)],
             90, args.output / "build.log")
     if args.compile_only:
         return
@@ -603,7 +620,9 @@ extension EnvironmentValues {
             scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
                          ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
                          ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
-                         ("busy", "hidden", "busy", None), ("inventory-cancel", "hidden", "inventory-cancel", None)]
+                         ("busy", "hidden", "busy", None), ("inventory-cancel", "hidden", "inventory-cancel", None),
+                         ("screen-unchanged", "hidden", "screen-unchanged", "hidden"),
+                         ("screen-change", "shown", "screen-change", None)]
             for index, (label, target, kind, expected) in enumerate(scenarios):
                 if args.case not in ("all", label):
                     continue
@@ -627,6 +646,8 @@ extension EnvironmentValues {
                     raise RuntimeError(f"{target}/{kind}: commits={actual}; events={state['events'][offset:]}")
                 if state["ownTaps"] or state["extraWindows"]:
                     raise RuntimeError("Settings drag installed global capture or an extra window")
+                if kind.startswith("screen-") and kind + " notified" not in events:
+                    raise RuntimeError("screen notification was not delivered during the drag")
                 if kind == "inventory-cancel":
                     state = read_state(state_path, probe_process, lambda value: value["sourceIDs"] == value["managerIDs"])
                     if "fixed|0" not in state["sourceIDs"]:
