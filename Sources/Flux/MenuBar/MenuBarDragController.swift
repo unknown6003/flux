@@ -7,6 +7,7 @@ final class MenuBarDragController: ObservableObject {
     static let pasteboardType = NSPasteboard.PasteboardType("com.bdwy.flux.menu-bar-icon")
 
     @Published private(set) var message: String?
+    @Published private(set) var isDragging = false
     var trace: ((String) -> Void)?
 
     private weak var manager: MenuBarIconManager?
@@ -50,8 +51,6 @@ final class MenuBarDragController: ObservableObject {
         manager = nil
         settingsWindow = nil
     }
-
-    var isDragging: Bool { active != nil }
 
     func refreshIcons() {
         guard active == nil, !updatingIcons else { return }
@@ -110,6 +109,7 @@ final class MenuBarDragController: ObservableObject {
         message = nil
         let token = UUID().uuidString
         active = (token, current, identity)
+        isDragging = true
         let writer = NSPasteboardItem()
         writer.setString(token, forType: Self.pasteboardType)
         let item = NSDraggingItem(pasteboardWriter: writer)
@@ -131,7 +131,10 @@ final class MenuBarDragController: ObservableObject {
         cancel()
     }
 
-    private func cancel() { active = nil }
+    private func cancel() {
+        active = nil
+        if isDragging { isDragging = false }
+    }
 
     private var canManage: Bool {
         guard let settingsWindow, let manager else { return false }

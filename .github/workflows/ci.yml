@@ -243,6 +243,22 @@ jobs:
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
 
+      - name: Compare baseline and current runtime work
+        timeout-minutes: 6
+        run: python3 Scripts/probe_performance.py --baseline-ref f286253 --repeats 3 --native-scan --output build/performance/paired
+
+      - name: Check saved-layout drawer response
+        timeout-minutes: 4
+        run: python3 Scripts/probe_drawer_response.py
+
+      - name: Upload performance measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: performance
+          path: build/performance/
+          if-no-files-found: warn
+
       - name: Self-test
         run: ./build/Flux.app/Contents/MacOS/Flux --selftest
 
