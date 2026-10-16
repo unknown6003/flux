@@ -259,6 +259,7 @@ class MenuBarDragDestinationView: NSView {
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = acceptsDrops && controller?.accepts(sender) == true
+        controller?.trace?("updated \(section.rawValue) valid=\(targeted) scroll=\(enclosingScrollView != nil)")
         if targeted, let scroll = enclosingScrollView {
             let clip = scroll.contentView
             let point = clip.convert(sender.draggingLocation, from: nil)
@@ -268,6 +269,7 @@ class MenuBarDragDestinationView: NSView {
             if bounds != clip.bounds {
                 clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
                 scroll.reflectScrolledClipView(clip)
+                controller?.trace?("scroll point=\(point) requested=\(bounds) actual=\(clip.bounds)")
             }
         }
         return targeted ? .move : []
