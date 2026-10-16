@@ -163,6 +163,10 @@ jobs:
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
 
+      - name: Measure clipboard image decoding
+        timeout-minutes: 4
+        run: python3 Scripts/probe_clipboard_images.py --out build/performance/clipboard-images
+
       - name: Compare baseline and current runtime work
         timeout-minutes: 6
         run: python3 Scripts/probe_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 3 --native-scan --output build/performance/paired
@@ -170,6 +174,10 @@ jobs:
       - name: Measure full app idle and Settings workloads
         timeout-minutes: 12
         run: python3 Scripts/probe_app_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 2 --seconds 5 --output build/performance/app
+
+      - name: Check disabled feature startup IO
+        timeout-minutes: 6
+        run: python3 Scripts/probe_idle_resources.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --output build/performance/feature-off
 
       - name: Check saved-layout drawer response
         timeout-minutes: 4

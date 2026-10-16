@@ -570,7 +570,7 @@ final class MenuBarIconManager: ObservableObject {
     func move(_ icon: Icon, to insertion: Insertion,
               accepting: @escaping (Icon) -> Bool = { _ in true }) -> Bool {
         guard !isPostingDrag else { return false }
-        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: insertion, accepting: accepting) }) { return true }
+        if deferMoveUntilMenuCloses({ [weak self] in _ = self?.move(icon, to: insertion, accepting: accepting) }) { return true }
         guard insertion.section != .alwaysHidden || alwaysHiddenEnabledProvider(),
               let icon = refreshedIcon(icon), accepting(icon) else { return false }
         let siblings = icons.filter { $0.section == insertion.section && $0.id != icon.id }

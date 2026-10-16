@@ -195,7 +195,7 @@ func make(width: Int, height: Int, alpha: Bool, window: Bool) -> CGImage {
     }
     if window && alpha {
         fill(CGRect(x: CGFloat(width - winW) / 2, y: CGFloat(height - winH) / 2,
-                    width: winW, height: winH), (0, 0, 0), 0)
+                    width: CGFloat(winW), height: CGFloat(winH)), (0, 0, 0), 0)
     }
     context.setBlendMode(.normal)
     guard let image = context.makeImage() else { fail("no image") }
