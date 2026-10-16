@@ -25,7 +25,11 @@ final class MenuBarDragController: ObservableObject {
         self.manager = manager
         settingsWindow = window
         updateObservation = manager.$isUpdatingIcons.sink { [weak self] updating in
-            MainActor.assumeIsolated { self?.updatingIcons = updating }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.updatingIcons = updating
+                if updating, self.active == nil, self.message != nil { self.message = nil }
+            }
         }
         let center = NotificationCenter.default
         for name in [NSApplication.didResignActiveNotification, NSApplication.willTerminateNotification,

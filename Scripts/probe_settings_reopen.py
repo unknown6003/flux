@@ -14,9 +14,9 @@ inert dependencies. No TCC calls, status items, app install or saved preferences
 
 Reopen requests the SAME tab on the SAME controller. Window and hosting-controller
 identity must survive that reopen. The later General/Menu Bar discriminator uses
-the public show(tab:) API, which may replace the hosting controller by design.
-It does not click the sidebar. Failures from reopen remain failures even if the
-discriminator restores management. Baseline failure is evidence, not an assumed
+the public show(tab:) API.
+It does not click the sidebar. Every tab request must retain the same hosting
+controller. Failures from reopen remain failures if a later tab request recovers. Baseline failure is evidence, not an assumed
 result: SwiftUI may deliver fresh appearance callbacks on a given macOS version.
 
 --controller-ref reads the controller and its matching SettingsView from git,

@@ -189,7 +189,7 @@ All listed image files were downloaded from a first-party source with bounded cu
 | `dato-main.jpg` | [Dato screenshot 1](https://sindresorhus.com/dato/screenshot1.jpg) | Compact native popover. Historical 2023 example content. |
 | `dato-event-menu.jpg` | [Dato screenshot 4](https://sindresorhus.com/dato/screenshot4.jpg) | Named menu commands and key equivalents. Historical 2023 example content. |
 
-`source-downloads.json` preserves the exact download URLs, including the Apple CDN image URLs. `asset-manifest.json` records byte sizes and SHA-256 hashes. HTML and pinned Swift files in the same folder preserve what was read.
+Two key images, `ice-layout.png` and `barbee-screen2.webp`, are kept in `docs/research/menu-bar-references`. The other downloads remain in the local research cache at `/tmp/flux-menu-research`. `source-downloads.json` preserves exact URLs. `asset-manifest.json` records sizes and hashes for the downloaded images. No reference asset is bundled in Flux.
 
 The attempted `hidden-preferences.png` URL returned 404. The real README assets are `screen1.png` and `screen2.png`. No missing image is used as evidence. The web reader could not fetch Ice's large layout image, so curl downloaded it and view_image inspected the local file.
 

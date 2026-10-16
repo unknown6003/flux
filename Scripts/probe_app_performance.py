@@ -148,7 +148,7 @@ def wait_state(path, process, check, seconds=20):
     raise RuntimeError(f"app state deadline, last state {last}")
 
 
-def measure(binary, directory, seconds):
+def measure(binary, directory, seconds, cycles):
     directory.mkdir()
     with (directory / "app.log").open("w") as log:
         process = subprocess.Popen([str(binary), str(directory)], stdout=log, stderr=subprocess.STDOUT,
@@ -177,7 +177,16 @@ def measure(binary, directory, seconds):
                 raise RuntimeError("retained Menu Bar Settings window did not reopen")
             result["settings_reopened"] = sample_process(process.pid, seconds)
             command("close")
-            result["drawer_calls"] = [command("drawer") for _ in range(10)]
+            result["settings_cycles"] = []
+            for cycle in range(cycles):
+                opened = command("settings")
+                closed = command("close")
+                if not opened["settingsVisible"] or closed["settingsVisible"]:
+                    raise RuntimeError(f"Settings lifecycle failed at cycle {cycle + 1}")
+                result["settings_cycles"].append({"cycle": cycle + 1, "open_ms": opened["milliseconds"],
+                                                  "close_ms": closed["milliseconds"]})
+            result["after_cycles"] = sample_process(process.pid, seconds)
+            result["drawer_calls"] = [command("drawer") for _ in range(100)]
             command("quit")
             process.wait(timeout=5)
             if process.returncode:
@@ -192,6 +201,7 @@ def main():
     parser.add_argument("--baseline-ref", default="f286253")
     parser.add_argument("--output", type=Path, default=ROOT / "build/performance/app")
     parser.add_argument("--seconds", type=int, choices=range(3, 31), default=5)
+    parser.add_argument("--cycles", type=int, choices=range(1, 101), default=50)
     parser.add_argument("--repeats", type=int, choices=range(1, 4), default=2)
     args = parser.parse_args()
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
@@ -200,7 +210,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     baseline = run(["git", "rev-parse", "--verify", "--end-of-options", args.baseline_ref + "^{commit}"], 10).strip()
     candidate = run(["git", "rev-parse", "HEAD"], 10).strip()
-    report = {"baseline": baseline, "candidate": candidate, "seconds_per_state": args.seconds,
+    report = {"baseline": baseline, "candidate": candidate, "seconds_per_state": args.seconds, "settings_cycles_per_round": args.cycles,
               "samples": {"baseline": [], "candidate": []},
               "boundary": "main process CPU/RSS, real Settings and default services; controlled copies with file driver",
               "status": "running"}
@@ -217,7 +227,7 @@ def main():
                 stack.enter_context(accessibility_grant(bundle_id))
             for iteration in range(args.repeats):
                 for label in (("baseline", "candidate") if iteration % 2 == 0 else ("candidate", "baseline")):
-                    report["samples"][label].append(measure(binaries[label], output / f"{label}-{iteration}", args.seconds))
+                    report["samples"][label].append(measure(binaries[label], output / f"{label}-{iteration}", args.seconds, args.cycles))
                     save()
         report["status"] = "measured"
     except BaseException as error:
