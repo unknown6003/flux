@@ -39,6 +39,17 @@ final class MenuBarIconManager: ObservableObject {
         let isMovable: Bool
         let frame: CGRect
     }
+    struct Insertion: Equatable {
+        let section: MenuBarSection
+        let before: Icon?
+        let after: Icon?
+        func matches(_ siblings: [Icon]) -> Bool {
+            let index = before.flatMap { next in siblings.firstIndex(of: next) } ?? siblings.count
+            return (index < siblings.count ? siblings[index] : nil) == before
+                && (index > 0 ? siblings[index - 1] : nil) == after
+        }
+    }
+    var insertions: [[String: String]] = []
     @Published var icons: [Icon] = []
     var stale = false
     var extra = false
@@ -97,6 +108,11 @@ final class MenuBarIconManager: ObservableObject {
         }
         icons.sort { $0.title == "Flux drag fixture" && $1.title != "Flux drag fixture" }
     }
+    func move(_ icon: Icon, to insertion: Insertion) {
+        insertions.append(["source": icon.id, "section": insertion.section.rawValue,
+                           "before": insertion.before?.id ?? "", "after": insertion.after?.id ?? ""])
+        move(icon, to: insertion.section)
+    }
     func move(_ icon: Icon, to destination: MenuBarSection) {
         beginVerification(after: 0.45)
         assignments[icon.id] = destination
@@ -127,8 +143,12 @@ func fixture(seconds: Double, emptyTitle: Bool) {
     a.button?.title = "FXD"
     a.button?.setAccessibilityTitle(emptyTitle ? "" : "Flux drag fixture")
     if emptyTitle { a.button?.setAccessibilityLabel("Flux drag fixture") }
+    let b = NSStatusBar.system.statusItem(withLength: 36)
+    b.button?.title = "FX2"
+    b.button?.setAccessibilityTitle("Second fixture")
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
         NSStatusBar.system.removeStatusItem(a)
+        NSStatusBar.system.removeStatusItem(b)
         exit(0)
     }
     NSApp.run()
@@ -211,12 +231,12 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 break
             }
         }
-        guard revealed else { fail("drag did not scroll to the offscreen Always Hidden lane") }
+        guard revealed else { fail("drag did not scroll horizontally to the first icon") }
         mouse(.leftMouseDragged, target)
     }
     Thread.sleep(forTimeInterval: 0.15)
     if !command && kind != "late-command" && kind != "busy" && destination != "invalid" {
-        let section = destination.replacingOccurrences(of: "-header", with: "")
+        let section = String(destination.split(separator: "-").first!)
         let valid = kind != "disabled"
         guard waitFor({ $0.contains("entered \(section) valid=\(valid)") }) else {
             fail("destination never accepted the session")
@@ -278,12 +298,18 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         var targets: [String: [Double]] = ["invalid": [30, 650]]
         var scrollTarget: [Double] = []
         for lane in lanes {
-            targets[lane.section.rawValue] = center(lane, x: lane.bounds.width - 12, y: lane.bounds.height - 12)
+            targets[lane.section.rawValue] = center(lane, x: lane.bounds.width - 12, y: 55)
             targets[lane.section.rawValue + "-header"] = center(lane, x: 30, y: 16)
-            let visible = lane.visibleRect.intersection(lane.bounds)
-                .intersection(lane.convert(window.contentView!.bounds, from: window.contentView!))
-            if lane.section == .alwaysHidden, !visible.isNull, visible.height >= 60 {
-                scrollTarget = center(lane, x: visible.midX, y: visible.midY)
+            if lane.section == .shown {
+                let cells = self.views(lane).compactMap { $0 as? MenuBarDragSourceView }
+                let others = cells.filter { $0 !== source }.sorted { $0.frame.minX < $1.frame.minX }
+                if let neighbor = others.last(where: { $0.icon?.isMovable == true }) {
+                    targets["shown-before"] = center(neighbor, x: neighbor.bounds.width * 0.25)
+                    targets["shown-after"] = center(neighbor, x: neighbor.bounds.width * 0.75)
+                }
+                if let first = others.first, first.visibleRect.width >= 24 {
+                    scrollTarget = center(first, x: first.bounds.width * 0.25)
+                }
             }
         }
         var tapCount: UInt32 = 0
@@ -296,7 +322,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "ready": configured && source != nil && lanes.count == 3 && NSApp.isActive && window.isKeyWindow,
             "row": source.map { center($0, x: $0.bounds.width * 0.7) } ?? [],
             "sourceWidth": Double(source?.bounds.width ?? 0), "targets": targets,
-            "scrollEdge": clip.map { center($0, y: $0.isFlipped ? $0.bounds.maxY - 12 : $0.bounds.minY + 12) } ?? [],
+            "scrollEdge": clip.map { center($0, x: $0.bounds.minX + 8) } ?? [],
             "scrollTarget": scrollTarget,
             "laneAncestors": ancestors,
             "nativeScrollViews": all.filter { $0 is NSScrollView }.count,
@@ -304,13 +330,14 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "usableScreen": NSStringFromRect(window.screen?.visibleFrame ?? .zero),
             "sourceIDs": sources.compactMap { $0.icon?.id }.sorted(),
             "managerIDs": manager.icons.map(\.id).sorted(),
-            "menu": lanes.flatMap(\.subviews).compactMap { $0 as? NSPopUpButton }.first(where: \.isEnabled).map { center($0) } ?? [],
+            "menu": source.map { center($0) } ?? [],
+            "insertions": manager.insertions,
+            "sourceID": source?.icon?.id ?? "",
+            "neighborID": sources.first { $0.icon?.title == "Second fixture" }?.icon?.id ?? "",
             "events": events, "commits": commits,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
-            "focusedMenu": (window.firstResponder as? NSPopUpButton).map {
-                $0.isEnabled && $0.superview is MenuBarIconLaneView
-            } ?? false,
+            "focusedMenu": (window.firstResponder as? MenuBarDragSourceView)?.icon?.isMovable == true,
             "keyboardAccess": NSApp.isFullKeyboardAccessEnabled,
             "firstResponder": String(describing: window.firstResponder).prefix(300).description,
             "frontmost": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none",
@@ -339,7 +366,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         settings.showAlwaysHiddenSection = true
         if CommandLine.arguments.contains("--scroll") { manager.extraRows = 40 }
         if CommandLine.arguments.contains("--disabled-populated") {
-            manager.assignments["com.flux.menu-drag-fixture|0"] = .alwaysHidden
+            manager.refresh()
+            if let icon = manager.icons.first(where: { $0.title == "Flux drag fixture" }) {
+                manager.assignments[icon.id] = .alwaysHidden
+            }
         }
         let usable = NSScreen.main!.visibleFrame
         window = NSWindow(contentRect: NSRect(x: 80, y: 90, width: 620, height: min(620, usable.height - 40)),
@@ -425,10 +455,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         settings.showAlwaysHiddenSection = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             let all = self.views(self.window.contentView!)
-            guard let popup = all.compactMap({ $0 as? NSPopUpButton }).first(where: {
-                $0.isEnabled && $0.superview is MenuBarIconLaneView
-            }),
-                  let menu = popup.menu,
+            guard let source = all.compactMap({ $0 as? MenuBarDragSourceView }).first(where: {
+                $0.icon?.title == "Flux drag fixture"
+            }), let menu = source.menu,
                   let item = menu.items.first(where: { $0.title == "Always Hidden" }), !item.isEnabled,
                   let hidden = menu.items.first(where: { $0.title == "Hidden" }), hidden.isEnabled else {
                 print("FAIL: disabled Always Hidden is an active Move destination"); exit(11)
@@ -483,7 +512,7 @@ func menuKey(_ code: CGKeyCode) {
                    state["focusedMenu"] as? Bool == true { focused = true; break }
             }
             guard focused else {
-                print("FAIL: Tab did not reach an enabled Move popup")
+                print("FAIL: Tab did not reach a movable icon")
                 print((try? String(contentsOfFile: args[2], encoding: .utf8)) ?? "missing state")
                 exit(12)
             }
@@ -586,7 +615,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
-                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close"))
+                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close", "insert-before", "insert-after"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -652,20 +681,22 @@ extension MenuBarDragController {
                     processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
             probe_process = processes[-1]
             state = read_state(state_path, probe_process)
-            if state["sourceWidth"] < 180 or state["ownTaps"] or state["extraWindows"]:
+            if not 40 <= state["sourceWidth"] <= 44 or state["ownTaps"] or state["extraWindows"]:
                 raise RuntimeError(f"wrong drag area or unexpected global capture: {state}")
             if args.empty_title and not state["emptyTitle"]:
                 raise RuntimeError("empty AX title fallback was not exercised")
             started = time.monotonic()
             if args.case == "scroll":
                 if state["scrollTarget"]:
-                    raise RuntimeError("scroll fixture did not put the destination below the viewport")
-                bounded([str(binary), "--drive", str(state_path), "row", "alwaysHidden", "scroll"], 13,
+                    raise RuntimeError("scroll fixture did not overflow the horizontal strip")
+                bounded([str(binary), "--drive", str(state_path), "row", "shown", "scroll"], 13,
                         args.output / "scroll.log")
                 state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
-                if state["commits"] != ["alwaysHidden"]:
-                    raise RuntimeError("offscreen lane drop did not request Always Hidden exactly once")
-                results.append("PASS drag scrolls a 41-item editor to an offscreen destination")
+                if state["commits"] != ["shown"]:
+                    raise RuntimeError("horizontal overflow drop did not request Shown exactly once")
+                if state["insertions"][-1]["before"] != "fixed|0" or state["insertions"][-1]["after"]:
+                    raise RuntimeError("horizontal scroll did not insert before the first icon")
+                results.append("PASS horizontal strip autoscroll reveals the first icon and preserves its insertion target")
             scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
                          ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
                          ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
@@ -701,7 +732,7 @@ extension MenuBarDragController {
                     state = read_state(state_path, probe_process, lambda value: value["sourceIDs"] == value["managerIDs"])
                     if "fixed|0" not in state["sourceIDs"]:
                         raise RuntimeError("inventory did not change during the cancelled drag")
-                results.append(f"PASS text-area drag to {target}, {kind}")
+                results.append(f"PASS icon-strip drag to {target}, {kind}")
             if args.case in ("all", "menu", "disabled-populated"):
                 # Return to Shown before checking the actual native fallback menu.
                 if args.case != "disabled-populated":
@@ -715,7 +746,7 @@ extension MenuBarDragController {
                     bounded([str(binary), "--drive", str(state_path), "row", "alwaysHidden", "disabled"], 8,
                             args.output / "disabled-drop.log")
                     state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["buttons"])
-                    if len(state["commits"]) != before or "com.flux.menu-drag-fixture|0" not in state["sourceIDs"]:
+                    if len(state["commits"]) != before or state["sourceID"] not in state["sourceIDs"]:
                         raise RuntimeError("disabled populated lane accepted a drop or lost its item")
                 bounded([str(binary), "--menu", str(state_path)], 8, args.output / "menu-click.log")
                 state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
@@ -739,6 +770,24 @@ extension MenuBarDragController {
                     raise RuntimeError(f"keyboard {label} requested {state['commits'][before:]}")
                 state = read_state(state_path, probe_process, lambda value: not value["busy"])
                 results.append(f"PASS keyboard-only Move {expected}")
+            for label, side in (("insert-before", "before"), ("insert-after", "after")):
+                if args.case not in ("all", label):
+                    continue
+                bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
+                        args.output / (label + "-setup.log"))
+                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
+                before = len(state["insertions"])
+                neighbor = state["neighborID"]
+                moving = state["sourceID"]
+                bounded([str(binary), "--drive", str(state_path), "row", "shown-" + side, "normal"], 8,
+                        args.output / (label + ".log"))
+                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
+                placements = state["insertions"][before:]
+                expected = {"source": moving, "section": "shown", side: neighbor,
+                            "after" if side == "before" else "before": ""}
+                if placements != [expected]:
+                    raise RuntimeError(f"{label} wrong exact insertion request: {placements}, expected {expected}")
+                results.append(f"PASS native strip drop requests the exact slot {side} its neighbor")
             for index, kind in enumerate(("stale", "close")):
                 if args.case not in ("all", kind):
                     continue

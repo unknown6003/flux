@@ -49,7 +49,7 @@ struct MenuBarTab: View {
                 .fixedSize()
                 .accessibilityLabel("Menu bar help")
             }
-            Text("Drag an icon to a section, or use its Move menu. Command-drag in the menu bar to change its order.")
+            Text("Drag between icons to place them. Click an icon for move options, or use Tab and Space.")
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondaryColor)
             if iconManager.isUpdatingIcons {

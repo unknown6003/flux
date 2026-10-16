@@ -16,6 +16,7 @@ final class MenuBarDragController: ObservableObject {
     private var updateObservation: AnyCancellable?
     private var updatingIcons = false
     private var active: (token: String, icon: MenuBarIconManager.Icon, identity: MenuBarDragIdentity)?
+    var draggedIconID: String? { active?.icon.id }
     private struct DisplayGeometry: Equatable {
         let id: UInt32
         let frame: CGRect
@@ -106,7 +107,8 @@ final class MenuBarDragController: ObservableObject {
         return true
     }
 
-    func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection) -> Bool {
+    func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection,
+                     insertion: MenuBarIconManager.Insertion? = nil) -> Bool {
         guard accepts(sender), let pending = active, let manager, AXIsProcessTrusted() else { return false }
         manager.refresh()
         let matches = manager.icons.filter { $0.id == pending.icon.id }
@@ -119,10 +121,20 @@ final class MenuBarDragController: ObservableObject {
             trace?("drop rejected identity")
             return false
         }
+        if let insertion {
+            let siblings = manager.icons.filter { $0.section == section && $0.id != current.id }
+                .sorted { $0.frame.minX < $1.frame.minX }
+            guard insertion.section == section, insertion.matches(siblings) else {
+                cancel()
+                message = "The destination changed during the drag. Try again."
+                return false
+            }
+        }
         cancel()
         message = nil
         trace?("commit \(section.rawValue) \(current.id)")
-        manager.move(current, to: section)
+        if let insertion { manager.move(current, to: insertion) }
+        else { manager.move(current, to: section) }
         return true
     }
 
@@ -194,6 +206,8 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
     }
     private var appImage: NSImage?
     private var down: NSEvent?
+    var canShowMenu: (() -> Bool)?
+    override var acceptsFirstResponder: Bool { icon?.isMovable == true }
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -211,7 +225,44 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
         _ = controller?.begin(icon: icon, in: self, mouseDown: down)
     }
 
-    override func mouseUp(with event: NSEvent) { down = nil }
+    override func mouseUp(with event: NSEvent) {
+        let clicked = down != nil && !event.modifierFlags.contains(.command)
+        down = nil
+        if clicked { showMoveMenu() }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 48:
+            if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(nil) }
+            else { window?.selectNextKeyView(nil) }
+        case 36, 49, 125: showMoveMenu()
+        case 123: window?.selectPreviousKeyView(nil)
+        case 124: window?.selectNextKeyView(nil)
+        default: super.keyDown(with: event)
+        }
+    }
+
+    override func accessibilityPerformPress() -> Bool { showMoveMenu() }
+
+    @discardableResult private func showMoveMenu() -> Bool {
+        guard icon?.isMovable == true, canShowMenu?() == true, let menu else { return false }
+        window?.makeFirstResponder(self)
+        return menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: self)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? { canShowMenu?() == true ? menu : nil }
+
+    override func becomeFirstResponder() -> Bool {
+        scrollToVisible(bounds)
+        needsDisplay = true
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        needsDisplay = true
+        return super.resignFirstResponder()
+    }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         .move
@@ -239,21 +290,17 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let icon else { return }
+        if window?.firstResponder === self {
+            NSColor.keyboardFocusIndicatorColor.setStroke()
+            let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6)
+            ring.lineWidth = 2
+            ring.stroke()
+        }
         let image = appImage ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: nil)
-        image?.draw(in: NSRect(x: 9, y: bounds.midY - 11, width: 22, height: 22))
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        let subtitle = icon.source.flatMap { $0.isEmpty || $0 == icon.title ? nil : $0 }
-        let title = NSRect(x: 40, y: bounds.midY - (subtitle == nil ? 8 : 1), width: max(0, bounds.width - 50), height: 17)
-        (icon.title as NSString).draw(in: title, withAttributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
-        ])
-        if let subtitle {
-            (subtitle as NSString).draw(in: NSRect(x: 40, y: bounds.midY - 16, width: title.width, height: 14), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 10),
-                .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph
-            ])
+        image?.draw(in: NSRect(x: bounds.midX - 11, y: bounds.midY - 11, width: 22, height: 22))
+        if !icon.isMovable {
+            NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil)?
+                .draw(in: NSRect(x: bounds.maxX - 10, y: 3, width: 7, height: 8))
         }
     }
 }
@@ -263,6 +310,9 @@ class MenuBarDragDestinationView: NSView {
     weak var controller: MenuBarDragController?
     var section: MenuBarSection = .shown
     var acceptsDrops = true
+    var insertionAt: ((NSPoint) -> MenuBarIconManager.Insertion?)?
+    var markerAt: ((NSPoint) -> CGFloat)?
+    private var markerX: CGFloat?
     private var targeted = false { didSet { needsDisplay = true } }
 
     override init(frame frameRect: NSRect) {
@@ -274,12 +324,14 @@ class MenuBarDragDestinationView: NSView {
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = acceptsDrops && controller?.accepts(sender) == true
+        markerX = targeted ? markerAt?(convert(sender.draggingLocation, from: nil)) : nil
         controller?.trace?("entered \(section.rawValue) valid=\(targeted)")
         return targeted ? .move : []
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         targeted = acceptsDrops && controller?.accepts(sender) == true
+        markerX = targeted ? markerAt?(convert(sender.draggingLocation, from: nil)) : nil
         controller?.trace?("updated \(section.rawValue) valid=\(targeted) scroll=\(enclosingScrollView != nil)")
         if targeted, let scroll = enclosingScrollView {
             let clip = scroll.contentView
@@ -288,6 +340,10 @@ class MenuBarDragDestinationView: NSView {
             controller?.trace?("viewport point=\(point) bounds=\(bounds) location=\(sender.draggingLocation)")
             if point.y < bounds.minY + 24 { bounds.origin.y -= 18 }
             else if point.y > bounds.maxY - 24 { bounds.origin.y += 18 }
+            if scroll.hasHorizontalScroller {
+                if point.x < bounds.minX + 28 { bounds.origin.x -= 18 }
+                else if point.x > bounds.maxX - 28 { bounds.origin.x += 18 }
+            }
             if bounds != clip.bounds {
                 clip.scroll(to: clip.constrainBoundsRect(bounds).origin)
                 scroll.reflectScrolledClipView(clip)
@@ -299,7 +355,7 @@ class MenuBarDragDestinationView: NSView {
 
     override func wantsPeriodicDraggingUpdates() -> Bool { true }
 
-    override func draggingExited(_ sender: NSDraggingInfo?) { targeted = false }
+    override func draggingExited(_ sender: NSDraggingInfo?) { targeted = false; markerX = nil }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let accepted = acceptsDrops && controller?.accepts(sender) == true
         controller?.trace?("prepared \(section.rawValue) valid=\(accepted)")
@@ -307,7 +363,8 @@ class MenuBarDragDestinationView: NSView {
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         targeted = false
-        let committed = acceptsDrops && controller?.performDrop(sender, to: section) == true
+        let insertion = insertionAt?(convert(sender.draggingLocation, from: nil))
+        let committed = acceptsDrops && controller?.performDrop(sender, to: section, insertion: insertion) == true
         controller?.trace?("performed \(section.rawValue) valid=\(committed)")
         return committed
     }
@@ -320,6 +377,11 @@ class MenuBarDragDestinationView: NSView {
         let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9)
         border.lineWidth = 2
         border.stroke()
+        if let markerX {
+            NSColor.controlAccentColor.setFill()
+            NSBezierPath(roundedRect: NSRect(x: markerX - 1.5, y: 8, width: 3, height: bounds.height - 16),
+                         xRadius: 1.5, yRadius: 1.5).fill()
+        }
     }
 }
 

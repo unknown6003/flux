@@ -22,6 +22,18 @@ final class MenuBarIconManager: ObservableObject {
         var identity: UUID? = nil
     }
 
+    struct Insertion: Equatable {
+        let section: MenuBarSection
+        let before: Icon?
+        let after: Icon?
+
+        func matches(_ siblings: [Icon]) -> Bool {
+            let index = before.flatMap { next in siblings.firstIndex(of: next) } ?? siblings.count
+            return (index < siblings.count ? siblings[index] : nil) == before
+                && (index > 0 ? siblings[index - 1] : nil) == after
+        }
+    }
+
     @Published private(set) var icons: [Icon] = []
     @Published private(set) var isTrusted = false
     @Published private(set) var errorMessage: String?
@@ -551,6 +563,34 @@ final class MenuBarIconManager: ObservableObject {
         move(icon, toX: targetX, expectedSection: section)
     }
 
+    func move(_ icon: Icon, to insertion: Insertion) {
+        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: insertion) }) { return }
+        guard insertion.section != .alwaysHidden || alwaysHiddenEnabledProvider(),
+              let icon = refreshedIcon(icon) else { return }
+        let siblings = icons.filter { $0.section == insertion.section && $0.id != icon.id }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        guard insertion.matches(siblings) else {
+            errorMessage = "The destination changed. Refresh icons and try again."
+            return
+        }
+        let targetX: CGFloat?
+        if let next = insertion.before {
+            targetX = ControlItem.usesMacOS27Model
+                ? next.frame.midX - icon.frame.width / 2 - 4
+                : next.frame.minX - icon.frame.width - 4
+        } else if let previous = insertion.after {
+            targetX = ControlItem.usesMacOS27Model
+                ? previous.frame.midX - icon.frame.width / 2 + 4 : previous.frame.maxX + 4
+        } else {
+            targetX = Self.insertionX(for: insertion.section, iconWidth: icon.frame.width,
+                                     boundaries: boundaryProvider())
+        }
+        guard let targetX else { return }
+        assignedSections[icon.id] = insertion.section
+        move(icon, toX: targetX, expectedSection: insertion.section,
+             allowNativeRetry: false, insertion: insertion)
+    }
+
     func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool {
         guard icon.isMovable else { return false }
         let siblings = icons
@@ -728,7 +768,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection,
-                      allowNativeRetry: Bool = true) {
+                      allowNativeRetry: Bool = true, insertion: Insertion? = nil) {
         let inputGeneration = nativeInputGeneration
         beginIconUpdate()
         pendingMoveCount += 1
@@ -753,7 +793,7 @@ final class MenuBarIconManager: ObservableObject {
                    expectedSection: expectedSection,
                    target: target,
                    retryWithDrag: usedAccessibility || (ControlItem.usesMacOS27Model && allowNativeRetry),
-                   inputGeneration: inputGeneration)
+                   inputGeneration: inputGeneration, insertion: insertion)
     }
 
     private func beginIconUpdate() {
@@ -804,13 +844,13 @@ final class MenuBarIconManager: ObservableObject {
                             target: CGPoint,
                             retryWithDrag: Bool,
                             readAttempts: Int = 0,
-                            inputGeneration: Int) {
+                            inputGeneration: Int, insertion: Insertion? = nil) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self else { return }
             guard !ControlItem.usesMacOS27Model || self.nativeInputIsQuiet() else {
                 self.verifyMove(icon: icon, expectedSection: expectedSection,
                                 target: target, retryWithDrag: retryWithDrag,
-                                readAttempts: readAttempts, inputGeneration: inputGeneration)
+                                readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
                 return
             }
             let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
@@ -823,7 +863,7 @@ final class MenuBarIconManager: ObservableObject {
             guard canCommit() else {
                 self.verifyMove(icon: icon, expectedSection: expectedSection,
                                 target: target, retryWithDrag: retryWithDrag,
-                                readAttempts: readAttempts, inputGeneration: inputGeneration)
+                                readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
                 return
             }
             guard let current = self.icons.first(where: { $0.id == icon.id }) else {
@@ -831,7 +871,7 @@ final class MenuBarIconManager: ObservableObject {
                 if readAttempts < 2 {
                     self.verifyMove(icon: icon, expectedSection: expectedSection,
                                     target: target, retryWithDrag: retryWithDrag,
-                                    readAttempts: readAttempts + 1, inputGeneration: inputGeneration)
+                                    readAttempts: readAttempts + 1, inputGeneration: inputGeneration, insertion: insertion)
                     return
                 }
                 self.finishUnsavedMove(icon)
@@ -840,18 +880,25 @@ final class MenuBarIconManager: ObservableObject {
             let actualSection = Self.section(for: current.frame,
                                              boundaries: self.boundaryProvider())
             self.lastMoveVerification = "id=\(current.id), frame=\(current.frame), actual=\(actualSection.rawValue), expected=\(expectedSection.rawValue), boundaries=\(self.boundaryProvider())"
-            guard actualSection != expectedSection else {
+            let orderMatches = insertion.map { placement in
+                let siblings = self.icons.filter { $0.section == expectedSection }
+                    .sorted { $0.frame.minX < $1.frame.minX }
+                guard let index = siblings.firstIndex(where: { $0.id == current.id }) else { return false }
+                return (index + 1 < siblings.count ? siblings[index + 1].id : nil) == placement.before?.id
+                    && (index > 0 ? siblings[index - 1].id : nil) == placement.after?.id
+            } ?? true
+            guard actualSection != expectedSection || !orderMatches else {
                 if !self.saveLayout(for: current, canCommit: canCommit) {
                     guard canCommit() else {
                         self.verifyMove(icon: icon, expectedSection: expectedSection,
                                         target: target, retryWithDrag: retryWithDrag,
-                                        readAttempts: readAttempts, inputGeneration: inputGeneration)
+                                        readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
                         return
                     }
                     if readAttempts < 2 {
                         self.verifyMove(icon: icon, expectedSection: expectedSection,
                                         target: target, retryWithDrag: retryWithDrag,
-                                        readAttempts: readAttempts + 1, inputGeneration: inputGeneration)
+                                        readAttempts: readAttempts + 1, inputGeneration: inputGeneration, insertion: insertion)
                         return
                     }
                     self.finishUnsavedMove(icon)
@@ -879,7 +926,7 @@ final class MenuBarIconManager: ObservableObject {
                 guard canCommit() else {
                     self.verifyMove(icon: icon, expectedSection: expectedSection,
                                     target: target, retryWithDrag: true,
-                                    readAttempts: readAttempts, inputGeneration: inputGeneration)
+                                    readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
                     return
                 }
                 self.move(fresh, toX: targetX, expectedSection: expectedSection,
@@ -892,7 +939,7 @@ final class MenuBarIconManager: ObservableObject {
             self.verifyMove(icon: icon,
                             expectedSection: expectedSection,
                             target: target,
-                            retryWithDrag: false, inputGeneration: inputGeneration)
+                            retryWithDrag: false, inputGeneration: inputGeneration, insertion: insertion)
         }
     }
 

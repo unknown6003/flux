@@ -20,10 +20,7 @@ struct MenuBarIconLane: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MenuBarIconLaneView, context: Context) -> CGSize? {
-        let width = proposal.width ?? 500
-        let columns = width >= 460 ? 2 : 1
-        let rows = max(1, (icons.count + columns - 1) / columns)
-        return CGSize(width: width, height: CGFloat(rows * 46 + 52))
+        CGSize(width: proposal.width ?? 500, height: 88)
     }
 }
 
@@ -31,94 +28,128 @@ struct MenuBarIconLane: NSViewRepresentable {
 final class MenuBarIconLaneView: MenuBarDragDestinationView {
     private var icons: [MenuBarIconManager.Icon] = []
     private weak var manager: MenuBarIconManager?
-    private var alwaysHiddenEnabled = true
+    private let scroll = NSScrollView()
+    private let strip = MenuBarDragDestinationView()
+    private var sources: [MenuBarDragSourceView] = []
     override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.documentView = strip
+        addSubview(scroll)
+        insertionAt = { [weak self] point in
+            guard let self else { return nil }
+            return self.insertion(at: self.strip.convert(point, from: self))
+        }
+        strip.insertionAt = { [weak self] point in self?.insertion(at: point) }
+        strip.markerAt = { [weak self] point in self?.marker(at: point) ?? 12 }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func configure(controller: MenuBarDragController, manager: MenuBarIconManager,
                    section: MenuBarSection, icons: [MenuBarIconManager.Icon], alwaysHiddenEnabled: Bool) {
         self.controller = controller
         self.manager = manager
         self.section = section
+        strip.controller = controller
+        strip.section = section
         acceptsDrops = section != .alwaysHidden || alwaysHiddenEnabled
+        strip.acceptsDrops = acceptsDrops
         guard !controller.isDragging else { return }
-        let changed = self.icons != icons || self.alwaysHiddenEnabled != alwaysHiddenEnabled || subviews.isEmpty
-        self.icons = icons
-        self.alwaysHiddenEnabled = alwaysHiddenEnabled
-        if changed {
-            subviews.forEach { $0.removeFromSuperview() }
-            for icon in icons {
-                let source = controller.makeSourceView(for: icon)
-                source.toolTip = icon.isMovable ? "Drag \(icon.title) to another section" : icon.source
-                source.setAccessibilityElement(true)
-                source.setAccessibilityRole(.image)
-                source.setAccessibilityLabel(icon.isMovable ? "Drag \(icon.title)" : icon.title)
-                addSubview(source)
-                let menu = NSPopUpButton(frame: .zero, pullsDown: true)
-                menu.bezelStyle = .rounded
-                menu.controlSize = .small
-                menu.font = .systemFont(ofSize: 11)
-                menu.addItem(withTitle: icon.isMovable ? "Move" : "Fixed")
-                if icon.isMovable {
-                    for destination in MenuBarSection.allCases {
-                        let item = NSMenuItem(title: destination.displayName,
-                                              action: #selector(moveIcon(_:)), keyEquivalent: "")
-                        item.target = self
-                        item.representedObject = (icon, destination)
-                        item.isEnabled = destination != icon.section && (destination != .alwaysHidden || alwaysHiddenEnabled)
-                        menu.menu?.addItem(item)
-                    }
-                    menu.menu?.addItem(.separator())
-                    for (title, direction) in [("Move left", MenuBarIconManager.MoveDirection.towardDrawer),
-                                               ("Move right", .towardClock)] {
-                        let item = NSMenuItem(title: title, action: #selector(reorderIcon(_:)), keyEquivalent: "")
-                        item.target = self
-                        item.representedObject = (icon, direction)
-                        item.isEnabled = manager.canMove(icon, toward: direction)
-                        menu.menu?.addItem(item)
-                    }
-                }
-                menu.menu?.autoenablesItems = false
-                menu.setAccessibilityLabel("Move \(icon.title)")
-                addSubview(menu)
+        self.icons = icons.sorted { $0.frame.minX < $1.frame.minX }
+        let old = Dictionary(uniqueKeysWithValues: sources.compactMap { source in source.icon.map { ($0.id, source) } })
+        sources.forEach { $0.removeFromSuperview() }
+        sources = self.icons.map { icon in
+            let source = old[icon.id] ?? controller.makeSourceView(for: icon)
+            source.icon = icon
+            source.canShowMenu = { [weak source, weak manager] in
+                manager?.isTrusted == true && manager?.isUpdatingIcons == false
+                    && NSApp.isActive && source?.window?.isKeyWindow == true
             }
-        }
-        for (index, menu) in subviews.compactMap({ $0 as? NSPopUpButton }).enumerated() {
-            menu.isEnabled = !manager.isUpdatingIcons && icons[index].isMovable
+            source.toolTip = [icon.title, icon.source, icon.isMovable ? "Click for move options" : "Fixed system icon"]
+                .compactMap { $0 }.joined(separator: " · ")
+            source.setAccessibilityElement(true)
+            source.setAccessibilityRole(.button)
+            source.setAccessibilityLabel(icon.title)
+            source.setAccessibilityHelp(icon.isMovable ? "Drag to place. Press Space for move options." : "Fixed system icon")
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            for destination in MenuBarSection.allCases {
+                let item = NSMenuItem(title: destination.displayName, action: #selector(moveIcon(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = (icon, destination)
+                item.isEnabled = icon.isMovable && !manager.isUpdatingIcons && destination != icon.section
+                    && (destination != .alwaysHidden || alwaysHiddenEnabled)
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+            for (title, direction) in [("Move left", MenuBarIconManager.MoveDirection.towardDrawer), ("Move right", .towardClock)] {
+                let item = NSMenuItem(title: title, action: #selector(reorderIcon(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = (icon, direction)
+                item.isEnabled = !manager.isUpdatingIcons && manager.canMove(icon, toward: direction)
+                menu.addItem(item)
+            }
+            source.menu = menu
+            strip.addSubview(source)
+            return source
         }
         setAccessibilityElement(false)
-        setAccessibilityLabel("\(section.displayName), \(icons.count) icons. Drop icons here.")
+        setAccessibilityLabel("\(section.displayName), \(icons.count) icons. Drop between icons to place.")
         needsLayout = true
         needsDisplay = true
     }
 
+    private func slot(at point: NSPoint) -> (icons: [MenuBarIconManager.Icon], index: Int) {
+        let available = sources.filter { $0.icon?.id != controller?.draggedIconID }
+        let index = available.firstIndex { point.x < $0.frame.midX } ?? available.count
+        return (available.compactMap(\.icon), index)
+    }
+
+    private func insertion(at point: NSPoint) -> MenuBarIconManager.Insertion {
+        let (icons, index) = slot(at: point)
+        return .init(section: section, before: index < icons.count ? icons[index] : nil,
+                     after: index > 0 ? icons[index - 1] : nil)
+    }
+
+    private func marker(at point: NSPoint) -> CGFloat {
+        let available = sources.filter { $0.icon?.id != controller?.draggedIconID }
+        let index = slot(at: point).index
+        if index < available.count { return available[index].frame.minX }
+        return available.last?.frame.maxX ?? strip.bounds.width - 18
+    }
+
     override func layout() {
         super.layout()
-        let columns = bounds.width >= 460 ? 2 : 1
-        let width = (bounds.width - 20 - CGFloat(columns - 1) * 8) / CGFloat(columns)
-        for index in icons.indices {
-            let x = 10 + CGFloat(index % columns) * (width + 8)
-            let y = 42 + CGFloat(index / columns) * 46
-            subviews[index * 2].frame = NSRect(x: x, y: y, width: max(0, width - 76), height: 40)
-            subviews[index * 2 + 1].frame = NSRect(x: x + width - 76, y: y + 8, width: 76, height: 24)
+        scroll.frame = NSRect(x: 0, y: 28, width: bounds.width, height: 54)
+        let width = max(scroll.contentSize.width, CGFloat(sources.count) * 42 + 24)
+        let atEnd = scroll.contentView.bounds.maxX >= strip.bounds.maxX - 1
+        strip.frame = NSRect(x: 0, y: 0, width: width, height: 54)
+        for (index, source) in sources.enumerated() {
+            source.frame = NSRect(x: width - 12 - CGFloat(sources.count - index) * 42, y: 7, width: 42, height: 40)
         }
+        if atEnd { scroll.contentView.scroll(to: NSPoint(x: max(0, width - scroll.contentSize.width), y: 0)) }
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        let bar = NSRect(x: 0, y: 28, width: bounds.width, height: 54)
         Theme.surfaceRaised.setFill()
-        NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9).fill()
-        Theme.zone(section).setFill()
-        NSBezierPath(ovalIn: NSRect(x: 12, y: 14, width: 7, height: 7)).fill()
-        ((section.displayName + (acceptsDrops ? "" : " (off)")) as NSString).draw(at: NSPoint(x: 26, y: 9), withAttributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: Theme.textPrimary
+        NSBezierPath(roundedRect: bar, xRadius: 9, yRadius: 9).fill()
+        Theme.zone(section).withAlphaComponent(0.08).setFill()
+        NSBezierPath(roundedRect: bar, xRadius: 9, yRadius: 9).fill()
+        ((section.displayName + (acceptsDrops ? "" : " (off)")) as NSString).draw(at: NSPoint(x: 2, y: 5), withAttributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: Theme.textPrimary
         ])
-        ("\(icons.count)" as NSString).draw(at: NSPoint(x: bounds.width - 28, y: 9), withAttributes: [
+        ("\(icons.count)" as NSString).draw(at: NSPoint(x: bounds.width - 25, y: 5), withAttributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: Theme.textSecondary
         ])
-        (section.subtitle as NSString).draw(at: NSPoint(x: 26, y: 27), withAttributes: [
-            .font: NSFont.systemFont(ofSize: 10), .foregroundColor: Theme.textSecondary
-        ])
         if icons.isEmpty {
-            ("Drop icons here" as NSString).draw(at: NSPoint(x: 26, y: 63), withAttributes: [
+            ("Drop icons here" as NSString).draw(at: NSPoint(x: 16, y: 48), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 11), .foregroundColor: Theme.textSecondary
             ])
         }
@@ -126,11 +157,13 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
     }
 
     @objc private func moveIcon(_ sender: NSMenuItem) {
+        guard manager?.isUpdatingIcons == false else { return }
         guard let (icon, section) = sender.representedObject as? (MenuBarIconManager.Icon, MenuBarSection) else { return }
         manager?.move(icon, to: section)
     }
 
     @objc private func reorderIcon(_ sender: NSMenuItem) {
+        guard manager?.isUpdatingIcons == false else { return }
         guard let (icon, direction) = sender.representedObject as? (MenuBarIconManager.Icon, MenuBarIconManager.MoveDirection) else { return }
         manager?.move(icon, toward: direction)
     }
