@@ -90,14 +90,22 @@ jobs:
                                 180, capture=True)
                       (source / 'update-prelude.log').write_text(log)
                   for case in item['cases']:
-                      budget = 180 if case == 'all' else 130
+                      budget = 240 if case == 'clipboard-images' else 180 if case == 'all' else 130
                       if time.monotonic() + budget > deadline:
                           raise RuntimeError('native drag plan reached its overall deadline')
                       try:
-                          log = run(['python3', str(source / 'Scripts/probe_menu_drag.py'),
-                                     '--output', str(source / case), '--case', case,
-                                     '--seconds', '55' if case == 'all' else '25'] + (['--empty-title'] if item.get('empty_title') else []),
-                                    budget, capture=True)
+                          if case == 'clipboard-images':
+                              command = ['python3', str(source / 'Scripts/probe_clipboard_images.py'),
+                                         '--out', str(source / case)]
+                          elif case in ('native-move', 'native-move-baseline'):
+                              command = ['python3', str(source / 'Scripts/probe_icons.py')]
+                              if case == 'native-move-baseline':
+                                  command += ['--manager-ref', '6fde90817068d06ecfae8eb6ec85c19e68af997b']
+                          else:
+                              command = ['python3', str(source / 'Scripts/probe_menu_drag.py'),
+                                         '--output', str(source / case), '--case', case,
+                                         '--seconds', '55' if case == 'all' else '25'] + (['--empty-title'] if item.get('empty_title') else [])
+                          log = run(command, budget, capture=True)
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'

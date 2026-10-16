@@ -251,14 +251,8 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchMirrorEnabled, forKey: Keys.notchMirrorEnabled) }
     }
 
-    /// Whether `ClipboardMonitor` collects clipboard history at all. Defaults
-    /// to `false`, unlike every other notch-suite toggle — clipboard content
-    /// routinely includes passwords and other sensitive text a user only
-    /// meant to paste once, so history collection is opt-in rather than
-    /// on-by-default the way a glanceable widget normally would be. Also
-    /// gates the Clipboard widget's own enabled state (see `AppDelegate`'s
-    /// wiring) — there's no reason to show an empty history widget when
-    /// collection itself is off.
+    /// Enables clipboard collection and its widget. New profiles default to on.
+    /// Saved user choices still take precedence over factory defaults.
     @Published var notchClipboardEnabled: Bool {
         didSet { defaults.set(notchClipboardEnabled, forKey: Keys.notchClipboardEnabled) }
     }
@@ -296,12 +290,8 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notchSoundHUDEnabled, forKey: Keys.notchSoundHUDEnabled) }
     }
 
-    /// EXPERIMENTAL — master on/off for `LockScreenPresenter`'s notch
-    /// silhouette on the macOS lock screen. Defaults to `false`: this rides
-    /// on undocumented lock-screen notification names and drawing above the
-    /// lock screen's own shield window level (see that type's own doc
-    /// comment on why), so it's opt-in rather than on-by-default like the
-    /// rest of the notch suite.
+    /// Enables Lock Screen presentation for new profiles. The presenter is
+    /// created on first enable and stays stopped while this setting is off.
     @Published var notchLockScreenExperimentEnabled: Bool {
         didSet { defaults.set(notchLockScreenExperimentEnabled, forKey: Keys.notchLockScreenExperimentEnabled) }
     }
