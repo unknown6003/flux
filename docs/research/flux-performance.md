@@ -4,9 +4,24 @@ Outcome: reduce repeat AX work and repeat state updates without changing icon mo
 
 Proof: run `Scripts/probe_performance.py` against the fixed baseline and the candidate on the same Mac. Use the native behavioral probes for correctness.
 
-Constraints: this worker owns the two inventory and hiding files, Services, this report, and the new performance script. The parent owns Settings, drag controller, CI, and release work.
+Constraints: keep native icon move timing, saved layouts and privacy access intact. Native checks run on the disposable macOS CI desktop. The parallel release thread owns drop spacing and the Hider's background access diagnostic callback. Integration stays serial.
 
-## Current evidence
+## Native CI evidence
+
+The paired runtime check passed on macOS 27.0.1 arm64 at `ce3d377` in [run 38847975225](https://github.com/unknown6003/flux/actions/runs/38847975225). The raw result is retained in `flux-performance-first-pair.json`.
+
+- Thirty controlled failed-clock lookups made thirty AX-boundary attempts in the baseline and one in the candidate, in all three alternating rounds. The fixture injects a 2 ms delay. This proves 97% fewer attempts during that burst, not a whole-app speedup. Expiry retries and successful cache reads also passed.
+- One hundred unchanged denied-access refreshes published inventory, trust and error one hundred times each in the baseline and zero times in the candidate. Both retained two hundred busy-state publications. Stale inventory still clears on denial.
+- One hundred unchanged denied Calendar refreshes published one hundred times in the baseline and zero times in the candidate.
+- The first native inventory scan ran with an empty inventory. Its small timing difference does not establish a useful scan speedup. The current fixture launches twelve real status items and requires both builds to read all twelve.
+
+[Run 38849139917](https://github.com/unknown6003/flux/actions/runs/38849139917) completed both alternating full-app resource rounds at `0104341`, including fifty Settings open, General, Menu Bar and close cycles per round. The candidate retained its hosting controller in all one hundred cycles. The baseline replaced it in all one hundred. CPU and RSS samples cover the main process only. The tab timing gate in that version checked window readiness but did not prove the requested content had rendered. Those tab timings must not be used as a latency claim.
+
+The current full-app probe adds the same native rendered-tab marker to both temporary source builds. It requires the requested tab's visible, completed layout and a display flush. A deliberately skipped General navigation must fail this gate after ten seconds. This proof and the twelve-icon workload must pass before final numbers are reported.
+
+Hardware feature loads, real media playback, helper-process costs, GPU presentation, long sessions and slow third-party AX servers remain outside these measurements. The source still has a 150 ms timed native Command-drag sequence. It needs separate tracing before its timing can change.
+
+## Baseline capture
 
 The baseline is `f286253671eae213e7d8f419aea2cb4b6210049b`. Before changing production code, the worker ran:
 
@@ -85,4 +100,4 @@ The parent must also run the normal native build, self-test, icon movement and o
 - A short forced timeout stops the probe command group.
 - `git diff --check` passes.
 
-Swift compilation and all native fixture assertions remain unrun. Flux idle CPU, RSS, wakeups, Settings latency, native scan latency, hide and reveal screen latency, drag responsiveness, and feature resource use remain unmeasured. No speedup percentage or release-ready performance claim follows from this work yet.
+These were the worker's checks at handoff. The native CI runs above supersede its original runtime blocker. Final-source native checks, the twelve-icon resource run, rendered-tab timings and the signed release artifact are still required. No app-wide speedup or perfect-reliability claim follows from the controlled publication and clock results.
