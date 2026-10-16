@@ -55,7 +55,6 @@ final class ShelfWidget: NotchWidget {
     /// tidiness/polish. Sweeping first means an about-to-be-swept item never
     /// gets a thumbnail generated for it needlessly.
     func willPresent() {
-        store.loadIfNeeded()
         store.sweepExpired()
         store.ensureThumbnails()
     }

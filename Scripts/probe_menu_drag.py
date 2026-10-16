@@ -24,6 +24,7 @@ import AppKit
 import ApplicationServices
 import Combine
 import SwiftUI
+import CryptoKit
 
 enum ControlItem { static let usesMacOS27Model = true }
 @MainActor
@@ -319,7 +320,15 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         let result = taps.withUnsafeMutableBufferPointer { CGGetEventTapList(UInt32($0.count), $0.baseAddress, &tapCount) }
         guard result == .success, Int(tapCount) <= taps.count else { exit(10) }
         let ownTaps = taps.prefix(Int(tapCount)).filter { $0.tappingProcess == getpid() }.count
-        let value: [String: Any] = [
+        let glyphs = sources.compactMap { source -> [String: Any]? in
+            guard let icon = source.icon, icon.isMovable,
+                  let image = source.menuBarImage, let data = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: data) else { return nil }
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            return ["id": icon.id, "digest": digest, "width": bitmap.pixelsWide, "height": bitmap.pixelsHigh]
+        }
+        let value: [String: Any] = ["glyphs": glyphs,
+
             "ready": configured && source != nil && lanes.count == 3 && NSApp.isActive && window.isKeyWindow,
             "row": source.map { center($0, x: $0.bounds.width * 0.7) } ?? [],
             "sourceWidth": Double(source?.bounds.width ?? 0), "targets": targets,
@@ -426,6 +435,12 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 if FileManager.default.fileExists(atPath: self.state + ".reset") {
                     try? FileManager.default.removeItem(atPath: self.state + ".reset")
                     self.manager.stale = false
+                    self.manager.refresh()
+                }
+                if FileManager.default.fileExists(atPath: self.state + ".reset-layout") {
+                    try? FileManager.default.removeItem(atPath: self.state + ".reset-layout")
+                    self.manager.assignments.removeAll()
+                    self.manager.extra = false
                     self.manager.refresh()
                 }
                 if FileManager.default.fileExists(atPath: self.state + ".close") {
@@ -616,7 +631,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
     parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
-                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close", "insert-before", "insert-after"))
+                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close", "insert-before", "insert-after", "glyphs"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -648,7 +663,7 @@ extension EnvironmentValues {
         "CFBundleIdentifier": "com.flux.menu-drag-probe", "CFBundleExecutable": binary.name,
         "CFBundleName": "Flux Settings drag probe", "LSUIElement": False,
     }))
-    sources = ["MenuBar/MenuBarDragController.swift", "MenuBar/MenuBarSection.swift",
+    sources = ["MenuBar/MenuBarDragController.swift", "MenuBar/MenuBarIconImages.swift", "MenuBar/MenuBarGeometry.swift", "MenuBar/MenuBarSection.swift",
                "MenuBar/MenuBarIconStyle.swift", "Settings/Tabs/MenuBarTab.swift",
                "Settings/MenuBarIconDropZone.swift", "Settings/SettingsRows.swift", "Support/Theme.swift"]
     controller = args.output / "MenuBarDragController.swift"
@@ -682,7 +697,7 @@ extension MenuBarDragController {
                     processes.append(subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True))
             probe_process = processes[-1]
             state = read_state(state_path, probe_process)
-            if not 40 <= state["sourceWidth"] <= 44 or state["ownTaps"] or state["extraWindows"]:
+            if not 40 <= state["sourceWidth"] <= 60 or state["ownTaps"] or state["extraWindows"]:
                 raise RuntimeError(f"wrong drag area or unexpected global capture: {state}")
             if args.empty_title and not state["emptyTitle"]:
                 raise RuntimeError("empty AX title fallback was not exercised")
@@ -698,6 +713,15 @@ extension MenuBarDragController {
                 if state["insertions"][-1]["before"] != "fixed|0" or state["insertions"][-1]["after"]:
                     raise RuntimeError("horizontal scroll did not insert before the first icon")
                 results.append("PASS horizontal strip autoscroll reveals the first icon and preserves its insertion target")
+            if args.case == "glyphs":
+                state = read_state(state_path, probe_process, lambda value: len(value["glyphs"]) == 2)
+                glyphs = state["glyphs"]
+                if len({value["digest"] for value in glyphs}) != 2 or any(
+                        not 36 <= value["width"] <= 144 or not 16 <= value["height"] <= 128 for value in glyphs):
+                    raise RuntimeError(f"wrong captured menu bar glyphs: {glyphs}")
+                Path(str(state_path) + ".close").touch()
+                state = read_state(state_path, probe_process, lambda value: not value["glyphs"])
+                results.append("PASS actual distinct menu bar glyphs load and their cache clears when Settings closes")
             scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
                          ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
                          ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
@@ -771,12 +795,13 @@ extension MenuBarDragController {
                     raise RuntimeError(f"keyboard {label} requested {state['commits'][before:]}")
                 state = read_state(state_path, probe_process, lambda value: not value["busy"])
                 results.append(f"PASS keyboard-only Move {expected}")
+            if args.case in ("all", "insert-before", "insert-after"):
+                Path(str(state_path) + ".reset-layout").touch()
+                state = read_state(state_path, probe_process, lambda value: len(value["sourceIDs"]) == 2
+                                   and "shown-before" in value["targets"] and not value["busy"])
             for label, side in (("insert-before", "before"), ("insert-after", "after")):
                 if args.case not in ("all", label):
                     continue
-                bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
-                        args.output / (label + "-setup.log"))
-                state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
                 before = len(state["insertions"])
                 neighbor = state["neighborID"]
                 moving = state["sourceID"]

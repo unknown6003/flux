@@ -9,7 +9,7 @@ Proof boundary: compile the unchanged production SettingsWindowController,
 SettingsView and MenuBarTab. Actual NSWindow.performClose and SwiftUI appearance
 callbacks drive an in-memory manager recorder. The recorder reports requested
 management reveal state, not real menu-bar visibility or the production manager's
-permission/hider behavior. Other tabs, services and drag UI are
+permission/hider behavior. Other tabs, services, glyph capture and drag UI are
 inert dependencies. No TCC calls, status items, app install or saved preferences.
 
 Reopen requests the SAME tab on the SAME controller. Window and hosting-controller
@@ -120,7 +120,7 @@ enum PermissionStatus { case notDetermined, granted, denied, restricted, unavail
 @MainActor final class MenuBarIconManager: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     enum MoveDirection { case towardDrawer, towardClock }
-    struct Icon: Identifiable {
+    struct Icon: Identifiable, Equatable {
         let id: Int
         let title: String
         let source: String?
@@ -170,6 +170,14 @@ enum PermissionStatus { case notDetermined, granted, denied, restricted, unavail
     func refreshIcons() {}
     func setMenuBarDragging(_ active: Bool) {}
 }
+@MainActor final class MenuBarIconImages: ObservableObject {
+    let hasAccess = true
+    let message: String? = nil
+    func open(_ icons: [MenuBarIconManager.Icon]) {}
+    func refresh(_ icons: [MenuBarIconManager.Icon], force: Bool = false) {}
+    func close() {}
+    func requestAccess(_ icons: [MenuBarIconManager.Icon]) { fatalError("Probe must not request access") }
+}
 enum ControlItem { static let usesMacOS27Model = true }
 
 struct MenuBarDragSettingsAnchor: NSViewRepresentable {
@@ -181,6 +189,7 @@ struct MenuBarDragSettingsAnchor: NSViewRepresentable {
 struct MenuBarIconLane: NSViewRepresentable {
     let controller: MenuBarDragController
     let manager: MenuBarIconManager
+    let images: MenuBarIconImages
     let section: MenuBarSection
     let icons: [MenuBarIconManager.Icon]
     let alwaysHiddenEnabled: Bool

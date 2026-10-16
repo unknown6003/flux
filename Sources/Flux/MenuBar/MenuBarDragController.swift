@@ -9,6 +9,7 @@ final class MenuBarDragController: ObservableObject {
     @Published private(set) var message: String?
     @Published private(set) var isDragging = false
     var trace: ((String) -> Void)?
+    var onWindowClose: (() -> Void)?
 
     private weak var manager: MenuBarIconManager?
     private weak var settingsWindow: NSWindow?
@@ -67,6 +68,7 @@ final class MenuBarDragController: ObservableObject {
                      NSWindow.didResignKeyNotification] {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
+                    if name == NSWindow.willCloseNotification { self?.onWindowClose?() }
                     self?.trace?("cancel notification=\(name.rawValue)")
                     self?.cancel()
                 }
@@ -205,6 +207,8 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
         }
     }
     private var appImage: NSImage?
+    var imageProvider: (() -> NSImage?)?
+    var menuBarImage: NSImage? { imageProvider?() }
     private var down: NSEvent?
     var moveMenu: (() -> NSMenu?)?
     override var acceptsFirstResponder: Bool { icon?.isMovable == true }
@@ -296,8 +300,14 @@ final class MenuBarDragSourceView: NSView, NSDraggingSource {
             ring.lineWidth = 2
             ring.stroke()
         }
-        let image = appImage ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: nil)
-        image?.draw(in: NSRect(x: bounds.midX - 11, y: bounds.midY - 11, width: 22, height: 22))
+        let image = menuBarImage ?? appImage ?? NSImage(systemSymbolName: "menubar.rectangle", accessibilityDescription: nil)
+        if let image {
+            let size = menuBarImage?.size ?? NSSize(width: 22, height: 22)
+            let scale = min(1, min((bounds.width - 12) / max(1, size.width), 26 / max(1, size.height)))
+            let drawn = NSSize(width: size.width * scale, height: size.height * scale)
+            image.draw(in: NSRect(x: bounds.midX - drawn.width / 2, y: bounds.midY - drawn.height / 2,
+                                 width: drawn.width, height: drawn.height))
+        }
         if !icon.isMovable {
             NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil)?
                 .draw(in: NSRect(x: bounds.maxX - 10, y: 3, width: 7, height: 8))

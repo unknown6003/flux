@@ -62,7 +62,7 @@ jobs:
           from pathlib import Path
           sys.path.insert(0, 'Scripts')
           from probe_hidden_transition import run
-          from probe_tcc import accessibility_grant
+          from probe_tcc import accessibility_grant, screen_capture_grant
           plan = json.loads(os.environ['FLUX_DRAG_PROBE_PLAN'])
           assert isinstance(plan, list) and 0 < len(plan) <= 6
           assert sum(len(item['cases']) for item in plan) <= 12
@@ -76,7 +76,7 @@ jobs:
           output.mkdir(parents=True)
           results = []
           deadline = time.monotonic() + 480
-          with accessibility_grant('com.flux.menu-drag-probe'):
+          with accessibility_grant('com.flux.menu-drag-probe'), screen_capture_grant('com.flux.menu-drag-probe'):
               for item in plan:
                   ref = item['ref']
                   source = output / ref[:8]
@@ -230,19 +230,19 @@ jobs:
 
       - name: Probe real Settings lanes and drag cancellation
         if: ${{ (inputs.menu_bar_probe && !inputs.arrow_probe_only) || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' }}
-        timeout-minutes: 9
+        timeout-minutes: 12
         run: |
           python3 - <<'PY'
           import sys
           sys.path.insert(0, 'Scripts')
           from probe_hidden_transition import run
-          from probe_tcc import accessibility_grant
-          with accessibility_grant('com.flux.menu-drag-probe'):
+          from probe_tcc import accessibility_grant, screen_capture_grant
+          with accessibility_grant('com.flux.menu-drag-probe'), screen_capture_grant('com.flux.menu-drag-probe'):
               run(['python3', 'Scripts/probe_menu_drag.py', '--output',
                    'build/menu-drag-probe', '--seconds', '55'], 170)
               run(['python3', 'Scripts/probe_menu_drag.py', '--output',
                    'build/menu-drag-probe-empty-title', '--seconds', '55', '--empty-title'], 170)
-              for case in ('disabled-populated', 'scroll'):
+              for case in ('disabled-populated', 'scroll', 'glyphs'):
                   run(['python3', 'Scripts/probe_menu_drag.py', '--case', case, '--output',
                        'build/menu-drag-probe-' + case, '--seconds', '25'], 130)
           PY

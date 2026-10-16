@@ -6,6 +6,7 @@ struct MenuBarTab: View {
     @EnvironmentObject private var iconManager: MenuBarIconManager
     @Environment(\.menuBarSnapshotIcons) private var snapshotIcons
     @StateObject private var dragController = MenuBarDragController()
+    @StateObject private var images = MenuBarIconImages()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -26,8 +27,16 @@ struct MenuBarTab: View {
         .padding(20)
         .background(MenuBarDragSettingsAnchor(controller: dragController, manager: iconManager)
             .frame(width: 0, height: 0))
-        .onAppear { if snapshotIcons == nil { iconManager.beginIconManagement() } }
+        .onAppear {
+            dragController.onWindowClose = { [weak images] in images?.close() }
+            if snapshotIcons == nil {
+                iconManager.beginIconManagement()
+                images.open(iconManager.icons)
+            }
+        }
+        .onChange(of: iconManager.icons) { icons in if snapshotIcons == nil { images.refresh(icons) } }
         .onDisappear {
+            images.close()
             dragController.close()
             if snapshotIcons == nil { iconManager.endIconManagement() }
         }
@@ -38,7 +47,10 @@ struct MenuBarTab: View {
             HStack {
                 Text("Organise icons").font(.headline)
                 Spacer()
-                Button { dragController.refreshIcons() } label: {
+                Button {
+                    dragController.refreshIcons()
+                    images.refresh(iconManager.icons, force: true)
+                } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(iconManager.isUpdatingIcons)
@@ -52,19 +64,29 @@ struct MenuBarTab: View {
             Text("Drag between icons to place them. Click an icon for move options, or use Tab and Space.")
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondaryColor)
-            if iconManager.isUpdatingIcons {
-                Label("Checking icon positions…", systemImage: "arrow.triangle.2.circlepath")
+            if snapshotIcons == nil, !images.hasAccess {
+                Button("Show actual menu bar icons…") { images.requestAccess(iconManager.icons) }
                     .font(.caption)
-                    .foregroundStyle(Theme.textSecondaryColor)
+                    .help("Allow Screen Recording to show menu bar images. App icons work without it.")
             }
-            if let message = iconManager.errorMessage ?? dragController.message {
-                Text(message).font(.caption).foregroundStyle(.orange)
+            Group {
+                if iconManager.isUpdatingIcons {
+                    Label("Checking icon positions…", systemImage: "arrow.triangle.2.circlepath")
+                } else if let message = iconManager.errorMessage ?? dragController.message {
+                    Text(message).foregroundStyle(.orange)
+                } else {
+                    Text(images.message ?? " ")
+                }
             }
+            .font(.caption)
+            .foregroundStyle(Theme.textSecondaryColor)
+            .lineLimit(2)
+            .frame(height: 28, alignment: .leading)
             ForEach(MenuBarSection.allCases.filter {
                 $0 != .alwaysHidden || settings.showAlwaysHiddenSection
                     || (snapshotIcons ?? iconManager.icons).contains { $0.section == .alwaysHidden }
             }) { section in
-                MenuBarIconLane(controller: dragController, manager: iconManager, section: section,
+                MenuBarIconLane(controller: dragController, manager: iconManager, images: images, section: section,
                                 icons: (snapshotIcons ?? iconManager.icons).filter { $0.section == section },
                                 alwaysHiddenEnabled: settings.showAlwaysHiddenSection)
             }

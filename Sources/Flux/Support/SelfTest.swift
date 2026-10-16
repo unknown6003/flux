@@ -915,6 +915,16 @@ enum SelfTest {
             check(shelfStore2.items.contains(where: { $0.id == shelfItem2.id && $0.fileName == "world.txt" }),
                   "Shelf: persistence — a fresh ShelfStore on the same directory loads the manifest")
 
+            let deferredShelf = ShelfStore(directory: shelfDirA, deferLoad: true)
+            check(deferredShelf.items.isEmpty,
+                  "Shelf: a deferred store does not restore items before first use")
+            deferredShelf.sweepExpired()
+            check(deferredShelf.items.contains(where: { $0.id == shelfItem2.id }),
+                  "Shelf: first use restores persisted files in a deferred store")
+            deferredShelf.loadIfNeeded()
+            check(deferredShelf.items.count == shelfStore2.items.count,
+                  "Shelf: repeated loading does not duplicate persisted items")
+
             // Reconcile: delete the stored file behind the store's back (as if
             // the user removed it in Finder) — the next instance to load this
             // directory must drop the now-dangling manifest entry.
@@ -933,6 +943,17 @@ enum SelfTest {
         writeShelfStoredFile(for: shelfStaleItem, in: shelfDirExpiry, contents: "stale")
         if let shelfExpiryManifest = try? JSONEncoder().encode([shelfStaleItem]) {
             try? shelfExpiryManifest.write(to: shelfDirExpiry.appendingPathComponent("manifest.json"))
+        }
+        let deferredExpiry = ShelfStore(directory: shelfDirExpiry, deferLoad: true)
+        deferredExpiry.expiryInterval = 60
+        check(deferredExpiry.items.isEmpty && FileManager.default.fileExists(atPath: shelfStaleItem.storedURL(in: shelfDirExpiry).path),
+              "Shelf: setting expiry does not load or remove files before first use")
+        deferredExpiry.loadIfNeeded()
+        check(deferredExpiry.items.isEmpty && !FileManager.default.fileExists(atPath: shelfStaleItem.storedURL(in: shelfDirExpiry).path),
+              "Shelf: the first deferred load applies its configured expiry")
+        writeShelfStoredFile(for: shelfStaleItem, in: shelfDirExpiry, contents: "stale")
+        if let data = try? JSONEncoder().encode([shelfStaleItem]) {
+            try? data.write(to: shelfDirExpiry.appendingPathComponent("manifest.json"))
         }
         let shelfStoreExpiry = ShelfStore(directory: shelfDirExpiry)
         check(shelfStoreExpiry.items.contains(where: { $0.id == shelfStaleItem.id }),
@@ -2764,13 +2785,13 @@ enum SelfTest {
             check(reloadedAppearance.appearance == .light,
                   "SettingsStore: Flux appearance persists across reloads")
             check(m6Settings.notchMirrorEnabled, "SettingsStore: notchMirrorEnabled defaults to true")
-            check(!m6Settings.notchClipboardEnabled,
-                  "SettingsStore: notchClipboardEnabled defaults to false — clipboard history collection is opt-in")
+            check(m6Settings.notchClipboardEnabled,
+                  "SettingsStore: clipboard is enabled for a new profile")
+            check(m6Settings.notchLockScreenExperimentEnabled,
+                  "SettingsStore: Lock Screen is enabled for a new profile")
             check(m6Settings.notchClipboardPersistenceEnabled,
                   "SettingsStore: clipboard persistence defaults to on once clipboard history is enabled")
             check(m6Settings.notchActivityTimerEnabled, "SettingsStore: notchActivityTimerEnabled defaults to true")
-            check(!m6Settings.notchLockScreenExperimentEnabled,
-                  "SettingsStore: notchLockScreenExperimentEnabled (EXPERIMENTAL) defaults to false")
             check(m6Settings.notchWidgetOrder == [WidgetID.nowPlaying.rawValue, WidgetID.shelf.rawValue,
                                                    WidgetID.calendar.rawValue, WidgetID.mirror.rawValue,
                                                    WidgetID.clipboard.rawValue],

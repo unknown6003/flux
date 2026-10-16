@@ -295,7 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// never reads the manifest. Assigning a non-nil interval loads and sweeps.
     private func applyShelfExpiry(notchEnabled: Bool? = nil, shelfEnabled: Bool? = nil) {
         let active = (notchEnabled ?? settings.notchEnabled) && (shelfEnabled ?? settings.notchShelfEnabled)
-        if active { shelfStore.expiryInterval = settings.notchShelfExpiryInterval }
+        shelfStore.expiryInterval = active ? settings.notchShelfExpiryInterval : nil
     }
 
     private func configureClipboardMonitor(notchEnabled: Bool? = nil) {
@@ -473,6 +473,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$notchShelfExpiryDays
             .dropFirst()
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.applyShelfExpiry()
             }

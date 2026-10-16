@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarIconLane: NSViewRepresentable {
     @ObservedObject var controller: MenuBarDragController
     @ObservedObject var manager: MenuBarIconManager
+    @ObservedObject var images: MenuBarIconImages
     let section: MenuBarSection
     let icons: [MenuBarIconManager.Icon]
     let alwaysHiddenEnabled: Bool
@@ -16,7 +17,7 @@ struct MenuBarIconLane: NSViewRepresentable {
 
     func updateNSView(_ view: MenuBarIconLaneView, context: Context) {
         view.configure(controller: controller, manager: manager, section: section,
-                       icons: icons, alwaysHiddenEnabled: alwaysHiddenEnabled)
+                       icons: icons, images: images, alwaysHiddenEnabled: alwaysHiddenEnabled)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MenuBarIconLaneView, context: Context) -> CGSize? {
@@ -53,7 +54,8 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func configure(controller: MenuBarDragController, manager: MenuBarIconManager,
-                   section: MenuBarSection, icons: [MenuBarIconManager.Icon], alwaysHiddenEnabled: Bool) {
+                   section: MenuBarSection, icons: [MenuBarIconManager.Icon], images: MenuBarIconImages,
+                   alwaysHiddenEnabled: Bool) {
         self.controller = controller
         self.manager = manager
         self.section = section
@@ -62,6 +64,8 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         acceptsDrops = section != .alwaysHidden || alwaysHiddenEnabled
         strip.acceptsDrops = acceptsDrops
         guard !controller.isDragging else { return }
+        sources.forEach { $0.needsDisplay = true }
+        needsLayout = true
         self.alwaysHiddenEnabled = alwaysHiddenEnabled
         let ordered = icons.sorted { $0.frame.minX < $1.frame.minX }
         guard self.icons != ordered || sources.isEmpty else { needsDisplay = true; return }
@@ -69,6 +73,7 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         let next = ordered.map { icon -> MenuBarDragSourceView in
             let source = old[icon.id] ?? controller.makeSourceView(for: icon)
             source.icon = icon
+            source.imageProvider = { [weak images] in images?.images[icon.id] }
             source.moveMenu = { [weak self, weak source] in
                 guard let self, let source, let icon = source.icon,
                       self.manager?.isTrusted == true, self.manager?.isUpdatingIcons == false,
@@ -117,11 +122,14 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
     override func layout() {
         super.layout()
         scroll.frame = NSRect(x: 0, y: 28, width: bounds.width, height: 54)
-        let width = max(scroll.contentSize.width, CGFloat(sources.count) * 42 + 24)
+        let widths = sources.map { $0.menuBarImage.map { min(160, max(30, $0.size.width + 12)) } ?? 42 }
+        let width = max(scroll.contentSize.width, widths.reduce(24, +))
         let atEnd = scroll.contentView.bounds.maxX >= strip.bounds.maxX - 1
         strip.frame = NSRect(x: 0, y: 0, width: width, height: 54)
-        for (index, source) in sources.enumerated() {
-            source.frame = NSRect(x: width - 12 - CGFloat(sources.count - index) * 42, y: 7, width: 42, height: 40)
+        var x = width - 12
+        for index in sources.indices.reversed() {
+            x -= widths[index]
+            sources[index].frame = NSRect(x: x, y: 7, width: widths[index], height: 40)
         }
         if atEnd { scroll.contentView.scroll(to: NSPoint(x: max(0, width - scroll.contentSize.width), y: 0)) }
     }

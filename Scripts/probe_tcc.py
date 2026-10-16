@@ -36,6 +36,9 @@ def _unpack(value):
 def _apply(action, request):
     _require_ci()
     client = request.get("client", "")
+    service = request.get("service", SERVICE)
+    if service not in (SERVICE, "kTCCServiceScreenCapture"):
+        raise RuntimeError("Only Accessibility and Screen Recording fixture grants are allowed")
     if not isinstance(client, str) or not client.startswith("com.flux."):
         raise RuntimeError("The AX test grant must use a com.flux. bundle identifier")
     # Open an existing database. Never create one if the CI image changes its path.
@@ -49,12 +52,12 @@ def _apply(action, request):
         quoted = ",".join('"' + name.replace('"', '""') + '"' for name in columns)
         insert = f"INSERT INTO access ({quoted}) VALUES ({','.join('?' for _ in columns)})"
         own_rows = database.execute(
-            f"SELECT {quoted} FROM access WHERE {ROW_FILTER}", (SERVICE, client)
+            f"SELECT {quoted} FROM access WHERE {ROW_FILTER}", (service, client)
         ).fetchall()
         if len(own_rows) > 1:
             raise RuntimeError("The runner has more than one matching Flux AX row")
 
-        snapshot = {"client": client, "columns": columns,
+        snapshot = {"client": client, "service": service, "columns": columns,
                     "rows": [[_pack(value) for value in row] for row in own_rows]}
         if action == "snapshot":
             return snapshot
@@ -63,11 +66,17 @@ def _apply(action, request):
                 raise RuntimeError("The app's AX row changed before the test grant")
             donor = database.execute(
                 f"SELECT {quoted} FROM access WHERE {ROW_FILTER} AND auth_value=2",
-                (SERVICE, DONOR),
+                (service, DONOR),
             ).fetchone()
+            if donor is None and service == "kTCCServiceScreenCapture":
+                donor = database.execute(
+                    f"SELECT {quoted} FROM access WHERE {ROW_FILTER} AND auth_value=2",
+                    (SERVICE, DONOR),
+                ).fetchone()
             if donor is None:
                 raise RuntimeError("The runner has no allowed Xcode Helper AX row to copy")
             grant = dict(zip(columns, donor))
+            grant["service"] = service
             grant["client"] = client
             # A null requirement tests clicks. An explicit blob tests signed updates.
             grant["csreq"] = _unpack(request.get("csreq"))
@@ -85,11 +94,11 @@ def _apply(action, request):
             for row in rows:
                 values = dict(zip(columns, row))
                 if len(row) != len(columns) or any(values.get(name) != expected for name, expected in
-                        (("service", SERVICE), ("client", client), ("client_type", 0),
+                        (("service", service), ("client", client), ("client_type", 0),
                          ("indirect_object_identifier", "UNUSED"))):
                     raise RuntimeError("The snapshot contains a row outside Flux's AX grant")
 
-        database.execute(f"DELETE FROM access WHERE {ROW_FILTER}", (SERVICE, client))
+        database.execute(f"DELETE FROM access WHERE {ROW_FILTER}", (service, client))
         database.executemany(insert, rows)
         return snapshot
 
@@ -135,7 +144,7 @@ def _worker(action, request):
 
 
 @contextmanager
-def accessibility_grant(bundle_id, csreq=None):
+def _temporary_grant(bundle_id, csreq=None, service=SERVICE):
     """Stop the test app before leaving this context. Never use it on a user Mac."""
     _require_ci()
     if csreq is not None and not isinstance(csreq, bytes):
@@ -148,17 +157,25 @@ def accessibility_grant(bundle_id, csreq=None):
     signal.signal(signal.SIGTERM, interrupted)
     snapshot = None
     try:
-        snapshot = _worker("snapshot", {"client": bundle_id})
-        _worker("grant", {"client": bundle_id, "snapshot": snapshot, "csreq": _pack(csreq)})
-        print(f"CI: temporary AX grant installed for {bundle_id}", flush=True)
+        snapshot = _worker("snapshot", {"client": bundle_id, "service": service})
+        _worker("grant", {"client": bundle_id, "service": service, "snapshot": snapshot, "csreq": _pack(csreq)})
+        print(f"CI: temporary {service} grant installed for {bundle_id}", flush=True)
         yield snapshot
     finally:
         try:
             if snapshot is not None:
                 _worker("restore", snapshot)
-                print(f"CI: prior AX grant restored for {bundle_id}", flush=True)
+                print(f"CI: prior {service} grant restored for {bundle_id}", flush=True)
         finally:
             signal.signal(signal.SIGTERM, previous_term)
+
+
+def accessibility_grant(bundle_id, csreq=None):
+    return _temporary_grant(bundle_id, csreq)
+
+
+def screen_capture_grant(bundle_id):
+    return _temporary_grant(bundle_id, service="kTCCServiceScreenCapture")
 
 
 def flux_accessibility_grant():
