@@ -119,7 +119,10 @@ final class MediaRemoteAdapterSource {
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { @MainActor in self?.consume(data) }
+            Task { @MainActor [weak self, weak proc] in
+                guard let self, let proc, self.process === proc else { return }
+                self.consume(data)
+            }
         }
         proc.terminationHandler = { [weak self] terminated in
             Task { @MainActor in self?.handleTermination(terminated) }

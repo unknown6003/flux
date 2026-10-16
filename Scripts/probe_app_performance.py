@@ -348,6 +348,8 @@ def measure(binary, directory, seconds, cycles, profile="on"):
                         closed = command("collapse")
                         result["widgets"][widget] = {"open": opened, "runtime": resources, "collapse": closed}
                     result["disabled_after_use"] = command("disable-features")
+                    if result["disabled_after_use"].get("notchPresenting"):
+                        raise RuntimeError("disabling features left the real notch panel visible")
                     result["after_widgets"] = sample_app(process.pid, seconds)
                     result["after_widgets_resources"] = command("resources")
                 command("quit")

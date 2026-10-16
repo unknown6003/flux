@@ -134,6 +134,7 @@ final class NowPlayingService: ObservableObject {
     }
 
     private func applyState(_ newState: NowPlayingState?) {
+        guard isEnabled || newState == nil else { return }
         guard newState != state else { return }
         state = newState
         updateArtwork(from: newState?.artworkData)
