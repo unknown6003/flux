@@ -1020,9 +1020,8 @@ func probe() {
             moveFromMenu()
             return
         }
-        let reorderSection: MenuBarSection = staleFrameKind == "arrow"
-            ? MenuBarIconManager.section(for: items[0].frame, boundaries: manager.boundaryProvider()) : .hidden
-        if prepared < expected && staleFrameKind != "arrow" {
+        let reorderSection: MenuBarSection = .hidden
+        if prepared < expected {
             manager.move(items[prepared], to: .hidden)
             guard manager.isUpdatingIcons else {
                 print("FAIL: the section move did not publish its pending verification")
