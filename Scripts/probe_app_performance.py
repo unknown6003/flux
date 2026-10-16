@@ -313,7 +313,7 @@ def sample_app(pid, seconds):
     return result
 
 
-def measure(binary, directory, seconds, cycles, profile="on"):
+def measure(binary, directory, seconds, cycles, profile="on", steady_idle_seconds=0):
     directory.mkdir()
     with (directory / "app.log").open("w") as log:
         process = subprocess.Popen([str(binary), str(directory), profile], stdout=log, stderr=subprocess.STDOUT,
@@ -337,6 +337,10 @@ def measure(binary, directory, seconds, cycles, profile="on"):
                 return state
             result = {"desktop": ready, "idle": sample_app(process.pid, seconds)}
             result["idle_resources"] = command("resources")
+            if steady_idle_seconds:
+                time.sleep(10)
+                result["steady_idle"] = sample_app(process.pid, steady_idle_seconds)
+                result["steady_idle_resources"] = command("resources")
             if profile != "on":
                 result["widgets"] = {}
                 if profile == "notch":
@@ -413,6 +417,7 @@ def main():
     parser.add_argument("--seconds", type=int, choices=range(3, 31), default=5)
     parser.add_argument("--cycles", type=int, choices=range(1, 101), default=50)
     parser.add_argument("--repeats", type=int, choices=range(1, 4), default=2)
+    parser.add_argument("--steady-idle-seconds", type=int, choices=range(0, 61), default=30)
     args = parser.parse_args()
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("requires a disposable GitHub macOS desktop")
@@ -421,6 +426,7 @@ def main():
     baseline = run(["git", "rev-parse", "--verify", "--end-of-options", args.baseline_ref + "^{commit}"], 10).strip()
     candidate = run(["git", "rev-parse", "HEAD"], 10).strip()
     report = {"baseline": baseline, "candidate": candidate, "seconds_per_state": args.seconds, "settings_cycles_per_round": args.cycles,
+              "steady_idle_seconds_first_round": args.steady_idle_seconds, "steady_idle_extra_settle_seconds": 10,
               "samples": {"baseline": [], "candidate": []}, "profiles": {"off": {"baseline": [], "candidate": []}, "notch": {"baseline": [], "candidate": []}},
               "boundary": "main process CPU/RSS, real Settings and explicit identical all-on services; all-off and synthetic-notch profiles are separate; camera/Calendar remain subject to real CI permission and hardware availability; tab timing through native view layout and display flush, not GPU presentation; controlled copies with file driver",
               "status": "running"}
@@ -439,11 +445,11 @@ def main():
             for profile in ("off", "notch"):
                 for iteration in range(args.repeats):
                     for label in (("baseline", "candidate") if iteration % 2 == 0 else ("candidate", "baseline")):
-                        report["profiles"][profile][label].append(measure(binaries[label], output / f"{label}-{profile}-{iteration}", args.seconds, 0, profile))
+                        report["profiles"][profile][label].append(measure(binaries[label], output / f"{label}-{profile}-{iteration}", args.seconds, 0, profile, args.steady_idle_seconds if iteration == 0 else 0))
                         save()
             for iteration in range(args.repeats):
                 for label in (("baseline", "candidate") if iteration % 2 == 0 else ("candidate", "baseline")):
-                    report["samples"][label].append(measure(binaries[label], output / f"{label}-{iteration}", args.seconds, args.cycles))
+                    report["samples"][label].append(measure(binaries[label], output / f"{label}-{iteration}", args.seconds, args.cycles, steady_idle_seconds=args.steady_idle_seconds if iteration == 0 else 0))
                     save()
         report["status"] = "measured"
     except BaseException as error:
