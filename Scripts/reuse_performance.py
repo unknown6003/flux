@@ -17,20 +17,29 @@ def main():
     if not re.fullmatch(r'[0-9]+', run_id):
         raise ValueError('Performance run must be a numeric GitHub run ID')
     repository = os.environ['GITHUB_REPOSITORY']
+    # This reviewed workflow bridge preserves the measured environment and guards.
+    # Any later workflow edit needs fresh measurements.
+    if run('git', 'hash-object', '.github/workflows/ci.yml').strip() != '36e731cd7c9a2cde2d684a82feec5448fe8815d2':
+        raise ValueError('Workflow changed; run fresh measurements')
     record = json.loads(run('gh', 'api', f'repos/{repository}/actions/runs/{run_id}'))
     measured = record['head_sha']
     if (record['event'] != 'workflow_dispatch' or record['path'] != '.github/workflows/ci.yml'
             or record['status'] != 'completed' or not re.fullmatch(r'[0-9a-f]{40}', measured)):
         raise ValueError('Evidence must come from this completed manual CI workflow')
+    if run('git', 'rev-parse', measured + ':.github/workflows/ci.yml').strip() != 'b8c7d5ff6a63e19fcf89825001b16fc7776a8d26':
+        raise ValueError('Measured workflow differs from the reviewed environment')
     jobs = json.loads(run('gh', 'api', f'repos/{repository}/actions/runs/{run_id}/jobs'))['jobs']
     steps = {s['name']: s['conclusion'] for job in jobs for s in job['steps']}
     required = ['Measure clipboard image decoding', 'Compare baseline and current runtime work',
                 'Measure full app idle and Settings workloads', 'Check disabled feature startup IO']
     if not all(steps.get(name) == 'success' for name in required):
         raise ValueError('Every reused performance step must have succeeded')
-    changed = set(run('git', 'diff', '--name-only', measured, 'HEAD', '--', 'Sources',
+    changed = set(run('git', 'diff', '--name-only', measured, '--', 'Sources',
                       'Resources', 'Package.swift', 'Package.resolved', 'Scripts').splitlines())
-    # These native correctness fixtures are not used by the four measured commands.
+    if run('git', 'ls-files', '--others', '--exclude-standard', '--', 'Sources',
+           'Resources', 'Scripts').strip():
+        raise ValueError('Untracked product or benchmark inputs exist')
+    # The measured commands omit --suite, so they do not call these native fixtures.
     if changed - {'Scripts/probe_icons.py', 'Scripts/probe_settings_reopen.py',
                   'Scripts/reuse_performance.py'}:
         raise ValueError('Product, build or benchmark inputs changed: ' + ', '.join(sorted(changed)))
