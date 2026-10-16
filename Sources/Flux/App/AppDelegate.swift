@@ -7,17 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let arranger = MenuBarArranger()
     private let menuBarIcons = MenuBarIconManager()
     private let updater = UpdateChecker()
-    /// Notices that the last run died without a clean shutdown, and remembers
-    /// what the notch/camera were doing at the time — see `CrashReporter`'s
-    /// own doc comment on why a hardware-only crash needs this.
     private let crashReporter = CrashReporter()
     private var menuBar: MenuBarManager?
     private let hotkey = HotkeyManager()
     private var updateScheduler: AutomaticUpdateScheduler?
 
-    // Notch suite: one panel/state-machine controller plus the Now Playing
-    // service + widget it hosts for M1, and the File Shelf store + widget
-    // added in M2.
     private let notchWindow = NotchWindowController()
     private let nowPlayingService = NowPlayingService()
     private lazy var nowPlayingWidget = NowPlayingWidget(
@@ -25,63 +19,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let shelfStore = ShelfStore()
     private lazy var shelfWidget = ShelfWidget(
         store: shelfStore, isEnabled: settings.notchShelfEnabled)
-    // Unified TCC status/request center — first consumer is Calendar (M4);
-    // M6 (Camera) reuses the same instance.
     private let permissionCenter = PermissionCenter()
-    // EventKit is owned here, shared between `calendarWidget` (the agenda
-    // UI, read-only) and `notchActivityRouter` (the event-soon live
-    // activity, and the SOLE caller of `start()`/`stop()` — see
-    // `CalendarService`'s own doc comment on that ownership fix).
     private let calendarService = CalendarService()
     private lazy var calendarWidget = CalendarWidget(
         service: calendarService, permissions: permissionCenter, isEnabled: settings.notchCalendarEnabled)
-    // M6: Mirror owns `CameraService.start()`/`stop()` itself (see that
-    // widget's own doc comment on why its lifecycle needs no shared router
-    // the way Calendar's does) — `permissionCenter` above is reused rather
-    // than a second instance.
     private let cameraService = CameraService()
     private lazy var mirrorWidget = MirrorWidget(
         service: cameraService, permissions: permissionCenter, isEnabled: settings.notchMirrorEnabled)
-    // M6: `ClipboardMonitor.start()`/`stop()` is settings-driven (see its own
-    // doc comment) rather than tied to `ClipboardWidget`'s presentation — the
-    // whole point of a history is that it keeps accumulating while the
-    // widget itself is closed. Wired from `configureClipboardMonitor()` below.
     private let clipboardMonitor = ClipboardMonitor()
     private lazy var clipboardWidget = ClipboardWidget(
         monitor: clipboardMonitor, isEnabled: settings.notchClipboardEnabled)
-    // M6: `TimerService` has no start/stop lifecycle at all (a single
-    // cancellable boundary `Task`, rearmed on mutation — see its own doc
-    // comment). The shared menu starts timers, while the activity router
-    // consumes this same instance for the live countdown wing.
     private let timerService = TimerService()
-    // M6/M9: EXPERIMENTAL — see `LockScreenPresenter`'s own doc comment.
-    // Gated from `configureLockScreenPresenter()` below. `lazy` (like the
-    // widgets above) because its initializer reads sibling instance
-    // properties (`nowPlayingService`, `notchWindow.activities`, `settings`),
-    // which isn't possible from a plain stored property's default-value
-    // expression; forced into existence by `configureLockScreenPresenter()`'s
-    // own `lockScreenPresenter.setEnabled(...)` call, so nothing extra is
-    // needed to touch it the way `notchActivityRouter` needs its explicit
-    // `_ = notchActivityRouter` line.
     private lazy var lockScreenPresenter = LockScreenPresenter(
         nowPlaying: nowPlayingService, activities: notchWindow.activities, settings: settings)
-    // Single home for every live-activity *producer* (menu-bar overflow,
-    // battery, Bluetooth, calendar, volume HUD) — see
-    // `NotchActivityRouter`'s own doc comment for why this replaced the ad
-    // hoc per-producer Combine sink that used to live directly on this
-    // class. `lazy` (like the widgets
-    // above) because its initializer reads sibling instance properties
-    // (`notchWindow`, `settings`, `arranger`, `calendarService`,
-    // `permissionCenter`), which isn't possible from a plain stored
-    // property's default-value expression; forced into existence at launch
-    // via the `_ = notchActivityRouter` touch in `configureNotch()`, since
-    // nothing else naturally accesses it the way `nowPlayingWidget` is
-    // forced via `registry.register(...)`.
-    //
-    // `viewModel`/`presentation` replace the old `isPresentationAvailable`/
-    // `isCalendarWidgetPresented` closures — the router now observes
-    // `notchWindow.viewModel.$state` and `notchWindow.$isPresenting`
-    // directly (see the router's own doc comment on that M4 fix).
     private lazy var notchActivityRouter = NotchActivityRouter(
         activities: notchWindow.activities, settings: settings, arranger: arranger,
         calendar: calendarService, permissions: permissionCenter, viewModel: notchWindow.viewModel,
@@ -92,15 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings: settings, arranger: arranger, iconManager: menuBarIcons, updater: updater,
         nowPlaying: nowPlayingService, permissions: permissionCenter,
         crashReporter: crashReporter, clipboardMonitor: clipboardMonitor)
-    // Glows the notch when icons are clipped behind it; clicking opens the drawer.
-    // Only used when the notch panel itself is disabled — see
-    // `configureNotchOverflowCoexistence`.
     private var notchHighlight: NotchHighlightWindowController?
 
     private var cancellables = Set<AnyCancellable>()
     private let duoCalendarBoundaryTask = DeadlineTask()
-    /// See the `$launchAtLogin` sink — guards its own write-back from
-    /// re-entering it.
     private var isReconcilingLaunchAtLogin = false
     private var hasStartedApplication = false
 
@@ -141,8 +86,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hasStartedApplication = true
         Log.menuBar.info("Flux launching")
 
-        // First thing: reading the previous session has to happen before
-        // anything this launch does can overwrite it.
         crashReporter.beginSession()
 
         menuBar = MenuBarManager(settings: settings, arranger: arranger,
@@ -173,13 +116,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 revealAlwaysHidden: revealAlwaysHidden)
         }
         menuBar?.notifyDrawerState()
-        // Lets a background-found update surface somewhere the user actually
-        // looks — see `MenuBarManager.pendingUpdateVersion`.
         menuBar?.pendingUpdateVersion = { [weak self] in self?.updater.pendingRelease?.version }
         menuBar?.onOpenSettingsTab = { [weak self] tab in self?.settingsWindow.show(tab: tab) }
 
-        // Reconcile the login-item registration with the saved preference. The OS
-        // is the source of truth, so push the actual state back into settings.
         settings.launchAtLogin = LoginItemManager.setEnabled(settings.launchAtLogin)
 
         notchWindow.registry.register(nowPlayingWidget)
@@ -188,39 +127,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow.registry.register(mirrorWidget)
         notchWindow.registry.register(clipboardWidget)
         notchWindow.artworkProvider = { [weak self] in self?.nowPlayingService.artwork }
-        // A file dropped on the *collapsed* notch is caught at the window
-        // level (see `NotchPanel`/`NotchWindowController`), which has no
-        // knowledge of `ShelfStore` itself — this is the one place that
-        // knowledge gap is bridged.
-        // Both counts are forwarded — see `NotchWindowController.ShelfDropResult`
-        // for why the drag's success and the confirmation wing's wording must
-        // come from different numbers.
         notchWindow.onShelfDrop = { [weak self] urls in
             guard let outcome = self?.shelfStore.add(urls: urls) else { return .declined }
             return .init(accepted: outcome.accepted, ready: outcome.added.count)
         }
-        // A tap on the overflow indicator opens the real icon drawer in Settings.
         notchWindow.onActivityTap = { [weak self] kind in
             guard kind == .menuBarOverflow else { return false }
             self?.settingsWindow.show(tab: .menuBar)
             return true
         }
-        // Right-clicking the notch should feel like right-clicking the
-        // chevron does — same kind of menu, in the other place Flux draws
-        // itself. `NotchWindowController` decides *when* a right-click counts
-        // as on the notch; this closure is the only thing that knows what
-        // should be *in* the menu.
         notchWindow.menuProvider = { [weak self] in self?.menuBar?.makeMenu() ?? NSMenu() }
-        // Screen changes (external display connect/disconnect, clamshell
-        // open/close) flip `notchWindow.isPresenting` independently of every
-        // settings toggle `notchActivityRouter` already reacts to.
-        // `notchActivityRouter` observes `notchWindow.$isPresenting` directly
-        // (injected at construction above), so no explicit wiring is needed
-        // here anymore — it re-applies its monitor start/stop decision (and
-        // the calendar-event activity gating) on its own whenever
-        // presentation changes, keeping the battery/Bluetooth monitors from
-        // running with nowhere left to show a wing (or sitting idle once a
-        // notched screen reappears).
 
         NSApp.mainMenu = Self.makeMainMenu()
 
@@ -233,9 +149,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UpdateStartup.confirmLaunch()
     }
 
-    /// Flipping the session file to "clean" is the entire crash-detection
-    /// mechanism: a crash never reaches this method, so finding the flag
-    /// still false at the next launch is what identifies an abnormal exit.
     func applicationWillTerminate(_ notification: Notification) {
         crashReporter.endSession()
     }
@@ -265,10 +178,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
     }
 
-    /// `NotchState` as a stable string. Deliberately not `String(describing:)`
-    /// on the whole value — `.activity` carries a `UUID` that would churn the
-    /// breadcrumb (and the file write behind it) on every activity change
-    /// while saying nothing useful.
     static func describe(_ state: NotchState) -> String {
         switch state {
         case .collapsed: return "collapsed"
@@ -277,7 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: Settings reactions
 
     private func observeSettings() {
         settings.$launchAtLogin
@@ -289,14 +197,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // General › Login Items. Discarding that (as this used to)
                 // left the switch showing "on" for something macOS refused,
                 // so Flux quietly didn't launch at login and nothing said so.
-                // Launch already reconciles this way; a live toggle now does
-                // too. The inequality guard is load-bearing: writing the same
-                // value back would re-enter this sink through the property's
-                // own `didSet`.
                 guard let self, !self.isReconcilingLaunchAtLogin else { return }
                 let actual = LoginItemManager.setEnabled(enabled)
                 guard actual != enabled else { return }
-                // DEFERRED one runloop turn, and that is the whole fix.
                 // `@Published` emits from `willSet`, so this sink runs BEFORE
                 // the triggering assignment has written its own storage. A
                 // synchronous correction here completes first and is then
@@ -305,11 +208,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // this was meant to fix, still there. (The same `willSet`
                 // footgun `configureNotch` documents, pointing the other
                 // way.)
-                //
-                // The flag still earns its keep: the deferred write re-enters
-                // this sink, and without it that re-entry would call
-                // `LoginItemManager.setEnabled` a second time for the same
-                // failure.
                 self.isReconcilingLaunchAtLogin = true
                 DispatchQueue.main.async {
                     self.settings.launchAtLogin = actual
@@ -323,8 +221,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.configureHotkey() }
             .store(in: &cancellables)
 
-        // Re-register as soon as the user records a new chord, so the field in
-        // Settings and the live system hotkey never disagree.
         settings.$hotkeyShortcut
             .dropFirst()
             .removeDuplicates()
@@ -332,20 +228,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.configureHotkey() }
             .store(in: &cancellables)
 
-        // Track the Settings window so we can suppress the floating hint while
-        // it's open — Settings already shows the same arrange guidance.
         settingsWindow.onVisibilityChanged = { [weak self] visible in
             self?.crashReporter.update { $0.settingsOpen = visible }
         }
 
-        // Float the "how to arrange" hint next to the menu bar whenever Arrange
-        // Mode is on, from wherever it was toggled (menu or Settings).
         observeNotchSettings()
     }
 
-    /// The floating arrange hint is redundant while Settings is open — that
-    /// window already spells out the same gesture — so only float it when
-    /// arranging *and* Settings is closed.
     /// Install (or tear down) the global hotkey to match the current preferences, and
     /// push the *actual* outcome back into settings: macOS hands a chord to whichever
     /// app claimed it first, so a registration can legitimately fail. Surfacing that as
@@ -361,16 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.hotkeyConflict = !hotkey.register(settings.hotkeyShortcut, for: .menuBarToggle)
     }
 
-    // MARK: Notch
 
-    /// Push every notch-related preference into the live controller. Called
-    /// once at launch (to apply whatever was persisted) and again from each
-    /// setting's own Combine sink.
-    /// `notchEnabled` follows the same emitted-value convention as
-    /// `recomputeDuoActive`/`configureLockScreenPresenter` below, and for the
-    /// same reason — but this one was missing it, which made the master notch
-    /// toggle itself unreliable.
-    ///
     /// `@Published` delivers to subscribers from `willSet`, BEFORE its own
     /// backing storage updates. `settings.$notchEnabled`'s sink calls this
     /// function, which then re-read `settings.notchEnabled` synchronously and
@@ -380,13 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// preference itself displayed and persisted as off.
     private func configureNotch(notchEnabled: Bool? = nil) {
         let notchOn = notchEnabled ?? settings.notchEnabled
-        // Give transient Flux-owned overlays (Arrange Mode and overflow
-        // hints) the same appearance as the persistent Settings/notch windows.
         NSApp.appearance = settings.appearance.nsAppearance
-        // Applied before `setEnabled` so a fresh panel is built with the
-        // right collection behavior from the start, rather than defaulting
-        // to `NotchPanel.init`'s always-on `.fullScreenAuxiliary` for one
-        // tick and then immediately being corrected.
         notchWindow.setShowInFullscreen(settings.notchShowInFullscreen)
         notchWindow.setAppearance(settings.appearance)
         notchWindow.setEnabled(notchOn)
@@ -404,18 +278,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureClipboardMonitor(notchEnabled: notchOn)
         configureLockScreenPresenter(notchEnabled: notchOn)
         recomputeDuoActive()
-        // Force the lazy router into existence — see its property doc
-        // comment for why nothing else naturally touches it. Its own `init`
-        // reads the live activity toggles directly, so no further settings
-        // plumbing is needed here.
         _ = notchActivityRouter
     }
 
-    /// Clipboard history collection follows both its OWN toggle and the
-    /// master notch switch — a disabled notch feature means "off" everywhere,
-    /// including a background monitor with nothing to actually show its
-    /// history in (see `ClipboardMonitor`'s own doc comment on why its
-    /// lifecycle is settings-, not presentation-, driven).
     private func configureClipboardMonitor(notchEnabled: Bool? = nil) {
         clipboardMonitor.setPersistenceEnabled(settings.notchClipboardPersistenceEnabled)
         if (notchEnabled ?? settings.notchEnabled) && settings.notchClipboardEnabled {
@@ -425,10 +290,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// EXPERIMENTAL — same "both this feature's own toggle AND the master
-    /// notch switch" gating as `configureClipboardMonitor`, for the same
-    /// reason: a disabled notch feature means off everywhere.
-    ///
     /// `lockScreenExperimentEnabled` — like `recomputeDuoActive`'s own
     /// optional params (see that function's doc comment) — takes the value a
     /// `settings.$notchLockScreenExperimentEnabled` sink was just handed
@@ -453,9 +314,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
     }
 
-    /// Updates Duo when settings, permission, calendar data, or the clock
-    /// changes. The boundary task avoids a repeating timer.
-    ///
     /// `duoSettingEnabled`/`calendarPermissionGranted`/`calendarEvents` are optionals,
     /// defaulting to `nil` (read live from `settings`/`permissionCenter`) —
     /// callers reacting to a settings/permission change THAT ISN'T
@@ -494,8 +352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeNotchSettings() {
         settings.$notchEnabled
             .dropFirst()
-            // The emitted value, NOT a re-read — see `configureNotch`'s doc
-            // comment. This is the repo's recurring Combine footgun.
             .sink { [weak self] enabled in self?.configureNotch(notchEnabled: enabled) }
             .store(in: &cancellables)
 
@@ -604,16 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
     }
 
-    /// Register (or tear down) the notch toggle hotkey, mirroring
-    /// `configureHotkey()`'s pattern for the menu-bar chord. Only meaningful
-    /// while the notch feature itself is on — there's nothing to toggle
-    /// otherwise.
     private func configureNotchHotkey(notchEnabled: Bool? = nil) {
-        // Routed through `NotchWindowController.hotkeyToggled()` (not the
-        // view model directly) so it's a no-op while the controller has
-        // nothing presenting — the hotkey stays registered even on an
-        // external-only clamshell setup with no built-in notched screen,
-        // and must not drive a headless expand in that case.
         hotkey.onTrigger[.notchToggle] = { [weak self] in self?.notchWindow.hotkeyToggled() }
         guard (notchEnabled ?? settings.notchEnabled), settings.notchHotkey.isValid else {
             hotkey.unregister(.notchToggle)
@@ -623,16 +470,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.notchHotkeyConflict = !hotkey.register(settings.notchHotkey, for: .notchToggle)
     }
 
-    /// The legacy `NotchHighlightWindowController` overlay and the notch
-    /// panel's own live-activity glow both exist to say "icons are clipped
-    /// behind the notch" — showing both at once would double up over the
-    /// same physical notch. When the notch panel is enabled, the overflow
-    /// warning rides as a `LiveActivity` in its wings instead (posted by
-    /// `notchActivityRouter`, which reacts to `notchEnabled` on its own); the
-    /// legacy floating overlay is only (re)created when the notch panel is
-    /// off. This method now only owns that overlay's lifecycle — the
-    /// live-activity side of this coexistence moved to `NotchActivityRouter`
-    /// (see its doc comment for why).
     private func configureNotchOverflowCoexistence(notchEnabled: Bool? = nil) {
         if notchEnabled ?? settings.notchEnabled {
             notchHighlight = nil
@@ -644,12 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: Main menu
 
-    /// The app menu bar, used only while Flux is temporarily `.regular` —
-    /// i.e. while the Settings window is open (see
-    /// `SettingsWindowController.applyRegularActivationPolicy`).
-    ///
     /// An `LSUIElement` app has no menu bar and needs none. But promoting to
     /// `.regular` without setting `NSApp.mainMenu` gives you the *worst* of
     /// both: a visible, empty menu bar, and no ⌘W to close the window, no ⌘Q
@@ -703,19 +535,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowItem.submenu = windowMenu
         main.addItem(windowItem)
-        // Hands AppKit the Window menu it manages itself (window list,
-        // Bring All to Front) rather than leaving it a static three items.
         NSApp.windowsMenu = windowMenu
 
         return main
     }
 
-    // MARK: Software update
 
-    /// Poll GitHub for a newer Flux when automatic checks are on: a quiet check a
-    /// few seconds after launch (so it never delays startup), then every 6 hours.
-    /// Turning the preference off cancels the timer. Manual checks from Settings
-    /// are independent of this schedule.
     private func configureUpdateChecks() {
         updateScheduler = AutomaticUpdateScheduler(
             enabled: settings.$automaticUpdateChecks.eraseToAnyPublisher()
@@ -724,7 +549,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: Settings window
 
     func openSettings() {
         settingsWindow.show()

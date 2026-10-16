@@ -1,9 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// The sections shown in the Alcove-style sidebar. Selection is intentionally
-/// transient: opening Settings starts at the requested section, while the
-/// native grouped-window layout stays stable as the user moves around it.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general, menuBar, notch, lockScreen, about
 
@@ -30,9 +27,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// A native-material settings window with Alcove's sidebar/detail hierarchy:
-/// compact navigation on the left, a titled detail pane on the right, and
-/// translucent grouped cards instead of a branded header plus tab strip.
 struct SettingsView: View {
     static let designSize = CGSize(width: 760, height: 620)
 
@@ -40,8 +34,6 @@ struct SettingsView: View {
     @EnvironmentObject private var arranger: MenuBarArranger
     @EnvironmentObject private var nowPlaying: NowPlayingService
 
-    /// Kept for the off-screen renderer and older callers. The live window is
-    /// always scrollable because the Notch section is intentionally long.
     var scrolls: Bool
     var initialTab: SettingsTab
     var onTabChange: ((SettingsTab) -> Void)?
@@ -220,9 +212,6 @@ private struct SettingsDetailHeader: View {
     }
 }
 
-/// AppKit's semantic window material gives Alcove its native window-level
-/// surface. Light-mode cards use stronger semantic tokens on top so text does
-/// not depend on an unpredictable desktop backdrop to remain readable.
 private struct SettingsMaterialBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()

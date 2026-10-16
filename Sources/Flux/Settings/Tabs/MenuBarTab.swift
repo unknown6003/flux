@@ -52,6 +52,11 @@ struct MenuBarTab: View {
             Text("Drag an icon to a section, or use its Move menu. Command-drag in the menu bar to change its order.")
                 .font(.caption)
                 .foregroundStyle(Theme.textSecondaryColor)
+            if iconManager.isUpdatingIcons {
+                Label("Checking icon positions…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondaryColor)
+            }
             if let message = iconManager.errorMessage ?? dragController.message {
                 Text(message).font(.caption).foregroundStyle(.orange)
             }
@@ -65,7 +70,7 @@ struct MenuBarTab: View {
                 .controlSize(.small)
                 .font(.caption)
             if ControlItem.usesMacOS27Model {
-                Text("Apple system icons stay in the menu bar.")
+                Text("Icons from the same app hide together. Apple system icons stay in the menu bar.")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondaryColor)
             }

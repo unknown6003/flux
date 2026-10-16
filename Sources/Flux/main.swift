@@ -3,11 +3,6 @@ import AppKit
 AccessibilityAccess.exitIfRequested()
 UpdateStartup.registerLaunch()
 
-// Flux runs as a menu-bar agent: no Dock icon, no main window, no app menu.
-// We drive NSApplication manually instead of using the SwiftUI `@main`/Settings
-// scene so we have full control over status-item geometry and window lifetime.
-// SwiftUI is still used for the Settings UI, hosted inside an AppKit window.
-//
 // `main.swift`'s top-level code is nonisolated, but the process entry point is
 // already the main thread — so we assert main-actor isolation to satisfy the
 // concurrency checker. `run()` blocks here, keeping `delegate` (held weakly by
@@ -37,12 +32,6 @@ MainActor.assumeIsolated {
         if args[(idx + 2)...].contains("all") {
             NotchSnapshot.captureAll(to: args[idx + 1], dark: dark)
         } else {
-            // M9: "lockscreen" added alongside the pre-existing three —
-            // `NotchSnapshot.capture(to:dark:state:)` already special-cases it
-            // (see that function's own doc comment), but this allowed-state
-            // list gates whether the flag ever reaches that dispatch at all;
-            // without it here, `--snapshot-notch out.png lockscreen` silently
-            // fell back to "collapsed" instead.
             let state = ["collapsed", "activity", "expanded", "lockscreen", "sound-activity", "mute-activity"].first { args[(idx + 2)...].contains($0) } ?? "collapsed"
             NotchSnapshot.capture(to: args[idx + 1], dark: dark, state: state)
         }

@@ -2,10 +2,6 @@ import AppKit
 import SwiftUI
 import Combine
 
-/// Hosts the SwiftUI settings UI in the same material/sidebar window shape as
-/// Alcove. The detail pane scrolls internally, so changing sections never
-/// changes the window's footprint or leaves a tall blank canvas behind.
-/// Lazily created and reused so reopening is instant and cheap.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let settings: SettingsStore
@@ -19,13 +15,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
-    /// Fires with the new visibility whenever the window is shown or closed.
-    /// Lets the app suppress the floating arrange hint while Settings — which
-    /// already spells out the same guidance — is on screen.
     var onVisibilityChanged: ((Bool) -> Void)?
 
-    /// The tab currently showing. Tracked here so menu-bar and notch menu
-    /// entry points can open the requested sidebar section.
     private var currentTab: SettingsTab = .general
 
     init(settings: SettingsStore, arranger: MenuBarArranger, iconManager: MenuBarIconManager, updater: UpdateChecker,
@@ -53,9 +44,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         let resumesIconManagement = currentTab == .menuBar && window?.isVisible == false
-        // A failure or a since-deleted download from an earlier session isn't
-        // news; clearing it here means the General tab's update card opens
-        // showing what's true now rather than a stale verdict.
         updater.clearStaleOutcome()
         if window == nil {
             window = makeWindow()
@@ -64,8 +52,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             clampSizeToScreen()
         }
         applyAppearance(settings.appearance)
-        // Become a regular app for as long as Settings is open — see
-        // `applyRegularActivationPolicy`.
         Self.applyRegularActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         // `makeKeyAndOrderFront` does NOT restore a minimized window — that
@@ -102,21 +88,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
     }
 
-    /// Back to a Dock-less accessory once nothing needs a window presence.
     static func applyAccessoryActivationPolicy() {
         guard NSApp.activationPolicy() != .accessory else { return }
         NSApp.setActivationPolicy(.accessory)
     }
 
-    /// Opens Settings on a specific tab — the notch's right-click menu jumps
-    /// straight to Notch rather than dropping the user on General to find it
-    /// themselves.
-    ///
-    /// `SettingsView` seeds its own `@State` selection from `initialTab`, so
-    /// an already-open window can't just be told to switch: its content
-    /// controller is rebuilt (cheap — the whole view is a few cards over
-    /// shared `EnvironmentObject`s) and re-fitted to the new tab's natural
-    /// height, exactly as a manual tab switch would.
     func show(tab: SettingsTab) {
         if currentTab != tab {
             currentTab = tab
@@ -128,7 +104,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func makeContentController() -> NSViewController {
-        // Only records which tab is showing — deliberately does NOT resize.
         let root = SettingsView(initialTab: currentTab, onTabChange: { [weak self] tab in
             self?.currentTab = tab
         })
@@ -171,11 +146,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window?.contentView?.appearance = appearance.nsAppearance
     }
 
-    // MARK: Sizing
 
-    /// The content view owns the full design footprint. All variation between
-    /// sections is handled by the detail ScrollView, which keeps traffic
-    /// lights, sidebar rows, and controls in stable positions.
     private func sizeToDesignSize() {
         guard let window else { return }
         let size = sizeThatFitsScreen(on: NSScreen.main)
@@ -207,9 +178,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         // from inside `windowWillClose` pulls the Dock tile and menu bar out
         // from under a window AppKit is still in the middle of closing.
         DispatchQueue.main.async { [weak self] in
-            // Conditional: if anything re-opened Settings inside the same
-            // runloop turn, demoting would leave an open window with no Dock
-            // tile and no ⌘-Tab entry — the bug this whole change removes.
             guard self?.window?.isVisible != true else { return }
             Self.applyAccessoryActivationPolicy()
         }

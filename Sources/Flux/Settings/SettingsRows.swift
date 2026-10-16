@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// Shared row primitives used across every Settings tab — extracted here
-/// (rather than duplicated per-tab) when the tab restructure split
-/// `SettingsView.swift` into `Tabs/*.swift`.
 
 struct RowDivider: View {
     var body: some View {
@@ -40,13 +37,6 @@ struct ToggleRow: View {
     }
 }
 
-/// A permission's live status (badge) plus the one action that helps —
-/// "Grant Access" while undetermined, "Open System Settings" once denied/
-/// restricted, nothing once granted (or on a status this app can't act on).
-/// Introduced in M4 for Calendar; written generically over `PermissionKind`
-/// so M6 (Camera) reuses this exact row rather than hand-rolling its own —
-/// see `PermissionCenter`'s doc comment for why a grant here can't be assumed
-/// permanent (ad-hoc signing).
 struct PermissionRow: View {
     let kind: PermissionKind
     let title: String
