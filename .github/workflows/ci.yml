@@ -91,11 +91,13 @@ jobs:
                                 180, capture=True)
                       (source / 'update-prelude.log').write_text(log)
                   for case in item['cases']:
-                      budget = 240 if case == 'clipboard-images' else 180 if case == 'all' else 130
+                      budget = 420 if case == 'icon-suite' else 240 if case == 'clipboard-images' else 180 if case == 'all' else 130
                       if time.monotonic() + budget > deadline:
                           raise RuntimeError('native drag plan reached its overall deadline')
                       try:
-                          if case == 'clipboard-images':
+                          if case == 'icon-suite':
+                              command = ['python3', str(source / 'Scripts/run_icon_probes.py')]
+                          elif case == 'clipboard-images':
                               command = ['python3', str(source / 'Scripts/probe_clipboard_images.py'),
                                          '--out', str(source / case)]
                           elif case in ('physical-overlap', 'physical-retry-overlap'):

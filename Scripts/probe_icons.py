@@ -550,9 +550,8 @@ func probe() {
         manager.refresh()
         guard let icon = fixture(), icon.section == .hidden else { exit(1) }
         manager.move(icon, to: .shown)
-        let started = ProcessInfo.processInfo.systemUptime
         @MainActor
-        func closeAfterMovement() {
+        func closeAfterMovement(started: TimeInterval) {
             manager.refresh()
             guard let current = fixture(), MenuBarIconManager.section(
                 for: current.frame, boundaries: manager.boundaryProvider()) == .shown else {
@@ -560,7 +559,7 @@ func probe() {
                     print("FAIL: programmatic close test did not reach Shown before verification")
                     exit(1)
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { closeAfterMovement() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { closeAfterMovement(started: started) }
                 return
             }
             guard manager.isUpdatingIcons, ProcessInfo.processInfo.systemUptime - started < 0.45 else {
@@ -648,7 +647,7 @@ func probe() {
                 finish()
             }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { closeAfterMovement() }
+        afterPostingDrag { closeAfterMovement(started: ProcessInfo.processInfo.systemUptime) }
     }
     @MainActor
     func moveSibling(_ items: [MenuBarIconManager.Icon]) {

@@ -164,6 +164,7 @@ enum PermissionStatus { case notDetermined, granted, denied, restricted, unavail
 }
 
 @MainActor final class MenuBarDragController: ObservableObject {
+    var onWindowClose: (() -> Void)?
     let isMenuBarDragging = false
     let message: String? = nil
     func close() {}
