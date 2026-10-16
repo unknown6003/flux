@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Measure the full app's idle/Settings CPU and memory with paired source builds.
 
-Uses real AppDelegate, Settings window and services. Only a file-command driver
-is added to temporary source copies. Both builds use the current bundled media
+Uses real AppDelegate, Settings window and services. A file-command driver and
+native tab markers are added to temporary source copies. Both builds use the current bundled media
 helper. Automatic updates and login registration are off in private probe domains.
 CPU and RSS cover the main process. Camera, real media and hardware feature loads
-are not simulated. Window timing waits for the real key window and a display flush;
-it is not GPU presentation time. Native icon/drag correctness has separate probes.
+are not simulated. Window timing waits for the real key window, the requested
+tab's native view, completed layout and a display flush. It is not GPU presentation
+time. Native icon/drag correctness has separate probes.
 """
 import argparse
 from contextlib import ExitStack
@@ -54,18 +55,24 @@ MainActor.assumeIsolated {
                   let action = command["action"] as? String else { return }
             sequence = number
             let start = ProcessInfo.processInfo.systemUptime
-            delegate.perfAction(action)
+            if command["skipAction"] as? Bool != true { delegate.perfAction(action) }
             @MainActor func finishWhenReady() {
                 var state = delegate.perfWindowState()
-                let ready = (action == "settings" || action == "general")
-                    ? state["settingsVisible"] as? Bool == true && state["settingsKey"] as? Bool == true
-                    : action != "close" || state["settingsVisible"] as? Bool == false
+                let expectedTab = action == "settings" ? "menuBar" : action == "general" ? "general" : nil
+                let ready: Bool
+                if let expectedTab {
+                    ready = state["settingsVisible"] as? Bool == true && state["settingsKey"] as? Bool == true
+                        && state["renderedTabs"] as? [String] == [expectedTab]
+                } else {
+                    ready = action != "close" || state["settingsVisible"] as? Bool == false
+                }
                 if !ready && ProcessInfo.processInfo.systemUptime - start < 10 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { finishWhenReady() }
                     return
                 }
                 state["sequence"] = number
                 state["action"] = action
+                state["actionReady"] = ready
                 state["milliseconds"] = (ProcessInfo.processInfo.systemUptime - start) * 1_000
                 state["pid"] = getpid()
                 reply(state)
@@ -106,13 +113,63 @@ WINDOW_ACCESS = r'''
 extension SettingsWindowController {
     func perfClose() { window?.performClose(nil) }
     func perfState() -> [String: Any] {
+        window?.contentView?.layoutSubtreeIfNeeded()
         window?.displayIfNeeded()
+        func renderedTabs(in view: NSView) -> [String] {
+            var tabs: [String] = []
+            if let marker = view as? PerfRenderedTabView,
+               marker.window === window, marker.hasLaidOut,
+               !marker.isHiddenOrHasHiddenAncestor,
+               marker.bounds.width > 0, marker.bounds.height > 0,
+               !marker.visibleRect.isEmpty {
+                tabs.append(marker.tab)
+            }
+            return tabs + view.subviews.flatMap { renderedTabs(in: $0) }
+        }
         return ["settingsVisible": window?.isVisible == true,
                 "settingsKey": window?.isKeyWindow == true,
+                "renderedTabs": window?.contentView.map { renderedTabs(in: $0).sorted() } ?? [],
                 "hostingID": window?.contentViewController.map { String(describing: ObjectIdentifier($0)) } ?? "none"]
     }
 }
 '''
+
+TAB_MARKER = r'''
+@MainActor
+struct PerfRenderedTabMarker: NSViewRepresentable {
+    let tab: String
+    func makeNSView(context: Context) -> PerfRenderedTabView {
+        let view = PerfRenderedTabView(frame: .zero)
+        view.tab = tab
+        view.needsLayout = true
+        return view
+    }
+    func updateNSView(_ view: PerfRenderedTabView, context: Context) {}
+}
+
+@MainActor
+final class PerfRenderedTabView: NSView {
+    var tab = ""
+    private(set) var hasLaidOut = false
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        hasLaidOut = false
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        hasLaidOut = true
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+'''
+
+
+def instrument_tab(source, tab):
+    anchor = "        .padding(20)"
+    if anchor not in source:
+        raise RuntimeError(f"{tab} tab marker anchor was not found")
+    return source.replace(anchor, anchor + f'\n        .background(PerfRenderedTabMarker(tab: "{tab}"))', 1)
 
 
 def build(ref, label, output, scratch):
@@ -126,6 +183,9 @@ def build(ref, label, output, scratch):
     for name, addition in (("AppDelegate.swift", APP_ACCESS), ("SettingsWindowController.swift", WINDOW_ACCESS)):
         path = next(path for path in files if path.name == name)
         path.write_text(path.read_text() + addition)
+    for name, tab in (("GeneralTab.swift", "general"), ("MenuBarTab.swift", "menuBar")):
+        path = next(path for path in files if path.name == name)
+        path.write_text(instrument_tab(path.read_text(), tab) + (TAB_MARKER if tab == "general" else ""))
     main = source / "Sources/Flux/main.swift"
     main.write_text(FIXTURE)
     app = source / "Flux.app"
@@ -171,19 +231,26 @@ def measure(binary, directory, seconds, cycles):
             state_path = directory / "state.json"
             ready = wait_state(state_path, process, lambda state: state.get("ready"))
             sequence = 0
-            def command(action):
+            def command(action, skip_action=False, require_ready=True):
                 nonlocal sequence
                 sequence += 1
                 temporary = directory / "command.tmp"
-                temporary.write_text(json.dumps({"sequence": sequence, "action": action}))
+                temporary.write_text(json.dumps({"sequence": sequence, "action": action, "skipAction": skip_action}))
                 temporary.replace(directory / "command.json")
-                return wait_state(state_path, process, lambda state: state.get("sequence") == sequence)
+                state = wait_state(state_path, process, lambda state: state.get("sequence") == sequence)
+                if require_ready and not state.get("actionReady"):
+                    raise RuntimeError(f"{action} did not reach its rendered window state: {state}")
+                return state
             result = {"desktop": ready, "idle": sample_process(process.pid, seconds)}
             result["settings_open"] = command("settings")
             if not result["settings_open"]["settingsVisible"] or not result["settings_open"]["settingsKey"]:
                 raise RuntimeError("real Menu Bar Settings window did not open")
             if result["settings_open"]["fixtureIcons"] != 12:
                 raise RuntimeError("Settings did not load all 12 real menu bar fixture icons")
+            negative = command("general", skip_action=True, require_ready=False)
+            if negative.get("actionReady") or negative.get("renderedTabs") != ["menuBar"] or negative["milliseconds"] < 10_000:
+                raise RuntimeError("tab readiness gate accepted a skipped General navigation")
+            result["skipped_general_control"] = negative
             result["settings"] = sample_process(process.pid, seconds)
             result["close"] = command("close")
             if result["close"]["settingsVisible"]:
@@ -207,6 +274,7 @@ def measure(binary, directory, seconds, cycles):
                                                   "close_ms": closed["milliseconds"],
                                                   "general_ms": general["milliseconds"],
                                                   "return_menu_bar_ms": returned["milliseconds"],
+                                                  "rendered_tabs": [opened["renderedTabs"], general["renderedTabs"], returned["renderedTabs"]],
                                                   "hosting_retained": len({opened["hostingID"], general["hostingID"], returned["hostingID"]}) == 1})
             result["after_cycles"] = sample_process(process.pid, seconds)
             result["drawer_calls"] = [command("drawer") for _ in range(100)]
@@ -235,7 +303,7 @@ def main():
     candidate = run(["git", "rev-parse", "HEAD"], 10).strip()
     report = {"baseline": baseline, "candidate": candidate, "seconds_per_state": args.seconds, "settings_cycles_per_round": args.cycles,
               "samples": {"baseline": [], "candidate": []},
-              "boundary": "main process CPU/RSS, real Settings and default services; controlled copies with file driver",
+              "boundary": "main process CPU/RSS, real Settings and default services; tab timing through native view layout and display flush, not GPU presentation; controlled copies with file driver",
               "status": "running"}
     def save():
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
