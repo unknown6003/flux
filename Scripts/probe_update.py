@@ -11,6 +11,7 @@ import plistlib
 import re
 import shlex
 import signal
+from socketserver import TCPServer
 import subprocess
 import sys
 import tempfile
@@ -405,6 +406,12 @@ MainActor.assumeIsolated { probe() }
 '''
 
 
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 @contextmanager
 def fixture_server(dmg):
     class Handler(BaseHTTPRequestHandler):
@@ -431,7 +438,7 @@ def fixture_server(dmg):
             self.end_headers()
             self.wfile.write(body)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     server.downloads = 0
     server.checks = 0
