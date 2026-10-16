@@ -678,6 +678,10 @@ extension MenuBarDragController {
             for label, expected in (("keyboard", "hidden"), ("order-left", "left"), ("order-right", "right")):
                 if args.case not in ("all", label):
                     continue
+                if args.case == "all" and label == "keyboard":
+                    bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
+                            args.output / "keyboard-setup.log")
+                    state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
                 before = len(state["commits"])
                 bounded([str(binary), "--keyboard", str(state_path), expected], 7,
                         args.output / (label + ".log"))
