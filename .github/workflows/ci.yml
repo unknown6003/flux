@@ -33,9 +33,14 @@ on:
         description: Run isolated native drag cases from exact commits instead of building
         type: string
         default: ''
+      performance_run:
+        description: Reuse performance evidence after verifying identical product and benchmark inputs
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ci-${{ inputs.drag_probe_plan && 'native-drag-probes' || github.ref }}
@@ -172,19 +177,31 @@ jobs:
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
 
+      - name: Reuse performance from identical product source
+        if: ${{ inputs.performance_run }}
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLUX_PERFORMANCE_RUN: ${{ inputs.performance_run }}
+        run: python3 Scripts/reuse_performance.py
+
       - name: Measure clipboard image decoding
+        if: ${{ !inputs.performance_run }}
         timeout-minutes: 4
         run: python3 Scripts/probe_clipboard_images.py --out build/performance/clipboard-images
 
       - name: Compare baseline and current runtime work
+        if: ${{ !inputs.performance_run }}
         timeout-minutes: 6
         run: python3 Scripts/probe_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 3 --native-scan --output build/performance/paired
 
       - name: Measure full app idle and Settings workloads
+        if: ${{ !inputs.performance_run }}
         timeout-minutes: 20
         run: python3 Scripts/probe_app_performance.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --repeats 2 --seconds 5 --output build/performance/app
 
       - name: Check disabled feature startup IO
+        if: ${{ !inputs.performance_run }}
         timeout-minutes: 6
         run: python3 Scripts/probe_idle_resources.py --baseline-ref 6fde90817068d06ecfae8eb6ec85c19e68af997b --output build/performance/feature-off
 

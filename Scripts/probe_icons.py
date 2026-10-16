@@ -444,7 +444,7 @@ func probe() {
         target.invoke = nil
         guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
         print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        afterMove {
             let expiryError = manager.errorMessage
             manager.refresh()
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
@@ -586,7 +586,7 @@ func probe() {
                     exit(1)
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            afterMove {
                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
                 if exhausted {
                     manager.refresh()
@@ -606,7 +606,7 @@ func probe() {
                                 exit(1)
                             }
                             manager.move(retry, to: .shown)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                            afterMove {
                                 let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
                                 guard !manager.isUpdatingIcons,
                                       (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
@@ -697,6 +697,20 @@ func probe() {
         }
         do { try driver.run() }
         catch { print("FAIL: sibling native driver could not start: \(error)"); exit(1) }
+    }
+    @MainActor
+    func afterMove(_ action: @escaping () -> Void) {
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        @MainActor func poll() {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                print("FAIL: the icon move did not complete within five seconds")
+                exit(1)
+            }
+            if manager.isUpdatingIcons {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
+            } else { action() }
+        }
+        poll()
     }
     @MainActor
     func afterPostingDrag(_ action: @escaping () -> Void) {
@@ -1045,7 +1059,7 @@ func probe() {
                 print("FAIL: the section move did not publish its pending verification")
                 exit(1)
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { reorder(prepared: prepared + 1) }
+            afterMove { reorder(prepared: prepared + 1) }
             return
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
@@ -1123,7 +1137,7 @@ func probe() {
             print("FAIL: the arrow move did not publish its pending verification")
             exit(1)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        afterMove {
             manager.refresh()
             let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
                 .sorted { $0.frame.minX < $1.frame.minX }
@@ -1168,7 +1182,7 @@ func probe() {
             print("FAIL: the section move did not publish its pending verification")
             exit(1)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        afterMove {
             manager.refresh()
             guard !manager.isUpdatingIcons, let current = fixture(),
                   MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == section,
