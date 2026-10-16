@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 struct MenuBarIconLane: NSViewRepresentable {
-    let controller: MenuBarDragController
-    let manager: MenuBarIconManager
+    @ObservedObject var controller: MenuBarDragController
+    @ObservedObject var manager: MenuBarIconManager
     let section: MenuBarSection
     let icons: [MenuBarIconManager.Icon]
     let alwaysHiddenEnabled: Bool
