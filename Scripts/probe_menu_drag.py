@@ -762,8 +762,8 @@ extension MenuBarDragController {
             (args.output / "result.json").write_text(json.dumps({"results": results, "state": state}, indent=2))
         finally:
             if error := sys.exc_info()[1]:
-                (args.output / "failure.log").write_text(str(error))
                 try:
+                    (args.output / "failure.log").write_text(str(error))
                     bounded(["/usr/sbin/screencapture", "-x", str(args.output / "failure.png")],
                             10, args.output / "capture.log")
                 except (RuntimeError, OSError):
