@@ -297,6 +297,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "scrollTarget": scrollTarget,
             "laneAncestors": ancestors,
             "nativeScrollViews": all.filter { $0 is NSScrollView }.count,
+            "windowFrame": NSStringFromRect(window.frame),
+            "usableScreen": NSStringFromRect(window.screen?.visibleFrame ?? .zero),
             "sourceIDs": sources.compactMap { $0.icon?.id }.sorted(),
             "managerIDs": manager.icons.map(\.id).sorted(),
             "menu": lanes.flatMap(\.subviews).compactMap { $0 as? NSPopUpButton }.first(where: \.isEnabled).map { center($0) } ?? [],
@@ -322,14 +324,15 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         if CommandLine.arguments.contains("--disabled-populated") {
             manager.assignments["com.flux.menu-drag-fixture|0"] = .alwaysHidden
         }
-        window = NSWindow(contentRect: NSRect(x: 80, y: 90, width: 620, height: 670),
+        let usable = NSScreen.main!.visibleFrame
+        window = NSWindow(contentRect: NSRect(x: 80, y: 90, width: 620, height: min(620, usable.height - 40)),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.autorecalculatesKeyViewLoop = true
         window.title = "Flux Settings drag probe"
         let root = ScrollView { MenuBarTab().environmentObject(settings).environmentObject(manager) }
         window.contentView = NSHostingView(rootView: root)
-        window.center()
+        window.setFrameTopLeftPoint(NSPoint(x: usable.midX - window.frame.width / 2, y: usable.maxY - 8))
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
