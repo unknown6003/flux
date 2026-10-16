@@ -82,8 +82,7 @@ jobs:
                   source.mkdir()
                   archive = source / 'source.tar'
                   run(['git', 'archive', '--format=tar', '--output', str(archive), ref,
-                       'Scripts', 'Sources/Flux/MenuBar/MenuBarDragController.swift',
-                       'Sources/Flux/MenuBar/MenuBarSection.swift'], 15)
+                       'Scripts', 'Sources/Flux'], 15)
                   run(['tar', '-xf', str(archive), '-C', str(source)], 15)
                   for case in item['cases']:
                       if time.monotonic() + 130 > deadline:

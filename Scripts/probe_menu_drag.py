@@ -40,6 +40,7 @@ final class MenuBarIconManager: ObservableObject {
     }
     @Published var icons: [Icon] = []
     var stale = false
+    var extra = false
     var assignments: [String: MenuBarSection] = [:]
     let canHideWithoutAccess = false
     let errorMessage: String? = nil
@@ -81,6 +82,10 @@ final class MenuBarIconManager: ObservableObject {
             icons.append(Icon(id: "com.flux.menu-drag-fixture|\(index)", title: stale ? "Replaced item" : title,
                               source: app.localizedName, section: assignments["com.flux.menu-drag-fixture|\(index)"] ?? .shown, isMovable: true,
                               frame: CGRect(origin: point, size: size)))
+        }
+        if extra {
+            icons.append(Icon(id: "fixed|0", title: "New fixed item", source: "System", section: .shown,
+                              isMovable: false, frame: .zero))
         }
         icons.sort { $0.title == "Flux drag fixture" && $1.title != "Flux drag fixture" }
     }
@@ -185,16 +190,20 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         Thread.sleep(forTimeInterval: 0.018)
     }
     Thread.sleep(forTimeInterval: 0.15)
-    if !command && kind != "late-command" && destination != "invalid" {
+    if !command && kind != "late-command" && kind != "busy" && destination != "invalid" {
         let section = destination.replacingOccurrences(of: "-header", with: "")
         guard waitFor({ $0.contains("entered \(section) valid=true") }) else {
             fail("destination never accepted the session")
         }
     }
+    if kind == "inventory-cancel" {
+        FileManager.default.createFile(atPath: statePath + ".update", contents: Data())
+        Thread.sleep(forTimeInterval: 0.2)
+    }
     if kind == "stale" { FileManager.default.createFile(atPath: statePath + ".stale", contents: Data()) }
     if kind == "close" { FileManager.default.createFile(atPath: statePath + ".close", contents: Data()) }
     if kind == "stale" || kind == "close" { Thread.sleep(forTimeInterval: 0.15) }
-    if kind == "escape" {
+    if kind == "escape" || kind == "inventory-cancel" {
         key(53, true); key(53, false)
         guard waitFor({ $0.contains("ended operation=0") }) else { fail("Escape did not end the session") }
     }
@@ -245,6 +254,9 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "ready": configured && source != nil && lanes.count == 3 && NSApp.isActive && window.isKeyWindow,
             "row": source.map { center($0, x: $0.bounds.width * 0.7) } ?? [],
             "sourceWidth": Double(source?.bounds.width ?? 0), "targets": targets,
+            "sourceIDs": sources.compactMap { $0.icon?.id }.sorted(),
+            "managerIDs": manager.icons.map(\.id).sorted(),
+            "menu": lanes.first(where: { $0.section == .shown })?.subviews.compactMap { $0 as? NSPopUpButton }.first.map { center($0) } ?? [],
             "events": events, "commits": commits,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
@@ -277,6 +289,19 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 if FileManager.default.fileExists(atPath: self.state + ".menu") {
                     try? FileManager.default.removeItem(atPath: self.state + ".menu")
                     self.checkMenu()
+                }
+                if FileManager.default.fileExists(atPath: self.state + ".show-always") {
+                    try? FileManager.default.removeItem(atPath: self.state + ".show-always")
+                    self.settings.showAlwaysHiddenSection = true
+                }
+                if FileManager.default.fileExists(atPath: self.state + ".update") {
+                    try? FileManager.default.removeItem(atPath: self.state + ".update")
+                    self.manager.extra = true
+                    self.manager.refresh()
+                }
+                if FileManager.default.fileExists(atPath: self.state + ".busy") {
+                    try? FileManager.default.removeItem(atPath: self.state + ".busy")
+                    self.manager.beginVerification(after: 2)
                 }
                 if FileManager.default.fileExists(atPath: self.state + ".reset") {
                     try? FileManager.default.removeItem(atPath: self.state + ".reset")
@@ -312,9 +337,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             var hit = lane.hitTest(point)
             while hit != nil && hit !== popup { hit = hit?.superview }
             guard hit === popup else { print("FAIL: drag source swallowed the Move control"); exit(11) }
-            menu.performActionForItem(at: menu.index(of: hidden))
-            self.events.append("menu fallback passed")
-            self.settings.showAlwaysHiddenSection = true
+            self.events.append("menu ready")
         }
     }
     func stop() {
@@ -335,6 +358,21 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         switch args[1] {
         case "--fixture": fixture(seconds: Double(args[2])!, emptyTitle: args.contains("--empty-title"))
         case "--drive": drive(statePath: args[2], source: args[3], destination: args[4], kind: args[5])
+        case "--menu":
+            let data = try! Data(contentsOf: URL(fileURLWithPath: args[2]))
+            let state = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let point = state["menu"] as! [Double]
+            let location = CGPoint(x: point[0], y: point[1])
+            for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+                CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: location, mouseButton: .left)?.post(tap: .cghidEventTap)
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+            for code in [CGKeyCode(4), 36] {
+                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)?.post(tap: .cghidEventTap)
+                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)?.post(tap: .cghidEventTap)
+                Thread.sleep(forTimeInterval: 0.1)
+            }
         case "--release":
             let point = CGEvent(source: nil)!.location
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
@@ -390,6 +428,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
+                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "stale", "close"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -452,10 +492,16 @@ extension EnvironmentValues {
         if args.empty_title and not state["emptyTitle"]:
             raise RuntimeError("empty AX title fallback was not exercised")
         started = time.monotonic()
-        scenarios = [("hidden-header", "normal", "hidden"), ("shown", "normal", "shown"),
-                     ("alwaysHidden", "normal", "alwaysHidden"), ("hidden", "escape", None),
-                     ("invalid", "normal", None), ("hidden", "late-command", None)]
-        for index, (target, kind, expected) in enumerate(scenarios):
+        scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
+                     ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
+                     ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
+                     ("busy", "hidden", "busy", None), ("inventory-cancel", "hidden", "inventory-cancel", None)]
+        for index, (label, target, kind, expected) in enumerate(scenarios):
+            if args.case not in ("all", label):
+                continue
+            if kind == "busy":
+                Path(str(state_path) + ".busy").touch()
+                state = read_state(state_path, probe_process, lambda value: value["busy"])
             if time.monotonic() - started > args.seconds - 15:
                 raise RuntimeError("scenario deadline")
             before = len(state["commits"])
@@ -466,26 +512,36 @@ extension EnvironmentValues {
                                lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
             events = state["events"][offset:]
             begins = [event for event in events if event.startswith("begin ")]
-            if len(begins) != (0 if kind == "late-command" else 1):
+            if len(begins) != (0 if kind in ("late-command", "busy") else 1):
                 raise RuntimeError(f"{target}/{kind}: wrong drag callback count: {events}")
             actual = state["commits"][before:]
             if actual != ([expected] if expected else []):
                 raise RuntimeError(f"{target}/{kind}: commits={actual}; events={state['events'][offset:]}")
             if state["ownTaps"] or state["extraWindows"]:
                 raise RuntimeError("Settings drag installed global capture or an extra window")
+            if kind == "inventory-cancel":
+                state = read_state(state_path, probe_process, lambda value: value["sourceIDs"] == value["managerIDs"])
+                if "fixed|0" not in state["sourceIDs"]:
+                    raise RuntimeError("inventory did not change during the cancelled drag")
             results.append(f"PASS text-area drag to {target}, {kind}")
-        # Return to Shown before checking the actual native fallback menu.
-        bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
-                args.output / "restore.log")
-        state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
-        before = len(state["commits"])
-        Path(str(state_path) + ".menu").touch()
-        state = read_state(state_path, probe_process, lambda value: "menu fallback passed" in value["events"])
-        if state["commits"][before:] != ["hidden"]:
-            raise RuntimeError("Move menu did not request Hidden")
-        results.append("PASS Move control accepts clicks, requests Hidden and disables Always Hidden while off")
-        state = read_state(state_path, probe_process, lambda value: value["ready"] and not value["busy"])
+        if args.case in ("all", "menu"):
+            # Return to Shown before checking the actual native fallback menu.
+            bounded([str(binary), "--drive", str(state_path), "row", "shown", "normal"], 8,
+                    args.output / "restore.log")
+            state = read_state(state_path, probe_process, lambda value: not value["moving"] and not value["busy"])
+            before = len(state["commits"])
+            Path(str(state_path) + ".menu").touch()
+            state = read_state(state_path, probe_process, lambda value: "menu ready" in value["events"])
+            bounded([str(binary), "--menu", str(state_path)], 5, args.output / "menu-click.log")
+            state = read_state(state_path, probe_process, lambda value: len(value["commits"]) > before)
+            if state["commits"][before:] != ["hidden"]:
+                raise RuntimeError("Move menu did not request Hidden")
+            results.append("PASS native Move popup requests Hidden and disables Always Hidden while off")
+            Path(str(state_path) + ".show-always").touch()
+            state = read_state(state_path, probe_process, lambda value: value["ready"] and not value["busy"])
         for index, kind in enumerate(("stale", "close")):
+            if args.case not in ("all", kind):
+                continue
             before = len(state["commits"])
             offset = len(state["events"])
             bounded([str(binary), "--drive", str(state_path), "row", "shown", kind], 8,
