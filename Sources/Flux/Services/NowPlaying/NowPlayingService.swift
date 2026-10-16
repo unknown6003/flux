@@ -66,7 +66,7 @@ final class NowPlayingService: ObservableObject {
     /// The adapter's `stream` process is event-driven (blocks in a run loop
     /// waiting on MediaRemote notifications, no polling), so there's nothing
     /// to stop on `active == false` — leaving it running while inactive
-    /// costs nothing at idle and means the widget has an instant, already-
+    /// avoids polling and means the widget has an already-
     /// warm answer the moment it's shown again.
     func setActive(_ active: Bool) {
         guard active != isActive else { return }

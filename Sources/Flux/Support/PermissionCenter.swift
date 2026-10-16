@@ -15,7 +15,7 @@ let permissionLog = Logger(subsystem: "com.flux.menubar", category: "permission"
 /// (`SettingsRows.swift`) and every call site can be written once and reused
 /// as each later milestone turns its case on. M11 removed the third case,
 /// `accessibility` (M5's media-key interception, deleted along with it) —
-/// Calendar and Camera are now the only two permissions Flux ever requests.
+/// Calendar and Camera are the two widget permissions modeled here.
 enum PermissionKind: String, CaseIterable {
     case calendar, camera
 }
@@ -51,14 +51,14 @@ final class PermissionCenter: ObservableObject {
     /// TCC authorization is process-wide, not per-instance, so two instances
     /// never disagree about it; keeping them separate avoids coupling this
     /// permission-only type to the event-fetching one.
-    private let eventStore: EKEventStore
+    private var eventStore: EKEventStore?
 
     private var cancellables = Set<AnyCancellable>()
 
     init(eventStore: EKEventStore? = nil) {
-        self.eventStore = eventStore ?? EKEventStore()
+        self.eventStore = eventStore
         for kind in PermissionKind.allCases {
-            statuses[kind] = Self.currentStatus(for: kind, eventStore: self.eventStore)
+            statuses[kind] = Self.currentStatus(for: kind)
         }
         observeAppActivation()
     }
@@ -89,12 +89,12 @@ final class PermissionCenter: ObservableObject {
     /// every single app activation even when nothing about the permission
     /// actually changed.
     func refresh(_ kind: PermissionKind) {
-        let current = Self.currentStatus(for: kind, eventStore: eventStore)
+        let current = Self.currentStatus(for: kind)
         guard statuses[kind] != current else { return }
         statuses[kind] = current
     }
 
-    private static func currentStatus(for kind: PermissionKind, eventStore: EKEventStore) -> PermissionStatus {
+    private static func currentStatus(for kind: PermissionKind) -> PermissionStatus {
         switch kind {
         case .calendar:
             return mapCalendarStatus(EKEventStore.authorizationStatus(for: .event))
@@ -155,7 +155,9 @@ final class PermissionCenter: ObservableObject {
     func request(_ kind: PermissionKind) {
         switch kind {
         case .calendar:
-            eventStore.requestFullAccessToEvents { [weak self] _, error in
+            let store = eventStore ?? EKEventStore()
+            eventStore = store
+            store.requestFullAccessToEvents { [weak self] _, error in
                 Task { @MainActor in
                     if let error {
                         permissionLog.error("Calendar access request failed: \(error.localizedDescription, privacy: .public)")

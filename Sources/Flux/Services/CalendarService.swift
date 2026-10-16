@@ -219,9 +219,8 @@ final class CalendarService: ObservableObject {
     /// Resets `eventStore` once, the first time a fetch runs with access
     /// actually granted.
     ///
-    /// This service's store is constructed eagerly at launch
-    /// (`AppDelegate`), which on a first run means it exists well before the
-    /// user grants anything — and it is NOT the store that requested access.
+    /// This service's store is created on first fetch, and may also be injected
+    /// before access is granted. It is not the store that requested access.
     /// `PermissionCenter` owns a second `EKEventStore` and calls
     /// `requestFullAccessToEvents` on that one, on the stated grounds that
     /// TCC authorization is process-wide. That's true of the status *query*,

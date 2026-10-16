@@ -90,7 +90,7 @@ enum LockScreenWidgetPositionLogic {
 ///
 /// None of that is something application code can fix — it can only fail
 /// safely. That's the whole design brief for this type:
-///   - defaults OFF, entirely the wiring agent's call via `setEnabled(_:)`;
+///   - enabled for new profiles, controlled through `setEnabled(_:)`;
 ///   - never force-unwraps anything anywhere on the lock path;
 ///   - persists the last known display geometry and reconciles state by polling
 ///     as well as notifications, so one missed transition is recoverable;
