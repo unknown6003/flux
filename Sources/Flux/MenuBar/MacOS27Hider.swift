@@ -17,11 +17,11 @@ private final class MenuBarAssessment {
         NSSelectorFromString("initWithAllowedSystemItems:allowedBundleIdentifiers:")
     private let classes: (assertion: NSObject.Type, configuration: NSObject.Type)?
     private var active: (assertion: MenuBarAssessmentAssertion, allowed: [String])?
-    private var pending: MenuBarAssessmentAssertion?
+    private var pending: (assertion: MenuBarAssessmentAssertion, allowed: [String])?
     var onStatus: ((String?) -> Void)?
 
     deinit {
-        pending?.invalidate()
+        pending?.assertion.invalidate()
         active?.assertion.invalidate()
     }
 
@@ -50,11 +50,14 @@ private final class MenuBarAssessment {
 
     func restrict(to bundleIDs: [String]) {
         guard let classes else { return }
-        guard bundleIDs != allowed else {
-            pending?.invalidate()
+        guard bundleIDs != active?.allowed else {
+            pending?.assertion.invalidate()
             pending = nil
             return
         }
+        guard MacOS27Hider.shouldStartAssessment(requested: bundleIDs,
+                                                 active: active?.allowed,
+                                                 pending: pending?.allowed) else { return }
         let allocated = (classes.configuration as AnyObject)
             .perform(NSSelectorFromString("alloc"))?.takeUnretainedValue()
         let systemItems = (0..<64).map { NSNumber(value: $0) } as NSArray
@@ -65,13 +68,13 @@ private final class MenuBarAssessment {
             return
         }
 
-        pending?.invalidate()
+        pending?.assertion.invalidate()
         let assertion = unsafeBitCast(classes.assertion.init(),
                                       to: MenuBarAssessmentAssertion.self)
-        pending = assertion
+        pending = (assertion, bundleIDs)
         assertion.activate(with: configuration) { [weak self] error in
             DispatchQueue.main.async {
-                guard let self, self.pending === assertion else { return }
+                guard let self, self.pending?.assertion === assertion else { return }
                 self.pending = nil
                 if let error {
                     assertion.invalidate()
@@ -87,7 +90,7 @@ private final class MenuBarAssessment {
     }
 
     func release() {
-        pending?.invalidate()
+        pending?.assertion.invalidate()
         pending = nil
         active?.assertion.invalidate()
         active = nil
@@ -134,6 +137,7 @@ final class MacOS27Hider {
     private var accessGeneration = 0
     private var lastCollapsedScan = "No collapsed scan has run."
     private var lastCollapsedRequest = "No collapsed hide request has run."
+    private var runningBundleIDs = Set<String>()
 
     var diagnostics: String {
         let registered = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.flux.menubar")
@@ -181,12 +185,20 @@ final class MacOS27Hider {
         }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
-                     NSWorkspace.didTerminateApplicationNotification] {
+                     NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didWakeNotification] {
             appObservers.append(center.addObserver(forName: name, object: nil, queue: .main) {
                 [weak self] _ in
-                Task { @MainActor in self?.reconcile() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.runningBundleIDs = Self.runningApplicationBundleIDs()
+                    self.reconcile()
+                }
             })
         }
+        // Register first, then take the initial snapshot so a launch between the
+        // two steps cannot leave a running app out of the allow list.
+        runningBundleIDs = Self.runningApplicationBundleIDs()
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) {
             [weak self] _ in
             Task { @MainActor in self?.updateClockHover() }
@@ -229,6 +241,13 @@ final class MacOS27Hider {
     }
 
     @discardableResult
+    func recordSection(_ section: MenuBarSection, for bundleID: String,
+                       canCommit: () -> Bool = { true }) -> Bool {
+        commitLayoutChanges(for: [bundleID], requireAll: true,
+                            assignments: [bundleID: section], canCommit: canCommit) == [bundleID]
+    }
+
+    @discardableResult
     func recordLayoutChanges(for bundleIDs: Set<String>, canCommit: () -> Bool = { true }) -> Bool {
         commitLayoutChanges(for: bundleIDs, requireAll: true, canCommit: canCommit) == bundleIDs
     }
@@ -238,6 +257,7 @@ final class MacOS27Hider {
     }
 
     private func commitLayoutChanges(for bundleIDs: Set<String>, requireAll: Bool,
+                                     assignments: [String: MenuBarSection] = [:],
                                      canCommit: () -> Bool) -> Set<String> {
         guard !bundleIDs.isEmpty,
               bundleIDs.allSatisfy({ !$0.hasPrefix("com.apple.") && !Self.alwaysAllowed.contains($0) }),
@@ -255,7 +275,7 @@ final class MacOS27Hider {
               canCommit() else { return [] }
         generation += 1
         layoutScanPending = false
-        updateLayout(from: positions, chevronX: chevronX)
+        updateLayout(from: positions, chevronX: chevronX, assignments: assignments)
         reconcile()
         return available
     }
@@ -267,6 +287,34 @@ final class MacOS27Hider {
         return Set(groups.compactMap { id, items in
             items.allSatisfy { $0.x < boundary } ? id : nil
         })
+    }
+
+    static func applyingSectionAssignments(
+        _ assignments: [String: MenuBarSection],
+        hidden: Set<String>,
+        alwaysHidden: Set<String>
+    ) -> (hidden: Set<String>, alwaysHidden: Set<String>) {
+        var hidden = hidden
+        var alwaysHidden = alwaysHidden
+        for (bundleID, section) in assignments {
+            if section == .shown { hidden.remove(bundleID) }
+            else { hidden.insert(bundleID) }
+            if section == .alwaysHidden { alwaysHidden.insert(bundleID) }
+            else { alwaysHidden.remove(bundleID) }
+        }
+        return (hidden, alwaysHidden.intersection(hidden))
+    }
+
+    static func allowedBundleIDs(running: Set<String>, excluded: Set<String>) -> [String] {
+        running.subtracting(excluded).union(alwaysAllowed).sorted()
+    }
+
+    static func shouldStartAssessment(requested: [String], active: [String]?, pending: [String]?) -> Bool {
+        requested != active && requested != pending
+    }
+
+    private static func runningApplicationBundleIDs() -> Set<String> {
+        Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
     }
 
     nonisolated static func completePositions(for bundleID: String, centers: [CGFloat?]) -> [(bundleID: String, x: CGFloat)] {
@@ -418,13 +466,20 @@ final class MacOS27Hider {
         }
     }
 
-    private func updateLayout(from positions: [(bundleID: String, x: CGFloat)], chevronX: CGFloat) {
+    private func updateLayout(from positions: [(bundleID: String, x: CGFloat)],
+                              chevronX: CGFloat,
+                              assignments: [String: MenuBarSection] = [:]) {
         let readIDs = Set(positions.map(\.bundleID))
         hidden = hidden.subtracting(readIDs)
             .union(Self.hiddenBundleIDs(positions, leftOf: chevronX))
         alwaysHidden = alwaysHidden.subtracting(readIDs)
             .union(alwaysHiddenEnabled ? Self.hiddenBundleIDs(positions, leftOf: alwaysX()) : [])
             .intersection(hidden)
+        let assigned = Self.applyingSectionAssignments(assignments,
+                                                       hidden: hidden,
+                                                       alwaysHidden: alwaysHidden)
+        hidden = assigned.hidden
+        alwaysHidden = assigned.alwaysHidden
         defaults.set(["hidden": hidden.sorted(), "alwaysHidden": alwaysHidden.sorted()],
                      forKey: Self.layoutKey)
         hasSavedLayout = true
@@ -455,9 +510,7 @@ final class MacOS27Hider {
             releaseAssessment()
             return
         }
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        let allowed = running.subtracting(excluded)
-            .union(Self.alwaysAllowed).sorted()
+        let allowed = Self.allowedBundleIDs(running: runningBundleIDs, excluded: excluded)
         if !revealHidden && !revealAlwaysHidden {
             lastCollapsedRequest = "Requested hiding \(excluded.count) apps."
         }

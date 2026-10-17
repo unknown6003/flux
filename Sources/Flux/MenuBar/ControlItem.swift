@@ -189,7 +189,7 @@ final class ControlItem {
     /// Read-only outside the class; used by diagnostics and the self-test.
     private(set) var isArranging = false
 
-    init(role: Role, autosaveName: String) {
+    init(role: Role, autosaveName: String, initiallyVisible: Bool = true) {
         self.role = role
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Persist the user's Cmd-drag position across launches so the zones stay
@@ -201,8 +201,9 @@ final class ControlItem {
         // behavior still lets Cmd-drag *reposition* the items — it just can't
         // delete them.
         item.behavior = []
-        // Self-heal: force visible in case an older build persisted isVisible=false.
-        item.isVisible = true
+        // Self-heal old persisted state, while allowing a boundary that no longer
+        // participates in the macOS 27 layout to start hidden without flashing.
+        item.isVisible = initiallyVisible
         self.statusItem = item
 
         configureButton()

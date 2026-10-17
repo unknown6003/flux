@@ -409,24 +409,29 @@ private struct MenuBarDragIdentity {
     let barAttribute: String
 
     init?(icon: MenuBarIconManager.Icon) {
-        let parts = icon.id.split(separator: "|", omittingEmptySubsequences: false)
         let apps: [NSRunningApplication]
         let attribute: String
+        let expectedIndex: Int?
         if ControlItem.usesMacOS27Model {
-            guard parts.count == 2, Int(parts[1]) != nil else { return nil }
-            apps = NSRunningApplication.runningApplications(withBundleIdentifier: String(parts[0]))
+            guard let identity = MenuBarIconManager.appIconIdentity(from: icon.id) else { return nil }
+            apps = NSRunningApplication.runningApplications(withBundleIdentifier: identity.bundleID)
+                .filter { $0.processIdentifier == identity.processID }
             attribute = kAXExtrasMenuBarAttribute
+            expectedIndex = identity.index
         } else {
             apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systemuiserver")
             attribute = kAXMenuBarAttribute
+            expectedIndex = nil
         }
         guard apps.count == 1, let owner = apps.first,
+              expectedIndex == nil || MenuBarIconManager.launchToken(for: owner.launchDate)
+                == MenuBarIconManager.appIconIdentity(from: icon.id)?.launchToken,
               let elements = Self.items(owner: owner, attribute: attribute) else { return nil }
         let matches = elements.enumerated().filter {
             Self.matches($0.element, icon: icon, owner: owner, index: $0.offset)
         }
         guard matches.count == 1, let match = matches.first else { return nil }
-        if attribute == kAXExtrasMenuBarAttribute, match.offset != Int(parts[1]) { return nil }
+        if let expectedIndex, match.offset != expectedIndex { return nil }
         self.owner = owner
         launched = owner.launchDate
         self.elements = elements
