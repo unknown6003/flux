@@ -11,6 +11,12 @@ import ApplicationServices
     func invalidate()
 }
 
+enum MenuBarAssessmentPolicy {
+    static func shouldStart(requested: [String], active: [String]?, pending: [String]?) -> Bool {
+        requested != active && requested != pending
+    }
+}
+
 @MainActor
 private final class MenuBarAssessment {
     private static let configurationSelector =
@@ -18,9 +24,11 @@ private final class MenuBarAssessment {
     private let classes: (assertion: NSObject.Type, configuration: NSObject.Type)?
     private var active: (assertion: MenuBarAssessmentAssertion, allowed: [String])?
     private var pending: (assertion: MenuBarAssessmentAssertion, allowed: [String])?
+    private var pendingTimeout: DispatchWorkItem?
     var onStatus: ((String?) -> Void)?
 
     deinit {
+        pendingTimeout?.cancel()
         pending?.assertion.invalidate()
         active?.assertion.invalidate()
     }
@@ -51,13 +59,15 @@ private final class MenuBarAssessment {
     func restrict(to bundleIDs: [String]) {
         guard let classes else { return }
         guard bundleIDs != active?.allowed else {
+            pendingTimeout?.cancel()
+            pendingTimeout = nil
             pending?.assertion.invalidate()
             pending = nil
             return
         }
-        guard MacOS27Hider.shouldStartAssessment(requested: bundleIDs,
-                                                 active: active?.allowed,
-                                                 pending: pending?.allowed) else { return }
+        guard MenuBarAssessmentPolicy.shouldStart(requested: bundleIDs,
+                                                  active: active?.allowed,
+                                                  pending: pending?.allowed) else { return }
         let allocated = (classes.configuration as AnyObject)
             .perform(NSSelectorFromString("alloc"))?.takeUnretainedValue()
         let systemItems = (0..<64).map { NSNumber(value: $0) } as NSArray
@@ -68,13 +78,26 @@ private final class MenuBarAssessment {
             return
         }
 
+        pendingTimeout?.cancel()
         pending?.assertion.invalidate()
         let assertion = unsafeBitCast(classes.assertion.init(),
                                       to: MenuBarAssessmentAssertion.self)
         pending = (assertion, bundleIDs)
+        let timeout = DispatchWorkItem { [weak self, weak assertion] in
+            guard let self, let assertion,
+                  self.pending?.assertion === assertion else { return }
+            self.pending = nil
+            self.pendingTimeout = nil
+            assertion.invalidate()
+            self.onStatus?("MenuBarAgent did not confirm the hiding request within 10 seconds.")
+        }
+        pendingTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
         assertion.activate(with: configuration) { [weak self] error in
             DispatchQueue.main.async {
                 guard let self, self.pending?.assertion === assertion else { return }
+                self.pendingTimeout?.cancel()
+                self.pendingTimeout = nil
                 self.pending = nil
                 if let error {
                     assertion.invalidate()
@@ -90,6 +113,8 @@ private final class MenuBarAssessment {
     }
 
     func release() {
+        pendingTimeout?.cancel()
+        pendingTimeout = nil
         pending?.assertion.invalidate()
         pending = nil
         active?.assertion.invalidate()
@@ -307,10 +332,6 @@ final class MacOS27Hider {
 
     static func allowedBundleIDs(running: Set<String>, excluded: Set<String>) -> [String] {
         running.subtracting(excluded).union(alwaysAllowed).sorted()
-    }
-
-    static func shouldStartAssessment(requested: [String], active: [String]?, pending: [String]?) -> Bool {
-        requested != active && requested != pending
     }
 
     private static func runningApplicationBundleIDs() -> Set<String> {

@@ -98,10 +98,10 @@ enum SelfTest {
         check(allowed.contains("shown.app") && !allowed.contains("hidden.app")
                 && allowed.contains("com.flux.menubar"),
               "The reveal request keeps Flux allowed while excluding saved hidden apps")
-        check(!MacOS27Hider.shouldStartAssessment(requested: ["shown.app"],
-                                                  active: ["other.app"], pending: ["shown.app"])
-                && MacOS27Hider.shouldStartAssessment(requested: ["shown.app"],
-                                                      active: ["other.app"], pending: ["another.app"]),
+        check(!MenuBarAssessmentPolicy.shouldStart(requested: ["shown.app"],
+                                                   active: ["other.app"], pending: ["shown.app"])
+                && MenuBarAssessmentPolicy.shouldStart(requested: ["shown.app"],
+                                                       active: ["other.app"], pending: ["another.app"]),
               "Repeated hide requests reuse the pending MenuBarAgent assessment")
         let launch = Date(timeIntervalSince1970: 1_000)
         let firstProcessID = MenuBarIconManager.iconID(bundleID: "multi.app", processID: 101,
