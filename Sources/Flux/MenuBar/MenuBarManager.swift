@@ -47,7 +47,8 @@ final class MenuBarManager {
         }
 
         self.chevron = ControlItem(role: .chevron, autosaveName: "flux.chevron")
-        self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden")
+        self.hiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.hidden",
+                                         initiallyVisible: !ControlItem.usesMacOS27Model)
         self.alwaysHiddenDivider = ControlItem(role: .divider, autosaveName: "flux.divider.alwaysHidden")
 
         wireChevron()
@@ -180,7 +181,8 @@ final class MenuBarManager {
 
     private func computeOverflowDeficit() -> CGFloat? {
         guard let screen = menuBarScreen() else { return 0 }
-        let boundary = revealAlwaysHidden ? alwaysHiddenDivider : hiddenDivider
+        let boundary = revealAlwaysHidden ? alwaysHiddenDivider
+            : (ControlItem.usesMacOS27Model ? chevron : hiddenDivider)
         guard let frame = boundary.statusItem.button?.window?.frame else { return nil }
         guard frame.width <= screen.frame.width else { return nil }
         guard frame.width >= 1 else { return .greatestFiniteMagnitude }
@@ -203,13 +205,20 @@ final class MenuBarManager {
 
     /// Boundaries used by the Settings drawer to classify and move real icons.
     var drawerBoundaries: (hidden: CGFloat?, alwaysHidden: CGFloat?) {
-        (hidden: hiddenDivider.statusItem.button?.window?.frame.maxX,
+        (hidden: Self.hiddenBoundary(hiddenDividerX: hiddenDivider.statusItem.button?.window?.frame.maxX,
+                                      chevronX: chevronBoundary,
+                                      usesMacOS27Model: ControlItem.usesMacOS27Model),
          alwaysHidden: settings.showAlwaysHiddenSection
             ? alwaysHiddenDivider.statusItem.button?.window?.frame.maxX
             : nil)
     }
 
     var chevronBoundary: CGFloat? { chevron.statusItem.button?.window?.frame.minX }
+
+    static func hiddenBoundary(hiddenDividerX: CGFloat?, chevronX: CGFloat?,
+                               usesMacOS27Model: Bool) -> CGFloat? {
+        usesMacOS27Model ? chevronX : hiddenDividerX
+    }
 
     // MARK: Auto-hide
 

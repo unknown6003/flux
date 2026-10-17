@@ -83,6 +83,63 @@ enum SelfTest {
               "macOS 27 hides only apps whose every item is left of the chevron")
         check(MacOS27Hider.hiddenBundleIDs(positions, leftOf: nil).isEmpty,
               "macOS 27 keeps all apps visible when the boundary is unavailable")
+        let movedPolicy = MacOS27Hider.applyingSectionAssignments(
+            ["moving.app": .hidden], hidden: ["moving.app"], alwaysHidden: ["moving.app"])
+        check(movedPolicy.hidden.contains("moving.app")
+                && !movedPolicy.alwaysHidden.contains("moving.app"),
+              "A saved Hidden move replaces a stale Always Hidden assignment")
+        let appMovePolicy = MacOS27Hider.applyingSectionAssignments(
+            ["multi.app": .hidden], hidden: [], alwaysHidden: [])
+        check(appMovePolicy.hidden == ["multi.app"],
+              "A Settings move assigns every icon owned by the same app together")
+        let shownPolicy = MacOS27Hider.applyingSectionAssignments(
+            ["moving.app": .shown], hidden: ["moving.app"], alwaysHidden: ["moving.app"])
+        check(!shownPolicy.hidden.contains("moving.app")
+                && !shownPolicy.alwaysHidden.contains("moving.app"),
+              "A saved Shown move clears both hidden policies")
+        let allowed = MacOS27Hider.allowedBundleIDs(
+            running: ["shown.app", "hidden.app"], excluded: ["hidden.app"])
+        check(allowed.contains("shown.app") && !allowed.contains("hidden.app")
+                && allowed.contains("com.flux.menubar"),
+              "The reveal request keeps Flux allowed while excluding saved hidden apps")
+        check(!MenuBarAssessmentPolicy.shouldStart(requested: ["shown.app"],
+                                                   active: ["other.app"], pending: ["shown.app"])
+                && MenuBarAssessmentPolicy.shouldStart(requested: ["shown.app"],
+                                                       active: ["other.app"], pending: ["another.app"]),
+              "Repeated hide requests reuse the pending MenuBarAgent assessment")
+        let launch = Date(timeIntervalSince1970: 1_000)
+        let firstProcessID = MenuBarIconManager.iconID(bundleID: "multi.app", processID: 101,
+                                                       launchDate: launch, index: 0)
+        let secondProcessID = MenuBarIconManager.iconID(bundleID: "multi.app", processID: 202,
+                                                        launchDate: launch, index: 0)
+        let relaunchedProcessID = MenuBarIconManager.iconID(bundleID: "multi.app", processID: 101,
+                                                            launchDate: launch.addingTimeInterval(1), index: 0)
+        let decodedProcessID = MenuBarIconManager.appIconIdentity(from: firstProcessID)
+        check(firstProcessID != secondProcessID && firstProcessID != relaunchedProcessID
+                && firstProcessID == MenuBarIconManager.iconID(bundleID: "multi.app", processID: 101,
+                                                               launchDate: launch, index: 0),
+              "Icon identity separates app processes and process launches")
+        check(decodedProcessID?.bundleID == "multi.app" && decodedProcessID?.processID == 101
+                && decodedProcessID?.launchToken == MenuBarIconManager.launchToken(for: launch)
+                && decodedProcessID?.index == 0
+                && MenuBarIconManager.appIconIdentity(from: "multi.app|101|0") == nil,
+              "App icon identity parsing preserves process and AX item index")
+        let movedIcon = MenuBarIconManager.Icon(id: "moving", title: "Moved", source: nil,
+                                                section: .shown, isMovable: true,
+                                                frame: CGRect(x: 120, y: 0, width: 20, height: 20))
+        let hiddenSibling = MenuBarIconManager.Icon(id: "hidden", title: "Hidden", source: nil,
+                                                    section: .hidden, isMovable: true,
+                                                    frame: CGRect(x: 100, y: 0, width: 20, height: 20))
+        let destination = MenuBarIconManager.Insertion(section: .hidden, before: nil,
+                                                       after: hiddenSibling)
+        check(MenuBarIconManager.insertionMatches(movedIcon, placement: destination,
+                                                  in: [hiddenSibling]),
+              "Cross-section verification includes the moved icon before its saved section changes")
+        check(MenuBarManager.hiddenBoundary(hiddenDividerX: 250, chevronX: 260,
+                                            usesMacOS27Model: true) == 260
+                && MenuBarManager.hiddenBoundary(hiddenDividerX: 250, chevronX: 260,
+                                                usesMacOS27Model: false) == 250,
+              "macOS 27 classification uses the chevron as the Shown/Hidden boundary")
         if ControlItem.usesMacOS27Model {
             check(MacOS27Hider().isAvailable,
                   "macOS 27 exposes the MenuBarAgent visibility interface")

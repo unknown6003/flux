@@ -57,6 +57,17 @@ final class MenuBarIconManager: ObservableObject {
     var extra = false
     var extraRows = 0
     var assignments: [String: MenuBarSection] = [:]
+    static func launchToken(for launchDate: Date?) -> Int64 {
+        guard let launchDate else { return 0 }
+        return Int64((launchDate.timeIntervalSince1970 * 1_000).rounded())
+    }
+    static func appIconIdentity(from id: String) ->
+        (bundleID: String, processID: pid_t, launchToken: Int64, index: Int)? {
+        let parts = id.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 4, let processID = Int32(parts[1]),
+              let launchToken = Int64(parts[2]), let index = Int(parts[3]), index >= 0 else { return nil }
+        return (String(parts[0]), pid_t(processID), launchToken, index)
+    }
     let canHideWithoutAccess = false
     let errorMessage: String? = nil
     func beginIconManagement() { refresh() }
@@ -96,8 +107,10 @@ final class MenuBarIconManager: ObservableObject {
             var size = CGSize.zero
             guard AXValueGetValue(p as! AXValue, .cgPoint, &point),
                   AXValueGetValue(s as! AXValue, .cgSize, &size) else { continue }
-            icons.append(Icon(id: "com.flux.menu-drag-fixture|\(index)", title: stale ? "Replaced item" : title,
-                              source: app.localizedName, section: assignments["com.flux.menu-drag-fixture|\(index)"] ?? .shown, isMovable: true,
+            let launchToken = Int64(((app.launchDate?.timeIntervalSince1970 ?? 0) * 1_000).rounded())
+            let id = "com.flux.menu-drag-fixture|\(app.processIdentifier)|\(launchToken)|\(index)"
+            icons.append(Icon(id: id, title: stale ? "Replaced item" : title,
+                              source: app.localizedName, section: assignments[id] ?? .shown, isMovable: true,
                               frame: CGRect(origin: point, size: size)))
         }
         if extra {

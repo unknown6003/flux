@@ -69,9 +69,14 @@ final class MenuBarIconLaneView: MenuBarDragDestinationView {
         self.alwaysHiddenEnabled = alwaysHiddenEnabled
         let ordered = icons.sorted { $0.frame.minX < $1.frame.minX }
         guard self.icons != ordered || sources.isEmpty else { needsDisplay = true; return }
-        let old = Dictionary(uniqueKeysWithValues: sources.compactMap { source in source.icon.map { ($0.id, source) } })
+        let oldGroups = Dictionary(grouping: sources.compactMap { source in
+            source.icon.map { ($0.id, source) }
+        }, by: { $0.0 })
+        var old = oldGroups.compactMapValues { matches in
+            matches.count == 1 ? matches[0].1 : nil
+        }
         let next = ordered.map { icon -> MenuBarDragSourceView in
-            let source = old[icon.id] ?? controller.makeSourceView(for: icon)
+            let source = old.removeValue(forKey: icon.id) ?? controller.makeSourceView(for: icon)
             source.icon = icon
             source.imageProvider = { [weak images] in images?.images[icon.id] }
             source.moveMenu = { [weak self, weak source] in

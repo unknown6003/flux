@@ -1212,7 +1212,7 @@ func probe() {
     @MainActor
     func removedRow() {
         guard let index = CommandLine.arguments.firstIndex(of: "--removed-row"),
-              let old = manager.icons.first(where: { $0.id == "com.flux.icon-fixture|0" }),
+              let old = manager.icons.first(where: { $0.id.hasPrefix("com.flux.icon-fixture|") && $0.id.hasSuffix("|0") }),
               old.title == "Flux fixture A" else {
             print("FAIL: the removed-row fixture did not expose A at index zero")
             exit(1)
