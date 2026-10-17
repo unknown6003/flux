@@ -95,7 +95,7 @@ struct MenuBarTab: View {
                 .controlSize(.small)
                 .font(.caption)
             if ControlItem.usesMacOS27Model {
-                Text("Icons from the same app hide together. Apple system icons stay in the menu bar.")
+                Text("Moving one icon moves all icons from that app. Apple system icons stay in the menu bar.")
                     .font(.caption)
                     .foregroundStyle(Theme.textSecondaryColor)
             }

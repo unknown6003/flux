@@ -265,9 +265,11 @@ final class MacOS27Hider {
         recordLayoutChanges(for: [bundleID], canCommit: canCommit)
     }
 
+    /// MenuBarAgent visibility is app-scoped, so every icon from this bundle
+    /// follows the selected Settings section.
     @discardableResult
-    func recordSection(_ section: MenuBarSection, for bundleID: String,
-                       canCommit: () -> Bool = { true }) -> Bool {
+    func recordAppSection(_ section: MenuBarSection, for bundleID: String,
+                          canCommit: () -> Bool = { true }) -> Bool {
         commitLayoutChanges(for: [bundleID], requireAll: true,
                             assignments: [bundleID: section], canCommit: canCommit) == [bundleID]
     }

@@ -48,6 +48,7 @@ final class MenuBarIconManager: ObservableObject {
 
     private var elements: [String: AXUIElement] = [:]
     private var assignedSections: [String: MenuBarSection] = [:]
+    private var provisionalSections: [String: MenuBarSection] = [:]
     private struct NativeMove {
         let icon: Icon
         let element: AXUIElement
@@ -455,7 +456,7 @@ final class MenuBarIconManager: ObservableObject {
                     ?? app.localizedName ?? bundleID
                 let id = Self.iconID(bundleID: bundleID, processID: app.processIdentifier,
                                      launchDate: app.launchDate, index: index)
-                let section = macOS27Hider.section(for: bundleID)
+                let section = provisionalSections[id] ?? macOS27Hider.section(for: bundleID)
                     ?? Self.section(for: frame, boundaries: boundaries)
                 next.append(Icon(id: id, title: title, source: app.localizedName,
                                  section: section, isMovable: true, frame: frame,
@@ -584,7 +585,8 @@ final class MenuBarIconManager: ObservableObject {
                                              boundaries: boundaryProvider()) else {
             return
         }
-        if !ControlItem.usesMacOS27Model { assignedSections[icon.id] = section }
+        if ControlItem.usesMacOS27Model { provisionalSections[icon.id] = section }
+        else { assignedSections[icon.id] = section }
         move(icon, toX: targetX, expectedSection: section)
     }
 
@@ -614,7 +616,8 @@ final class MenuBarIconManager: ObservableObject {
                                      boundaries: boundaryProvider())
         }
         guard let targetX else { return false }
-        if !ControlItem.usesMacOS27Model { assignedSections[icon.id] = insertion.section }
+        if ControlItem.usesMacOS27Model { provisionalSections[icon.id] = insertion.section }
+        else { assignedSections[icon.id] = insertion.section }
         move(icon, toX: targetX, expectedSection: insertion.section,
              allowNativeRetry: false, insertion: insertion)
         return true
@@ -720,6 +723,14 @@ final class MenuBarIconManager: ObservableObject {
         return .shown
     }
 
+    static func insertionMatches(_ current: Icon, placement: Insertion, in icons: [Icon]) -> Bool {
+        let siblings = icons.filter { $0.id != current.id && $0.section == placement.section }
+        let ordered = (siblings + [current]).sorted { $0.frame.minX < $1.frame.minX }
+        guard let index = ordered.firstIndex(where: { $0.id == current.id }) else { return false }
+        return (index + 1 < ordered.count ? ordered[index + 1].id : nil) == placement.before?.id
+            && (index > 0 ? ordered[index - 1].id : nil) == placement.after?.id
+    }
+
     static func insertionX(for section: MenuBarSection,
                            iconWidth: CGFloat,
                            boundaries: Boundaries,
@@ -801,6 +812,7 @@ final class MenuBarIconManager: ObservableObject {
             completedNativeMoves = completedNativeMoves.filter { $0.value.owner.bundleIdentifier != String(bundleID) }
         }
         guard let element = elements[icon.id] else {
+            provisionalSections.removeValue(forKey: icon.id)
             refresh()
             finishMove()
             return
@@ -834,6 +846,10 @@ final class MenuBarIconManager: ObservableObject {
 
     private func finishMove() {
         pendingMoveCount -= 1
+        if pendingMoveCount == 0, !provisionalSections.isEmpty {
+            provisionalSections.removeAll()
+            refresh()
+        }
         applyDeferredVisibility()
         finishIconUpdate()
     }
@@ -907,11 +923,7 @@ final class MenuBarIconManager: ObservableObject {
                                              boundaries: self.boundaryProvider())
             self.lastMoveVerification = "id=\(current.id), frame=\(current.frame), actual=\(actualSection.rawValue), expected=\(expectedSection.rawValue), boundaries=\(self.boundaryProvider())"
             let orderMatches = insertion.map { placement in
-                let siblings = self.icons.filter { $0.section == expectedSection }
-                    .sorted { $0.frame.minX < $1.frame.minX }
-                guard let index = siblings.firstIndex(where: { $0.id == current.id }) else { return false }
-                return (index + 1 < siblings.count ? siblings[index + 1].id : nil) == placement.before?.id
-                    && (index > 0 ? siblings[index - 1].id : nil) == placement.after?.id
+                Self.insertionMatches(current, placement: placement, in: self.icons)
             } ?? true
             guard actualSection != expectedSection || !orderMatches else {
                 if !self.saveLayout(for: current, section: expectedSection, canCommit: canCommit) {
@@ -930,13 +942,17 @@ final class MenuBarIconManager: ObservableObject {
                     self.finishUnsavedMove(icon)
                     return
                 }
-                if ControlItem.usesMacOS27Model { self.refresh() }
+                if ControlItem.usesMacOS27Model {
+                    self.provisionalSections.removeValue(forKey: icon.id)
+                    self.refresh()
+                }
                 self.finishMove()
                 return
             }
             guard retryWithDrag,
                   !ControlItem.usesMacOS27Model || inputGeneration == self.nativeInputGeneration else {
                 self.assignedSections.removeValue(forKey: icon.id)
+                self.provisionalSections.removeValue(forKey: icon.id)
                 self.refresh()
                 self.errorMessage = "macOS did not move \(icon.title). Try again."
                 self.finishMove()
@@ -971,6 +987,7 @@ final class MenuBarIconManager: ObservableObject {
 
     private func finishUnsavedMove(_ icon: Icon) {
         assignedSections.removeValue(forKey: icon.id)
+        provisionalSections.removeValue(forKey: icon.id)
         if ControlItem.usesMacOS27Model,
            let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
             nativeSaveFailures.insert(String(bundleID))
@@ -984,7 +1001,7 @@ final class MenuBarIconManager: ObservableObject {
                             canCommit: () -> Bool) -> Bool {
         guard ControlItem.usesMacOS27Model else { return true }
         guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
-        let saved = macOS27Hider.recordSection(section, for: String(bundleID), canCommit: canCommit)
+        let saved = macOS27Hider.recordAppSection(section, for: String(bundleID), canCommit: canCommit)
         if saved {
             nativeSaveFailures.remove(String(bundleID))
             errorMessage = nativeSaveError ?? macOS27Hider.latestError

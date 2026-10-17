@@ -88,6 +88,10 @@ enum SelfTest {
         check(movedPolicy.hidden.contains("moving.app")
                 && !movedPolicy.alwaysHidden.contains("moving.app"),
               "A saved Hidden move replaces a stale Always Hidden assignment")
+        let appMovePolicy = MacOS27Hider.applyingSectionAssignments(
+            ["multi.app": .hidden], hidden: [], alwaysHidden: [])
+        check(appMovePolicy.hidden == ["multi.app"],
+              "A Settings move assigns every icon owned by the same app together")
         let shownPolicy = MacOS27Hider.applyingSectionAssignments(
             ["moving.app": .shown], hidden: ["moving.app"], alwaysHidden: ["moving.app"])
         check(!shownPolicy.hidden.contains("moving.app")
@@ -120,6 +124,17 @@ enum SelfTest {
                 && decodedProcessID?.index == 0
                 && MenuBarIconManager.appIconIdentity(from: "multi.app|101|0") == nil,
               "App icon identity parsing preserves process and AX item index")
+        let movedIcon = MenuBarIconManager.Icon(id: "moving", title: "Moved", source: nil,
+                                                section: .shown, isMovable: true,
+                                                frame: CGRect(x: 120, y: 0, width: 20, height: 20))
+        let hiddenSibling = MenuBarIconManager.Icon(id: "hidden", title: "Hidden", source: nil,
+                                                    section: .hidden, isMovable: true,
+                                                    frame: CGRect(x: 100, y: 0, width: 20, height: 20))
+        let destination = MenuBarIconManager.Insertion(section: .hidden, before: nil,
+                                                       after: hiddenSibling)
+        check(MenuBarIconManager.insertionMatches(movedIcon, placement: destination,
+                                                  in: [hiddenSibling]),
+              "Cross-section verification includes the moved icon before its saved section changes")
         check(MenuBarManager.hiddenBoundary(hiddenDividerX: 250, chevronX: 260,
                                             usesMacOS27Model: true) == 260
                 && MenuBarManager.hiddenBoundary(hiddenDividerX: 250, chevronX: 260,
