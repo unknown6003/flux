@@ -27,10 +27,6 @@ def command(arguments, seconds):
             raise RuntimeError(f"FAIL: {arguments[0]} exited with {status}")
     finally:
         _stop(process)
-        if recording:
-            _stop(recording)
-        if recording_log:
-            recording_log.close()
 
 
 def interrupted(signum, _frame):
