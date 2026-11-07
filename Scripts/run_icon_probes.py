@@ -87,10 +87,16 @@ def select_cases(selected, include_baselines):
     unknown = selected - {case[0] for case in CASES}
     if unknown:
         raise ValueError("Unknown native icon case: " + ", ".join(sorted(unknown)))
-    return [(case, None if (case[0] in selected if selected else
-                           include_baselines or case[3] is None) else
-             ("not selected" if selected else "historical baseline; opt in with --include-baselines"))
-            for case in CASES]
+    selection = []
+    for case in CASES:
+        if selected:
+            reason = None if case[0] in selected else "not selected"
+        elif case[0] == "insertion-evidence":
+            reason = "media capture; opt in with --cases insertion-evidence"
+        else:
+            reason = None if include_baselines or case[3] is None else "historical baseline; opt in with --include-baselines"
+        selection.append((case, reason))
+    return selection
 
 
 def run_cases(selection, output):

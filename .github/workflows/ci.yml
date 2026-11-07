@@ -251,7 +251,7 @@ jobs:
 
       - name: Probe Settings icon section moves
         if: ${{ inputs.menu_bar_probe }}
-        timeout-minutes: 13
+        timeout-minutes: 16
         env:
           FLUX_ICON_PROBE_CASES: ${{ inputs.icon_probe_cases }}
           FLUX_ICON_PROBE_BASELINES: ${{ inputs.historical_baselines }}

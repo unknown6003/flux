@@ -1033,7 +1033,7 @@ final class MenuBarIconManager: ObservableObject {
                     move.flags = .maskCommand
                     move.post(tap: .cghidEventTap)
                 }
-                if paced { Thread.sleep(forTimeInterval: 0.018) }
+                if paced { Thread.sleep(forTimeInterval: 0.12) }
             }
             up.flags = .maskCommand
             up.post(tap: .cghidEventTap)
