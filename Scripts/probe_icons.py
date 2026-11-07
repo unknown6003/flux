@@ -57,6 +57,7 @@ parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--move-retry-overlap", action="store_true")
 parser.add_argument("--trace-drag", action="store_true", help="Record actual event-post completion times in a temporary manager copy")
 parser.add_argument("--insertion", action="store_true", help="Use the exact strip insertion interface for physical reorder")
+parser.add_argument("--wide-item", action="store_true", help="Reorder an icon with a wide, changing status title")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
 options = parser.parse_args()
@@ -133,8 +134,8 @@ if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap", "--drag-held
 }
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-let item = NSStatusBar.system.statusItem(withLength: 28)
-item.button?.title = "FXA"
+let item = NSStatusBar.system.statusItem(withLength: CommandLine.arguments.contains("--wide-item") ? 240 : 28)
+item.button?.title = CommandLine.arguments.contains("--wide-item") ? "Home workout · in 2 h 37 m" : "FXA"
 item.button?.setAccessibilityTitle("Flux fixture A")
 if let index = CommandLine.arguments.firstIndex(of: "--geometry-output") {
     let output = URL(fileURLWithPath: CommandLine.arguments[index + 1])
@@ -1375,6 +1376,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
     geometry = temporary / "geometry"
     geometry.mkdir()
     fixture_flags = (["--single"] if close_test else [])
+    if options.wide_item:
+        fixture_flags += ["--wide-item"]
     removal_request = temporary / "remove-first"
     if options.removed_row:
         fixture_flags += ["--remove-first", str(removal_request), "--duplicate-title"]

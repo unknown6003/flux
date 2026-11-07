@@ -76,6 +76,7 @@ CASES = [
         'c691fe1c2b1f475eb22239e1a65662cfa7394aac'], 'an expired menu request posted native input'),
     ('menu-expired', 'probe_icons.py', ['--menu-expired'], None),
     ('insertion', 'probe_icons.py', ['--insertion'], None),
+    ('wide-insertion', 'probe_icons.py', ['--insertion', '--wide-item'], None),
 ]
 
 
