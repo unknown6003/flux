@@ -1329,6 +1329,10 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
             ["git", "show", "6fde90817068d06ecfae8eb6ec85c19e68af997b:" + controller_path],
             cwd=root, text=True, timeout=15))
     if options.insertion:
+        source = source.replace('destination.section = .shown', '''destination.section = .shown
+        destination.insertionAt = { _ in
+            MenuBarIconManager.Insertion(section: .shown, before: nil, after: nil)
+        }''')
         if "struct Insertion:" not in manager_source.read_text():
             raise RuntimeError("selected manager has no insertion interface")
         source = source.replace('manager.move(moveArgument(moving, kind: "arrow"), toward: direction)', '''
