@@ -65,6 +65,7 @@ jobs:
       - name: Run isolated native drag cases
         env:
           FLUX_DRAG_PROBE_PLAN: ${{ inputs.drag_probe_plan }}
+          FLUX_ICON_PROBE_CASES: ${{ inputs.icon_probe_cases }}
         run: |
           python3 - <<'PY'
           import json, os, re, sys, time
