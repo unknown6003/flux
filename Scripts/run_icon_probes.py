@@ -77,6 +77,8 @@ CASES = [
     ('menu-expired', 'probe_icons.py', ['--menu-expired'], None),
     ('insertion', 'probe_icons.py', ['--insertion'], None),
     ('wide-insertion', 'probe_icons.py', ['--insertion', '--wide-item'], None),
+    ('insertion-evidence', 'probe_icons.py', ['--insertion', '--wide-item',
+        '--evidence-output', 'build/icon-probe/insertion-evidence'], None),
 ]
 
 

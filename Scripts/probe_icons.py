@@ -27,6 +27,10 @@ def command(arguments, seconds):
             raise RuntimeError(f"FAIL: {arguments[0]} exited with {status}")
     finally:
         _stop(process)
+        if recording:
+            _stop(recording)
+        if recording_log:
+            recording_log.close()
 
 
 def interrupted(signum, _frame):
@@ -57,7 +61,8 @@ parser.add_argument("--move-overlap", action="store_true")
 parser.add_argument("--move-retry-overlap", action="store_true")
 parser.add_argument("--trace-drag", action="store_true", help="Record actual event-post completion times in a temporary manager copy")
 parser.add_argument("--insertion", action="store_true", help="Use the exact strip insertion interface for physical reorder")
-parser.add_argument("--wide-item", action="store_true", help="Reorder an icon with a wide, changing status title")
+parser.add_argument("--wide-item", action="store_true", help="Reorder an icon with a wide status title")
+parser.add_argument("--evidence-output", type=Path, help="Save real menu bar screenshots and a bounded recording")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
 options = parser.parse_args()
@@ -277,6 +282,25 @@ func probe() {
         print("UI_SNAPSHOT id=\(icon.id) old=\(oldFrame) live=\(icon.frame) action=\(kind)")
         return MenuBarIconManager.Icon(id: icon.id, title: icon.title, source: icon.source,
                                       section: icon.section, isMovable: icon.isMovable, frame: oldFrame)
+    }
+    @MainActor
+    func captureEvidence(_ stage: String) {
+        guard let index = CommandLine.arguments.firstIndex(of: "--evidence-output"),
+              let screen = NSScreen.screens.first else { return }
+        let path = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+            .appendingPathComponent(stage + ".png")
+        let capture = Process()
+        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        capture.arguments = ["-x", "-R0,0,\(Int(screen.frame.width)),80", path.path]
+        do { try capture.run() }
+        catch { print("FAIL: evidence capture could not start: \(error)"); exit(1) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while capture.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if capture.isRunning { kill(capture.processIdentifier, SIGKILL) }
+        capture.waitUntilExit()
+        guard capture.terminationStatus == 0 else { print("FAIL: evidence capture failed"); exit(1) }
     }
     var captureDeadlines: [String: TimeInterval] = [:]
     @MainActor
@@ -1128,6 +1152,7 @@ func probe() {
             return
         }
         guard manager.canMove(moving, toward: direction) else { exit(1) }
+        captureEvidence("before-reorder-\(arrowPass)")
         let actionStart = ProcessInfo.processInfo.systemUptime
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
             print("PERF_NATIVE_MOVE_PULSE_MS \((ProcessInfo.processInfo.systemUptime - actionStart) * 1_000)")
@@ -1161,6 +1186,7 @@ func probe() {
                     exit(1)
                 }
             }
+            captureEvidence("after-reorder-\(arrowPass)")
             print("PASS: the Settings arrow changed the real icon order")
             if (staleFrameKind == "arrow" || CommandLine.arguments.contains("--wide-item")) && arrowPass == 0 {
                 reorder(prepared: expected, arrowPass: 1)
@@ -1177,6 +1203,7 @@ func probe() {
             exit(1)
         }
         let section = sections[index]
+        captureEvidence("before-\(section.rawValue)")
         print("Moving fixture to \(section.rawValue), from \(icon.frame); boundaries=\(manager.boundaryProvider())")
         manager.move(moveArgument(icon, kind: "section"), to: section)
         guard manager.isUpdatingIcons else {
@@ -1194,6 +1221,7 @@ func probe() {
                 print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
             }
+            captureEvidence("after-\(section.rawValue)")
             print("PASS: Settings moved the real fixture to \(section.rawValue)")
             if let physical = geometry("section-\(section.rawValue)") {
                 guard abs(physical.x - current.frame.midX) <= 1,
@@ -1383,6 +1411,11 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         fixture_flags += ["--remove-first", str(removal_request), "--duplicate-title"]
     if capture_geometry:
         fixture_flags += ["--geometry-output", str(geometry / "fixture.json")]
+    if options.evidence_output:
+        options.evidence_output = options.evidence_output.resolve()
+        options.evidence_output.mkdir(parents=True, exist_ok=True)
+    recording = None
+    recording_log = None
     process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
     started_at = time.time()
     try:
@@ -1406,7 +1439,17 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
             flags += ["--removed-row", str(removal_request)]
         if capture_geometry:
             flags += ["--geometry-output", str(geometry)]
+        if options.evidence_output:
+            flags += ["--evidence-output", str(options.evidence_output)]
+            recording_log = (options.evidence_output / "recording.log").open("w")
+            recording = subprocess.Popen(["/usr/sbin/screencapture", "-v", "-V", "22",
+                "-R0,0,1024,160", str(options.evidence_output / "moves.mov")],
+                stdout=recording_log, stderr=subprocess.STDOUT, start_new_session=True)
         command([str(binary), str(fixture)] + flags, 30)
+        if recording:
+            status = recording.wait(timeout=25)
+            if status or not (options.evidence_output / "moves.mov").is_file():
+                raise RuntimeError("native screen recording failed; see recording.log")
         _stop(process)
         if capture_geometry:
             shutil.copytree(geometry, root / "build/icon-probe/geometry", dirs_exist_ok=True)
@@ -1432,3 +1475,7 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         raise
     finally:
         _stop(process)
+        if recording:
+            _stop(recording)
+        if recording_log:
+            recording_log.close()
