@@ -1064,7 +1064,7 @@ func probe() {
             return
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
-        let moving = staleFrameKind == "arrow" ? fixture()! : ordered[0]
+        let moving = staleFrameKind == "arrow" || CommandLine.arguments.contains("--wide-item") ? fixture()! : ordered[0]
         let towardClock = ordered.first?.id == moving.id
         let direction: MenuBarIconManager.MoveDirection = towardClock ? .towardClock : .towardDrawer
         let pixelIcon = fixture()
@@ -1162,7 +1162,7 @@ func probe() {
                 }
             }
             print("PASS: the Settings arrow changed the real icon order")
-            if staleFrameKind == "arrow" && arrowPass == 0 {
+            if (staleFrameKind == "arrow" || CommandLine.arguments.contains("--wide-item")) && arrowPass == 0 {
                 reorder(prepared: expected, arrowPass: 1)
             } else {
                 finish()
@@ -1398,6 +1398,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
                     ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
                     ("--move-overlap", options.move_overlap), ("--move-retry-overlap", options.move_retry_overlap)]
         flags = [flag for flag, enabled in selected if enabled]
+        if options.wide_item:
+            flags += ["--wide-item"]
         if options.stale_frame:
             flags += ["--stale-frame", options.stale_frame]
         if options.removed_row:
