@@ -25,6 +25,10 @@ on:
         description: Send fixed synthetic records through the new native client to the Flux EU project
         type: boolean
         default: false
+      native_capture_probe:
+        description: Build a capture-only probe with the existing Flux signing identity, without installing or releasing it
+        type: boolean
+        default: false
       menu_bar_probe:
         description: Run the live macOS 27 visibility probe before building
         type: boolean
@@ -89,6 +93,28 @@ jobs:
           name: native-ui
           path: build/native-ui/
           if-no-files-found: error
+      - name: Import identity for capture-only probe
+        if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        env:
+          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
+          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
+        run: python3 Scripts/import_signing.py
+      - name: Build matching-signed capture-only probe
+        if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        timeout-minutes: 4
+        run: python3 Scripts/rebuild/build_capture_probe.py
+      - name: Upload capture-only probe
+        if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-capture-probe
+          path: |
+            build/native-capture-probe/FluxCaptureProbe.zip
+            build/native-capture-probe/artifact.json
+          if-no-files-found: error
+      - name: Remove capture-probe keychain
+        if: ${{ always() && inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        run: python3 Scripts/import_signing.py --cleanup
       - name: Verify native PostHog transport
         if: ${{ inputs.native_posthog_probe }}
         timeout-minutes: 2

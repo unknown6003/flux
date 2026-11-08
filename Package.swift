@@ -58,6 +58,11 @@ let package = Package(
             dependencies: ["FluxCore", "FluxUI"],
             path: "Scripts/rebuild/UIProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "FluxMenuCaptureProbe",
+            path: "Scripts/rebuild/MenuCaptureProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )
