@@ -62,3 +62,12 @@ Analytics off constructs no client and sends nothing. Turning it off cancels sen
 The official SDK audit found periodic queues and data added outside its event callback. The new native API client controls the final requests. Forty-one core tests pass. The Flux EU project is configured, and the live native probe sent marked synthetic events, an exception and a log. Server readback found no IP or location fields and no person profile for the test ID. There is no PostHog SDK dependency. The installed old app is unchanged. See POSTHOG-PROJECT.md. Whole-app analytics performance remains unmeasured.
 
 Zero cost is not a testable promise. Measure analytics on and off on the same signed app. Include total process footprint, CPU, wakeups, networking, startup and menu-bar latency. Set release limits before acceptance and reject a change that exceeds them. Test all outgoing requests with private-content canaries and test opt-out and ID reset during an in-flight send.
+
+
+## Current integration checkpoint
+
+At d8a951d, Mac CI42515715698 passed the native core, AppKit compilation, platform adapter compilation and three native view-lifetime tests. FeatureRuntime now owns actual service handles, stops removed services before starting replacements and releases stopped handles. StatusInventory reads bounded AX owner trees on an actor with per-object IPC and total scan limits. These adapters have compile proof, not real-Mac inventory acceptance.
+
+The static native UI capture produced four PNGs, but they show invalid backing and overlapping content. They are failed visual evidence. The probe now creates an offscreen backing window and settles drawing before capture; that change needs its own run. No screenshot has yet passed native UI layout acceptance.
+
+Next ownership remains split. Parent owns FluxCore, FluxPlatform, app composition, Package.swift, CI and probe scripts. The existing isolated Opus line may continue Sources/FluxUI and its integration notes only. A Terra read-only Mac task will compare ScreenCaptureKit filters with the explicit includeMenuBar option against the same recorded region. It must not change visibility or permissions. Neither line may publish or install the rewrite.
