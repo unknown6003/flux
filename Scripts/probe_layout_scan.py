@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise cached layout changes and overlapping lifecycle calls through the hider."""
+"""Exercise explicit visibility edits, native imports and overlapping lifecycle calls."""
 
 import argparse
 from pathlib import Path
@@ -32,9 +32,14 @@ MainActor.assumeIsolated {
     }
     var positions: [(bundleID: String, x: CGFloat)] = [("test.normal", 250)]
     var reads = 0
+    var grants = 0
+    var allowAccess = true
     var allowCommit = true
     var invalidateRead = false
-    let hider = MacOS27Hider(defaults: defaults, trustProvider: { true }, positionReader: {
+    let hider = MacOS27Hider(defaults: defaults, trustProvider: {
+        grants += 1
+        return allowAccess
+    }, positionReader: {
         reads += 1
         if invalidateRead { allowCommit = false }
         return (positions, [])
@@ -148,20 +153,24 @@ MainActor.assumeIsolated {
         apply(true, false)
         waitForRead()
         positions = [("test.normal", 350), ("test.always", 350)]
-        guard hider.recordLayoutChange(for: "test.normal") else {
-            print("FAIL: the explicit move could not save its layout")
+        allowAccess = false
+        let readsBefore = reads
+        let grantsBefore = grants
+        guard hider.recordAppSection(.shown, for: "test.normal"),
+              reads == readsBefore, grants == grantsBefore else {
+            print("FAIL: an explicit section edit needed geometry or Accessibility access")
             exit(1)
         }
         apply(false, false)
         waitForRead()
         let moved = layout()
-        guard reads > 0, !moved.hidden.contains("test.normal"),
+        guard reads == readsBefore, !moved.hidden.contains("test.normal"),
               moved.hidden.contains("test.always"), moved.always.contains("test.always") else {
             defaults.removePersistentDomain(forName: suite)
-            print("FAIL: a visible icon moved to Shown kept its cached Hidden assignment; reads=\(reads)")
+            print("FAIL: a Shown assignment was lost or changed an unrelated Always Hidden app")
             exit(1)
         }
-        print("PASS: an explicit move saves its section and preserves unrelated Always Hidden items")
+        print("PASS: an explicit section edit saves without geometry or grant reads and preserves unrelated apps")
         if CommandLine.arguments.contains("moves") { return }
     }
 
@@ -171,6 +180,13 @@ MainActor.assumeIsolated {
     positions = [("test.normal", 250), ("test.always", 150)]
     var arrow: CGFloat? = nil
     let before = reads
+    let grantsBefore = grants
+    allowAccess = false
+    guard hider.recordAppSection(.hidden, for: "test.normal"),
+          reads == before, grants == grantsBefore else {
+        print("FAIL: the management section edit needed geometry or Accessibility access")
+        exit(1)
+    }
     apply(false, false, arrow: { arrow })
     apply(false, false, arrow: { arrow })
     hider.retry()
@@ -178,19 +194,15 @@ MainActor.assumeIsolated {
                                                object: nil)
     RunLoop.main.run(until: Date().addingTimeInterval(0.1))
     arrow = 300
-    guard hider.recordLayoutChange(for: "test.normal") else {
-        print("FAIL: the verified management move could not save its layout")
-        exit(1)
-    }
     waitForRead()
     let managed = layout()
-    guard reads > before, managed.hidden == ["test.normal", "test.always"],
+    guard reads == before, managed.hidden == ["test.normal", "test.always"],
           managed.always == ["test.always"] else {
         defaults.removePersistentDomain(forName: suite)
-        print("FAIL: duplicate lifecycle calls discarded the management layout scan; reads=\(reads), before=\(before)")
+        print("FAIL: duplicate lifecycle calls changed an explicit assignment; reads=\(reads), before=\(before)")
         exit(1)
     }
-    print("PASS: duplicate end, retry and workspace callbacks preserve a verified layout edit")
+    print("PASS: duplicate end, retry and workspace callbacks preserve an explicit section edit without AX scans")
     apply(true, true)
     waitForRead()
 }
@@ -215,26 +227,14 @@ def main():
         paths = [root / "Sources/Flux" / path for path in files]
         if args.hider_ref:
             previous = temporary / "MacOS27Hider.swift"
-            previous.write_text(subprocess.check_output(
+            previous_source = subprocess.check_output(
                 ['git', 'show', args.hider_ref + ':Sources/Flux/MenuBar/MacOS27Hider.swift'],
-                cwd=root, text=True, timeout=15))
+                cwd=root, text=True, timeout=15)
+            if "struct MenuBarVisibilityPolicy" not in previous_source:
+                raise RuntimeError("This probe requires the explicit visibility-policy contract. "
+                                   "For a pre-rewrite --hider-ref, run that ref's original probe instead.")
+            previous.write_text(previous_source)
             paths[0] = previous
-            if "func recordAvailableLayoutChanges" not in previous.read_text():
-                source.write_text(FIXTURE + '''
-extension MacOS27Hider {
-    func recordAvailableLayoutChanges(for ids: Set<String>, canCommit: () -> Bool) -> Set<String> {
-        recordLayoutChanges(for: ids, canCommit: canCommit) ? ids : []
-    }
-}
-''')
-            if "func completePositions" not in previous.read_text():
-                source.write_text(source.read_text() + '''
-extension MacOS27Hider {
-    static func completePositions(for id: String, centers: [CGFloat?]) -> [(bundleID: String, x: CGFloat)] {
-        centers.compactMap { $0.map { (id, $0) } }
-    }
-}
-''')
         run(["xcrun", "swiftc", "-swift-version", "5", str(source),
              *[str(path) for path in paths], "-o", str(binary)], 120)
         if args.case == "all":
