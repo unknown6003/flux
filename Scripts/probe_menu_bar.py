@@ -105,6 +105,7 @@ func probe() {
     if CommandLine.arguments.contains("--app-click") {
         let deadline = Date().addingTimeInterval(8)
         var ready = false
+        var lastRead = "Flux process unavailable"
         while Date() < deadline {
             if let flux = NSRunningApplication.runningApplications(
                 withBundleIdentifier: "com.flux.menubar").first {
@@ -118,15 +119,32 @@ func probe() {
                                                &bar) == .success, let bar,
                     AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString,
                                                    &children) == .success,
-                    let items = children as? [AXUIElement], items.count >= 2 {
-                    ready = true
-                    break
+                    let items = children as? [AXUIElement] {
+                    var widths: [CGFloat] = []
+                    for item in items {
+                        var value: CFTypeRef?
+                        guard AXUIElementCopyAttributeValue(item, kAXSizeAttribute as CFString,
+                                                           &value) == .success, let value,
+                              CFGetTypeID(value) == AXValueGetTypeID() else { continue }
+                        var size = CGSize.zero
+                        if AXValueGetValue(value as! AXValue, .cgSize, &size) {
+                            widths.append(size.width)
+                        }
+                    }
+                    lastRead = "pid=\(flux.processIdentifier), items=\(items.count), widths=\(widths)"
+                    // macOS 27 can omit the zero-width dividers from AX.
+                    // The click test needs the visible arrow, not two items.
+                    if widths.contains(where: { $0 >= 20 }) {
+                        print("Flux ready: \(lastRead)")
+                        ready = true
+                        break
+                    }
                 }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
         guard ready else {
-            print("FAIL: Flux did not become ready within 8 seconds")
+            print("FAIL: Flux did not become ready within 8 seconds; \(lastRead)")
             exit(1)
         }
     }
