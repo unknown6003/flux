@@ -39,7 +39,7 @@ import FluxUI
     #expect(keys.held[old]?.keyCode == 3)
     keys.actions[old]?()
     #expect(revealed == 1)
-    #expect(owner.conflict(.reveal) == .unavailable)
+    #expect(owner.conflict(.reveal) == .clear)
     keys.unavailable = nil
     #expect(owner.replace(.reveal, with: .init(keyCode: 4, carbonModifiers: 6400)))
     #expect(keys.held[old] == nil)

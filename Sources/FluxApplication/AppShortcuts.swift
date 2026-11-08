@@ -48,6 +48,9 @@ import FluxUI
 
     public func conflict(_ role: ShortcutRole) -> ShortcutConflict {
         guard started, preferences.value(for: Preferences.enableHotkey) else { return .clear }
+        // Settings reports a rejected edit separately. The saved chord can
+        // still be registered even when that new attempt was refused.
+        if registrations[role]?.chord == saved(role) { return .clear }
         return conflicts[role] ?? .unavailable
     }
 
