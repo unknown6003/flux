@@ -213,6 +213,7 @@ enum ProbeMenuClock {
 
 @MainActor
 func probe() {
+    print("PROBE arguments: \(CommandLine.arguments)")
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     guard Bundle.main.bundleIdentifier == "com.flux.icon-probe" else { exit(2) }
@@ -1088,6 +1089,7 @@ func probe() {
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
         let savedSectionReorder = CommandLine.arguments.contains("--saved-section-reorder")
         if savedSectionReorder {
+            print("SAVED_SECTION_REORDER frames=\(ordered.map(\.frame)) boundaries=\(manager.boundaryProvider())")
             guard ordered.allSatisfy({ $0.section == .hidden }),
                   let hiddenX = manager.boundaryProvider().hidden else { exit(1) }
             // Keep the saved assignment, but inject the real Mac's mismatch
