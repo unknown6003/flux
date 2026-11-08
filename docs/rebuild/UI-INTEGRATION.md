@@ -31,6 +31,7 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/AnalyticsSettingsView.swift` | `AnalyticsStatus`, `AnalyticsSettingsView` |
 | `Sources/FluxUI/PermissionCardView.swift` | `PermissionCardView`, `PermissionCardView.Content` |
 | `Sources/FluxUI/NotchPanelController.swift` | `NotchGeometry`, `NotchPanelController` |
+| `Sources/FluxApplication/Notch/NotchWindowCoordinator.swift` | `NotchWindowCoordinator`, `.Presentation`, `.Callbacks` |
 | `Sources/FluxUI/CompactNotchController.swift` | `CompactNotchState`, `CompactNotchAction`, `CompactNotchController` |
 | `Sources/FluxUI/FormPageController.swift` | `FormPageController`, `UpdateStatus` |
 | `Sources/FluxUI/ShortcutRecorderView.swift` | `Shortcut` |
@@ -180,6 +181,48 @@ window.setContentSize(compact.preferredSize)  // exact size, center on the top e
 - The context menu and the VoiceOver show-menu action list Open notch, then Next, Dismiss and Restore only when each is possible. VoiceOver custom actions list the same three. The label is the full text, for example "Battery, Warning, 18 percent, 3 activities". Idle reads "Open notch".
 - A change of activity fades the wings once (0.18 s `CATransition`). Reduce Motion turns it off. Value changes do not animate. Nothing repeats.
 - The parent owns the window, hover, presentation, services, clock, and the switch to `NotchPanelController`.
+
+## Notch window (FluxApplication)
+
+`Sources/FluxApplication/Notch/NotchWindowCoordinator.swift` owns the one notch window. It is not compiled or run yet. It was written on Linux with no Swift toolchain, so the first proof is the root's Mac CI build and a native run.
+
+```swift
+let notch = NotchWindowCoordinator(callbacks: .init(
+    willShowWidget: { from, to in runtime.apply(demand(visible: to)) },   // before makeWidget
+    makeWidget: { widgets.makeWidget($0) },                                // only the selected widget
+    willDismissWidget: { _ in runtime.apply(demand(visible: nil)); widgets.dismiss() }, // camera stops before the view goes
+    compactAction: { action in                                             // .cycle, .dismissActivity, .restoreActivity
+        switch action {
+        case .cycle: queue.cycle()
+        case .dismissActivity: queue.dismissCurrent()
+        case .restoreActivity: queue.restoreLastDismissed()
+        case .expand: break                                                // handled inside, never forwarded
+        }
+    }))
+notch.start(screen: screen, widgets: enabledWidgets)   // shows the compact notch
+notch.updateActivity(queue.current, artwork: image, queueCount: queue.count, restorableCount: queue.restorableCount)
+notch.setHover(enabled: trigger == .hover, closeDelay: savedDelay)
+notch.toggle()                                         // global shortcut: opens with focus, or collapses
+notch.expand(.calendar, focus: true)                   // menu command
+notch.collapse()
+notch.setWidgets(newOrder)
+notch.update(screen: newScreen)                        // display or notch change
+notch.setSessionLocked(true)                           // hides; false shows compact again
+notch.stop()
+```
+
+- `presentation`: `.hidden`, `.compact` or `.expanded(Widget)`. Also `geometry`, `widgets`, `isLocked`.
+- `NotchWindowCoordinator.geometry(for: NSScreen)` reads `auxiliaryTopLeftArea` and `auxiliaryTopRightArea` each call. With both areas, `cameraWidth` is their gap and `topInset` is the larger of the area heights and `safeAreaInsets.top`. Without them, `cameraWidth` is 0 and `topInset` is `frame.maxY - visibleFrame.maxY`.
+- Window: `NSPanel`, `[.borderless, .nonactivatingPanel]`, `level = .statusBar`, `isFloatingPanel`, `becomesKeyOnlyIfNeeded`, clear, no shadow, not movable, `hidesOnDeactivate = false`, `[.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]`. `canBecomeKey` is true and `canBecomeMain` false.
+- Compact frame: `CompactNotchController.preferredSize`, centered on `screenFrame.midX` at the top edge. The camera gap stays empty. A display with no notch gets the same centered top frame with the 8 pt gap.
+- Expanded frame: `expandedRect(contentHeight:)` with the panel's fitting height at the 440 pt width. Height is at most 80 % of the screen height. It refits after each tab switch, on the next main-actor turn.
+- Focus: only `expand(_:focus: true)`, `toggle()` and a Return or Space press on the compact button make the window key. Hover, a click, an activity update and `start` use `orderFrontRegardless()` and never take focus. The app is never activated.
+- Order: a widget is made only through `willShowWidget` then `makeWidget`. `collapse`, `update(screen:)` while open, `setSessionLocked(true)` and `stop` call `NotchPanelController.dismiss()`, so `willDismissWidget` runs before the widget view goes. Then the panel controller is released. Escape inside the panel, or `setWidgets([])`, dismisses the same way and returns to compact on the next turn.
+- A display change while open collapses first. The old widget and camera go before the window moves. `stop` and lock release the window and both controllers.
+- Hover: one `NSTrackingArea` (`.mouseEnteredAndExited`, `.activeAlways`, `.inVisibleRect`) on the window content, only while hover is on. No event monitor of any kind. Entering the compact notch opens the last-used widget without focus. Leaving the open panel starts one close-delay `Task.sleep`; re-entry cancels it. A panel opened with focus does not close on exit. `setHover(enabled: false)`, lock and `stop` remove the area and cancel the task. The delay is clamped to 0...10 s.
+- Compact `.expand`: focus only when `NSApp.currentEvent` is a key press.
+- Not here: file-drag auto-open of the shelf, full-screen hide, lock-screen presenter, and screen choice. The parent picks the screen and calls `update(screen:)` on `NSApplication.didChangeScreenParametersNotification`.
+- Needs native proof: the area coordinate space on each macOS release, `.statusBar` against the menu bar and full-screen apps, tracking-area enter when the content view swaps under a still pointer, and the fitting height of each widget.
 
 ## Proof the root must run
 
