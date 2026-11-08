@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from probe_tcc import flux_accessibility_grant
 
 
@@ -60,22 +61,57 @@ def uninstall_flux():
             raise RuntimeError("FAIL: could not remove the CI Flux install")
 
 
-def use_hidden_section(privacy):
-    # A newly created status item lands left of every Flux control. Disable the
-    # Always Hidden divider only in this disposable test so it lands in Hidden.
-    domain, key = "com.flux.menubar", "flux.showAlwaysHiddenSection"
-    previous = subprocess.run(["/usr/bin/defaults", "read", domain, key],
-                              capture_output=True, text=True, timeout=10)
-    if previous.returncode == 0:
-        value = previous.stdout.strip()
-        if value not in ("0", "1"):
-            raise RuntimeError("FAIL: unexpected saved Always Hidden setting")
-        restore = ["/usr/bin/defaults", "write", domain, key, "-bool", value]
-    else:
-        restore = ["/usr/bin/defaults", "delete", domain, key]
-    privacy.callback(run, restore, 10)
-    if run(["/usr/bin/defaults", "write", domain, key, "-bool", "false"], 10):
-        raise RuntimeError("FAIL: could not prepare the Hidden test section")
+def use_saved_hidden_policy(privacy, temporary):
+    domain, key = "com.flux.menubar", "flux.macOS27IconLayout"
+    previous = subprocess.run(["/usr/bin/defaults", "export", domain, "-"],
+                              capture_output=True, timeout=10)
+    original = plistlib.loads(previous.stdout) if previous.returncode == 0 else None
+    preferences = dict(original or {})
+    layout = preferences.get(key, {})
+    if not isinstance(layout, dict) or layout.get("schemaVersion", 2) != 2:
+        raise RuntimeError("FAIL: unexpected saved icon policy")
+    hidden, always = layout.get("hidden", []), layout.get("alwaysHidden", [])
+    if any(not isinstance(ids, list) or any(not isinstance(value, str) for value in ids)
+           for ids in (hidden, always)):
+        raise RuntimeError("FAIL: unexpected saved icon assignments")
+    preferences[key] = {"schemaVersion": 2,
+                        "hidden": sorted(set(hidden) | {"com.flux.visibility-probe"}),
+                        "alwaysHidden": sorted(set(always) - {"com.flux.visibility-probe"})}
+    preferences["flux.showAlwaysHiddenSection"] = False
+    seeded = temporary / "seeded-flux-preferences.plist"
+    seeded.write_bytes(plistlib.dumps(preferences))
+    backup = temporary / "original-flux-preferences.plist"
+    if original is not None:
+        backup.write_bytes(plistlib.dumps(original))
+
+    def restore():
+        command = (["/usr/bin/defaults", "import", domain, str(backup)] if original is not None
+                   else ["/usr/bin/defaults", "delete", domain])
+        if run(command, 10):
+            raise RuntimeError("FAIL: could not restore the prior Flux preferences")
+        restored = subprocess.run(["/usr/bin/defaults", "export", domain, "-"],
+                                  capture_output=True, timeout=10)
+        if ((original is None and restored.returncode == 0)
+                or (original is not None and (restored.returncode != 0
+                                             or plistlib.loads(restored.stdout) != original))):
+            raise RuntimeError("FAIL: restored Flux preferences do not match their backup")
+
+    privacy.callback(restore)
+    if run(["/usr/bin/defaults", "import", domain, str(seeded)], 10):
+        raise RuntimeError("FAIL: could not save the fixture's explicit Hidden assignment")
+
+
+def check_flux_access(expected):
+    actual = run(["/Applications/Flux.app/Contents/MacOS/Flux", "--flux-check-access"], 10)
+    if actual != expected:
+        raise RuntimeError(f"FAIL: signed Flux access check returned {actual}, expected {expected}")
+
+
+def remove_probe_policy(suite):
+    existing = subprocess.run(["/usr/bin/defaults", "export", suite, "-"],
+                              capture_output=True, timeout=10)
+    if existing.returncode == 0 and run(["/usr/bin/defaults", "delete", suite], 10):
+        raise RuntimeError("FAIL: could not remove the isolated visibility policy")
 
 
 if sys.platform != "darwin":
@@ -349,9 +385,8 @@ func probe() {
                 print("Flux control: \(frame)")
                 if dimensions.width >= 20 { chevron = frame }
             }
-            guard let chevron, let fixture = fixtureAXFrame,
-                fixture.maxX <= chevron.minX else {
-                print("FAIL: the fixture is not to the left of Flux's arrow")
+            guard let chevron else {
+                print("FAIL: Flux's visible arrow has no readable frame")
                 exit(1)
             }
             func click() {
@@ -431,7 +466,23 @@ func probe() {
                 }
                 print("PASS: the real probe icon disappeared and returned")
                 var access = AXIsProcessTrusted()
-                let hider = MacOS27Hider(trustProvider: { access })
+                guard let policyIndex = CommandLine.arguments.firstIndex(of: "--policy-suite"),
+                      policyIndex + 1 < CommandLine.arguments.count,
+                      let policyDefaults = UserDefaults(suiteName: CommandLine.arguments[policyIndex + 1]) else {
+                    print("FAIL: the fixture has no isolated visibility policy")
+                    exit(1)
+                }
+                let hider = MacOS27Hider(defaults: policyDefaults, trustProvider: { access })
+                guard !hider.hasSavedLayout, hider.section(for: "com.flux.visibility-probe") == .shown else {
+                    print("FAIL: a new app did not start in Shown")
+                    exit(1)
+                }
+                print("PASS: a new app starts in Shown")
+                guard hider.recordAppSection(.hidden, for: "com.flux.visibility-probe"),
+                      hider.section(for: "com.flux.visibility-probe") == .hidden else {
+                    print("FAIL: the fixture's explicit Hidden assignment was not saved")
+                    exit(1)
+                }
                 print("Clock bounds: \(String(describing: hider.probeClockFrame))")
                 print("Pointer: \(NSEvent.mouseLocation)")
                 @MainActor
@@ -443,7 +494,7 @@ func probe() {
                 apply(false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                     let collapsed = snapshot("HiderCollapsed")
-                    // A second toggle must retain the first toggle's layout wait.
+                    // Rapid toggles must preserve the saved Hidden assignment.
                     apply(true)
                     apply(false)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -452,11 +503,11 @@ func probe() {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                             let expanded = snapshot("HiderExpanded")
                             guard collapsed == 0, rapidCollapsed == 0, expanded > 0 else {
-                                print("FAIL: Flux's full position scan and toggles did not hide and show the icon")
+                                print("FAIL: Flux's saved app assignment and toggles did not hide and show the icon")
                                 print("Hider error: \(hider.latestError ?? "none")")
                                 exit(1)
                             }
-                            print("PASS: Flux's full position scan, rapid toggles and reveal hid and showed the icon")
+                            print("PASS: Flux's saved app assignment, rapid toggles and reveal hid and showed the icon")
                             access = false
                             apply(false)
                             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -475,9 +526,14 @@ func probe() {
                                     }
                                     print("PASS: known icons still hide and reveal after Accessibility access is lost")
                                     access = true
+                                    guard hider.recordAppSection(.alwaysHidden, for: "com.flux.visibility-probe"),
+                                          hider.section(for: "com.flux.visibility-probe") == .alwaysHidden else {
+                                        print("FAIL: the fixture's explicit Always Hidden assignment was not saved")
+                                        exit(1)
+                                    }
                                     hider.apply(revealHidden: false, revealAlwaysHidden: false,
                                                 chevronX: { item.button?.window?.frame.maxX },
-                                                alwaysX: { item.button?.window?.frame.maxX })
+                                                alwaysX: { nil })
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                                         guard snapshot("AlwaysHiddenSeed") == 0 else {
                                             print("FAIL: the Always Hidden fixture did not hide")
@@ -560,11 +616,15 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
         output.mkdir(parents=True, exist_ok=True)
         arguments = [arg for arg in sys.argv[1:] if arg in ("--dual-display", "--app-click")]
         with ExitStack() as privacy:
+            if "--app-click" not in arguments:
+                policy_suite = "com.flux.visibility-policy-probe." + uuid.uuid4().hex
+                arguments += ["--policy-suite", policy_suite]
+                privacy.callback(remove_probe_policy, policy_suite)
             if "--app-click" in arguments:
                 destination = Path("/Applications/Flux.app")
                 if destination.exists():
                     raise SystemExit("FAIL: the probe will not replace an existing Flux install")
-                use_hidden_section(privacy)
+                use_saved_hidden_policy(privacy, temporary)
                 privacy.callback(uninstall_flux)
                 status = run(["sudo", "-n", "ditto", str(root / "build/Flux.app"),
                               str(destination)], 30)
@@ -581,6 +641,7 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
                 if any(row[auth_index] == 2 for row in baseline["rows"]):
                     raise SystemExit("FAIL: the saved-layout probe needs an initially untrusted Flux install")
                 privacy.callback(stop_flux)
+                check_flux_access(0)
                 (output / "Flux.pid").unlink(missing_ok=True)
                 status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
@@ -589,20 +650,15 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
             if status == 0 and "--app-click" in arguments:
                 stop_flux()
                 grant.close()
+                check_flux_access(1)
                 status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
                     raise SystemExit(status)
                 print("CI: testing the saved layout with the real Flux AX grant removed", flush=True)
                 status = run([str(binary), str(output)] + arguments, 100)
                 if status == 0:
-                    pid = int((output / "Flux.pid").read_text())
-                    report = subprocess.run(
-                        ["/usr/bin/log", "show", "--last", "2m", "--info", "--style", "compact",
-                         "--predicate", f'processID == {pid} AND eventMessage == "Using saved icon layout without Accessibility access"'],
-                        capture_output=True, text=True, timeout=20, check=True)
-                    if "Using saved icon layout without Accessibility access" not in report.stdout:
-                        raise RuntimeError("FAIL: the real Flux app did not confirm its Accessibility grant was absent")
-                    print("PASS: real Flux reported lost access while its saved icons still hid and revealed", flush=True)
+                    check_flux_access(1)
+                    print("PASS: signed Flux access is denied while its saved icons still hide and reveal", flush=True)
             raise SystemExit(status)
     finally:
         run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/"
