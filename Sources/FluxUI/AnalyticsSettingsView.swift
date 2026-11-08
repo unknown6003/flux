@@ -30,6 +30,7 @@ public final class AnalyticsSettingsView: NSView {
         let title = FluxUIStyle.label(L("analytics.title", "Share anonymous usage data"))
         toggle.target = self
         toggle.action = #selector(switchChanged)
+        toggle.identifier = .init("analytics.enabled")
         toggle.setAccessibilityLabel(L("analytics.title", "Share anonymous usage data"))
 
         let helper = FluxUIStyle.label(L(
@@ -45,6 +46,7 @@ public final class AnalyticsSettingsView: NSView {
         resetButton.bezelStyle = .push
         resetButton.target = self
         resetButton.action = #selector(reset)
+        resetButton.identifier = .init("analytics.reset")
         resetButton.setAccessibilityLabel(L("analytics.reset.ax", "Reset analytics ID"))
 
         let spacer1 = NSView(), spacer2 = NSView()

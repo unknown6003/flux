@@ -14,7 +14,7 @@ FluxUI is an AppKit-only Swift 6 library. It has no SwiftUI, WebKit, timers, bac
 .target(name: "FluxUI", dependencies: ["FluxCore"], path: "Sources/FluxUI")
 ```
 
-FluxUI uses these FluxCore types: `ApplicationID`, `MenuBarGroup`, `MenuBarCapability`, `Widget`. It adds an internal `Widget.displayName` extension. It declares no public name that FluxCore already has.
+FluxUI uses these FluxCore types: `ApplicationID`, `MenuBarGroup`, `MenuBarCapability`, `Widget`, `Appearance`. It adds an internal `Widget.displayName` extension. It declares no public name that FluxCore already has.
 
 Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The English text is the fallback.
 
@@ -29,6 +29,10 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/AnalyticsSettingsView.swift` | `AnalyticsStatus`, `AnalyticsSettingsView` |
 | `Sources/FluxUI/PermissionCardView.swift` | `PermissionCardView`, `PermissionCardView.Content` |
 | `Sources/FluxUI/NotchPanelController.swift` | `NotchGeometry`, `NotchPanelController` |
+| `Sources/FluxUI/FormPageController.swift` | `FormPageController`, `UpdateStatus` |
+| `Sources/FluxUI/ShortcutRecorderView.swift` | `Shortcut` |
+| `Sources/FluxUI/GeneralPreferencesController.swift` | `LoginStatus`, `ShortcutConflict`, `GeneralPreferencesState`, `GeneralPreferencesAction`, `GeneralPreferencesController` |
+| `Sources/FluxUI/AboutPreferencesController.swift` | `DiagnosticStatus`, `AboutPreferencesState`, `AboutPreferencesAction`, `AboutPreferencesController` |
 
 ## Settings window
 
@@ -49,7 +53,7 @@ settings.show()           // or settings.show(.menuBar)
 - A page that adopts `SettingsPageFocus` gets its `preferredFirstResponder` focused when `show(_:)` opens it.
 - Teardown: `onClose` runs once, after the page is discarded. Release the controller there. The window has `isReleasedWhenClosed = false`.
 - Sidebar groups follow the design: **Flux** (Menu Bar, Notch, Lock Screen) and **System** (General, About).
-- Root must still build the General, Notch, Lock Screen and About page contents. FluxUI gives the Analytics group and permission cards for them.
+- FluxUI now gives the General and About pages. Root must still build the Notch and Lock Screen page contents. FluxUI gives the permission cards for them.
 
 ## Menu Bar page
 
@@ -130,9 +134,65 @@ The fixture captures at `build/native-ui-d8a951d` and `build/native-ui-51d1d63` 
 - `UpdateStatus` (public enum): `.idle`, `.checking`, `.upToDate`, `.available(version:)`, `.installing`, `.failed(code:)`.
 - `Shortcut(keyCode:carbonModifiers:)` (public) and the internal `ShortcutRecorderView`. The recorder reads only `keyDown` and `performKeyEquivalent` while it is first responder. It installs no event monitor. Esc cancels. A shortcut must have ⌘, ⌃ or ⌥.
 
+## General page (slice 3)
+
+```swift
+let general = GeneralPreferencesController(state: GeneralPreferencesState(
+    launchAtLoginRequested: store.value(for: Preferences.launchAtLogin),
+    loginStatus: .disabled,              // mapped from SMAppService.mainApp.status
+    hotkeysEnabled: store.value(for: Preferences.enableHotkey),
+    revealShortcut: Shortcut(keyCode: 3, carbonModifiers: 6400),
+    revealConflict: .clear,
+    notchShortcut: Shortcut(keyCode: 45, carbonModifiers: 6400),
+    notchConflict: .clear,
+    appearance: store.value(for: Preferences.appearance),
+    automaticUpdateChecks: store.value(for: Preferences.automaticUpdateChecks),
+    update: .idle,
+    analytics: .off                      // .on only after a saved opt-in
+)) { action in parentHandle(action) }
+general.update(state: next)              // after each saved change
+```
+
+The `store.value(for:)` calls are the parent's reads. FluxUI reads nothing.
+
+State fields, all `let`: `launchAtLoginRequested: Bool`, `loginStatus: LoginStatus` (`.disabled`, `.enabled`, `.requiresApproval`, `.unavailable`), `hotkeysEnabled: Bool`, `revealShortcut: Shortcut`, `revealConflict: ShortcutConflict`, `notchShortcut: Shortcut`, `notchConflict: ShortcutConflict` (`.clear`, `.otherFluxShortcut`, `.unavailable`), `appearance: Appearance`, `automaticUpdateChecks: Bool`, `update: UpdateStatus`, `analytics: AnalyticsStatus`. The conflicts, update and analytics fields have defaults: `.clear`, `.idle`, `.off`.
+
+`GeneralPreferencesAction` cases: `.setLaunchAtLogin(Bool)`, `.openLoginItems`, `.setHotkeysEnabled(Bool)`, `.setRevealShortcut(Shortcut)`, `.setNotchShortcut(Shortcut)`, `.setAppearance(Appearance)`, `.setAutomaticUpdateChecks(Bool)`, `.checkForUpdates`, `.installUpdate`, `.setAnalyticsEnabled(Bool)`, `.resetAnalyticsID`.
+
+- Sections: Startup, Keyboard shortcuts, Appearance, Updates, then the existing `AnalyticsSettingsView`. The page owns one analytics view and routes its two callbacks into the action enum.
+- The login switch shows the requested value. Its helper text names the effective status. `.unavailable` turns the switch off for input but keeps the value. `.requiresApproval` adds a "Needs approval in Login Items" row with Open Login Items.
+- Each recorder sends one action. It reads keys only while it has focus, through `ShortcutRecorderView`. With global shortcuts off, both recorders are off for input and keep their values. Each recorder shows its own conflict text.
+- The update button says Install Update only for `.available(version:)`. Otherwise it says Check for Updates. It is off while `.checking` or `.installing`.
+- `update(state:)` ignores an equal state. Otherwise it rebuilds the rows and gives focus back to the control with the same identifier. It never sends an action.
+- Identifiers: `general.login`, `general.login.approve`, `general.hotkeys`, `general.shortcut.reveal`, `general.shortcut.notch`, `general.appearance`, `general.updates.auto`, `general.updates.action`, `analytics.enabled`, `analytics.reset`.
+- Parent owns: saving, `SMAppService`, opening Login Items, Carbon registration and conflict checks, the update checker and installer, and `UsageCollection`.
+
+## About page (slice 3)
+
+```swift
+let about = AboutPreferencesController(state: AboutPreferencesState(
+    version: bundleShortVersion, build: bundleVersion,   // from Bundle.main
+    update: .idle, diagnostics: .ready
+)) { action in parentHandle(action) }
+about.update(state: next)
+```
+
+State fields, all `let`: `version: String`, `build: String`, `update: UpdateStatus`, `diagnostics: DiagnosticStatus` (`.ready`, `.copied`, `.unavailable`).
+
+`AboutPreferencesAction` cases: `.checkForUpdates`, `.installUpdate`, `.copyDiagnosticReport`, `.openMediaRemoteAdapterLicense`, `.openSourceRepository`.
+
+- Shows "Flux", "Version <version> (<build>)" exactly as passed, and the design's trust note "Self-signed. Not notarized." Then Updates, Diagnostics and Credits.
+- Diagnostic text is fixed per status. The page never shows the report, logs, error text or IDs. Copy is off for `.unavailable`.
+- Credits name MediaRemoteAdapter by Jonas van den Berg and contributors, BSD 3-Clause (`Vendor/mediaremote-adapter/LICENSE`). The parent opens the license and the source repository.
+- Identifiers: `about.updates.action`, `about.diagnostics.copy`, `about.credits.license`, `about.credits.source`.
+
+## Teardown
+
+Both pages hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
+
 ## Not written yet
 
-- The General, Notch, Lock Screen and About page controllers, with their state and action enums.
-- The fixed 1–5 feedback form.
-
-The time limit ran out after the layout fix and these shared parts. The planned API is one immutable `State` struct per page, plus one `onAction: (PageAction) -> Void`, where each page has its own action enum with typed associated values.
+- The Notch and Lock Screen page controllers.
+- The fixed 1–5 feedback form. A later About action can carry a FluxCore `UsageRating`.
+- The General Permissions list and the About crash report banner from the design.
+- General and About are not compiled or run. This host has no Swift. The root's macOS build and capture must prove them.
