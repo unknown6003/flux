@@ -38,7 +38,7 @@ public struct ClipboardRecord: Identifiable, Equatable, Sendable {
         switch payload {
         case .text(let text, _): String(text.prefix(200)).components(separatedBy: .newlines).joined(separator: " ")
         case .files(let urls): urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) files"
-        case .image(_, _, let width, let height): "Image \(width) × \(height)"
+        case .image(_, _, let width, let height): width > 0 && height > 0 ? "Image \(width) × \(height)" : "Image"
         case .unsupported: "Unsupported content"
         }
     }
