@@ -15,24 +15,23 @@ final class ShellProbe: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         window.isReleasedWhenClosed = false
         window.contentView = nil
-        Task {
-            await sample("closed")
-            show()
-            await sample("shown")
-            let start = ContinuousClock.now
-            for _ in 0..<100 {
-                autoreleasepool {
-                    window.orderOut(nil)
-                    window.contentView = nil
-                    show()
-                    window.orderOut(nil)
-                    window.contentView = nil
+        sample("closed") {
+            self.show()
+            self.sample("shown") {
+                let start = ContinuousClock.now
+                for _ in 0..<20 {
+                    autoreleasepool {
+                        self.window.orderOut(nil)
+                        self.window.contentView = nil
+                        self.show()
+                        self.window.orderOut(nil)
+                        self.window.contentView = nil
+                    }
                 }
+                let elapsed = start.duration(to: .now).components
+                self.emit(["phase": "cycles", "count": 20, "nanoseconds": Double(elapsed.seconds) * 1e9 + Double(elapsed.attoseconds) / 1e9])
+                self.sample("closedAfterCycles") { NSApp.terminate(nil) }
             }
-            let elapsed = start.duration(to: .now).components
-            emit(["phase": "cycles", "count": 100, "nanoseconds": Double(elapsed.seconds) * 1e9 + Double(elapsed.attoseconds) / 1e9])
-            await sample("closedAfterCycles")
-            NSApp.terminate(nil)
         }
     }
 
@@ -44,10 +43,16 @@ final class ShellProbe: NSObject, NSApplicationDelegate {
         CATransaction.flush()
     }
 
-    private func sample(_ phase: String) async {
+    private func sample(_ phase: String, completion: @escaping @MainActor () -> Void) {
         let started = ProcessInfo.processInfo.systemUptime
         let before = cpu()
-        try? await Task.sleep(for: .seconds(2))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            self.finishSample(phase, started: started, before: before)
+            completion()
+        }
+    }
+
+    private func finishSample(_ phase: String, started: TimeInterval, before: Double) {
         let interval = ProcessInfo.processInfo.systemUptime - started
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
