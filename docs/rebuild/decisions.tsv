@@ -1,0 +1,3 @@
+ts	phase	decision	why	evidence	result
+2026-11-08T16:49:06Z	frame	Stop the failed module release and start a full app rebuild	The user rejected another repair and requested a complete replacement	branch fix/notion-move; docs/rebuild/PLAN.md	open
+2026-11-08T16:49:06Z	inventory	Preserve34 task groups and34 explicit preference keys	The README does not match current defaults or lifecycle work	docs/rebuild/BASELINE.md	verified
