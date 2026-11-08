@@ -33,7 +33,7 @@ test now covers pause, resume and a later seek.
 Mac CI42526545250 passed the initial parser and fake-process tests at4e868f7.
 Those tests prove event parsing, command arguments, command timeout, pending
 command completion, child termination and cancellation of a scheduled restart
-through a private Perl fixture. The pause fix and feed-release test need their
-new CI run. Real playback, artwork memory, source selection, hardware media
+through a private Perl fixture. CI42528576315 at1025a07 also passed the pause
+fix and feed-release test. Real playback, artwork memory, source selection, hardware media
 controls, rapid panel switches and full process-tree costs remain acceptance
 work. This module is not yet connected to a released app.
