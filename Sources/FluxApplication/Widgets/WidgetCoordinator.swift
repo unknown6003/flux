@@ -188,7 +188,7 @@ public final class WidgetCoordinator {
 
     public func startCalendarFeed() -> any FeatureServiceHandle {
         let feed = CalendarFeed { [weak self] result in self?.agendaChanged(result) }
-        let lease = ServiceLease(feed: feed) { [weak self] in self?.calendarLease = nil }
+        let lease = ServiceLease(feed: feed) { [weak self] in self?.calendarStopped() }
         calendarLease = lease
         return lease
     }
@@ -242,7 +242,15 @@ public final class WidgetCoordinator {
         artworkPipeline.clear()
         artworkID = nil
         artwork = nil
+        effects.widgetEvent(.media(.unavailable))
         refreshNowPlaying()
+    }
+
+    private func calendarStopped() {
+        calendarLease = nil
+        agenda = nil
+        effects.widgetEvent(.calendar(.unavailable))
+        calendarView?.update(calendarState())
     }
 
     private func refreshNowPlaying() {

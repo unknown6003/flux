@@ -7,6 +7,12 @@ public struct VolumeSnapshot: Equatable, Sendable {
     public let level: Float
     public let muted: Bool
     public let adjustable: Bool
+
+    public init(level: Float, muted: Bool, adjustable: Bool) {
+        self.level = level.isFinite ? min(max(level, 0), 1) : 0
+        self.muted = muted
+        self.adjustable = adjustable
+    }
 }
 
 /// CoreAudio removes listeners by the original block identity. All fields

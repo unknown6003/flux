@@ -64,3 +64,29 @@ single-writer lease. The lock descriptor closes on process death and is not
 inherited by helpers. It rejects symlink and hard-linked lease files.
 Analytics starts after ready and only for an existing opt-in. No feature is
 started by constructing this session. This is not yet the executable entry.
+
+## Runtime and activities
+
+NotchRuntime now connects the session phase, feature demand, real widget feeds
+and window owner. It stops private feeds before removing the visible widget.
+The device and lock-screen factories remain required outer dependencies. This
+is application wiring, not an executable or a release candidate.
+
+A separate risk review found a Mirror retry race: the old driver's delayed
+stop cleared a preview layer after the new feed attached it. CameraFeed now
+detaches that layer synchronously before scheduling driver shutdown. A native
+regression connects two real preview layers without camera input. Runtime and
+camera regression results are pending.
+
+ActivityCoordinator binds the eight activity kinds and countdowns to local
+events. Producer ticks update an existing queue entry without restoring a
+user dismissal. Timer completion keeps its ten-second alert when another
+timer starts. Calendar deadlines cover the ten-minute threshold and event
+start; text refreshes only for a presented activity. Artwork uses the bounded
+pipeline. Tests for dismissed battery, timer and calendar events are pending.
+
+CI42534958255 passed 68 Core, 18 Platform, 9 UI and 5 Application tests at
+fa0fefc. That run includes publisher rejection tests and the corrected signed
+diagnostic builder. The diagnostic now launches through Launch Services as a
+distinct process, but its output directory stayed empty. No physical hiding
+result follows from that launch check.
