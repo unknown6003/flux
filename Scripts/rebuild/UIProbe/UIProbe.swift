@@ -68,7 +68,20 @@ import FluxUI
     @MainActor private static func render(_ view: NSView, to destination: URL) throws {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ProbeError.noBitmap }
         view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw ProbeError.noBitmap }
+        // cacheDisplay omits the NSWindow's background. Composite that same
+        // native color behind the view, so transparent pixels do not render
+        // as black and hide light-appearance labels in the artifact viewer.
+        guard let source = bitmap.cgImage,
+              let context = CGContext(data: nil, width: source.width, height: source.height,
+                                      bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ProbeError.noBitmap }
+        let bounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
+        context.setFillColor((view.window?.backgroundColor ?? NSColor.windowBackgroundColor).cgColor)
+        context.fill(bounds)
+        context.draw(source, in: bounds)
+        guard let image = context.makeImage(),
+              let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw ProbeError.noBitmap }
         try png.write(to: destination, options: .atomic)
     }
 

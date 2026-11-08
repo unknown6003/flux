@@ -12,8 +12,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def run(arguments, seconds=30):
-    return subprocess.run(arguments, cwd=ROOT, check=True, capture_output=True,
-                          text=True, timeout=seconds).stdout.strip()
+    result = subprocess.run(arguments, cwd=ROOT, capture_output=True,
+                            text=True, timeout=seconds)
+    if result.returncode:
+        raise RuntimeError(f"{arguments[0]} exited {result.returncode}: "
+                           f"{result.stdout[-6000:]}\n{result.stderr[-6000:]}")
+    return result.stdout.strip()
 
 
 def main():
@@ -42,7 +46,7 @@ def main():
          "--identifier", "com.flux.menubar", str(bundle)])
     run(["codesign", "--verify", "--deep", "--strict", str(bundle)])
     prefix = output / "signer"
-    run(["codesign", "--display", "--extract-certificates", str(prefix), str(bundle)])
+    run(["codesign", "--display", "--extract-certificates=" + str(prefix), str(bundle)])
     expected = subprocess.run(["openssl", "x509", "-in", str(ROOT / "Resources" / "FluxSigning.pem"),
                                "-outform", "DER"], check=True, capture_output=True, timeout=15).stdout
     leaf = Path(str(prefix) + "0").read_bytes()
