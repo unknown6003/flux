@@ -2,8 +2,8 @@
 """Exercise the production move transaction through its inventory/input/policy seam."""
 
 from pathlib import Path
-import subprocess
 import tempfile
+from probe_update import run
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = r'''
@@ -156,11 +156,11 @@ def main():
         source = path / "Probe.swift"
         source.write_text(FIXTURE)
         binary = path / "probe"
-        subprocess.run(["swiftc", "-swift-version", "5", str(source),
+        run(["swiftc", "-swift-version", "5", str(source),
                         str(ROOT / "Sources/Flux/MenuBar/MenuBarArrangement.swift"),
                         str(ROOT / "Sources/Flux/MenuBar/MenuBarSection.swift"),
-                        "-o", str(binary)], check=True, timeout=90)
-        subprocess.run([str(binary)], check=True, timeout=30)
+                        "-o", str(binary)], 90)
+        print(run([str(binary)], 30).stdout, end="")
 
 
 if __name__ == "__main__":

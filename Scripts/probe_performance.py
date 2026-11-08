@@ -38,6 +38,7 @@ SOURCES = (
     "Support/Theme.swift", "Support/Log.swift", "Support/AccessibilityAccess.swift",
     "Services/CalendarService.swift",
 )
+ARRANGEMENT_SOURCES = ("MenuBar/MenuBarArrangement.swift", "MenuBar/MenuBarNativeDrag.swift")
 
 
 def stop_group(process):
@@ -120,9 +121,12 @@ MainActor.assumeIsolated {
 
 
 def read_sources(ref=None):
+    available = set(run(["git", "ls-tree", "-r", "--name-only", ref, "Sources/Flux"], 10).splitlines()) if ref else None
+    names = SOURCES + tuple(name for name in ARRANGEMENT_SOURCES
+                            if available is None or "Sources/Flux/" + name in available)
     return {name: (run(["git", "show", f"{ref}:Sources/Flux/{name}"], 10)
                    if ref else (ROOT / "Sources/Flux" / name).read_text())
-            for name in SOURCES}
+            for name in names}
 
 
 def hashes(sources):

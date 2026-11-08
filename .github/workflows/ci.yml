@@ -172,6 +172,22 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: Check arrangement transactions and visibility policy
+        timeout-minutes: 4
+        run: |
+          python3 Scripts/probe_arrangement.py
+          python3 Scripts/probe_visibility_policy.py
+
+      - name: Prove the old visibility path fails the new assignment contract
+        timeout-minutes: 3
+        run: |
+          if python3 Scripts/probe_visibility_policy.py --hider-ref 2d81d9dd0549324dbfef3bf8da2aa68665e84229 > build/visibility-red-control.log 2>&1; then
+            cat build/visibility-red-control.log
+            exit 1
+          fi
+          cat build/visibility-red-control.log
+          grep -F 'FAIL: explicit assignment needs no grant, position, or divider' build/visibility-red-control.log
+
       - name: Import release signing identity
         if: ${{ github.event_name != 'pull_request' }}
         env:
@@ -181,6 +197,16 @@ jobs:
 
       - name: Build app + DMG
         run: ./Scripts/build_dmg.sh
+
+      - name: Upload signed candidate for native acceptance
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.drag_probe_plan }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-candidate
+          path: |
+            build/Flux.dmg
+            build/checked-source.txt
+          retention-days: 7
 
       - name: Reuse performance from identical product source
         if: ${{ inputs.performance_run }}

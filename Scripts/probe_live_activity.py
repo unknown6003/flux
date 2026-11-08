@@ -113,6 +113,7 @@ def main():
         (temporary / "Manager.swift").write_text(manager)
         (temporary / "main.swift").write_text(FIXTURE)
         dependencies = ["MenuBar/MacOS27Hider.swift", "MenuBar/ControlItem.swift",
+                        "MenuBar/MenuBarArrangement.swift", "MenuBar/MenuBarNativeDrag.swift",
                         "MenuBar/MenuBarSection.swift", "MenuBar/MenuBarIconStyle.swift",
                         "MenuBar/MenuBarGeometry.swift", "Support/Theme.swift",
                         "Support/Log.swift", "Support/AccessibilityAccess.swift"]
