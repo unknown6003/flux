@@ -52,7 +52,10 @@ public final class NotchWindowCoordinator {
     /// Hover close delay limits, in seconds.
     public static let closeDelayRange: ClosedRange<TimeInterval> = 0...10
 
-    public private(set) var presentation: Presentation = .hidden
+    public private(set) var presentation: Presentation = .hidden {
+        didSet { if oldValue != presentation { onPresentationChange?(presentation) } }
+    }
+    public var onPresentationChange: (@MainActor (Presentation) -> Void)?
     public private(set) var geometry: NotchGeometry?
     public private(set) var widgets: [Widget] = []
     public private(set) var isLocked = false

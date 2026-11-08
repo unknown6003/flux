@@ -22,6 +22,9 @@ public final class NotchRuntime: WidgetEffects {
         public var compactAction: @MainActor (CompactNotchAction) -> Void
         public var cameraRunning: @MainActor (Bool) -> Void
         public var accessChanged: @MainActor () -> Void
+        public var phaseChanged: @MainActor (SessionPhase) -> Void
+        public var presenting: @MainActor (Bool) -> Void
+        public var environmentChanged: @MainActor () -> Void
         /// Required platform owner for the lock-screen bridge.
         /// A failure remains visible to the application; it is never a no-op.
         public var makeAdditionalService: @MainActor (FeatureService) throws -> any FeatureServiceHandle
@@ -34,10 +37,15 @@ public final class NotchRuntime: WidgetEffects {
                     compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
                     cameraRunning: @escaping @MainActor (Bool) -> Void,
                     accessChanged: @escaping @MainActor () -> Void,
+                    phaseChanged: @escaping @MainActor (SessionPhase) -> Void,
+                    presenting: @escaping @MainActor (Bool) -> Void,
+                    environmentChanged: @escaping @MainActor () -> Void,
                     makeAdditionalService: @escaping @MainActor (FeatureService) throws -> any FeatureServiceHandle) {
             self.report = report; self.event = event; self.battery = battery
             self.volume = volume; self.device = device; self.compactAction = compactAction
             self.cameraRunning = cameraRunning; self.accessChanged = accessChanged
+            self.phaseChanged = phaseChanged; self.presenting = presenting
+            self.environmentChanged = environmentChanged
             self.makeAdditionalService = makeAdditionalService
         }
     }
@@ -61,7 +69,8 @@ public final class NotchRuntime: WidgetEffects {
         preferences: preferences, shelf: shelf, clipboard: clipboard, pasteboard: pasteboard,
         mediaScript: mediaScript, mediaFramework: mediaFramework, effects: self)
     private lazy var services = FeatureRuntime { [unowned self] in try self.makeService($0) }
-    private lazy var window = NotchWindowCoordinator(callbacks: .init(
+    private lazy var window: NotchWindowCoordinator = {
+        let owner = NotchWindowCoordinator(callbacks: .init(
         willShowWidget: { [unowned self] _, next in
             self.visibleWidget = next
             self.applyDemand()
@@ -73,6 +82,9 @@ public final class NotchRuntime: WidgetEffects {
             self.widgets.dismiss()
         },
         compactAction: { [unowned self] in self.callbacks.compactAction($0) }))
+        owner.onPresentationChange = { [weak self] in self?.callbacks.presenting($0 == .compact) }
+        return owner
+    }()
 
     public convenience init(preferences: PreferenceStore, files: ApplicationFiles,
                             mediaScript: URL, mediaFramework: URL, callbacks: Callbacks) {
@@ -99,7 +111,10 @@ public final class NotchRuntime: WidgetEffects {
     public func start() {
         guard !active else { refresh(); return }
         let monitor = SessionMonitor(onPhase: { [weak self] in self?.setPhase($0) },
-                                     onEnvironmentChange: { [weak self] in self?.refresh() })
+                                     onEnvironmentChange: { [weak self] in
+            self?.refresh()
+            self?.callbacks.environmentChanged()
+        })
         self.monitor = monitor
         begin(phase: monitor.phase)
         refresh()
@@ -112,6 +127,7 @@ public final class NotchRuntime: WidgetEffects {
         active = true
         self.phase = phase
         applyDemand()
+        callbacks.phaseChanged(phase)
     }
 
     public func stop() {
@@ -167,6 +183,7 @@ public final class NotchRuntime: WidgetEffects {
         applyDemand()
         window.setSessionLocked(next != .unlocked)
         widgets.refresh()
+        callbacks.phaseChanged(next)
     }
 
     private var demand: FeatureDemand {

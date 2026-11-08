@@ -21,6 +21,7 @@ struct NotchWindowTests {
         let screen = try #require(NSScreen.screens.first)
         var calls: [String] = []
         weak var child: NSViewController?
+        var presentations: [NotchWindowCoordinator.Presentation] = []
         let owner = NotchWindowCoordinator(callbacks: .init(
             willShowWidget: { _, widget in calls.append("demand.\(widget.rawValue)") },
             makeWidget: { widget in
@@ -35,6 +36,7 @@ struct NotchWindowTests {
                 calls.append("stop")
             }, compactAction: { _ in Issue.record("No compact action was requested") }))
         defer { owner.stop() }
+        owner.onPresentationChange = { presentations.append($0) }
         owner.start(screen: screen, widgets: [.mirror, .shelf])
         #expect(owner.presentation == .compact)
         autoreleasepool { owner.expand(.mirror, focus: false) }
@@ -61,5 +63,7 @@ struct NotchWindowTests {
         owner.setSessionLocked(false)
         #expect(owner.presentation == .compact)
         #expect(child == nil)
+        #expect(presentations == [.compact, .expanded(.mirror), .expanded(.shelf), .hidden, .compact,
+                                   .expanded(.shelf), .hidden, .compact])
     }
 }

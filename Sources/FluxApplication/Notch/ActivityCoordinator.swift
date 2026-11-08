@@ -70,6 +70,7 @@ public final class ActivityCoordinator {
     }
 
     public func setPresenting(_ presenting: Bool) {
+        guard self.presenting != presenting else { return }
         self.presenting = presenting
         guard active else { return }
         if !presenting { images.clear(); artworkID = nil; artwork = nil }
