@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// One move owns input, verification and policy commit until it has a result.
 @MainActor

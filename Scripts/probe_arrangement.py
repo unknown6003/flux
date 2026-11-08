@@ -8,6 +8,7 @@ from probe_update import run
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = r'''
 import Foundation
+import CoreGraphics
 
 @main struct ArrangementProbe {
     @MainActor static func main() async {

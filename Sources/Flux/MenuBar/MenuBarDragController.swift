@@ -133,7 +133,10 @@ final class MenuBarDragController: ObservableObject {
         guard accepts(sender), let active, let manager else { return false }
         manager.refresh()
         guard let current = manager.icons.first(where: { sameItem($0, active.icon) }),
-              insertion == nil || insertion?.section == section else { return false }
+              insertion == nil || insertion?.section == section else {
+            message = "That icon changed. Try the move again."
+            return false
+        }
         if let insertion {
             let peers = manager.icons.filter { $0.section == section && $0.id != current.id }
                 .sorted { $0.frame.minX < $1.frame.minX }

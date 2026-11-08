@@ -57,6 +57,8 @@ final class MenuBarIconManager: ObservableObject {
     var extra = false
     var extraRows = 0
     var assignments: [String: MenuBarSection] = [:]
+    private var identities: [String: UUID] = [:]
+    func cancelPendingMoves() {}
     static func launchToken(for launchDate: Date?) -> Int64 {
         guard let launchDate else { return 0 }
         return Int64((launchDate.timeIntervalSince1970 * 1_000).rounded())
@@ -109,9 +111,11 @@ final class MenuBarIconManager: ObservableObject {
                   AXValueGetValue(s as! AXValue, .cgSize, &size) else { continue }
             let launchToken = Int64(((app.launchDate?.timeIntervalSince1970 ?? 0) * 1_000).rounded())
             let id = "com.flux.menu-drag-fixture|\(app.processIdentifier)|\(launchToken)|\(index)"
+            let identity = identities[id] ?? UUID()
+            identities[id] = identity
             icons.append(Icon(id: id, title: stale ? "Replaced item" : title,
                               source: app.localizedName, section: assignments[id] ?? .shown, isMovable: true,
-                              frame: CGRect(origin: point, size: size)))
+                              frame: CGRect(origin: point, size: size), identity: stale ? UUID() : identity))
         }
         if extra {
             icons.append(Icon(id: "fixed|0", title: "New fixed item", source: "System", section: .shown,
@@ -721,7 +725,7 @@ extension EnvironmentValues {
     controller = args.output / "MenuBarDragController.swift"
     controller.write_text((root / "Sources/Flux" / sources[0]).read_text() + '''
 extension MenuBarDragController {
-    func probeChangedDisplay() { displayGeometry = [] }
+    func probeChangedDisplay() { displays = [] }
 }
 ''')
     captures = args.output / "MenuBarIconImages.swift"
