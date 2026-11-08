@@ -40,7 +40,9 @@ public actor PasteboardChannel: ClipboardChannel {
         } else if let bytes = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) {
             payload = Self.image(bytes)
         } else if let string = Self.plainText(pasteboard), !string.isEmpty {
-            payload = .text(string, ClipboardHistory.classify(string))
+            let bounded = string.count > ClipboardHistory.maximumTextCharacters
+                ? String(string.prefix(ClipboardHistory.maximumTextCharacters)) + "…" : string
+            payload = .text(bounded, ClipboardHistory.classify(bounded))
         } else {
             payload = .unsupported
         }
