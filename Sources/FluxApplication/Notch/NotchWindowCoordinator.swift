@@ -103,7 +103,7 @@ public final class NotchWindowCoordinator {
     /// Shows the compact notch on `screen`. Calling it again moves to a new screen.
     public func start(screen: NSScreen, widgets: [Widget]) {
         started = true
-        self.widgets = Self.unique(widgets)
+        setWidgets(widgets)
         update(screen: screen)
         if !isLocked, presentation == .hidden { showCompact() }
     }
@@ -283,7 +283,7 @@ public final class NotchWindowCoordinator {
     private func dismissPanel() {
         guard let panel else { return }
         collapsing = true
-        if panel.current != nil { panel.dismiss() }
+        panel.dismiss()
         collapsing = false
         releasePanel()
     }

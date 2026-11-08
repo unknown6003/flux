@@ -40,8 +40,13 @@ struct NotchWindowTests {
         autoreleasepool { owner.expand(.mirror, focus: false) }
         #expect(calls == ["demand.mirror", "make.mirror"])
         #expect(owner.presentation == .expanded(.mirror))
+        // Reapplying configuration on the same screen must stop a disabled
+        // Mirror just as changing the widget list directly would.
+        autoreleasepool { owner.start(screen: screen, widgets: [.shelf]) }
+        #expect(owner.presentation == .expanded(.shelf))
+        #expect(calls.suffix(2) == ["demand.shelf", "make.shelf"])
         autoreleasepool { owner.collapse() }
-        #expect(calls == ["demand.mirror", "make.mirror", "stop"])
+        #expect(calls.last == "stop")
         try await drainAppearanceChanges { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .compact)

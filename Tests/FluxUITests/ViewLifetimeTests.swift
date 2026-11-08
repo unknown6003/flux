@@ -5,6 +5,25 @@ import FluxCore
 
 @Suite(.serialized)
 struct ViewLifetimeTests {
+    @Test @MainActor func lateAppearanceCannotRestartADismissedWidget() {
+        _ = NSApplication.shared
+        var made: [Widget] = []
+        let panel = NotchPanelController(widgets: [.mirror, .shelf],
+            geometry: .init(screenFrame: .init(x: 0, y: 0, width: 1728, height: 1117), cameraWidth: 180, topInset: 33)) { widget in
+            made.append(widget)
+            let child = NSViewController()
+            child.view = NSView()
+            return child
+        }
+        _ = panel.view
+        panel.show(.mirror)
+        panel.dismiss()
+        panel.viewDidAppear()
+        panel.show(.shelf)
+        #expect(made == [.mirror])
+        #expect(panel.current == nil)
+        #expect(panel.children.isEmpty)
+    }
     @Test @MainActor func malformedMediaTimesNeverOverflowClockFormatting() {
         #expect(NotchWidgetStyle.clock(.nan) == "0:00")
         #expect(NotchWidgetStyle.clock(.infinity) == "0:00")

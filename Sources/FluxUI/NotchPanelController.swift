@@ -131,6 +131,7 @@ public final class NotchPanelController: NSViewController {
     private let container = NSView()
     private let cameraSpacer = NSView()
     private weak var child: NSViewController?
+    private var dismissed = false
 
     /// - Parameters:
     ///   - widgets: enabled widgets in the saved order.
@@ -184,8 +185,9 @@ public final class NotchPanelController: NSViewController {
 
     /// Shows one widget. The previous widget is removed first.
     public func show(_ widget: Widget) {
-        guard widgets.contains(widget), widget != current else { return }
+        guard !dismissed, widgets.contains(widget), widget != current else { return }
         onWillSwitch?(current, widget)
+        guard !dismissed else { return }
         removeChild()
         let controller = makeWidget(widget)
         addChild(controller)
@@ -226,8 +228,11 @@ public final class NotchPanelController: NSViewController {
         }
     }
 
-    /// Removes the widget content. The parent closes the window after this.
+    /// Terminal for this presentation. Late AppKit appearance callbacks must
+    /// not recreate a widget after the parent stopped its service.
     public func dismiss() {
+        guard !dismissed else { return }
+        dismissed = true
         onWillDismiss?(current)
         removeChild()
         current = nil
@@ -235,6 +240,7 @@ public final class NotchPanelController: NSViewController {
 
     override public func viewDidAppear() {
         super.viewDidAppear()
+        guard !dismissed else { return }
         if current == nil, let first = widgets.first { show(first) }
         view.window?.makeFirstResponder(tabs)
     }
