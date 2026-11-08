@@ -9,4 +9,4 @@ CameraDriver owns configuration, start and stop on one actor. Apple's documentat
 
 CameraFeed.stop cancels startup, rejects late state, asks the driver to stop and releases the layer connection after stop completes. A deinit task is a second idempotent stop. This is asynchronous shutdown, not an instant hardware-off claim. Real Mac tests must measure stop latency, the camera indicator, retained memory and quick reopen behavior.
 
-The first implementation has no runtime interruption or device-disconnect observer yet. Its fixed states and error paths contain no device name or raw error. It is not complete feature acceptance and is not wired into the app.
+Runtime error and interruption notifications produce fixed states through a bounded stream. Stop removes the observers and finishes the stream. The real-device disconnect and permission-revoke cases still need hardware tests. Fixed states contain no device name or raw error. This is not complete feature acceptance and is not wired into the app.

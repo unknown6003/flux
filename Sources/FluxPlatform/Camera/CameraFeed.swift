@@ -13,6 +13,7 @@ public protocol CameraPreviewSource: Sendable {
 
 public protocol CameraDriving: Sendable {
     var previewSource: any CameraPreviewSource { get }
+    func events() async -> AsyncStream<CameraState>
     func start() async -> CameraState
     func stop() async
 }
@@ -33,12 +34,20 @@ public actor CameraDriver: CameraDriving {
     private let session: AVCaptureSession
     private var ended = false
     private var configured = false
+    private let states: AsyncStream<CameraState>
+    private let output: AsyncStream<CameraState>.Continuation
+    private var observations: [NotificationObservation] = []
 
     public init() {
         let session = AVCaptureSession()
         self.session = session
         previewSource = PreviewConnection(session: session)
+        let channel = AsyncStream<CameraState>.makeStream(bufferingPolicy: .bufferingNewest(4))
+        states = channel.stream
+        output = channel.continuation
     }
+
+    public func events() -> AsyncStream<CameraState> { states }
 
     public func start() -> CameraState {
         guard !ended, !Task.isCancelled else { return .unavailable }
@@ -56,6 +65,7 @@ public actor CameraDriver: CameraDriving {
                 session.addInput(input)
                 session.commitConfiguration()
                 configured = true
+                observeSession(device: device)
             }
             guard !Task.isCancelled else { return .unavailable }
             session.startRunning()
@@ -65,6 +75,8 @@ public actor CameraDriver: CameraDriving {
 
     public func stop() {
         ended = true
+        observations.removeAll()
+        output.finish()
         if session.isRunning { session.stopRunning() }
         if configured {
             session.beginConfiguration()
@@ -72,6 +84,28 @@ public actor CameraDriver: CameraDriving {
             session.commitConfiguration()
             configured = false
         }
+    }
+
+    private func observeSession(device: AVCaptureDevice) {
+        let notifications: [(Notification.Name, CameraState)] = [
+            (AVCaptureSession.runtimeErrorNotification, .failed),
+            (AVCaptureSession.wasInterruptedNotification, .interrupted),
+            (AVCaptureSession.interruptionEndedNotification, .starting)
+        ]
+        observations = notifications.map { pair in
+            NotificationObservation(center: .default, name: pair.0, object: session) { [weak self] _ in
+                Task { await self?.receive(pair.1) }
+            }
+        }
+        observations.append(NotificationObservation(center: .default,
+            name: AVCaptureDevice.wasDisconnectedNotification, object: device) { [weak self] _ in
+                Task { await self?.receive(.unavailable) }
+            })
+    }
+
+    private func receive(_ state: CameraState) {
+        guard !ended else { return }
+        output.yield(state == .starting ? (session.isRunning ? .running : .unavailable) : state)
     }
 }
 
@@ -81,6 +115,7 @@ public actor CameraDriver: CameraDriving {
     public var onChange: ((CameraState) -> Void)?
     private let driver: any CameraDriving
     private var startup: Task<Void, Never>?
+    private var events: Task<Void, Never>?
     private weak var preview: AVCaptureVideoPreviewLayer?
     private var active = true
 
@@ -93,10 +128,17 @@ public actor CameraDriver: CameraDriving {
             guard let self, self.active, !Task.isCancelled else { return }
             self.onChange?(state)
         }
+        events = Task { @MainActor [weak self, driver] in
+            for await state in await driver.events() {
+                guard let self, self.active, !Task.isCancelled else { return }
+                self.onChange?(state)
+            }
+        }
     }
 
     deinit {
         startup?.cancel()
+        events?.cancel()
         let driver = driver
         Task { await driver.stop() }
     }
@@ -114,6 +156,8 @@ public actor CameraDriver: CameraDriving {
         onChange = nil
         startup?.cancel()
         startup = nil
+        events?.cancel()
+        events = nil
         let driver = driver
         let layer = preview
         preview = nil

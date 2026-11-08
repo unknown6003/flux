@@ -7,9 +7,10 @@ final class NotificationObservation: @unchecked Sendable {
     private let token: any NSObjectProtocol
 
     init(center: NotificationCenter, name: Notification.Name,
+         object: AnyObject? = nil,
          receive: @escaping @Sendable (Notification) -> Void) {
         self.center = center
-        token = center.addObserver(forName: name, object: nil, queue: .main, using: receive)
+        token = center.addObserver(forName: name, object: object, queue: .main, using: receive)
     }
 
     deinit { center.removeObserver(token) }
