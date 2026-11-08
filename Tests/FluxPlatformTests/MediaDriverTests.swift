@@ -123,3 +123,16 @@ func mediaCommandDeadlineStopsAnUnresponsiveCommand() async throws {
     await driver.stop()
     #expect(await mediaEventually { fixture.allStopped })
 }
+
+@MainActor @Test(.timeLimit(.minutes(1)))
+func releasingMediaFeedStopsItsHelperWithoutAnExplicitStop() async throws {
+    let fixture = try MediaFixture()
+    defer { fixture.cleanUp() }
+    let driver = MediaDriver(script: fixture.script, framework: fixture.root)
+    var feed: MediaFeed? = MediaFeed(driver: driver) { _ in }
+    weak var released = feed
+    #expect(await mediaEventually { !fixture.pids.isEmpty })
+    feed = nil
+    #expect(released == nil)
+    #expect(await mediaEventually { fixture.allStopped })
+}

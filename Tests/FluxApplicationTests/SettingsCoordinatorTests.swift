@@ -101,9 +101,11 @@ struct SettingsCoordinatorTests {
 
     @Test func widgetOrderMovesKnownNeighborsWithoutDiscardingFutureIDs() {
         var order = WidgetOrder(saved: ["future.first", "mirror", "future.middle", "shelf", "mirror", "calendar"])
-        #expect(order.move(.shelf, up: true))
+        let moved = order.move(.shelf, up: true)
+        #expect(moved)
         #expect(order.saved.prefix(4) == ["future.first", "shelf", "future.middle", "mirror"])
         #expect(order.widgets == [.shelf, .mirror, .calendar, .nowPlaying, .clipboard])
-        #expect(!order.move(.shelf, up: true))
+        let movedPastFirst = order.move(.shelf, up: true)
+        #expect(!movedPastFirst)
     }
 }
