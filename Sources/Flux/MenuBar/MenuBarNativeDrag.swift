@@ -8,28 +8,25 @@ final class MenuBarNativeDrag {
 
     func perform(from frame: CGRect, to target: CGPoint,
                  expectedProcessID: pid_t? = nil,
+                 expectedElement: AXUIElement? = nil,
                  canContinue: @escaping @MainActor () -> Bool) async -> Bool {
         diagnostics = "preflight"
         guard !isRunning, canContinue(), CGPreflightPostEventAccess(),
               frame.width > 0, frame.height > 0,
               frame.midX.isFinite, frame.midY.isFinite,
               target.x.isFinite, target.y.isFinite,
-              Self.isInMenuBar(CGPoint(x: frame.midX, y: frame.midY)), Self.isInMenuBar(target),
+              Self.isInMenuBar(target),
               !CGEventSource.buttonState(.combinedSessionState, button: .left),
               let source = CGEventSource(stateID: .privateState) else {
             diagnostics = "input unavailable, held, cancelled, or outside the menu bar; source=\(frame), target=\(target)"
             return false
         }
-        if let expectedProcessID {
-            var hit: AXUIElement?
-            var hitPID: pid_t = 0
-            guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
-                                                   Float(frame.midX), Float(frame.midY), &hit) == .success,
-                  let hit, AXUIElementGetPid(hit, &hitPID) == .success,
-                  hitPID == expectedProcessID else {
-                diagnostics = "source hit owner=\(hitPID), expected=\(expectedProcessID), frame=\(frame)"
-                return false
-            }
+        let points = [frame.midX, frame.minX + frame.width / 4, frame.maxX - frame.width / 4,
+                      frame.minX + min(3, frame.width / 4), frame.maxX - min(3, frame.width / 4)]
+            .map { CGPoint(x: $0, y: frame.midY) }.filter(Self.isInMenuBar)
+        guard let center = points.first else {
+            diagnostics = "source has no point in the menu bar; frame=\(frame)"
+            return false
         }
         isRunning = true
         let origin = CGEvent(source: nil)?.location ?? target
@@ -58,16 +55,49 @@ final class MenuBarNativeDrag {
             return true
         }
         var pressed = false
-        var lastPoint = CGPoint(x: frame.midX, y: frame.midY)
+        var postedInput = false
+        var lastPoint = center
         defer {
             if pressed { _ = post(.leftMouseUp, at: lastPoint, flags: physicalFlags.union(.maskCommand)) }
             // Mouse flags must return to the user's state. A key-up would also
             // release a Command key that the user may be holding.
-            let restore = interrupted || !canContinue() ? (CGEvent(source: nil)?.location ?? lastPoint) : origin
-            _ = post(.mouseMoved, at: restore, flags: physicalFlags)
+            if postedInput {
+                let restore = interrupted || !canContinue() ? (CGEvent(source: nil)?.location ?? lastPoint) : origin
+                _ = post(.mouseMoved, at: restore, flags: physicalFlags)
+            }
             if let monitor { NSEvent.removeMonitor(monitor) }
             if let localMonitor { NSEvent.removeMonitor(localMonitor) }
             isRunning = false
+        }
+        if let expectedProcessID {
+            let system = AXUIElementCreateSystemWide()
+            AXUIElementSetMessagingTimeout(system, 0.1)
+            let readyBy = ProcessInfo.processInfo.systemUptime + 3
+            var selected: CGPoint?
+            repeat {
+                guard !interrupted, canContinue() else { return false }
+                for point in points {
+                    var hit: AXUIElement?
+                    var hitPID: pid_t = 0
+                    let error = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit)
+                    var role: CFTypeRef?
+                    if let hit {
+                        _ = AXUIElementGetPid(hit, &hitPID)
+                        AXUIElementSetMessagingTimeout(hit, 0.05)
+                        _ = AXUIElementCopyAttributeValue(hit, kAXRoleAttribute as CFString, &role)
+                    }
+                    diagnostics = "source hit owner=\(hitPID), role=\(role as? String ?? "unknown"), expected=\(expectedProcessID), point=\(point), frame=\(frame)"
+                    guard error == .success, let hit, hitPID == expectedProcessID else { continue }
+                    guard expectedElement.map({ Self.containsSource(hit, source: $0) }) ?? true else { continue }
+                    selected = point
+                    break
+                }
+                if selected != nil { break }
+                guard ProcessInfo.processInfo.systemUptime < readyBy else { return false }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            } while true
+            guard !interrupted, canContinue(), let selected else { return false }
+            lastPoint = selected
         }
         let flags = physicalFlags.union(.maskCommand)
         guard post(.leftMouseDown, at: lastPoint, flags: flags) else {
@@ -75,6 +105,7 @@ final class MenuBarNativeDrag {
             return false
         }
         pressed = true
+        postedInput = true
         let paced = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
         if paced { try? await Task.sleep(nanoseconds: 60_000_000) }
         let start = lastPoint
@@ -97,8 +128,21 @@ final class MenuBarNativeDrag {
             return false
         }
         pressed = false
-        diagnostics = "posted complete drag; source=\(frame), target=\(target)"
+        diagnostics = "posted complete drag; source=\(frame), point=\(start), target=\(target)"
         return true
+    }
+
+    private static func containsSource(_ hit: AXUIElement, source: AXUIElement) -> Bool {
+        var current = hit
+        for _ in 0..<5 {
+            if CFEqual(current, source) { return true }
+            AXUIElementSetMessagingTimeout(current, 0.05)
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent) == .success,
+                  let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return false }
+            current = unsafeBitCast(parent, to: AXUIElement.self)
+        }
+        return false
     }
 
     private static func isInMenuBar(_ point: CGPoint) -> Bool {
