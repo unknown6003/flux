@@ -46,7 +46,7 @@ public enum ClipboardArchive {
         guard envelope.version == 1 else { throw ArchiveError.unsupportedVersion }
         return envelope.entries.compactMap { record in
             guard let kind = SavedClipboardKind(rawValue: record.kind),
-                  !record.text.isEmpty, record.text.count <= maximumCharacters,
+                  !record.text.isEmpty, accepts(record.text, kind: kind),
                   record.capturedAt >= now.addingTimeInterval(-retention) else { return nil }
             return SavedClipboardEntry(capturedAt: record.capturedAt, kind: kind, text: record.text)
         }.sorted { $0.capturedAt > $1.capturedAt }.prefix(maximumEntries).map { $0 }
@@ -56,7 +56,7 @@ public enum ClipboardArchive {
         let cutoff = now.addingTimeInterval(-retention)
         var records = entries.filter { $0.capturedAt >= cutoff && !$0.text.isEmpty }
             .sorted { $0.capturedAt > $1.capturedAt }.prefix(maximumEntries).compactMap { entry -> Record? in
-                if entry.text.count > maximumCharacters {
+                if !accepts(entry.text, kind: entry.kind) {
                     guard entry.kind != .url else { return nil }
                     return Record(capturedAt: entry.capturedAt, kind: entry.kind.rawValue,
                                   text: String(entry.text.prefix(maximumCharacters - 1)) + "…")
@@ -71,5 +71,12 @@ public enum ClipboardArchive {
             guard !records.isEmpty else { throw ArchiveError.tooLarge }
             records.removeLast()
         }
+    }
+
+    private static func accepts(_ text: String, kind: SavedClipboardKind) -> Bool {
+        let count = text.count
+        if count <= maximumCharacters { return true }
+        // The old writer appended an ellipsis after taking 32,000 characters.
+        return kind != .url && count == maximumCharacters + 1 && text.hasSuffix("…")
     }
 }

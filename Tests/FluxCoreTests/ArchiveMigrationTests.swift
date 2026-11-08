@@ -45,3 +45,15 @@ import Testing
     #expect(!decoded.contains { $0.kind == .url })
     #expect(decoded.count < 50)
 }
+
+@Test func legacyTruncatedClipboardTextKeepsItsExtraEllipsisCharacter() throws {
+    let text = String(repeating: "a", count: 32_000) + "…"
+    // This is the exact envelope shape and truncation form emitted by 0.21.35.
+    let data = Data(("{\"version\":1,\"entries\":[{\"capturedAt\":\"2026-11-08T17:00:00Z\",\"kind\":\"text\",\"text\":\"" + text + "\"}]}").utf8)
+    let now = try #require(ISO8601DateFormatter().date(from: "2026-11-08T18:00:00Z"))
+    let entries = try ClipboardArchive.decode(data, now: now)
+    #expect(entries.count == 1)
+    #expect(entries.first?.text == text)
+    let saved = try ClipboardArchive.encode(entries, now: now)
+    #expect(try ClipboardArchive.decode(saved, now: now).first?.text == text)
+}
