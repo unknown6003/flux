@@ -175,7 +175,9 @@ func probe() {
         print("FAIL: macOS 27, a display and the assessment interface are required")
         exit(1)
     }
+    var fixtureAXFrame: CGRect?
     func count() -> Int? {
+        fixtureAXFrame = nil
         let owner = AXUIElementCreateApplication(getpid())
         var bar: CFTypeRef?
         guard AXUIElementCopyAttributeValue(owner, kAXExtrasMenuBarAttribute as CFString,
@@ -193,6 +195,16 @@ func probe() {
                 var point = CGPoint.zero
                 if AXValueGetValue(value as! AXValue, .cgPoint, &point) {
                     print("Probe AX position: \(point)")
+                    var sizeValue: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(child, kAXSizeAttribute as CFString,
+                                                     &sizeValue) == .success, let sizeValue,
+                       CFGetTypeID(sizeValue) == AXValueGetTypeID() {
+                        var size = CGSize.zero
+                        if AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) {
+                            fixtureAXFrame = CGRect(origin: point, size: size)
+                            print("Probe AX frame: \(fixtureAXFrame!)")
+                        }
+                    }
                 }
             }
         }
@@ -337,7 +349,7 @@ func probe() {
                 print("Flux control: \(frame)")
                 if dimensions.width >= 20 { chevron = frame }
             }
-            guard let chevron, let fixture = item.button?.window?.frame,
+            guard let chevron, let fixture = fixtureAXFrame,
                 fixture.maxX <= chevron.minX else {
                 print("FAIL: the fixture is not to the left of Flux's arrow")
                 exit(1)
