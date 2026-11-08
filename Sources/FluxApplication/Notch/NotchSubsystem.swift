@@ -35,11 +35,11 @@ import FluxPlatform
     private let mediaFramework: URL
     private let callbacks: Callbacks
     private var active = false
-    private lazy var activities = ActivityCoordinator(preferences: preferences,
+    private lazy var activities: ActivityCoordinator = ActivityCoordinator(preferences: preferences,
         publish: { [weak self] item, image, count, restorable in
             self?.runtime.updateActivity(item, artwork: image, count: count, restorableCount: restorable)
         }, timerCompleted: { [weak self] in self?.callbacks.timerCompleted($0) })
-    private lazy var runtime = NotchRuntime(preferences: preferences, files: files,
+    private lazy var runtime: NotchRuntime = NotchRuntime(preferences: preferences, files: files,
         mediaScript: mediaScript, mediaFramework: mediaFramework, callbacks: .init(
             report: { [weak self] in self?.callbacks.report($0) },
             event: { [weak self] event in
