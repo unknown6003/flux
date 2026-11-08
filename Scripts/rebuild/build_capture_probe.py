@@ -42,6 +42,8 @@ def main():
         info = plistlib.load(stream)
     revision = run(["git", "rev-parse", "HEAD"])
     info["FluxProbeOnly"] = True
+    # The diagnostic must launch beside the product, never reuse its process.
+    info["LSMultipleInstancesProhibited"] = False
     if layout:
         info["FluxLayoutProbeOnly"] = True
     info["FluxProbeSourceRevision"] = revision
@@ -61,7 +63,8 @@ def main():
         raise RuntimeError("Capture probe signing certificate differs from Flux")
     archive = output / ("FluxLayoutProbe.zip" if layout else "FluxCaptureProbe.zip")
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)])
-    report = {"sourceRevision": revision, "probeOnly": True, "layoutProbe": layout, "bundleID": info["CFBundleIdentifier"],
+    report = {"sourceRevision": revision, "probeOnly": True, "layoutProbe": layout,
+              "multipleInstancesProhibited": info["LSMultipleInstancesProhibited"], "bundleID": info["CFBundleIdentifier"],
               "leafSHA256": hashlib.sha256(leaf).hexdigest(), "sizeBytes": archive.stat().st_size,
               "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
     (output / "artifact.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -31,7 +31,7 @@ passed, but the real panel reopened Mirror after collapse and lock. A late
 viewDidAppear called show after dismiss had cleared current. Dismissal is
 now final for that panel instance. The added regression calls the late
 appearance method and checks that it cannot create another widget. The
-fixed native test result is pending.
+fixed native tests passed in CI42533115317 and CI42533925638.
 
 A separate source review found that repeated start on an unchanged screen
 replaced the owner's widget list but left the panel's list unchanged. Start
@@ -46,7 +46,15 @@ Its own items had valid AppKit frames. No hide/show cycle ran. A new
 It compares an individual-window capture with two global-coordinate and two
 display-filter candidates. It creates no status items and posts no input.
 This tests capture coordinates and access before another visibility trial.
-No calibration result exists yet.
+The own-window control and both top-coordinate candidates showed FLUX-CAL;
+the bottom-coordinate candidates did not. This establishes the top-coordinate
+mapping for that control. It does not establish third-party capture access.
+
+A later Launch Services trial returned the installed Flux process rather than
+the explicit diagnostic. The diagnostic inherited the product's
+LSMultipleInstancesProhibited=true flag. The diagnostic builder now sets this
+flag to false before signing. The product flag stays true. A fresh launch with
+an exact returned-path and PID check is still required.
 
 ## Startup
 

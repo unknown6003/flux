@@ -18,7 +18,7 @@ public actor SignedApplicationVerifier {
         guard candidate.isFileURL, candidate.pathExtension == "app" else { throw SignedApplicationError.metadata }
         var code: SecStaticCode?
         var requirement: SecRequirement?
-        let standard = SecCSFlags(rawValue: kSecCSDefaultFlags)
+        let standard = SecCSFlags(rawValue: 0)
         guard SecStaticCodeCreateWithPath(candidate as CFURL, standard, &code) == errSecSuccess,
               let code,
               SecRequirementCreateWithString(Self.requirementText as CFString, standard, &requirement) == errSecSuccess,

@@ -17,7 +17,7 @@ struct SignedApplicationVerifierTests {
     @Test func validSystemSignatureIsNotTheFluxPublisher() async throws {
         let finder = URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app")
         var code: SecStaticCode?
-        let flags = SecCSFlags(rawValue: kSecCSDefaultFlags)
+        let flags = SecCSFlags(rawValue: 0)
         #expect(SecStaticCodeCreateWithPath(finder as CFURL, flags, &code) == errSecSuccess)
         let signedCode = try #require(code)
         #expect(SecStaticCodeCheckValidity(signedCode, flags, nil) == errSecSuccess)
