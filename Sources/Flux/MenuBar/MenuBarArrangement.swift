@@ -51,7 +51,7 @@ final class MenuBarArrangement {
     }
 
     enum Failure: Error, Equatable {
-        case changed, cancelled, unavailable, inputBusy, notMoved(String), notSaved
+        case changed, cancelled, unavailable, inputBusy, appScope, notMoved(String), notSaved
 
         var message: String {
             switch self {
@@ -59,6 +59,7 @@ final class MenuBarArrangement {
             case .cancelled: return "Icon move cancelled because input changed. Try again."
             case .unavailable: return "Flux could not read the menu bar. Try again."
             case .inputBusy: return "Finish the current mouse or menu action, then try again."
+            case .appScope: return "This app has other menu bar icons. Choose its section first, then place its icons."
             case .notMoved(let title): return "macOS did not move \(title). Try again."
             case .notSaved: return "Flux could not save the icon's section. Try again."
             }
@@ -127,6 +128,16 @@ final class MenuBarArrangement {
             && (index > 0 ? peers[index - 1].handle : nil) == slot.after
     }
 
+    private func assigning(_ section: MenuBarSection, to item: Item, in items: [Item]) -> [Item] {
+        guard environment.appScoped else { return items }
+        let bundle = item.handle.id.split(separator: "|").first
+        return items.map { peer in
+            Item(handle: peer.handle, title: peer.title,
+                 section: peer.handle.id.split(separator: "|").first == bundle ? section : peer.section,
+                 frame: peer.frame)
+        }
+    }
+
     private func execute(_ request: Request, eligible: @escaping () -> Bool) async -> Result<Void, Failure> {
         let readyBy = ProcessInfo.processInfo.systemUptime + 3
         while !environment.canStart() {
@@ -148,6 +159,10 @@ final class MenuBarArrangement {
             if !environment.appScoped { target = environment.sectionTarget(item, section) }
         case .slot(let placement):
             guard valid(placement, excluding: item.handle, in: items) else { return .failure(.changed) }
+            let resulting = assigning(section, to: item, in: items)
+            if placement.before != nil || placement.after != nil {
+                guard valid(placement, excluding: item.handle, in: resulting) else { return .failure(.appScope) }
+            }
             slot = placement
             if placement.before == nil && placement.after == nil {
                 if !environment.appScoped { target = environment.sectionTarget(item, section) }
@@ -178,7 +193,8 @@ final class MenuBarArrangement {
                 return .failure(.unavailable)
             }
             guard canCommit() else { return .failure(.cancelled) }
-            let placed = slot.map { neighbors(moved, slot: $0, in: fresh) }
+            let resulting = assigning(section, to: moved, in: fresh)
+            let placed = slot.map { neighbors(moved, slot: $0, in: resulting) }
                 ?? (environment.physicalSection(moved) == section)
             guard placed, environment.appScoped || environment.physicalSection(moved) == section else {
                 onTrace?("unchanged \(item.handle.id) frame=\(moved.frame)")

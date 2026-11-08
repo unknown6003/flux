@@ -106,7 +106,10 @@ final class MenuBarIconManager: ObservableObject {
                 guard let self else { return false }
                 let revision = self.nativeInputGeneration
                 let generation = self.cancellationGeneration
-                return await self.driver.perform(from: item.frame, to: target) { [weak self] in
+                let expectedPID = ControlItem.usesMacOS27Model
+                    ? Self.appIconIdentity(from: item.handle.id)?.processID : nil
+                return await self.driver.perform(from: item.frame, to: target,
+                                                 expectedProcessID: expectedPID) { [weak self] in
                     guard let self else { return false }
                     return self.trustProvider() && self.nativeInputGeneration == revision
                         && self.cancellationGeneration == generation
@@ -382,6 +385,7 @@ final class MenuBarIconManager: ObservableObject {
             guard let self else { return false }
             return self.trustProvider() && self.cancellationGeneration == generation
                 && self.nativeInputGeneration == revision
+                && (destination.section != .alwaysHidden || self.alwaysHiddenEnabledProvider())
         }
         publishStatus()
         return accepted

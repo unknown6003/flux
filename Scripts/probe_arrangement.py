@@ -92,6 +92,12 @@ import CoreGraphics
         await run(engine, .slot(.init(section: .alwaysHidden, before: nil, after: nil)))
         check(succeeded() && drags == 0 && saves == 2, "empty lane is a policy assignment")
 
+        rows = [item(a, 100), item(b, 200, section: .hidden), item(c, 300)]
+        let blockedSlot = A.Destination.slot(.init(section: .hidden, before: nil, after: b))
+        await run(engine, blockedSlot)
+        check(failed(.appScope) && drags == 0 && saves == 2,
+              "app-wide membership cannot silently invalidate the requested slot")
+
         rows = [item(a, 100, title: "Home workout", width: 200), item(b, 150, section: .hidden)]
         let slot = A.Destination.slot(.init(section: .hidden, before: nil, after: b))
         await run(engine, slot)
@@ -145,6 +151,10 @@ import CoreGraphics
         let legacy = make()
         await run(legacy, .section(.hidden))
         check(failed(.notMoved("Notion Calendar")), "legacy section change requires physical divider proof")
+        rows = [item(a, 100), item(b, 150)]
+        let beforeLegacyDrags = drags
+        await run(legacy, .slot(.init(section: .shown, before: b, after: nil)))
+        check(succeeded() && drags == beforeLegacyDrags, "satisfied legacy slot is a valid no-op")
         print("PASS: arrangement transaction contract")
     }
 }
