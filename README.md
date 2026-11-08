@@ -16,13 +16,13 @@
 
 Flux does not capture and redraw the menu bar with ScreenCaptureKit. On macOS
 14–26 it uses expandable status items. On macOS 27 it asks MenuBarAgent to
-hide the third-party apps placed left of the Flux chevron.
+hide the third-party apps assigned to Hidden or Always Hidden.
 
 The result:
 
 - **~0% CPU at idle** — it only reacts to clicks, nothing polls or redraws.
-- **Minimal permissions** — macOS 27 needs Accessibility once to learn your icon
-  layout. Hide and reveal then use the saved layout if access is lost. Earlier
+- **Minimal permissions** — macOS 27 needs Accessibility to list and arrange your
+  icons. Hide and reveal use saved app sections if access is lost. Earlier
   versions need no permission for the drawer. Calendar and Camera ask only when their widgets are enabled;
   the optional lock-screen overlay uses macOS's lock-screen window space instead of
   screen capture.
@@ -63,12 +63,11 @@ see exactly where to drop each icon:
 Click **Done** (or the ✓ that replaces the chevron) to apply. Flux remembers the
 arrangement across launches.
 
-On **macOS 27**, grant Flux Accessibility access, then move third-party icons
-left of the Flux chevron in Settings → Menu Bar. The hide toggle hides their
-owning apps' menu bar items. If one app has icons on both sides of the chevron,
-Flux keeps that app visible. Apple system icons remain under macOS control.
-Flux saves the last valid layout. If macOS later denies Accessibility access,
-hide and reveal still work with that layout. From 0.21.27, Flux checks the
+On **macOS 27**, grant Flux Accessibility access, then choose each app's section
+in Settings → Menu Bar. All menu bar icons from that app share its visibility
+setting. Apple system icons remain under macOS control. Flux saves these
+assignments. If macOS later denies Accessibility access, hide and reveal still
+work with them. From 0.21.27, Flux checks the
 current grant through a short-lived process of the same signed app when macOS
 retains an old denied result. Access changes can take effect while Flux stays
 open. New apps start in Shown. A Settings move or a native Command-drag changes
@@ -205,8 +204,8 @@ Quit Flux. In System Settings → Privacy & Security → Accessibility, remove t
 old Flux entry, add the installed Flux.app, and turn it on. Then open Flux.
 Menu Bar settings must show real app names. If it still shows Open Accessibility
 Settings, macOS has not granted access to that copy. The arrow opens these
-settings when access is missing and Flux has no saved layout. Allow access once
-so Flux can save the layout. Later access loss does not stop hiding saved
+settings when access is missing and Flux has no saved layout. Allow access,
+then choose the apps' sections. Later access loss does not stop hiding saved
 icons. In 0.21.27, **Check access again** reads the current grant even when
 macOS retains an old denied result.
 
