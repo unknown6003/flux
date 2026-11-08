@@ -57,3 +57,20 @@ import Testing
     queue.remove(.calendarEvent)
     #expect(queue.current?.kind == .soundHUD)
 }
+
+@MainActor @Test func producerTicksDoNotRestoreAnActivityTheUserDismissed() throws {
+    let queue = ActivityQueue()
+    defer { queue.clear() }
+    let initial = try ActivityItem(kind: .battery, leading: .none, trailing: .text("20%"), priority: 200, duration: nil)
+    queue.post(initial)
+    let id = queue.current?.id
+    let lower = try ActivityItem(kind: .battery, leading: .none, trailing: .text("19%"), priority: 200, duration: nil)
+    #expect(queue.updateIfPresent(lower))
+    #expect(queue.current?.id == id)
+    queue.dismissCurrent()
+    #expect(!queue.updateIfPresent(initial))
+    #expect(queue.current == nil)
+    #expect(queue.restorableCount == 1)
+    queue.restoreLastDismissed()
+    #expect(queue.current?.trailing == .text("19%"))
+}

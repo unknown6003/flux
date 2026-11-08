@@ -206,7 +206,8 @@ public final class NotchRuntime: WidgetEffects {
     }
 
     public func openSettings(_ permission: WidgetPermission) {
-        PermissionAccess.openSettings(switch permission { case .calendar: .calendar; case .camera: .camera })
+        let system: SystemPermission = switch permission { case .calendar: .calendar; case .camera: .camera }
+        PermissionAccess.openSettings(system)
     }
 
     public func retry(_ service: FeatureService) {

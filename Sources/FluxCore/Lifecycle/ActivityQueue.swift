@@ -92,6 +92,15 @@ public enum ActivityError: Error { case invalidDuration }
         publish()
     }
 
+    /// A producer tick changes an active item without undoing a user dismissal.
+    /// A new alert must use post instead.
+    @discardableResult public func updateIfPresent(_ item: ActivityItem) -> Bool {
+        reconcile()
+        guard entries.contains(where: { $0.item.kind == item.kind }) else { return false }
+        post(item)
+        return true
+    }
+
     public func cycle() {
         reconcile()
         guard entries.count > 1 else { return }
