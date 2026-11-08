@@ -54,7 +54,7 @@ private final class DeviceCallbacks: @unchecked Sendable {
 }
 
 private final class DeviceRegistryWatch: @unchecked Sendable {
-    struct Registration: Sendable { let iterator: UInt32; let source: Int; let connected: Bool }
+    struct Registration: Sendable { let iterator: UInt32 }
     let registrations: [Registration]
     private let port: IONotificationPortRef
     private let token: UInt
@@ -66,7 +66,7 @@ private final class DeviceRegistryWatch: @unchecked Sendable {
         token = DeviceCallbacks.shared.add(notify)
         IONotificationPortSetDispatchQueue(port, queue)
         var registered: [Registration] = []
-        for (source, name) in ["AppleDeviceManagementHIDEventService", "IOHIDDevice"].enumerated() {
+        for name in ["AppleDeviceManagementHIDEventService", "IOHIDDevice"] {
             for connected in [true, false] {
                 guard let matching = IOServiceMatching(name) else { continue }
                 var iterator: io_iterator_t = 0
@@ -75,7 +75,7 @@ private final class DeviceRegistryWatch: @unchecked Sendable {
                     { context, iterator in
                         DeviceCallbacks.shared.call(UInt(bitPattern: context), iterator: iterator)
                     }, UnsafeMutableRawPointer(bitPattern: token), &iterator)
-                if result == KERN_SUCCESS { registered.append(.init(iterator: iterator, source: source, connected: connected)) }
+                if result == KERN_SUCCESS { registered.append(.init(iterator: iterator)) }
                 else if iterator != 0 { IOObjectRelease(iterator) }
             }
         }
@@ -98,9 +98,7 @@ public actor DeviceDriver {
     private let signals = DeviceSignals()
     private var watch: DeviceRegistryWatch?
     private var audioObservation: AudioObservation?
-    private struct RegistryKey: Hashable { let source: Int; let entry: UInt64 }
-    private var registry: [RegistryKey: Accessory] = [:]
-    private var audio: [UInt32: Accessory] = [:]
+    private var inventory = AccessoryInventory()
     private var previous: [Accessory]?
     private var active = false
     private var ended = false
@@ -113,19 +111,21 @@ public actor DeviceDriver {
     public func start() -> [Accessory]? {
         guard !active, !ended else { return previous }
         active = true
-        audio = Self.readAudio() ?? [:]
+        inventory.accept(Self.readAudio().map { Array($0.values) }, from: .audio)
         let signals = signals
         watch = DeviceRegistryWatch { [weak self] iterator in
             if signals.insert(.registry(iterator)) { Task { await self?.drainSignals() } }
         }
-        for registration in watch?.registrations ?? [] { drain(registration, initial: true) }
+        for registration in watch?.registrations ?? [] { drain(registration) }
+        inventory.accept(Self.readRegistry(), from: .registry)
         publish()
-        let baseline = previous
+        let baseline = inventory.current
         audioObservation = AudioObservation(object: AudioObjectID(kAudioObjectSystemObject), address: Self.audioList) { [weak self] in
             if signals.insert(.audio) { Task { await self?.drainSignals() } }
         }
         // Reconcile the gap between the baseline and listener registration.
-        if let read = Self.readAudio() { audio = read; publish() }
+        inventory.accept(Self.readAudio().map { Array($0.values) }, from: .audio)
+        publish()
         return baseline
     }
 
@@ -134,7 +134,7 @@ public actor DeviceDriver {
         active = false; ended = true
         signals.close()
         watch = nil; audioObservation = nil
-        registry.removeAll(); audio.removeAll(); previous = nil
+        inventory = AccessoryInventory(); previous = nil
         output.finish()
     }
 
@@ -145,11 +145,15 @@ public actor DeviceDriver {
             guard active else { return }
             for signal in batch {
                 switch signal {
-                case .audio: if let read = Self.readAudio() { audio = read }
+                case .audio: inventory.accept(Self.readAudio().map { Array($0.values) }, from: .audio)
                 case .registry(let iterator):
-                    if let registration = watch?.registrations.first(where: { $0.iterator == iterator }) { drain(registration, initial: false) }
+                    if let registration = watch?.registrations.first(where: { $0.iterator == iterator }) { drain(registration) }
                 }
             }
+            // Notification iterators retain past services. Their order is
+            // not current presence. Query the active matched set once after
+            // draining; a delayed match cannot reinsert a terminated entry.
+            inventory.accept(Self.readRegistry(), from: .registry)
             publish()
             rounds += 1
             if rounds == 16 {
@@ -161,42 +165,16 @@ public actor DeviceDriver {
         }
     }
 
-    private func drain(_ registration: DeviceRegistryWatch.Registration, initial: Bool) {
-        var reads = 0
+    private func drain(_ registration: DeviceRegistryWatch.Registration) {
         while true {
             let entry = IOIteratorNext(registration.iterator)
             guard entry != 0 else { break }
-            defer { IOObjectRelease(entry) }
-            var id: UInt64 = 0
-            guard IORegistryEntryGetRegistryEntryID(entry, &id) == KERN_SUCCESS else { continue }
-            let key = RegistryKey(source: registration.source, entry: id)
-            if !registration.connected {
-                if !initial { registry[key] = nil }
-                continue
-            }
-            reads += 1
-            // Fully drain to re-arm IOKit, but bound property reads and cache.
-            guard reads <= 256, registry.count < 256 || registry[key] != nil else { continue }
-            guard let transport = Self.property(entry, "Transport") as? String,
-                  transport.lowercased().contains("bluetooth"),
-                  (Self.property(entry, "Built-In") as? NSNumber)?.boolValue != true else { continue }
-            let name = Self.property(entry, "Product") as? String ?? "Bluetooth Device"
-            let pairs = Self.property(entry, "DeviceUsagePairs") as? [[String: Any]] ?? []
-            registry[key] = Accessory(name: name, kind: Self.kind(name: name, pairs: pairs),
-                                      percent: (Self.property(entry, "BatteryPercent") as? NSNumber)?.intValue)
+            IOObjectRelease(entry)
         }
     }
 
     private func publish() {
-        // Registry values with battery readings take precedence over HAL names.
-        var merged = audio.values.sorted { $0.key < $1.key }
-        merged.append(contentsOf: registry.values.sorted { $0.key < $1.key })
-        var byName: [String: Accessory] = [:]
-        for accessory in merged {
-            if byName[accessory.key]?.percent != nil { continue }
-            byName[accessory.key] = accessory
-        }
-        let snapshot = Array(byName.values.sorted { $0.key < $1.key }.prefix(256))
+        guard let snapshot = inventory.current else { output.yield(nil); return }
         guard previous != snapshot else { return }
         previous = snapshot
         output.yield(snapshot)
@@ -204,6 +182,33 @@ public actor DeviceDriver {
 
     private static func property(_ entry: UInt32, _ key: String) -> Any? {
         IORegistryEntryCreateCFProperty(entry, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+    }
+    private static func readRegistry() -> [Accessory]? {
+        var result: [Accessory] = []
+        for name in ["AppleDeviceManagementHIDEventService", "IOHIDDevice"] {
+            guard let matching = IOServiceMatching(name) else { return nil }
+            var iterator: io_iterator_t = 0
+            guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else { return nil }
+            defer { IOObjectRelease(iterator) }
+            var count = 0
+            var oversized = false
+            while true {
+                let entry = IOIteratorNext(iterator)
+                guard entry != 0 else { break }
+                defer { IOObjectRelease(entry) }
+                count += 1
+                guard count <= 256 else { oversized = true; continue }
+                guard let transport = property(entry, "Transport") as? String,
+                      transport.lowercased().contains("bluetooth"),
+                      (property(entry, "Built-In") as? NSNumber)?.boolValue != true else { continue }
+                let name = property(entry, "Product") as? String ?? "Bluetooth Device"
+                let pairs = property(entry, "DeviceUsagePairs") as? [[String: Any]] ?? []
+                result.append(Accessory(name: name, kind: kind(name: name, pairs: pairs),
+                                        percent: (property(entry, "BatteryPercent") as? NSNumber)?.intValue))
+            }
+            guard !oversized, result.count <= 256 else { return nil }
+        }
+        return result
     }
     static func kind(name: String, pairs: [[String: Any]]) -> AccessoryKind {
         for pair in pairs.prefix(32) where (pair["DeviceUsagePage"] as? Int) == 1 {

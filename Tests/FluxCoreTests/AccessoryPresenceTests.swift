@@ -21,3 +21,14 @@ import Testing
     #expect(accessory.percent == 100)
     #expect(accessory.symbol == "computermouse")
 }
+
+@Test func failedAudioReadDoesNotMakeAnEmptyStartupBaseline() {
+    let headset = Accessory(name: "Existing headset", kind: .audio, percent: nil)
+    var sources = AccessoryInventory()
+    var presence = AccessoryPresence()
+    #expect(sources.accept([], from: .registry) == nil)
+    #expect(presence.accept(sources.accept(nil, from: .audio)).isEmpty)
+    #expect(presence.accept(sources.accept([headset], from: .audio)).isEmpty)
+    #expect(presence.accept(sources.accept(nil, from: .audio)).isEmpty)
+    #expect(presence.accept(sources.accept([], from: .audio)) == [.disconnected(headset)])
+}

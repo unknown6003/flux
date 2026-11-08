@@ -69,24 +69,56 @@ started by constructing this session. This is not yet the executable entry.
 
 NotchRuntime now connects the session phase, feature demand, real widget feeds
 and window owner. It stops private feeds before removing the visible widget.
-The device and lock-screen factories remain required outer dependencies. This
+The lock-screen factory remains a required outer dependency. This
 is application wiring, not an executable or a release candidate.
 
 A separate risk review found a Mirror retry race: the old driver's delayed
 stop cleared a preview layer after the new feed attached it. CameraFeed now
 detaches that layer synchronously before scheduling driver shutdown. A native
-regression connects two real preview layers without camera input. Runtime and
-camera regression results are pending.
+regression reuses one real preview layer between two session objects without
+camera input. The runtime and camera regression passed in CI42535635588.
 
 ActivityCoordinator binds the eight activity kinds and countdowns to local
 events. Producer ticks update an existing queue entry without restoring a
 user dismissal. Timer completion keeps its ten-second alert when another
 timer starts. Calendar deadlines cover the ten-minute threshold and event
 start; text refreshes only for a presented activity. Artwork uses the bounded
-pipeline. Tests for dismissed battery, timer and calendar events are pending.
+pipeline. CI42536314946 passed 69 Core, 19 Platform, 9 UI and 12 Application
+tests, including the real ten-second timer restoration test. Overflow reports
+now keep a dismissal until the current overflow episode ends.
 
 CI42534958255 passed 68 Core, 18 Platform, 9 UI and 5 Application tests at
 fa0fefc. That run includes publisher rejection tests and the corrected signed
 diagnostic builder. The diagnostic now launches through Launch Services as a
 distinct process, but its output directory stayed empty. No physical hiding
 result follows from that launch check.
+
+The instrumented Launch Services test at 23:46:35 UTC returned
+screenCaptureNotAllowed before taking an image. Its receipt recorded the
+expected six arguments and allow flag. The diagnostic exited and original
+Flux stayed running. This identifies that launch's permission gate; it does
+not establish the complete app's permission state. Further capture trials
+are deferred until the signed executable is ready.
+
+## Accessory notifications
+
+DeviceDriver uses IOKit matching notifications and the Core Audio device-list
+listener. The old app also used these notifications; the new implementation
+does not establish a measured speed improvement. CI42536658372 passed 71 Core,
+20 Platform, 9 UI and 12 Application tests, including real read-only listener
+creation and release. Actual accessory connect/disconnect flows remain untested.
+
+A separate review found that cached match and termination iterators could be
+drained in the wrong order, leaving a terminated service present. Notifications
+now only trigger a fresh active-registry snapshot. Apple's current XNU source
+routes getMatchingServices through copyExistingServices with MatchedState;
+instanceMatch also excludes InactiveState. Termination clears MatchedState.
+See [IOService.cpp](https://github.com/apple-oss-distributions/xnu/blob/main/iokit/Kernel/IOService.cpp).
+This is source evidence, not a runtime disconnect result on the user's kernel.
+
+The other review finding was an initial failed audio read treated as empty.
+AccessoryInventory now keeps source validity separate. It cannot publish a
+complete baseline until both sources are known. A failed later read preserves
+the last source value. The added nil-to-known baseline regression is pending.
+Names remain a local deduplication aid: equal names can merge distinct devices,
+and different names from the two OS sources can still duplicate one device.

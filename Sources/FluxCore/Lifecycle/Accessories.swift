@@ -33,6 +33,30 @@ public enum AccessoryConnection: Equatable, Sendable {
     case connected(Accessory), disconnected(Accessory)
 }
 
+/// Unknown and empty inventories are different states. Neither OS source can
+/// establish a complete baseline on behalf of the other source.
+public struct AccessoryInventory: Sendable {
+    public enum Source: Hashable, Sendable { case registry, audio }
+    private var sources: [Source: [Accessory]] = [:]
+    public init() {}
+
+    @discardableResult public mutating func accept(_ snapshot: [Accessory]?, from source: Source) -> [Accessory]? {
+        if let snapshot, snapshot.count <= 256 { sources[source] = snapshot }
+        return current
+    }
+
+    public var current: [Accessory]? {
+        guard let audio = sources[.audio], let registry = sources[.registry] else { return nil }
+        var merged: [String: Accessory] = [:]
+        for accessory in audio + registry where !accessory.key.isEmpty {
+            if merged[accessory.key]?.percent != nil { continue }
+            merged[accessory.key] = accessory
+        }
+        guard merged.count <= 256 else { return nil }
+        return merged.values.sorted { $0.key < $1.key }
+    }
+}
+
 /// First known inventory is a baseline, not a connection burst. A failed read
 /// preserves the prior inventory. Alias removal cannot disconnect an accessory
 /// still present through another OS source.
