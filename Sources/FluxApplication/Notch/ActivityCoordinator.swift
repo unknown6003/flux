@@ -170,6 +170,15 @@ public final class ActivityCoordinator {
         post(.bluetoothDevice, .symbol(symbol), .text(text), priority: 100, duration: 4)
     }
 
+    public func receiveDevice(_ event: AccessoryConnection) {
+        switch event {
+        case .connected(let accessory):
+            receiveDevice(name: accessory.name, symbol: accessory.symbol, connected: true, percent: accessory.percent)
+        case .disconnected(let accessory):
+            receiveDevice(name: accessory.name, symbol: accessory.symbol, connected: false, percent: nil)
+        }
+    }
+
     public func setOverflowCount(_ count: Int) {
         guard active else { return }
         guard count > 0, enabled(.menuBarOverflow) else {

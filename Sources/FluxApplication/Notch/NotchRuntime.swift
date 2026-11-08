@@ -18,10 +18,11 @@ public final class NotchRuntime: WidgetEffects {
         public var event: @MainActor (WidgetEvent) -> Void
         public var battery: @MainActor (PowerSnapshot?) -> Void
         public var volume: @MainActor (VolumeSnapshot?) -> Void
+        public var device: @MainActor (AccessoryConnection) -> Void
         public var compactAction: @MainActor (CompactNotchAction) -> Void
         public var cameraRunning: @MainActor (Bool) -> Void
         public var accessChanged: @MainActor () -> Void
-        /// Required platform owners for devices and the lock-screen bridge.
+        /// Required platform owner for the lock-screen bridge.
         /// A failure remains visible to the application; it is never a no-op.
         public var makeAdditionalService: @MainActor (FeatureService) throws -> any FeatureServiceHandle
 
@@ -29,12 +30,13 @@ public final class NotchRuntime: WidgetEffects {
                     event: @escaping @MainActor (WidgetEvent) -> Void,
                     battery: @escaping @MainActor (PowerSnapshot?) -> Void,
                     volume: @escaping @MainActor (VolumeSnapshot?) -> Void,
+                    device: @escaping @MainActor (AccessoryConnection) -> Void,
                     compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
                     cameraRunning: @escaping @MainActor (Bool) -> Void,
                     accessChanged: @escaping @MainActor () -> Void,
                     makeAdditionalService: @escaping @MainActor (FeatureService) throws -> any FeatureServiceHandle) {
             self.report = report; self.event = event; self.battery = battery
-            self.volume = volume; self.compactAction = compactAction
+            self.volume = volume; self.device = device; self.compactAction = compactAction
             self.cameraRunning = cameraRunning; self.accessChanged = accessChanged
             self.makeAdditionalService = makeAdditionalService
         }
@@ -190,7 +192,8 @@ public final class NotchRuntime: WidgetEffects {
             let feed = VolumeFeed(onChange: callbacks.volume)
             volumeFeed = feed
             return feed
-        case .devices, .lockScreen: return try callbacks.makeAdditionalService(service)
+        case .devices: return DeviceFeed(receive: callbacks.device)
+        case .lockScreen: return try callbacks.makeAdditionalService(service)
         }
     }
 

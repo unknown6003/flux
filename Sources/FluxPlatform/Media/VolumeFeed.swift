@@ -17,7 +17,7 @@ public struct VolumeSnapshot: Equatable, Sendable {
 
 /// CoreAudio removes listeners by the original block identity. All fields
 /// are immutable; the C remove call is valid during final-owner teardown.
-private final class AudioObservation: @unchecked Sendable {
+final class AudioObservation: @unchecked Sendable {
     private let object: AudioObjectID
     private let address: AudioObjectPropertyAddress
     private let queue: DispatchQueue
