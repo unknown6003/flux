@@ -657,16 +657,18 @@ final class MenuBarIconManager: ObservableObject {
             neighbor = siblings[siblings.index(after: index)]
             targetX = neighbor.frame.maxX + 4
         }
-        let bounds = boundaryProvider()
         if ControlItem.usesMacOS27Model {
             targetX = neighbor.frame.midX - icon.frame.width / 2
                 + (direction == .towardClock ? 4 : -4)
-            guard Self.section(for: CGRect(x: targetX, y: icon.frame.minY,
-                                          width: icon.frame.width, height: icon.frame.height),
-                               boundaries: bounds) == icon.section else {
-                errorMessage = "Flux could not read this icon's current section. Refresh icons and try again."
-                return
-            }
+            let remaining = siblings.filter { $0.id != icon.id }
+            guard let neighborIndex = remaining.firstIndex(of: neighbor) else { return }
+            let slot = neighborIndex + (direction == .towardClock ? 1 : 0)
+            let insertion = Insertion(section: icon.section,
+                                      before: slot < remaining.count ? remaining[slot] : nil,
+                                      after: slot > 0 ? remaining[slot - 1] : nil)
+            move(icon, toX: targetX, expectedSection: icon.section,
+                 allowNativeRetry: false, insertion: insertion)
+            return
         }
         move(icon, toX: targetX, expectedSection: icon.section, allowNativeRetry: false)
     }
@@ -925,7 +927,12 @@ final class MenuBarIconManager: ObservableObject {
             let orderMatches = insertion.map { placement in
                 Self.insertionMatches(current, placement: placement, in: self.icons)
             } ?? true
-            guard actualSection != expectedSection || !orderMatches else {
+            // Saved macOS 27 sections need not match the divider positions.
+            // A nonempty insertion proves placement against its real neighbors.
+            let hasNeighbor = insertion.map { $0.before != nil || $0.after != nil } ?? false
+            let sectionMatches = actualSection == expectedSection
+                || (ControlItem.usesMacOS27Model && hasNeighbor)
+            guard !sectionMatches || !orderMatches else {
                 if !self.saveLayout(for: current, section: expectedSection, canCommit: canCommit) {
                     guard canCommit() else {
                         self.verifyMove(icon: icon, expectedSection: expectedSection,

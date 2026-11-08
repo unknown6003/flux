@@ -78,6 +78,11 @@ CASES = [
     ('insertion', 'probe_icons.py', ['--insertion'], None),
     ('wide-insertion', 'probe_icons.py', ['--insertion', '--wide-item'], None),
     ('drag-insertion', 'probe_icons.py', ['--insertion', '--drag-context'], None),
+    ('saved-section-insertion-baseline', 'probe_icons.py', ['--insertion', '--wide-item',
+        '--saved-section-reorder', '--manager-ref', '8eba1ac2f24128a672baab868bccb94962d3fbfa'],
+        'the Settings arrow did not change the real icon order'),
+    ('saved-section-insertion', 'probe_icons.py', ['--insertion', '--wide-item', '--saved-section-reorder'], None),
+    ('saved-section-arrow', 'probe_icons.py', ['--wide-item', '--saved-section-reorder'], None),
     ('insertion-evidence', 'probe_icons.py', ['--insertion', '--wide-item',
         '--evidence-output', 'build/icon-probe/insertion-evidence'], None),
 ]

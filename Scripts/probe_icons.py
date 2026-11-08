@@ -58,6 +58,8 @@ parser.add_argument("--move-retry-overlap", action="store_true")
 parser.add_argument("--trace-drag", action="store_true", help="Record actual event-post completion times in a temporary manager copy")
 parser.add_argument("--insertion", action="store_true", help="Use the exact strip insertion interface for physical reorder")
 parser.add_argument("--wide-item", action="store_true", help="Reorder an icon with a wide status title")
+parser.add_argument("--saved-section-reorder", action="store_true",
+                    help="Reorder saved Hidden icons outside the physical Hidden divider span")
 parser.add_argument("--evidence-output", type=Path, help="Save real menu bar screenshots and a bounded recording")
 parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
 parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
@@ -1084,6 +1086,19 @@ func probe() {
             return
         }
         let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
+        let savedSectionReorder = CommandLine.arguments.contains("--saved-section-reorder")
+        if savedSectionReorder {
+            guard ordered.allSatisfy({ $0.section == .hidden }),
+                  let hiddenX = manager.boundaryProvider().hidden else { exit(1) }
+            // Keep the saved assignment, but inject the real Mac's mismatch
+            // between the saved section and the narrow divider span.
+            manager.boundaryProvider = { (hidden: hiddenX, alwaysHidden: hiddenX - 1) }
+            guard ordered.allSatisfy({ MenuBarIconManager.section(
+                for: $0.frame, boundaries: manager.boundaryProvider()) == .alwaysHidden }) else {
+                print("FAIL: saved-section fixture must be outside physical Hidden")
+                exit(1)
+            }
+        }
         let moving = staleFrameKind == "arrow" || CommandLine.arguments.contains("--wide-item") ? fixture()! : ordered[0]
         let towardClock = ordered.first?.id == moving.id
         let direction: MenuBarIconManager.MoveDirection = towardClock ? .towardClock : .towardDrawer
@@ -1096,7 +1111,7 @@ func probe() {
                 exit(1)
             }
         }
-        guard ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
+        guard savedSectionReorder || ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
             print("FAIL: the reorder fixture could not enter \(reorderSection.rawValue)")
             exit(1)
         }
@@ -1165,7 +1180,9 @@ func probe() {
                 .sorted { $0.frame.minX < $1.frame.minX }
             let edge = towardClock ? next.last : next.first
             guard !manager.isUpdatingIcons, edge?.id == moving.id,
-                  next.allSatisfy({ MenuBarIconManager.section(
+                  manager.errorMessage == nil,
+                  next.allSatisfy({ $0.section == reorderSection }),
+                  savedSectionReorder || next.allSatisfy({ MenuBarIconManager.section(
                     for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
                 print("Actual frames: \(next.map { ($0.title, $0.frame) }); boundaries=\(manager.boundaryProvider())")
@@ -1433,6 +1450,8 @@ with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         flags = [flag for flag, enabled in selected if enabled]
         if options.wide_item:
             flags += ["--wide-item"]
+        if options.saved_section_reorder:
+            flags += ["--saved-section-reorder"]
         if options.stale_frame:
             flags += ["--stale-frame", options.stale_frame]
         if options.removed_row:
