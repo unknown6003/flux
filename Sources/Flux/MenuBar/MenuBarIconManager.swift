@@ -2,15 +2,12 @@ import AppKit
 import ApplicationServices
 import Combine
 
-/// Reads real menu-bar items and lets Settings assign their section and order.
+/// Reads status items and submits all Settings moves to one transaction owner.
 @MainActor
 final class MenuBarIconManager: ObservableObject {
     typealias Boundaries = (hidden: CGFloat?, alwaysHidden: CGFloat?)
 
-    enum MoveDirection {
-        case towardDrawer
-        case towardClock
-    }
+    enum MoveDirection { case towardDrawer, towardClock }
 
     struct Icon: Identifiable, Equatable {
         let id: String
@@ -20,6 +17,8 @@ final class MenuBarIconManager: ObservableObject {
         let isMovable: Bool
         let frame: CGRect
         var identity: UUID? = nil
+
+        fileprivate var handle: MenuBarArrangement.Handle { .init(id: id, identity: identity) }
     }
 
     struct Insertion: Equatable {
@@ -28,9 +27,9 @@ final class MenuBarIconManager: ObservableObject {
         let after: Icon?
 
         func matches(_ siblings: [Icon]) -> Bool {
-            let index = before.flatMap { next in siblings.firstIndex(of: next) } ?? siblings.count
-            return (index < siblings.count ? siblings[index] : nil) == before
-                && (index > 0 ? siblings[index - 1] : nil) == after
+            let index = before.flatMap { next in siblings.firstIndex { $0.handle == next.handle } } ?? siblings.count
+            return (index < siblings.count ? siblings[index].handle : nil) == before?.handle
+                && (index > 0 ? siblings[index - 1].handle : nil) == after?.handle
         }
     }
 
@@ -39,60 +38,107 @@ final class MenuBarIconManager: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var isUpdatingIcons = false
 
-    /// AppDelegate supplies the live boundaries after the status items exist.
     var boundaryProvider: () -> Boundaries = { (nil, nil) }
     var chevronBoundaryProvider: () -> CGFloat? = { nil }
     var alwaysHiddenEnabledProvider: () -> Bool = { true }
     var beginProvider: () -> Void = {}
     var endProvider: () -> Void = {}
 
+    private let trustProvider: () -> Bool
+    private let injectedHider: MacOS27Hider?
+    private let driver = MenuBarNativeDrag()
     private var elements: [String: AXUIElement] = [:]
-    private var assignedSections: [String: MenuBarSection] = [:]
-    private var provisionalSections: [String: MenuBarSection] = [:]
-    private struct NativeMove {
-        let icon: Icon
+    private var ownerTopology: [String: [AXUIElement]] = [:]
+    private var inventoryReadable = false
+    private var readingInventory = false
+    private var hiderReads = 0
+    private var inventoryError: String?
+    private var moveError: String?
+    private var isManaging = false
+    private var managementGeneration = 0
+    private var cancellationGeneration = 0
+    private var nativeInputGeneration = 0
+    private var readyAfter: TimeInterval = 0
+    private var lastMoveReport = "none"
+    private var lastMoveVerification = "none"
+    private var desiredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
+    private var nativeMoveMonitor: Any?
+    private var localInputMonitor: Any?
+    private var cancellables = Set<AnyCancellable>()
+
+    private struct NativeGesture {
+        let handle: MenuBarArrangement.Handle
         let element: AXUIElement
         let owner: NSRunningApplication
         let launched: Date?
+        let bundleID: String
         let start: CGPoint
         let frame: CGRect
-        let section: MenuBarSection
         var dragged = false
-        var saveAttempts = 0
     }
-    private var nativeMove: NativeMove?
-    private var completedNativeMoves: [UUID: NativeMove] = [:]
-    private var nativeMoveGeneration = 0
-    private var nativeInputGeneration = 0
-    private var nativeMoveMonitor: Any?
-    private var escapeMonitor: Any?
-    private var iconUpdateCount = 0
-    private var iconManagementGeneration = 0
-    private var pendingMoveCount = 0
-    private var isPostingDrag = false
-    private static let dragQueue = DispatchQueue(label: "com.flux.icon-drag", qos: .userInitiated)
-    private var deferredVisibility: (hidden: Bool, alwaysHidden: Bool, refresh: Bool)?
-    private var nativeSaveFailures = Set<String>()
-    private var lastMoveReport = "none"
-    private var lastMoveVerification = "none"
-    private var nativeSaveError: String? {
-        nativeSaveFailures.isEmpty ? nil : "Flux could not save an icon's new position. Try again."
-    }
-    private let trustProvider: () -> Bool
-    private let injectedHider: MacOS27Hider?
+    private var nativeGesture: NativeGesture?
+    private var nativeImport: Task<Void, Never>?
+    private var nativeImportGeneration = 0
+
     private lazy var macOS27Hider: MacOS27Hider = {
         let hider = injectedHider ?? MacOS27Hider()
-        hider.onStatus = { [weak self] message in
-            guard let self else { return }
-            self.updateErrorMessage(self.nativeSaveError ?? message)
-        }
+        hider.onStatus = { [weak self] _ in self?.publishStatus() }
         hider.onReadState = { [weak self] reading in
-            if reading { self?.beginIconUpdate() }
-            else { self?.finishIconUpdate() }
+            guard let self else { return }
+            self.hiderReads += reading ? 1 : -1
+            self.publishBusy()
         }
         return hider
     }()
-    private var cancellables = Set<AnyCancellable>()
+
+    private lazy var arrangement: MenuBarArrangement = {
+        let result = MenuBarArrangement(environment: .init(
+            appScoped: ControlItem.usesMacOS27Model,
+            read: { [weak self] in self?.readArrangement() },
+            canStart: { [weak self] in self?.canStartMove() ?? false },
+            inputRevision: { [weak self] in self?.nativeInputGeneration ?? -1 },
+            sectionTarget: { [weak self] item, section in
+                guard let self, let x = Self.insertionX(for: section, iconWidth: item.frame.width,
+                                                       boundaries: self.boundaryProvider()) else { return nil }
+                return CGPoint(x: x + item.frame.width / 2, y: item.frame.midY)
+            },
+            drag: { [weak self] item, target in
+                guard let self else { return false }
+                let revision = self.nativeInputGeneration
+                let generation = self.cancellationGeneration
+                return await self.driver.perform(from: item.frame, to: target) { [weak self] in
+                    guard let self else { return false }
+                    return self.trustProvider() && self.nativeInputGeneration == revision
+                        && self.cancellationGeneration == generation
+                }
+            },
+            physicalSection: { [weak self] item in
+                Self.section(for: item.frame, boundaries: self?.boundaryProvider() ?? (nil, nil))
+            },
+            assign: { [weak self] item, section, canCommit in
+                guard let self, canCommit() else { return false }
+                guard ControlItem.usesMacOS27Model else { return true }
+                guard let owner = Self.appIconIdentity(from: item.handle.id) else { return false }
+                return self.macOS27Hider.recordAppSection(section, for: owner.bundleID, canCommit: canCommit)
+                    && self.macOS27Hider.section(for: owner.bundleID) == section
+            }))
+        result.onBusy = { [weak self] _ in self?.publishBusy() }
+        result.onTrace = { [weak self] trace in self?.lastMoveReport = trace }
+        result.onResult = { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.moveError = nil
+                self.lastMoveVerification = "verified and saved"
+            case .failure(let failure):
+                self.moveError = failure.message
+                self.lastMoveVerification = failure.message
+            }
+            self.refresh()
+            self.applyDesiredVisibility()
+        }
+        return result
+    }()
 
     var canHideWithoutAccess: Bool {
         ControlItem.usesMacOS27Model && macOS27Hider.isAvailable && macOS27Hider.hasSavedLayout
@@ -103,202 +149,31 @@ final class MenuBarIconManager: ObservableObject {
         self.trustProvider = trustProvider
         injectedHider = hider
         observeAppActivation()
-        observeNativeMoves()
+        observeInput()
     }
 
     deinit {
         if let nativeMoveMonitor { NSEvent.removeMonitor(nativeMoveMonitor) }
-        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        if let localInputMonitor { NSEvent.removeMonitor(localInputMonitor) }
+        nativeImport?.cancel()
     }
 
-    private func observeNativeMoves() {
-        guard ControlItem.usesMacOS27Model else { return }
-        nativeMoveMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown]) { [weak self] event in
-            MainActor.assumeIsolated { self?.observeNativeMove(event) }
-        }
-        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { [weak self] event in
-            MainActor.assumeIsolated {
-                if event.type == .leftMouseDown {
-                    self?.nativeInputGeneration += 1
-                    self?.nativeMove = nil
-                    self?.scheduleNativeMoveCommit()
-                } else if event.keyCode == 53 {
-                    self?.nativeMove = nil
-                    self?.scheduleNativeMoveCommit()
-                }
-            }
-            return event
-        }
+    private func publishBusy() {
+        let busy = readingInventory || hiderReads > 0 || arrangement.isBusy
+            || nativeGesture != nil || nativeImport != nil
+        if isUpdatingIcons != busy { isUpdatingIcons = busy }
     }
 
-    private func observeNativeMove(_ event: NSEvent) {
-        if event.type == .keyDown {
-            if event.keyCode == 53 {
-                nativeMove = nil
-                scheduleNativeMoveCommit()
-            }
-            return
-        }
-        guard let cgEvent = event.cgEvent,
-              cgEvent.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
-        switch event.type {
-        case .leftMouseDown:
-            nativeInputGeneration += 1
-            nativeMove = nil
-            scheduleNativeMoveCommit()
-            guard event.modifierFlags.contains(.command),
-                  let primary = NSScreen.screens.first else { return }
-            let point = cgEvent.location
-            let appKitPoint = CGPoint(x: point.x, y: primary.frame.maxY - point.y)
-            guard NSScreen.screens.contains(where: {
-                $0.frame.contains(appKitPoint)
-                    && appKitPoint.y >= $0.frame.maxY - max(NSStatusBar.system.thickness, $0.safeAreaInsets.top)
-            }) else { return }
-            beginIconUpdate()
-            defer { finishIconUpdate() }
-            refresh()
-            let matches = icons.filter { $0.isMovable && $0.frame.contains(point) }
-            guard isTrusted, matches.count == 1, let icon = matches.first,
-                  let element = elements[icon.id] else { return }
-            AXUIElementSetMessagingTimeout(element, 0.15)
-            var pid: pid_t = 0
-            guard AXUIElementGetPid(element, &pid) == .success,
-                  let owner = NSRunningApplication(processIdentifier: pid),
-                  let bundleID = owner.bundleIdentifier, icon.id.hasPrefix(bundleID + "|"),
-                  macOS27Hider.canReadPosition(for: bundleID),
-                  let frame = frame(of: element), frame.contains(point) else { return }
-            nativeMove = NativeMove(icon: icon, element: element, owner: owner,
-                                    launched: owner.launchDate, start: point, frame: frame,
-                                    section: Self.section(for: frame, boundaries: boundaryProvider()))
-        case .leftMouseDragged:
-            guard let pending = nativeMove else { return }
-            if hypot(cgEvent.location.x - pending.start.x, cgEvent.location.y - pending.start.y) >= 3 {
-                nativeMove?.dragged = true
-            }
-        case .leftMouseUp:
-            let pending = nativeMove
-            nativeMove = nil
-            if let pending, pending.dragged,
-               !completedNativeMoves.values.contains(where: {
-                   !$0.owner.isTerminated && CFEqual($0.element, pending.element)
-               }) {
-                completedNativeMoves[UUID()] = pending
-            }
-            scheduleNativeMoveCommit()
-        default: break
-        }
-    }
-
-    private func scheduleNativeMoveCommit() {
-        nativeMoveGeneration += 1
-        let generation = nativeMoveGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self, self.nativeMoveGeneration == generation else { return }
-            self.commitNativeMoves()
-        }
-    }
-
-    private func commitNativeMoves() {
-        guard nativeInputIsQuiet(), pendingMoveCount == 0 else {
-            scheduleNativeMoveCommit()
-            return
-        }
-        nativeMove = nil
-        guard !completedNativeMoves.isEmpty else {
-            applyDeferredVisibility()
-            return
-        }
-        let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
-        let generation = nativeMoveGeneration
-        let canCommit = {
-            self.nativeMoveGeneration == generation
-                && !CGEventSource.buttonState(.combinedSessionState, button: .left)
-                && CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount
-        }
-        beginIconUpdate()
-        defer { finishIconUpdate() }
-        refresh()
-        var changes: [String: Icon] = [:]
-        var changedMoves: [UUID] = []
-        for (key, pending) in completedNativeMoves {
-            guard canCommit() else { scheduleNativeMoveCommit(); return }
-            let matches = icons.filter {
-                elements[$0.id].map { CFEqual($0, pending.element) } ?? false
-            }
-            guard !pending.owner.isTerminated, pending.owner.launchDate == pending.launched,
-                  let bundleID = pending.owner.bundleIdentifier else {
-                completedNativeMoves.removeValue(forKey: key)
-                continue
-            }
-            guard isTrusted, !matches.isEmpty else {
-                retryNativeSave(pending, key: key)
-                continue
-            }
-            guard matches.count == 1, let current = matches.first,
-                  current.title == pending.icon.title, current.source == pending.icon.source,
-                  current.isMovable else {
-                completedNativeMoves.removeValue(forKey: key)
-                nativeSaveFailures.insert(bundleID)
-                continue
-            }
-            guard macOS27Hider.canReadPosition(for: bundleID) else {
-                scheduleNativeMoveCommit()
-                return
-            }
-            guard abs(current.frame.midX - pending.frame.midX) >= 3
-                    || Self.section(for: current.frame, boundaries: boundaryProvider()) != pending.section else {
-                completedNativeMoves.removeValue(forKey: key)
-                continue
-            }
-            changes[bundleID] = current
-            changedMoves.append(key)
-        }
-        if !changes.isEmpty {
-            let saved = macOS27Hider.recordAvailableLayoutChanges(for: Set(changes.keys), canCommit: canCommit)
-            guard canCommit() else { scheduleNativeMoveCommit(); return }
-            nativeSaveFailures.subtract(saved)
-            assignedSections = assignedSections.filter { entry in
-                !saved.contains(where: { entry.key.hasPrefix($0 + "|") })
-            }
-            for key in changedMoves {
-                guard let pending = completedNativeMoves[key],
-                      let bundleID = pending.owner.bundleIdentifier else { continue }
-                if saved.contains(bundleID) {
-                    completedNativeMoves.removeValue(forKey: key)
-                } else {
-                    retryNativeSave(pending, key: key)
-                }
-            }
-        }
-        refresh()
-        if !completedNativeMoves.isEmpty { scheduleNativeMoveCommit() }
-        applyDeferredVisibility()
-    }
-
-    private func retryNativeSave(_ move: NativeMove, key: UUID) {
-        var move = move
-        move.saveAttempts += 1
-        if move.saveAttempts < 3 {
-            completedNativeMoves[key] = move
-        } else {
-            completedNativeMoves.removeValue(forKey: key)
-            if let bundleID = move.owner.bundleIdentifier { nativeSaveFailures.insert(bundleID) }
-        }
-    }
-
-    private func nativeInputIsQuiet() -> Bool {
-        !CGEventSource.buttonState(.combinedSessionState, button: .left)
-            && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown) >= 0.35
-            && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) >= 0.35
+    private func publishStatus() {
+        let message = moveError ?? inventoryError
+            ?? (ControlItem.usesMacOS27Model ? macOS27Hider.latestError : nil)
+        if errorMessage != message { errorMessage = message }
     }
 
     private func observeAppActivation() {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.beginIconUpdate()
-                defer { self.finishIconUpdate() }
                 _ = AccessibilityAccess.isGranted(forceRefresh: true)
                 self.refresh()
                 if ControlItem.usesMacOS27Model { self.macOS27Hider.retry() }
@@ -306,48 +181,42 @@ final class MenuBarIconManager: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Opens the system pane without asking macOS to show a TCC prompt.
-    /// Repeated prompts are especially bad here because a stale TCC entry can
-    /// make the same request appear on every Settings visit.
     func requestAccess() {
-        guard !trustProvider() else {
-            refresh()
-            return
-        }
+        guard !trustProvider() else { refresh(); return }
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
         NSWorkspace.shared.open(url)
     }
 
     func beginIconManagement() {
-        iconManagementGeneration += 1
-        guard !ControlItem.usesMacOS27Model || trustProvider() else {
-            refresh()
-            return
-        }
+        managementGeneration += 1
+        isManaging = true
+        readyAfter = ProcessInfo.processInfo.systemUptime + 0.5
+        guard !ControlItem.usesMacOS27Model || trustProvider() else { refresh(); return }
         beginProvider()
+        applyDrawerVisibility(revealHidden: true, revealAlwaysHidden: true, refreshBeforeApplying: false)
         refresh()
-        applyDrawerVisibility(revealHidden: true,
-                              revealAlwaysHidden: true,
-                              refreshBeforeApplying: false)
-        let generation = iconManagementGeneration
-        for delay in [0.15, 0.5] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.iconManagementGeneration == generation else { return }
-                self.refresh()
-            }
+        let generation = managementGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.isManaging, self.managementGeneration == generation else { return }
+            self.refresh()
         }
     }
 
     func endIconManagement() {
-        iconManagementGeneration += 1
+        managementGeneration += 1
+        isManaging = false
+        cancelPendingMoves()
         endProvider()
+        applyDesiredVisibility()
+    }
+
+    func cancelPendingMoves() {
+        cancellationGeneration += 1
     }
 
     func copyMenuBarReport() {
-        beginIconUpdate()
-        defer { finishIconUpdate() }
         let report = ControlItem.usesMacOS27Model ? macOS27Hider.diagnostics
-            : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())\nThe macOS 27 hiding path is not active."
+            : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())"
         let boundaries = boundaryProvider()
         let moveReport = """
 
@@ -355,120 +224,347 @@ final class MenuBarIconManager: ObservableObject {
         Event posting allowed: \(CGPreflightPostEventAccess())
         Last move request: \(lastMoveReport)
         Last move verification: \(lastMoveVerification)
+        Move busy: \(arrangement.isBusy), input revision: \(nativeInputGeneration)
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report + moveReport, forType: .string)
     }
 
     func refresh() {
-        beginIconUpdate()
-        defer { finishIconUpdate() }
-        let trusted = trustProvider()
-        if isTrusted != trusted { isTrusted = trusted }
+        guard !readingInventory else { return }
+        readingInventory = true
+        publishBusy()
+        defer {
+            readingInventory = false
+            publishBusy()
+            publishStatus()
+        }
+        isTrusted = trustProvider()
+        inventoryReadable = false
+        inventoryError = nil
         guard isTrusted else {
-            updateInventory([])
+            icons = []
             elements.removeAll()
-            updateErrorMessage("Allow Accessibility access to manage menu-bar icons.")
+            ownerTopology.removeAll()
+            inventoryError = "Allow Accessibility access to manage menu-bar icons."
             return
         }
+        if ControlItem.usesMacOS27Model { refreshMacOS27() }
+        else { refreshLegacy() }
+    }
 
-        if ControlItem.usesMacOS27Model {
-            refreshMacOS27()
+    private func refreshLegacy() {
+        guard let systemUI = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systemuiserver").first
+            ?? NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == "SystemUIServer" }) else {
+            inventoryError = "Flux could not find the macOS menu bar."
             return
         }
-
-        guard let systemUI = NSRunningApplication.runningApplications(
-            withBundleIdentifier: "com.apple.systemuiserver").first
-            ?? NSWorkspace.shared.runningApplications.first(where: {
-                $0.localizedName == "SystemUIServer"
-            }) else {
-            updateInventory([])
-            updateErrorMessage("Flux could not find the macOS menu bar.")
+        let owner = AXUIElementCreateApplication(systemUI.processIdentifier)
+        AXUIElementSetMessagingTimeout(owner, 0.2)
+        guard let bar = elementAttribute(owner, kAXMenuBarAttribute) else {
+            inventoryError = "Flux could not read the macOS menu bar."
             return
         }
-
-        let app = AXUIElementCreateApplication(systemUI.processIdentifier)
-        guard let menuBar = elementAttribute(app, kAXMenuBarAttribute) else {
-            updateInventory([])
-            updateErrorMessage("Flux could not read the macOS menu bar.")
-            return
-        }
-
-        let boundaries = boundaryProvider()
+        let items = children(of: bar)
+        let scope = "system-ui|\(systemUI.processIdentifier)|\(Self.launchToken(for: systemUI.launchDate))|"
+        let unchanged = topologyMatches(items, scope: scope)
         var next: [Icon] = []
         var nextElements: [String: AXUIElement] = [:]
-        for (index, element) in children(of: menuBar).enumerated() {
-            guard stringAttribute(element, kAXRoleAttribute) == (kAXMenuBarItemRole as String),
+        for (index, element) in items.enumerated() {
+            guard stringAttribute(element, kAXRoleAttribute) == kAXMenuBarItemRole as String,
                   let frame = frame(of: element) else { continue }
-
             let identifier = stringAttribute(element, kAXIdentifierAttribute)
             let title = stringAttribute(element, kAXTitleAttribute)
-                ?? stringAttribute(element, kAXDescriptionAttribute)
-                ?? "Menu bar item \(index + 1)"
+                ?? stringAttribute(element, kAXDescriptionAttribute) ?? "Menu bar item \(index + 1)"
             let source = stringAttribute(element, kAXHelpAttribute)
-            let id = identifier ?? "\(title)|\(source ?? "")|\(index)"
             guard !isFluxItem(identifier: identifier, title: title, source: source) else { continue }
-
-            let section = assignedSections[id]
-                ?? Self.section(for: frame, boundaries: boundaries)
-            next.append(Icon(id: id,
-                             title: title,
-                             source: source,
-                             section: section,
-                             isMovable: true,
-                             frame: frame,
-                             identity: identity(for: id, element: element)))
+            let id = scope + String(index)
+            next.append(Icon(id: id, title: title, source: source,
+                             section: Self.section(for: frame, boundaries: boundaryProvider()),
+                             isMovable: true, frame: frame,
+                             identity: retainedIdentity(id: id, element: element, unchanged: unchanged)))
             nextElements[id] = element
         }
-
-        updateInventory(next.sorted { $0.frame.minX < $1.frame.minX })
-        elements = nextElements
-        updateErrorMessage(nil)
+        ownerTopology = [scope: items]
+        replaceInventory(next, elements: nextElements)
     }
 
-    private func updateInventory(_ next: [Icon]) {
-        if icons != next { icons = next }
-    }
-
-    private func updateErrorMessage(_ message: String?) {
-        if errorMessage != message { errorMessage = message }
-    }
-
-    /// MenuBarAgent owns the drawn bar on macOS 27, but each app exposes its
-    /// own status items through AXExtrasMenuBar.
     private func refreshMacOS27() {
-        let boundaries = boundaryProvider()
         var next: [Icon] = []
         var nextElements: [String: AXUIElement] = [:]
+        var nextTopology: [String: [AXUIElement]] = [:]
         for app in NSWorkspace.shared.runningApplications {
-            guard let bundleID = app.bundleIdentifier,
-                  !bundleID.hasPrefix("com.apple."),
-                  app.activationPolicy != .prohibited,
-                  bundleID != Bundle.main.bundleIdentifier else { continue }
+            guard let bundleID = app.bundleIdentifier, !bundleID.hasPrefix("com.apple."),
+                  app.activationPolicy != .prohibited, bundleID != Bundle.main.bundleIdentifier else { continue }
             let owner = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(owner, 0.2)
             guard let bar = elementAttribute(owner, kAXExtrasMenuBarAttribute) else { continue }
             let items = children(of: bar)
+            let scope = "\(bundleID)|\(app.processIdentifier)|\(Self.launchToken(for: app.launchDate))|"
+            let unchanged = topologyMatches(items, scope: scope)
+            nextTopology[scope] = items
             for (index, element) in items.enumerated() {
                 guard let frame = frame(of: element) else { continue }
                 let title = stringAttribute(element, kAXTitleAttribute)
-                    ?? stringAttribute(element, kAXDescriptionAttribute)
-                    ?? app.localizedName ?? bundleID
+                    ?? stringAttribute(element, kAXDescriptionAttribute) ?? app.localizedName ?? bundleID
                 let id = Self.iconID(bundleID: bundleID, processID: app.processIdentifier,
                                      launchDate: app.launchDate, index: index)
-                let section = provisionalSections[id] ?? macOS27Hider.section(for: bundleID)
-                    ?? Self.section(for: frame, boundaries: boundaries)
                 next.append(Icon(id: id, title: title, source: app.localizedName,
-                                 section: section, isMovable: true, frame: frame,
-                                 identity: identity(for: id, element: element, ownerItemCount: items.count)))
+                                 section: macOS27Hider.section(for: bundleID) ?? .shown,
+                                 isMovable: MenuBarVisibilityPolicy.isAssignable(bundleID), frame: frame,
+                                 identity: retainedIdentity(id: id, element: element, unchanged: unchanged)))
                 nextElements[id] = element
             }
         }
         next.append(contentsOf: liveActivityIcons())
-        updateInventory(next.sorted { $0.frame.minX < $1.frame.minX })
+        ownerTopology = nextTopology
+        replaceInventory(next, elements: nextElements)
+        if !macOS27Hider.isAvailable {
+            inventoryError = "Hiding is unavailable on this macOS build. Flux needs an update."
+        }
+    }
+
+    private func topologyMatches(_ items: [AXUIElement], scope: String) -> Bool {
+        guard let previous = ownerTopology[scope], previous.count == items.count else { return false }
+        return zip(previous, items).allSatisfy { CFEqual($0.0, $0.1) }
+    }
+
+    private func retainedIdentity(id: String, element: AXUIElement, unchanged: Bool) -> UUID {
+        if unchanged, let previous = elements[id], CFEqual(previous, element),
+           let identity = icons.first(where: { $0.id == id })?.identity { return identity }
+        return UUID()
+    }
+
+    private func replaceInventory(_ next: [Icon], elements nextElements: [String: AXUIElement]) {
+        let sorted = next.sorted { $0.frame.minX < $1.frame.minX }
+        if icons != sorted { icons = sorted }
         elements = nextElements
-        updateErrorMessage(nativeSaveError ?? (macOS27Hider.isAvailable ? macOS27Hider.latestError
-            : "Hiding is unavailable on this macOS build. Flux needs an update."))
+        inventoryReadable = true
+    }
+
+    private func readArrangement() -> [MenuBarArrangement.Item]? {
+        refresh()
+        guard inventoryReadable else { return nil }
+        return icons.filter(\.isMovable).map {
+            MenuBarArrangement.Item(handle: $0.handle, title: $0.title, section: $0.section, frame: $0.frame)
+        }
+    }
+
+    private func canStartMove() -> Bool {
+        trustProvider() && ProcessInfo.processInfo.systemUptime >= readyAfter
+            && nativeGesture == nil && nativeImport == nil && inputIsQuiet()
+            && visibleMenuWindow() == false
+    }
+
+    private func inputIsQuiet() -> Bool {
+        !CGEventSource.buttonState(.combinedSessionState, button: .left)
+            && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown) >= 0.15
+            && CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) >= 0.15
+    }
+
+    private func visibleMenuWindow() -> Bool? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
+                                                      kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return windows.contains {
+            ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
+                && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
+        }
+    }
+
+    private func submit(_ icon: Icon, destination: MenuBarArrangement.Destination) -> Bool {
+        guard !arrangement.isBusy, icon.isMovable,
+              destination.section != .alwaysHidden || alwaysHiddenEnabledProvider() else { return false }
+        let generation = cancellationGeneration
+        let revision = nativeInputGeneration
+        moveError = nil
+        lastMoveVerification = "pending"
+        let accepted = arrangement.submit(.init(item: icon.handle, destination: destination)) { [weak self] in
+            guard let self else { return false }
+            return self.trustProvider() && self.cancellationGeneration == generation
+                && self.nativeInputGeneration == revision
+        }
+        publishStatus()
+        return accepted
+    }
+
+    func move(_ icon: Icon, to section: MenuBarSection) {
+        _ = submit(icon, destination: .section(section))
+    }
+
+    @discardableResult
+    func move(_ icon: Icon, to insertion: Insertion,
+              accepting: @escaping (Icon) -> Bool = { _ in true }) -> Bool {
+        guard !arrangement.isBusy else { return false }
+        refresh()
+        guard let current = icons.first(where: { $0.handle == icon.handle }), accepting(current) else { return false }
+        let peers = icons.filter { $0.section == insertion.section && $0.id != current.id }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        guard insertion.matches(peers) else {
+            moveError = MenuBarArrangement.Failure.changed.message
+            publishStatus()
+            return false
+        }
+        let slot = MenuBarArrangement.Slot(section: insertion.section,
+                                           before: insertion.before?.handle, after: insertion.after?.handle)
+        return submit(current, destination: .slot(slot))
+    }
+
+    func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool {
+        guard icon.isMovable else { return false }
+        let peers = icons.filter { $0.section == icon.section }.sorted { $0.frame.minX < $1.frame.minX }
+        guard let index = peers.firstIndex(where: { $0.handle == icon.handle }) else { return false }
+        return direction == .towardDrawer ? index > 0 : index + 1 < peers.count
+    }
+
+    func move(_ icon: Icon, toward direction: MoveDirection) {
+        guard !arrangement.isBusy else { return }
+        refresh()
+        guard let current = icons.first(where: { $0.handle == icon.handle }), canMove(current, toward: direction) else { return }
+        let peers = icons.filter { $0.section == current.section }.sorted { $0.frame.minX < $1.frame.minX }
+        guard let index = peers.firstIndex(where: { $0.handle == current.handle }) else { return }
+        let remaining = peers.filter { $0.id != current.id }
+        let slot = direction == .towardDrawer ? index - 1 : index + 1
+        let placement = MenuBarArrangement.Slot(section: current.section,
+                                               before: slot < remaining.count ? remaining[slot].handle : nil,
+                                               after: slot > 0 ? remaining[slot - 1].handle : nil)
+        _ = submit(current, destination: .slot(placement))
+    }
+
+    func applyDrawerVisibility(revealHidden: Bool, revealAlwaysHidden: Bool,
+                               refreshBeforeApplying: Bool = true) {
+        desiredVisibility = (revealHidden, revealAlwaysHidden, refreshBeforeApplying)
+        applyDesiredVisibility()
+    }
+
+    private func applyDesiredVisibility() {
+        guard !arrangement.isBusy, nativeGesture == nil, nativeImport == nil,
+              !CGEventSource.buttonState(.combinedSessionState, button: .left),
+              let visibility = desiredVisibility else { return }
+        desiredVisibility = nil
+        let hidden = isManaging || visibility.hidden
+        let always = isManaging || visibility.alwaysHidden
+        if ControlItem.usesMacOS27Model {
+            macOS27Hider.apply(revealHidden: hidden, revealAlwaysHidden: always,
+                               alwaysHiddenEnabled: alwaysHiddenEnabledProvider(),
+                               chevronX: { [weak self] in self?.chevronBoundaryProvider() },
+                               alwaysX: { [weak self] in self?.boundaryProvider().alwaysHidden })
+        } else {
+            if visibility.refresh && icons.isEmpty { refresh() }
+            for icon in icons {
+                guard let element = elements[icon.id] else { continue }
+                setHidden(!Self.isVisible(icon.section, revealHidden: hidden, revealAlwaysHidden: always), on: element)
+            }
+        }
+    }
+
+    private func setHidden(_ hidden: Bool, on element: AXUIElement) {
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, kAXHiddenAttribute as CFString, &settable) == .success,
+              settable.boolValue else { return }
+        _ = AXUIElementSetAttributeValue(element, kAXHiddenAttribute as CFString, NSNumber(value: hidden))
+    }
+
+    private func observeInput() {
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .leftMouseDragged, .leftMouseUp,
+                                          .rightMouseDown, .otherMouseDown, .keyDown, .flagsChanged]
+        nativeMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.observeInput(event) }
+        }
+        localInputMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.observeInput(event) }
+            return event
+        }
+    }
+
+    private func observeInput(_ event: NSEvent) {
+        guard let cg = event.cgEvent,
+              cg.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
+        switch event.type {
+        case .leftMouseDown:
+            nativeInputGeneration += 1
+            cancelNativeImport()
+            nativeGesture = nil
+            captureNativeGesture(event, cg: cg)
+        case .leftMouseDragged:
+            if let gesture = nativeGesture, hypot(cg.location.x - gesture.start.x, cg.location.y - gesture.start.y) >= 3 {
+                nativeGesture?.dragged = true
+            }
+        case .leftMouseUp:
+            let gesture = nativeGesture
+            nativeGesture = nil
+            if let gesture, gesture.dragged { importNativeGesture(gesture) }
+            else { applyDesiredVisibility() }
+        case .rightMouseDown, .otherMouseDown, .keyDown, .flagsChanged:
+            nativeInputGeneration += 1
+            if event.type != .flagsChanged { cancelNativeImport() }
+            if event.type != .flagsChanged || !event.modifierFlags.contains(.command) {
+                nativeGesture = nil
+            }
+        default: break
+        }
+        publishBusy()
+    }
+
+    private func captureNativeGesture(_ event: NSEvent, cg: CGEvent) {
+        guard ControlItem.usesMacOS27Model, !arrangement.isBusy,
+              event.modifierFlags.contains(.command), let primary = NSScreen.screens.first else { return }
+        let point = cg.location
+        let appKitPoint = CGPoint(x: point.x, y: primary.frame.maxY - point.y)
+        guard NSScreen.screens.contains(where: { $0.statusItemRegion.contains(appKitPoint) }) else { return }
+        refresh()
+        let matches = icons.filter { $0.isMovable && $0.frame.contains(point) }
+        guard matches.count == 1, let icon = matches.first, let element = elements[icon.id],
+              let identity = Self.appIconIdentity(from: icon.id),
+              let owner = NSRunningApplication(processIdentifier: identity.processID),
+              Self.launchToken(for: owner.launchDate) == identity.launchToken,
+              macOS27Hider.canReadPosition(for: identity.bundleID) else { return }
+        nativeGesture = NativeGesture(handle: icon.handle, element: element, owner: owner,
+                                      launched: owner.launchDate, bundleID: identity.bundleID,
+                                      start: point, frame: icon.frame)
+    }
+
+    private func cancelNativeImport() {
+        nativeImportGeneration += 1
+        nativeImport?.cancel()
+        nativeImport = nil
+    }
+
+    private func importNativeGesture(_ gesture: NativeGesture) {
+        cancelNativeImport()
+        let generation = nativeImportGeneration
+        nativeImport = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.nativeImportGeneration == generation {
+                    self.nativeImport = nil
+                    self.publishBusy()
+                    self.applyDesiredVisibility()
+                }
+            }
+            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            while !self.inputIsQuiet() || self.arrangement.isBusy {
+                guard !Task.isCancelled, self.nativeImportGeneration == generation,
+                      ProcessInfo.processInfo.systemUptime < deadline else { return }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            guard !Task.isCancelled, self.nativeImportGeneration == generation,
+                  !gesture.owner.isTerminated, gesture.owner.launchDate == gesture.launched else { return }
+            self.refresh()
+            guard let current = self.icons.first(where: { $0.handle == gesture.handle }),
+                  let element = self.elements[current.id], CFEqual(element, gesture.element),
+                  abs(current.frame.midX - gesture.frame.midX) >= 3 else { return }
+            let revision = self.nativeInputGeneration
+            let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+            let canCommit = {
+                !Task.isCancelled && self.nativeInputGeneration == revision && self.inputIsQuiet()
+                    && CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount
+            }
+            let saved = self.macOS27Hider.recordAvailableLayoutChanges(for: [gesture.bundleID], canCommit: canCommit)
+            if !saved.contains(gesture.bundleID) {
+                self.moveError = "Flux could not save the icon's new position. Try again."
+            }
+            self.refresh()
+        }
     }
 
     static func iconID(bundleID: String, processID: pid_t, launchDate: Date?, index: Int) -> String {
@@ -534,177 +630,6 @@ final class MenuBarIconManager: ObservableObject {
         return label(element, depth: 0)
     }
 
-    private func identity(for id: String, element: AXUIElement, ownerItemCount: Int? = nil) -> UUID {
-        let owner = id.split(separator: "|", maxSplits: 1).first.map(String.init)
-        let scope = Self.appIconIdentity(from: id).map {
-            "\($0.bundleID)|\($0.processID)|\($0.launchToken)|"
-        } ?? owner.map { "\($0)|" } ?? id
-        let sameCount = ownerItemCount.map { count in
-            icons.filter { $0.isMovable && $0.id.hasPrefix(scope) }.count == count
-        } ?? true
-        // macOS can reuse the same remote AX object when another item takes its index.
-        if sameCount, let previous = elements[id], CFEqual(previous, element),
-           let identity = icons.first(where: { $0.id == id })?.identity {
-            return identity
-        }
-        return UUID()
-    }
-
-    private func refreshedIcon(_ icon: Icon) -> Icon? {
-        guard icon.isMovable else { return nil }
-        refresh()
-        guard let current = icons.first(where: { $0.id == icon.id && $0.isMovable }) else {
-            if isTrusted { errorMessage = "Flux could not find this icon. Refresh icons and try again." }
-            return nil
-        }
-        guard current.title == icon.title, current.source == icon.source,
-              icon.identity == nil || current.identity == icon.identity else {
-            errorMessage = "This icon changed. Refresh icons and try again."
-            return nil
-        }
-        if ControlItem.usesMacOS27Model {
-            guard current.frame.width > 0, current.frame.height > 0,
-                  let primary = NSScreen.screens.first,
-                  NSScreen.screens.contains(where: {
-                      $0.statusItemRegion.contains(NSPoint(x: current.frame.midX,
-                                                          y: primary.frame.maxY - current.frame.midY))
-                  }) else {
-                errorMessage = "Flux could not read this icon's current position. Refresh icons and try again."
-                return nil
-            }
-        }
-        return current
-    }
-
-    func move(_ icon: Icon, to section: MenuBarSection) {
-        guard !isPostingDrag else { return }
-        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, to: section) }) { return }
-        guard let icon = refreshedIcon(icon),
-              let targetX = Self.insertionX(for: section,
-                                             iconWidth: icon.frame.width,
-                                             boundaries: boundaryProvider()) else {
-            return
-        }
-        if ControlItem.usesMacOS27Model { provisionalSections[icon.id] = section }
-        else { assignedSections[icon.id] = section }
-        move(icon, toX: targetX, expectedSection: section)
-    }
-
-    @discardableResult
-    func move(_ icon: Icon, to insertion: Insertion,
-              accepting: @escaping (Icon) -> Bool = { _ in true }) -> Bool {
-        guard !isPostingDrag else { return false }
-        if deferMoveUntilMenuCloses({ [weak self] in _ = self?.move(icon, to: insertion, accepting: accepting) }) { return true }
-        guard insertion.section != .alwaysHidden || alwaysHiddenEnabledProvider(),
-              let icon = refreshedIcon(icon), accepting(icon) else { return false }
-        let siblings = icons.filter { $0.section == insertion.section && $0.id != icon.id }
-            .sorted { $0.frame.minX < $1.frame.minX }
-        guard insertion.matches(siblings) else {
-            errorMessage = "The destination changed. Refresh icons and try again."
-            return false
-        }
-        let targetX: CGFloat?
-        if let next = insertion.before {
-            targetX = ControlItem.usesMacOS27Model
-                ? next.frame.midX - icon.frame.width / 2 - 4
-                : next.frame.minX - icon.frame.width - 4
-        } else if let previous = insertion.after {
-            targetX = ControlItem.usesMacOS27Model
-                ? previous.frame.midX - icon.frame.width / 2 + 4 : previous.frame.maxX + 4
-        } else {
-            targetX = Self.insertionX(for: insertion.section, iconWidth: icon.frame.width,
-                                     boundaries: boundaryProvider())
-        }
-        guard let targetX else { return false }
-        if ControlItem.usesMacOS27Model { provisionalSections[icon.id] = insertion.section }
-        else { assignedSections[icon.id] = insertion.section }
-        move(icon, toX: targetX, expectedSection: insertion.section,
-             allowNativeRetry: false, insertion: insertion)
-        return true
-    }
-
-    func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool {
-        guard icon.isMovable else { return false }
-        let siblings = icons
-            .filter { $0.section == icon.section }
-            .sorted { $0.frame.minX < $1.frame.minX }
-        guard let index = siblings.firstIndex(where: { $0.id == icon.id }) else { return false }
-        switch direction {
-        case .towardDrawer:
-            return index > siblings.startIndex
-        case .towardClock:
-            return index < siblings.index(before: siblings.endIndex)
-        }
-    }
-
-    /// Moves an icon one place within its current section. The drawer UI owns
-    /// order, so the user never has to Cmd-drag a crowded menu bar.
-    func move(_ icon: Icon, toward direction: MoveDirection) {
-        guard !isPostingDrag else { return }
-        if deferMoveUntilMenuCloses({ [weak self] in self?.move(icon, toward: direction) }) { return }
-        guard let icon = refreshedIcon(icon), canMove(icon, toward: direction) else { return }
-        let siblings = icons
-            .filter { $0.section == icon.section }
-            .sorted { $0.frame.minX < $1.frame.minX }
-        guard let index = siblings.firstIndex(where: { $0.id == icon.id }) else { return }
-        let neighbor: Icon
-        var targetX: CGFloat
-        switch direction {
-        case .towardDrawer:
-            neighbor = siblings[siblings.index(before: index)]
-            targetX = neighbor.frame.minX - icon.frame.width - 4
-        case .towardClock:
-            neighbor = siblings[siblings.index(after: index)]
-            targetX = neighbor.frame.maxX + 4
-        }
-        if ControlItem.usesMacOS27Model {
-            targetX = neighbor.frame.midX - icon.frame.width / 2
-                + (direction == .towardClock ? 4 : -4)
-            let remaining = siblings.filter { $0.id != icon.id }
-            guard let neighborIndex = remaining.firstIndex(of: neighbor) else { return }
-            let slot = neighborIndex + (direction == .towardClock ? 1 : 0)
-            let insertion = Insertion(section: icon.section,
-                                      before: slot < remaining.count ? remaining[slot] : nil,
-                                      after: slot > 0 ? remaining[slot - 1] : nil)
-            move(icon, toX: targetX, expectedSection: icon.section,
-                 allowNativeRetry: false, insertion: insertion)
-            return
-        }
-        move(icon, toX: targetX, expectedSection: icon.section, allowNativeRetry: false)
-    }
-
-    /// Applies the drawer's visibility. macOS 27 needs MenuBarAgent's app-level
-    /// restriction; older systems keep the divider geometry.
-    func applyDrawerVisibility(revealHidden: Bool,
-                               revealAlwaysHidden: Bool,
-                               refreshBeforeApplying: Bool = true) {
-        if ControlItem.usesMacOS27Model,
-           pendingMoveCount > 0 || nativeMove != nil || !completedNativeMoves.isEmpty
-            || CGEventSource.buttonState(.combinedSessionState, button: .left) {
-            deferredVisibility = (revealHidden, revealAlwaysHidden, refreshBeforeApplying)
-            scheduleNativeMoveCommit()
-            return
-        }
-        beginIconUpdate()
-        defer { finishIconUpdate() }
-        if ControlItem.usesMacOS27Model {
-            macOS27Hider.apply(revealHidden: revealHidden,
-                               revealAlwaysHidden: revealAlwaysHidden,
-                               alwaysHiddenEnabled: alwaysHiddenEnabledProvider(),
-                               chevronX: { [weak self] in self?.chevronBoundaryProvider() },
-                               alwaysX: { [weak self] in self?.boundaryProvider().alwaysHidden })
-            return
-        }
-        if refreshBeforeApplying, icons.isEmpty { refresh() }
-        for icon in icons {
-            guard let element = elements[icon.id] else { continue }
-            let visible = Self.isVisible(icon.section,
-                                         revealHidden: revealHidden,
-                                         revealAlwaysHidden: revealAlwaysHidden)
-            setHidden(!visible, on: element)
-        }
-    }
-
     static func isVisible(_ section: MenuBarSection,
                           revealHidden: Bool,
                           revealAlwaysHidden: Bool) -> Bool {
@@ -729,8 +654,8 @@ final class MenuBarIconManager: ObservableObject {
         let siblings = icons.filter { $0.id != current.id && $0.section == placement.section }
         let ordered = (siblings + [current]).sorted { $0.frame.minX < $1.frame.minX }
         guard let index = ordered.firstIndex(where: { $0.id == current.id }) else { return false }
-        return (index + 1 < ordered.count ? ordered[index + 1].id : nil) == placement.before?.id
-            && (index > 0 ? ordered[index - 1].id : nil) == placement.after?.id
+        return (index + 1 < ordered.count ? ordered[index + 1].handle : nil) == placement.before?.handle
+            && (index > 0 ? ordered[index - 1].handle : nil) == placement.after?.handle
     }
 
     static func insertionX(for section: MenuBarSection,
@@ -750,304 +675,6 @@ final class MenuBarIconManager: ObservableObject {
             return boundaries.hidden.map { $0 - iconWidth - gap }
         case .alwaysHidden:
             return boundaries.alwaysHidden.map { $0 - iconWidth - gap }
-        }
-    }
-
-    private func visibleMenuWindow() -> Bool? {
-        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                      kCGNullWindowID) as? [[String: Any]] else { return nil }
-        return windows.contains {
-            ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
-                && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
-        }
-    }
-
-    private func deferMoveUntilMenuCloses(_ action: @escaping () -> Void) -> Bool {
-        guard ControlItem.usesMacOS27Model else { return false }
-        guard let visible = visibleMenuWindow() else {
-            errorMessage = "Flux could not read the menu state. Try again."
-            return true
-        }
-        guard visible else { return false }
-        beginIconUpdate()
-        pendingMoveCount += 1
-        lastMoveReport = "waiting for menu to close"
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        let wasActive = NSApp.isActive
-        let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
-        func cancel(_ message: String) {
-            finishMove()
-            errorMessage = message
-            lastMoveVerification = message
-        }
-        func poll() {
-            guard (!wasActive || NSApp.isActive),
-                  CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount else {
-                cancel("Icon move cancelled because input changed. Try again.")
-                return
-            }
-            guard let visible = visibleMenuWindow() else {
-                cancel("Flux could not read the menu state. Try again.")
-                return
-            }
-            guard ProcessInfo.processInfo.systemUptime < deadline else {
-                cancel("Close the menu, then try moving the icon again.")
-                return
-            }
-            if !visible {
-                action()
-                finishMove()
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { poll() }
-        }
-        DispatchQueue.main.async { poll() }
-        return true
-    }
-
-    private func move(_ icon: Icon, toX targetX: CGFloat, expectedSection: MenuBarSection,
-                      allowNativeRetry: Bool = true, insertion: Insertion? = nil) {
-        let inputGeneration = nativeInputGeneration
-        beginIconUpdate()
-        pendingMoveCount += 1
-        if let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
-            completedNativeMoves = completedNativeMoves.filter { $0.value.owner.bundleIdentifier != String(bundleID) }
-        }
-        guard let element = elements[icon.id] else {
-            provisionalSections.removeValue(forKey: icon.id)
-            refresh()
-            finishMove()
-            return
-        }
-
-        let target = CGPoint(x: targetX, y: icon.frame.minY)
-        lastMoveReport = "id=\(icon.id), source=\(icon.frame), target=\(CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY)), expected=\(expectedSection.rawValue), mode=\(RunLoop.current.currentMode?.rawValue ?? "none")"
-        lastMoveVerification = "pending"
-        let usedAccessibility = !ControlItem.usesMacOS27Model && setPosition(target, on: element)
-        let verify: @MainActor () -> Void = { [weak self] in
-            self?.verifyMove(icon: icon, expectedSection: expectedSection, target: target,
-                             retryWithDrag: usedAccessibility || (ControlItem.usesMacOS27Model && allowNativeRetry),
-                             inputGeneration: inputGeneration, insertion: insertion)
-        }
-        if usedAccessibility { verify() }
-        else {
-            drag(icon.frame, to: CGPoint(x: targetX + icon.frame.width / 2, y: icon.frame.midY),
-                 completion: verify)
-        }
-    }
-
-    private func beginIconUpdate() {
-        iconUpdateCount += 1
-        if iconUpdateCount == 1 { isUpdatingIcons = true }
-    }
-
-    private func finishIconUpdate() {
-        iconUpdateCount -= 1
-        if iconUpdateCount == 0 { isUpdatingIcons = false }
-    }
-
-    private func finishMove() {
-        pendingMoveCount -= 1
-        if pendingMoveCount == 0, !provisionalSections.isEmpty {
-            provisionalSections.removeAll()
-            refresh()
-        }
-        applyDeferredVisibility()
-        finishIconUpdate()
-    }
-
-    private func applyDeferredVisibility() {
-        if pendingMoveCount == 0, nativeMove == nil, completedNativeMoves.isEmpty,
-           let visibility = deferredVisibility {
-            deferredVisibility = nil
-            applyDrawerVisibility(revealHidden: visibility.hidden,
-                                  revealAlwaysHidden: visibility.alwaysHidden,
-                                  refreshBeforeApplying: visibility.refresh)
-        }
-    }
-
-    private func setPosition(_ point: CGPoint, on element: AXUIElement) -> Bool {
-        var point = point
-        guard let value = AXValueCreate(.cgPoint, &point) else { return false }
-        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
-    }
-
-    private func setHidden(_ hidden: Bool, on element: AXUIElement) {
-        var settable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(element,
-                                              kAXHiddenAttribute as CFString,
-                                              &settable) == .success,
-              settable.boolValue else { return }
-        _ = AXUIElementSetAttributeValue(element,
-                                          kAXHiddenAttribute as CFString,
-                                          NSNumber(value: hidden))
-    }
-
-    private func verifyMove(icon: Icon,
-                            expectedSection: MenuBarSection,
-                            target: CGPoint,
-                            retryWithDrag: Bool,
-                            readAttempts: Int = 0,
-                            inputGeneration: Int, insertion: Insertion? = nil) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-            guard let self else { return }
-            guard !ControlItem.usesMacOS27Model || self.nativeInputIsQuiet() else {
-                self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                target: target, retryWithDrag: retryWithDrag,
-                                readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
-                return
-            }
-            let downCount = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
-            let canCommit = {
-                !ControlItem.usesMacOS27Model || (
-                    self.nativeInputIsQuiet()
-                    && CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downCount)
-            }
-            self.refresh()
-            guard canCommit() else {
-                self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                target: target, retryWithDrag: retryWithDrag,
-                                readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
-                return
-            }
-            guard let current = self.icons.first(where: { $0.id == icon.id }) else {
-                self.lastMoveVerification = "id=\(icon.id), inventory unavailable, attempt=\(readAttempts + 1)"
-                if readAttempts < 2 {
-                    self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                    target: target, retryWithDrag: retryWithDrag,
-                                    readAttempts: readAttempts + 1, inputGeneration: inputGeneration, insertion: insertion)
-                    return
-                }
-                self.finishUnsavedMove(icon)
-                return
-            }
-            let actualSection = Self.section(for: current.frame,
-                                             boundaries: self.boundaryProvider())
-            self.lastMoveVerification = "id=\(current.id), frame=\(current.frame), actual=\(actualSection.rawValue), expected=\(expectedSection.rawValue), boundaries=\(self.boundaryProvider())"
-            let orderMatches = insertion.map { placement in
-                Self.insertionMatches(current, placement: placement, in: self.icons)
-            } ?? true
-            // Saved macOS 27 sections need not match the divider positions.
-            // A nonempty insertion proves placement against its real neighbors.
-            let hasNeighbor = insertion.map { $0.before != nil || $0.after != nil } ?? false
-            let sectionMatches = actualSection == expectedSection
-                || (ControlItem.usesMacOS27Model && hasNeighbor)
-            guard !sectionMatches || !orderMatches else {
-                if !self.saveLayout(for: current, section: expectedSection, canCommit: canCommit) {
-                    guard canCommit() else {
-                        self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                        target: target, retryWithDrag: retryWithDrag,
-                                        readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
-                        return
-                    }
-                    if readAttempts < 2 {
-                        self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                        target: target, retryWithDrag: retryWithDrag,
-                                        readAttempts: readAttempts + 1, inputGeneration: inputGeneration, insertion: insertion)
-                        return
-                    }
-                    self.finishUnsavedMove(icon)
-                    return
-                }
-                if ControlItem.usesMacOS27Model {
-                    self.provisionalSections.removeValue(forKey: icon.id)
-                    self.refresh()
-                }
-                self.finishMove()
-                return
-            }
-            guard retryWithDrag,
-                  !ControlItem.usesMacOS27Model || inputGeneration == self.nativeInputGeneration else {
-                self.assignedSections.removeValue(forKey: icon.id)
-                self.provisionalSections.removeValue(forKey: icon.id)
-                self.refresh()
-                self.errorMessage = "macOS did not move \(icon.title). Try again."
-                self.finishMove()
-                return
-            }
-            if ControlItem.usesMacOS27Model {
-                guard let fresh = self.refreshedIcon(icon),
-                      let targetX = Self.insertionX(for: expectedSection,
-                                                   iconWidth: fresh.frame.width,
-                                                   boundaries: self.boundaryProvider()) else {
-                    self.finishUnsavedMove(icon)
-                    return
-                }
-                guard canCommit() else {
-                    self.verifyMove(icon: icon, expectedSection: expectedSection,
-                                    target: target, retryWithDrag: true,
-                                    readAttempts: readAttempts, inputGeneration: inputGeneration, insertion: insertion)
-                    return
-                }
-                self.move(fresh, toX: targetX, expectedSection: expectedSection,
-                          allowNativeRetry: false)
-                self.finishMove()
-                return
-            }
-            self.drag(icon.frame, to: CGPoint(x: target.x + icon.frame.width / 2,
-                                               y: icon.frame.midY)) { [weak self] in
-                self?.verifyMove(icon: icon, expectedSection: expectedSection, target: target,
-                                 retryWithDrag: false, inputGeneration: inputGeneration, insertion: insertion)
-            }
-        }
-    }
-
-    private func finishUnsavedMove(_ icon: Icon) {
-        assignedSections.removeValue(forKey: icon.id)
-        provisionalSections.removeValue(forKey: icon.id)
-        if ControlItem.usesMacOS27Model,
-           let bundleID = icon.id.split(separator: "|", maxSplits: 1).first {
-            nativeSaveFailures.insert(String(bundleID))
-        }
-        refresh()
-        errorMessage = nativeSaveError ?? "Flux could not verify the icon's new position. Try again."
-        finishMove()
-    }
-
-    private func saveLayout(for icon: Icon, section: MenuBarSection,
-                            canCommit: () -> Bool) -> Bool {
-        guard ControlItem.usesMacOS27Model else { return true }
-        guard let bundleID = icon.id.split(separator: "|", maxSplits: 1).first else { return false }
-        let saved = macOS27Hider.recordAppSection(section, for: String(bundleID), canCommit: canCommit)
-        if saved {
-            nativeSaveFailures.remove(String(bundleID))
-            errorMessage = nativeSaveError ?? macOS27Hider.latestError
-        }
-        return saved
-    }
-
-    private func drag(_ frame: CGRect, to target: CGPoint, completion: @escaping @MainActor () -> Void) {
-        let start = CGPoint(x: frame.midX, y: frame.midY)
-        guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                                 mouseCursorPosition: start, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                               mouseCursorPosition: target, mouseButton: .left) else {
-            completion()
-            return
-        }
-        let paced = ControlItem.usesMacOS27Model
-        isPostingDrag = true
-        Self.dragQueue.async { [weak self] in
-            down.flags = .maskCommand
-            down.post(tap: .cghidEventTap)
-            if paced { Thread.sleep(forTimeInterval: 0.06) }
-            for step in 1...5 {
-                let progress = CGFloat(step) / 5
-                let point = CGPoint(x: start.x + (target.x - start.x) * progress,
-                                    y: start.y + (target.y - start.y) * progress)
-                if let move = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged,
-                                      mouseCursorPosition: point, mouseButton: .left) {
-                    move.flags = .maskCommand
-                    move.post(tap: .cghidEventTap)
-                }
-                if paced { Thread.sleep(forTimeInterval: 0.12) }
-            }
-            up.flags = .maskCommand
-            up.post(tap: .cghidEventTap)
-            DispatchQueue.main.async {
-                self?.isPostingDrag = false
-                completion()
-            }
         }
     }
 
@@ -1075,13 +702,17 @@ final class MenuBarIconManager: ObservableObject {
 
     private func frame(of element: AXUIElement) -> CGRect? {
         guard let positionValue = attribute(element, kAXPositionAttribute),
-              let sizeValue = attribute(element, kAXSizeAttribute) else { return nil }
+              let sizeValue = attribute(element, kAXSizeAttribute),
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
         let position = positionValue as! AXValue
         let size = sizeValue as! AXValue
         var point = CGPoint.zero
         var dimensions = CGSize.zero
         guard AXValueGetValue(position, .cgPoint, &point),
               AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
+        guard point.x.isFinite, point.y.isFinite, dimensions.width.isFinite, dimensions.height.isFinite,
+              dimensions.width > 0, dimensions.height > 0 else { return nil }
         return CGRect(origin: point, size: dimensions)
     }
 
