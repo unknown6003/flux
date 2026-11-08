@@ -23,6 +23,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     private var rowViews: [ApplicationID: MenuBarRowView] = [:]
     private var query = ""
     private var announced = ""
+    private weak var contentStack: NSStackView?
 
     public var preferredFirstResponder: NSView? { searchField }
 
@@ -59,29 +60,11 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
             lanesStack.addArrangedSubview(lane)
         }
 
+        searchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let content = FluxUIStyle.vstack([modeLabel, searchField, reviewStack, arrangeCard, lanesStack, statusLabel, toolsStack], spacing: 14)
-        content.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 24, right: 24)
-        content.translatesAutoresizingMaskIntoConstraints = false
-        lanesStack.alignment = .width
-        for view in [modeLabel, searchField, reviewStack, arrangeCard, lanesStack, statusLabel] {
-            view.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -48).isActive = true
-        }
-
-        let document = FlippedView()
-        document.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            content.topAnchor.constraint(equalTo: document.topAnchor),
-            content.bottomAnchor.constraint(equalTo: document.bottomAnchor),
-        ])
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.documentView = document
-        document.translatesAutoresizingMaskIntoConstraints = false
-        document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-        view = scroll
+        toolsStack.setHuggingPriority(.defaultLow, for: .horizontal)
+        contentStack = content
+        view = FluxUIStyle.page(content)
         render()
     }
 
@@ -162,7 +145,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
             accessCard = nil
             return
         }
-        guard accessCard == nil, let content = modeLabel.superview as? NSStackView else { return }
+        guard accessCard == nil, let content = contentStack else { return }
         let card = PermissionCardView(content: .init(
             symbolName: "hand.raised",
             title: L("menuBar.access.title", "Allow Accessibility"),
@@ -173,7 +156,6 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         card.onAction = { [weak self] in self?.actions.openAccessibilitySettings() }
         card.onSecondary = { [weak self] in self?.actions.checkAccessibility() }
         content.insertArrangedSubview(card, at: 1)
-        card.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -48).isActive = true
         accessCard = card
     }
 
@@ -218,10 +200,6 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
 }
 
 // MARK: - Views
-
-private final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
-}
 
 private final class ReviewButton: NSButton {
     var applicationID: ApplicationID?
@@ -279,17 +257,19 @@ final class MenuBarRowView: NSView {
     var onChoose: ((ApplicationID, MenuBarGroup) -> Void)?
 
     private let iconView = NSImageView()
-    private let nameLabel = FluxUIStyle.label("")
-    private let detailLabel = FluxUIStyle.label("", style: .caption1, secondary: true)
-    private let fixedLabel = FluxUIStyle.label(L("menuBar.fixed", "Managed by macOS"), style: .callout, secondary: true)
+    private let nameLabel = FluxUIStyle.label("", wraps: false)
+    private let detailLabel = FluxUIStyle.label("", style: .caption1, secondary: true, wraps: false)
+    private let fixedLabel = FluxUIStyle.label(L("menuBar.fixed", "Managed by macOS"), style: .callout, secondary: true, wraps: false)
 
     init(id: ApplicationID) {
         self.id = id
         super.init(frame: .zero)
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.setAccessibilityElement(false)
-        nameLabel.maximumNumberOfLines = 1
-        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.toolTip = nil
+        fixedLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        groupControl.setContentCompressionResistancePriority(.required, for: .horizontal)
+        groupControl.setContentHuggingPriority(.required, for: .horizontal)
         groupControl.target = self
         groupControl.action = #selector(choose)
         groupControl.segmentStyle = .automatic
@@ -299,8 +279,8 @@ final class MenuBarRowView: NSView {
         }
 
         let text = FluxUIStyle.vstack([nameLabel, detailLabel], spacing: 1)
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        text.setContentCompressionResistancePriority(.init(200), for: .horizontal)
+        let spacer = FluxUIStyle.spacer()
         let stack = FluxUIStyle.hstack([iconView, text, spacer, fixedLabel, groupControl], spacing: 10)
         stack.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -324,6 +304,7 @@ final class MenuBarRowView: NSView {
         iconView.image = (showsPreview ? row.preview : nil) ?? row.icon
             ?? FluxUIStyle.symbol("app.dashed", label: row.name)
         nameLabel.stringValue = row.name
+        nameLabel.toolTip = row.name
         detailLabel.stringValue = MenuBarText.count(row.iconCount)
         let index = MenuBarGroup.allCases.firstIndex(of: row.group) ?? 0
         if groupControl.selectedSegment != index { groupControl.selectedSegment = index }
@@ -354,7 +335,7 @@ private final class ArrangeCardView: NSView {
         done.keyEquivalent = "\r"
         done.target = self
         done.action = #selector(finish)
-        let box = FluxUIStyle.group(FluxUIStyle.vstack([title, body, done]))
+        let box = FluxUIStyle.group(FluxUIStyle.vstack([title, body, FluxUIStyle.hstack([done, FluxUIStyle.spacer()])]))
         box.translatesAutoresizingMaskIntoConstraints = false
         addSubview(box)
         NSLayoutConstraint.activate([

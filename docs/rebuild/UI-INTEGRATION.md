@@ -112,3 +112,27 @@ panel.onWillDismiss = { widget in /* stop all widget hardware */ }
 2. Keyboard pass: sidebar arrows, ⌘,, Esc, Tab through Menu Bar rows, ← → in the notch.
 3. VoiceOver reads each row as "name, count, group" and announces the status line.
 4. Memory: switching pages and closing Settings releases page controllers; switching notch tabs releases the old widget.
+
+## Layout fix (slice 2)
+
+The fixture captures at `build/native-ui-d8a951d` and `build/native-ui-51d1d63` showed the lane groups at zero height, with rows drawn over the lane headers. The cause was in FluxUI. `FluxUIStyle.group` put a stack view in `NSBox.contentView`. NSBox sizes its content view by autoresizing, so the stack's constraints never set the box height.
+
+- `FluxUIStyle.group` now returns `GroupView`. It pins its content with constraints and 10/12 pt insets, so its height follows the content. It fills with `quaternarySystemFill`, resolved for the view's appearance in `updateLayer`.
+- `FluxUIStyle.page(_:)` is the shared page root: a vertical scroll view with a flipped document that is as wide as the clip view and as tall as the content.
+- `vstack` uses `.width` alignment by default, so the search field, groups and rows fill the page width at 680 and 840 pt.
+- Wrapping labels have low horizontal compression resistance. App names use one line with tail truncation and a tooltip. Segmented controls, buttons and "Managed by macOS" resist compression, so the group choices stay reachable.
+- Not proven: no new capture has run with this fix. The root probe must capture again on macOS.
+- The probe's General fixture hosts `AnalyticsSettingsView` with no bottom constraint. That is valid, because the view now has a fitting height.
+
+## Slice 2 additions
+
+- `FormPageController` (public base class): builds a page from sections of native controls. On `rebuild()` it restores focus to the control with the same identifier.
+- `UpdateStatus` (public enum): `.idle`, `.checking`, `.upToDate`, `.available(version:)`, `.installing`, `.failed(code:)`.
+- `Shortcut(keyCode:carbonModifiers:)` (public) and the internal `ShortcutRecorderView`. The recorder reads only `keyDown` and `performKeyEquivalent` while it is first responder. It installs no event monitor. Esc cancels. A shortcut must have ⌘, ⌃ or ⌥.
+
+## Not written yet
+
+- The General, Notch, Lock Screen and About page controllers, with their state and action enums.
+- The fixed 1–5 feedback form.
+
+The time limit ran out after the layout fix and these shared parts. The planned API is one immutable `State` struct per page, plus one `onAction: (PageAction) -> Void`, where each page has its own action enum with typed associated values.
