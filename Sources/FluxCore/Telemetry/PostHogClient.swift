@@ -15,10 +15,13 @@ public actor PostHogClient {
     private var logs: [UsageLogRecord] = []
     private var assignments: [UsageFlag: UsageVariant] = [:]
     private var payloads: [UsageFlag: UsageFlagPayload] = [:]
+    private var usedAssignments: [UsageFlag: UsageVariant] = [:]
+    private var usedPayloads: [UsageFlag: UsageFlagPayload] = [:]
     private var exposures: Set<String> = []
     private var scheduled: Task<Void, Never>?
     private var request: Task<UsageResponse, any Error>?
     private var busy = false
+    private var preferLogs = false
     private var rateWindow = ContinuousClock.now
     private var recordsInWindow = 0
 
@@ -42,7 +45,7 @@ public actor PostHogClient {
         if let expectedIdentity, expectedIdentity != identity { return }
         guard admitRecord() else { return }
         if events.count == Self.eventLimit { events.removeFirst() }
-        events.append(UsageRecord(event: event, assignments: assignments))
+        events.append(UsageRecord(event: event, assignments: usedAssignments))
         schedule()
     }
 
@@ -56,19 +59,25 @@ public actor PostHogClient {
 
     /// Cached presentation choice. A flag read never starts a request.
     public func variant(_ flag: UsageFlag) -> UsageVariant {
-        guard enabled, let variant = assignments[flag] else { return .control }
+        guard enabled, let variant = usedAssignments[flag] ?? assignments[flag] else { return .control }
+        if usedAssignments[flag] == nil {
+            // Keep an experiment's displayed choice stable until ID reset or restart.
+            usedAssignments[flag] = variant
+            usedPayloads[flag] = payloads[flag]
+        }
         let key = flag.rawValue + ":" + variant.rawValue
         if !exposures.contains(key), admitRecord() {
             exposures.insert(key)
             if events.count == Self.eventLimit { events.removeFirst() }
-            events.append(UsageRecord(event: .exposure(flag, variant), assignments: assignments))
+            events.append(UsageRecord(event: .exposure(flag, variant), assignments: usedAssignments))
             schedule()
         }
         return variant
     }
 
     public func payload(_ flag: UsageFlag) -> UsageFlagPayload? {
-        enabled ? payloads[flag] : nil
+        guard enabled else { return nil }
+        return usedAssignments[flag] == nil ? payloads[flag] : usedPayloads[flag]
     }
 
     /// Call from a noncritical action boundary. Never await from startup or native input.
@@ -96,16 +105,18 @@ public actor PostHogClient {
         scheduled = nil
         let revision = generation
         let payload: UsageRequest
-        if !events.isEmpty {
+        if !events.isEmpty && (logs.isEmpty || !preferLogs) {
             let batch = Array(events.prefix(20))
             events.removeFirst(batch.count)
             guard let data = try? UsageBatchEncoder.encode(batch, identity: identity, projectToken: projectToken) else { return }
             payload = UsageRequest(endpoint: .events, body: data, projectToken: projectToken)
+            preferLogs = true
         } else {
             let batch = Array(logs.prefix(20))
             logs.removeFirst(batch.count)
             guard let data = try? PostHogWire.logs(batch, identity: identity) else { return }
             payload = UsageRequest(endpoint: .logs, body: data, projectToken: projectToken)
+            preferLogs = false
         }
         busy = true
         _ = await perform(payload)
@@ -134,10 +145,13 @@ public actor PostHogClient {
         request?.cancel()
         request = nil
         busy = false
+        preferLogs = false
         events.removeAll(keepingCapacity: false)
         logs.removeAll(keepingCapacity: false)
         assignments.removeAll(keepingCapacity: false)
         payloads.removeAll(keepingCapacity: false)
+        usedAssignments.removeAll(keepingCapacity: false)
+        usedPayloads.removeAll(keepingCapacity: false)
         exposures.removeAll(keepingCapacity: false)
         rateWindow = .now
         recordsInWindow = 0

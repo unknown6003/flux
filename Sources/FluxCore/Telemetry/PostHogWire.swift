@@ -9,7 +9,15 @@ public enum UsageFlag: String, Sendable, CaseIterable, Hashable {
 }
 
 public enum UsageVariant: String, Sendable, CaseIterable, Hashable {
-    case control, compact, guided
+    case disabled, enabled, control, compact, guided
+
+    var wireValue: Any {
+        switch self {
+        case .disabled: false
+        case .enabled: true
+        case .control, .compact, .guided: rawValue
+        }
+    }
 }
 
 public struct UsageFlagPayload: Sendable, Equatable {
@@ -86,9 +94,11 @@ public enum PostHogWire {
         }
         var result: [UsageFlag: UsageVariant] = [:]
         for flag in UsageFlag.allCases {
-            guard let entry = flags[flag.rawValue], entry["enabled"] as? Bool == true else { continue }
-            guard let raw = entry["variant"] as? String, let variant = UsageVariant(rawValue: raw) else { continue }
-            result[flag] = variant
+            guard let entry = flags[flag.rawValue], let enabled = entry["enabled"] as? Bool else { continue }
+            if !enabled { result[flag] = .disabled }
+            else if let raw = entry["variant"] as? String {
+                if let variant = UsageVariant(rawValue: raw) { result[flag] = variant }
+            } else { result[flag] = .enabled }
         }
         return result
     }

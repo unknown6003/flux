@@ -117,7 +117,10 @@ public enum UsageBatchEncoder {
             properties["$process_person_profile"] = false
             properties["$geoip_disable"] = true
             for (flag, variant) in record.assignments {
-                properties["$feature/" + flag.rawValue] = variant.rawValue
+                properties["$feature/" + flag.rawValue] = variant.wireValue
+            }
+            if case .exposure(_, let variant) = record.event {
+                properties["$feature_flag_response"] = variant.wireValue
             }
             if case .failed(let code) = record.event {
                 properties["$exception_list"] = [[

@@ -11,13 +11,25 @@ import Testing
 
 @Test func remoteFlagsCanOnlySelectKnownPresentationChoices() throws {
     let data = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true,"variant":"compact"},"collect-clipboard":{"enabled":true,"variant":"guided"},"flux-notch-hints":{"enabled":true,"variant":"person@example.com"},"flux-arrangement-guide":{"enabled":false,"variant":"guided"}}}"#.utf8)
-    #expect(try PostHogWire.flagsResponse(data) == [.welcomeLayout: .compact])
+    #expect(try PostHogWire.flagsResponse(data) == [.welcomeLayout: .compact, .arrangementGuide: .disabled])
     for response in [#"{"flags":{},"quotaLimited":["feature_flags"]}"#, #"{"flags":{},"errorsWhileComputingFlags":true}"#, #"{}"#] {
         #expect(throws: (any Error).self) { try PostHogWire.flagsResponse(Data(response.utf8)) }
     }
     #expect(throws: PostHogWireError.self) {
         try PostHogWire.flagsResponse(Data(repeating: 32, count: PostHogWire.maximumResponseBytes + 1))
     }
+}
+
+@Test func booleanFlagsPreserveBooleanExposureAndConversionValues() throws {
+    let data = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true},"flux-notch-hints":{"enabled":false}}}"#.utf8)
+    #expect(try PostHogWire.flagsResponse(data) == [.welcomeLayout: .enabled, .notchHints: .disabled])
+    let records = [UsageRecord(event: .exposure(.welcomeLayout, .enabled), assignments: [.welcomeLayout: .enabled])]
+    let body = try UsageBatchEncoder.encode(records, identity: UsageIdentity(), projectToken: "phc_fixture")
+    let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let batch = try #require(object["batch"] as? [[String: Any]])
+    let properties = try #require(batch[0]["properties"] as? [String: Any])
+    #expect(properties["$feature_flag_response"] as? Bool == true)
+    #expect(properties["$feature/flux-welcome-layout"] as? Bool == true)
 }
 
 @Test func logsHaveOnlyFixedBodiesAndApprovedResourceAttributes() throws {

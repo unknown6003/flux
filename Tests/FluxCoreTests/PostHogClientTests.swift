@@ -6,7 +6,7 @@ private actor RecordingUsageTransport: UsageTransport {
     let received: AsyncStream<UsageRequest>
     private let continuation: AsyncStream<UsageRequest>.Continuation
     private var requests: [UsageRequest] = []
-    private let response: UsageResponse
+    private var response: UsageResponse
 
     init(response: UsageResponse = UsageResponse(status: 200)) {
         self.response = response
@@ -20,6 +20,7 @@ private actor RecordingUsageTransport: UsageTransport {
     }
 
     func snapshot() -> [UsageRequest] { requests }
+    func respondWith(_ value: UsageResponse) { response = value }
 }
 
 @Test(.timeLimit(.minutes(1))) func oneShotFlushResumesAfterAFlagReload() async throws {
@@ -141,5 +142,40 @@ private actor BlockingUsageTransport: UsageTransport {
     #expect(batch[0]["event"] as? String == "$feature_flag_called")
     let properties = try #require(batch[1]["properties"] as? [String: Any])
     #expect(properties["$feature/flux-welcome-layout"] as? String == "compact")
+    await client.disable()
+}
+
+@Test func aBackgroundReloadCannotReassignAnExperimentAlreadyUsedByTheInterface() async throws {
+    let compact = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true,"variant":"compact"}}}"#.utf8)
+    let guided = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true,"variant":"guided"}}}"#.utf8)
+    let transport = RecordingUsageTransport(response: UsageResponse(status: 200, body: compact))
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport)
+    await client.reloadFlags()
+    #expect(await client.variant(.welcomeLayout) == .compact)
+    await transport.respondWith(UsageResponse(status: 200, body: guided))
+    await client.reloadFlags()
+    #expect(await client.variant(.welcomeLayout) == .compact)
+    await client.record(.completed(.changeGroup, .succeeded))
+    await client.flush()
+    let requests = await transport.snapshot()
+    let object = try #require(JSONSerialization.jsonObject(with: requests.last!.body) as? [String: Any])
+    let batch = try #require(object["batch"] as? [[String: Any]])
+    #expect(batch.count == 2)
+    let conversion = try #require(batch.last?["properties"] as? [String: Any])
+    #expect(conversion["$feature/flux-welcome-layout"] as? String == "compact")
+    await client.disable()
+}
+
+@Test func steadyEventsDoNotStarveStructuredLogs() async throws {
+    let transport = RecordingUsageTransport()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport)
+    await client.log(.visibilityPaused, level: .warning)
+    for _ in 0..<3 {
+        for _ in 0..<20 { await client.record(.opened(.settings)) }
+        await client.flush()
+    }
+    let requests = await transport.snapshot()
+    #expect(requests.count == 3)
+    #expect(requests[1].endpoint == .logs)
     await client.disable()
 }
