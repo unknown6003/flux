@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import uuid
-from probe_tcc import flux_accessibility_grant
+from probe_tcc import flux_accessibility_grant, _worker as tcc_worker
 
 
 def run(command, seconds):
@@ -85,16 +85,23 @@ def use_saved_hidden_policy(privacy, temporary):
         backup.write_bytes(plistlib.dumps(original))
 
     def restore():
-        command = (["/usr/bin/defaults", "import", domain, str(backup)] if original is not None
-                   else ["/usr/bin/defaults", "delete", domain])
-        if run(command, 10):
+        current = subprocess.run(["/usr/bin/defaults", "export", domain, "-"],
+                                 capture_output=True, timeout=10)
+        if current.returncode == 0 and run(["/usr/bin/defaults", "delete", domain], 10):
+            raise RuntimeError("FAIL: could not remove the temporary Flux preferences")
+        if original is not None and run(["/usr/bin/defaults", "import", domain, str(backup)], 10):
             raise RuntimeError("FAIL: could not restore the prior Flux preferences")
         restored = subprocess.run(["/usr/bin/defaults", "export", domain, "-"],
                                   capture_output=True, timeout=10)
+        actual = plistlib.loads(restored.stdout) if restored.returncode == 0 else None
         if ((original is None and restored.returncode == 0)
-                or (original is not None and (restored.returncode != 0
-                                             or plistlib.loads(restored.stdout) != original))):
-            raise RuntimeError("FAIL: restored Flux preferences do not match their backup")
+                or (original is not None and actual != original)):
+            expected_keys, actual_keys = set(original or {}), set(actual or {})
+            changed = sorted(name for name in expected_keys & actual_keys
+                             if original[name] != actual[name])
+            raise RuntimeError("FAIL: restored Flux preferences do not match their backup; "
+                               f"added={sorted(actual_keys - expected_keys)}, "
+                               f"missing={sorted(expected_keys - actual_keys)}, changed={changed}")
 
     privacy.callback(restore)
     if run(["/usr/bin/defaults", "import", domain, str(seeded)], 10):
@@ -102,9 +109,28 @@ def use_saved_hidden_policy(privacy, temporary):
 
 
 def check_flux_access(expected):
-    actual = run(["/Applications/Flux.app/Contents/MacOS/Flux", "--flux-check-access"], 10)
-    if actual != expected:
-        raise RuntimeError(f"FAIL: signed Flux access check returned {actual}, expected {expected}")
+    for attempt in range(6):
+        actual = run(["/Applications/Flux.app/Contents/MacOS/Flux", "--flux-check-access"], 4)
+        if actual == expected:
+            print(f"CI: signed Flux access check confirmed exit {actual}", flush=True)
+            return
+        if actual not in (0, 1) or attempt == 5:
+            raise RuntimeError(f"FAIL: signed Flux access check returned {actual}, expected {expected}")
+        time.sleep(0.2)
+
+
+def revoke_flux_access():
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError("FAIL: revocation is only allowed on the disposable CI desktop")
+    # Unlike restoring the SQL snapshot, this also notifies the running TCC service.
+    if run(["/usr/bin/tccutil", "reset", "Accessibility", "com.flux.menubar"], 20):
+        raise RuntimeError("FAIL: could not revoke the CI Flux Accessibility grant")
+    snapshot = tcc_worker("snapshot", {"client": "com.flux.menubar",
+                                       "service": "kTCCServiceAccessibility"})
+    auth_index = snapshot["columns"].index("auth_value")
+    if any(row[auth_index] == 2 for row in snapshot["rows"]):
+        raise RuntimeError("FAIL: Flux still has an allowed Accessibility row after revocation")
+    print("CI: revoked Flux Accessibility; no allowed bundle grant remains", flush=True)
 
 
 def remove_probe_policy(suite):
@@ -649,7 +675,9 @@ with tempfile.TemporaryDirectory(prefix="flux-menu-bar-probe-") as directory:
             status = run([str(binary), str(output)] + arguments, 100)
             if status == 0 and "--app-click" in arguments:
                 stop_flux()
-                grant.close()
+                # Keep the grant context open so cleanup restores its exact
+                # baseline after this service-aware, bundle-scoped revocation.
+                revoke_flux_access()
                 check_flux_access(1)
                 status = run(["/usr/bin/open", "-n", "-g", str(destination)], 20)
                 if status:
