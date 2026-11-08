@@ -39,6 +39,9 @@ public struct CalendarWidgetEvent: Equatable, Sendable {
 }
 
 public enum CalendarWidgetState: Equatable, Sendable {
+    /// Access is allowed and the first read has not arrived. Shows a fixed
+    /// "Loading events" card with no button and no error.
+    case loading
     /// Events already split by the parent into today and tomorrow, in display order.
     /// Both empty shows "No upcoming events".
     case events(today: [CalendarWidgetEvent], tomorrow: [CalendarWidgetEvent])
@@ -108,6 +111,10 @@ public final class CalendarWidgetController: NSViewController {
         let focus = view.window?.firstResponder
         defer { NotchWidgetStyle.restoreFocus(focus, in: view.window) }
         switch state {
+        case .loading:
+            showCard("loading", .init(symbolName: "calendar", title: L("calendar.loading", "Loading events\u{2026}"),
+                     message: L("calendar.loading.message", "Flux is reading your calendars.")),
+                     onAction: nil)
         case .needsPermission:
             showCard("needsPermission", .init(symbolName: "calendar",
                      title: L("calendar.permission", "See your events"),

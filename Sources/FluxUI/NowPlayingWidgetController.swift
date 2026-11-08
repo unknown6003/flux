@@ -13,6 +13,9 @@ public struct NowPlayingSourceOption: Equatable, Sendable {
 }
 
 public enum NowPlayingWidgetStatus: Equatable, Sendable {
+    /// The parent has not got its first media read yet. The widget shows a
+    /// fixed "Loading" card with no button and no error.
+    case loading
     case playing
     case paused
     /// No source has media. The widget shows "Nothing playing" and Check Again.
@@ -171,6 +174,10 @@ public final class NowPlayingWidgetController: NSViewController {
         }
 
         switch state.status {
+        case .loading:
+            showCard("loading", .init(symbolName: "music.note", title: L("nowPlaying.loading", "Loading\u{2026}"),
+                           message: L("nowPlaying.loading.message", "Flux is reading what\u{2019}s playing.")))
+            return
         case .empty:
             showCard("empty", .init(symbolName: "music.note", title: L("nowPlaying.empty", "Nothing playing"),
                            message: L("nowPlaying.empty.message", "Play something in a music or video app."),
@@ -234,7 +241,8 @@ public final class NowPlayingWidgetController: NSViewController {
     }
 
     private func showCard(_ key: String, _ content: PermissionCardView.Content) {
-        card.show(key: key, content, onAction: { [weak self] in self?.send(.checkAgain) })
+        let action: (() -> Void)? = content.actionTitle == nil ? nil : { [weak self] in self?.send(.checkAgain) }
+        card.show(key: key, content, onAction: action)
         self.content.isHidden = true
         view.setAccessibilityLabel("\(Widget.nowPlaying.displayName): \(content.title)")
     }

@@ -31,6 +31,7 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/AnalyticsSettingsView.swift` | `AnalyticsStatus`, `AnalyticsSettingsView` |
 | `Sources/FluxUI/PermissionCardView.swift` | `PermissionCardView`, `PermissionCardView.Content` |
 | `Sources/FluxUI/NotchPanelController.swift` | `NotchGeometry`, `NotchPanelController` |
+| `Sources/FluxUI/CompactNotchController.swift` | `CompactNotchState`, `CompactNotchAction`, `CompactNotchController` |
 | `Sources/FluxUI/FormPageController.swift` | `FormPageController`, `UpdateStatus` |
 | `Sources/FluxUI/ShortcutRecorderView.swift` | `Shortcut` |
 | `Sources/FluxUI/GeneralPreferencesController.swift` | `LoginStatus`, `ShortcutConflict`, `GeneralPreferencesState`, `GeneralPreferencesAction`, `GeneralPreferencesController` |
@@ -155,6 +156,30 @@ panel.onWillDismiss = { widget in /* stop all widget hardware */ }
 - Keys: ← → switch tabs when the panel has focus. Esc dismisses and orders the window out. `viewDidDisappear` also dismisses, so no widget stays loaded while hidden.
 - Reduce Motion: the 0.15 s fade between widgets is skipped.
 - The parent owns the panel window, hover zone, hotkey, closed and wing states, and every camera or media session.
+
+## Compact notch
+
+```swift
+let compact = CompactNotchController(state: CompactNotchState(
+    geometry: geometry,                       // NotchGeometry from the target screen
+    currentActivity: queue.current,           // ActivityItem?, nil shows the idle open target
+    artwork: artworkImage,                    // NSImage?, compared by identity
+    queueCount: queue.count,
+    restorableCount: queue.restorableCount
+)) { action in parentHandle(action) }         // CompactNotchAction
+compact.update(newState)                      // equal state does nothing; never sends an action
+window.setContentSize(compact.preferredSize)  // exact size, center on the top edge
+```
+
+- `CompactNotchAction`: `.expand`, `.cycle`, `.dismissActivity`, `.restoreActivity`. Map them to `ActivityQueue.cycle()`, `dismissCurrent()` and `restoreLastDismissed()`. The controller drops an action that is not possible: `.cycle` needs `queueCount > 1`, `.dismissActivity` needs an activity, `.restoreActivity` needs `restorableCount > 0`.
+- Size (`preferredSize`, also the root `intrinsicContentSize`): height is `max(topInset, 24)`. With an activity, width is the gap plus two 40 pt wings. The gap is `cameraWidth`, or 8 pt with no notch. Idle width is `cameraWidth`, or 80 pt with no notch. Width never passes 440 pt or the screen width. The parent sizes the window to this. Do not stretch it.
+- Wings sit at `[0, side)` and `[width - side, width)`. The camera gap stays empty and black. Each wing clips its content and insets it 6 pt.
+- Wing content from `ActivityWing`: `.symbol`, `.text`, `.symbolText` (12 pt symbol, text truncates at the tail), `.artwork` (22 pt rounded image, music note when `artwork` is nil), `.gauge` (static ring with the symbol inside), `.soundGauge` (symbol and a static level bar), `.none`. Gauge values clamp to 0...1, and non-finite values read as 0. `.normal` tint is the Flux amber. `.warning` is system red.
+- Running time or progress is parent data. The parent posts a new `ActivityItem` with new text or gauge value. The controller has no clock.
+- Input on the one focusable button: click, Space or Return sends `.expand`. Left arrow dismisses, Right arrow restores, Up or Down arrow cycles. A horizontal trackpad or wheel scroll of 30 pt (finger motion, natural scrolling taken into account) sends dismiss for left and restore for right. A vertical scroll of 30 pt cycles. A trackpad gesture fires once and resets on `.ended` or `.cancelled`. Momentum events are ignored. A mouse wheel has no phase, so the sum resets after each action. A native three-finger `swipe(with:)` maps the same way. No timer and no global monitor.
+- The context menu and the VoiceOver show-menu action list Open notch, then Next, Dismiss and Restore only when each is possible. VoiceOver custom actions list the same three. The label is the full text, for example "Battery, Warning, 18 percent, 3 activities". Idle reads "Open notch".
+- A change of activity fades the wings once (0.18 s `CATransition`). Reduce Motion turns it off. Value changes do not animate. Nothing repeats.
+- The parent owns the window, hover, presentation, services, clock, and the switch to `NotchPanelController`.
 
 ## Proof the root must run
 
@@ -323,7 +348,7 @@ All five update controls in place. After an update, focus goes back to the contr
 
 ```swift
 let widget = NowPlayingWidgetController(state: NowPlayingWidgetState(
-    status: .playing,                 // .playing, .paused, .empty, .noAccess
+    status: .playing,                 // .loading, .playing, .paused, .empty, .noAccess
     title: title, artist: artist,
     artwork: nsImage,                 // nil shows a music note
     sources: [NowPlayingSourceOption(id: appID, name: "Music")],
@@ -337,7 +362,7 @@ widget.update(newState)               // send a new elapsed when the parent want
 - `NowPlayingWidgetAction`: `.togglePlayPause`, `.previous`, `.next`, `.seek(TimeInterval)`, `.selectSource(ApplicationID)`, `.openSource`, `.checkAgain`.
 - The seek slider has `isContinuous = false`. It sends one `.seek` when the user lets go. The parent sends the new `elapsed`.
 - The source menu shows only with two or more sources. Choosing the selected source again sends nothing.
-- `.empty` shows "Nothing playing" and a fixed Check Again button. `.noAccess` shows "Flux can't read what's playing" and Check Again. Both send `.checkAgain`.
+- `.loading` shows a fixed "Loading…" card with no button and no error. Use it until the first media read arrives. `.empty` shows "Nothing playing" and a fixed Check Again button. `.noAccess` shows "Flux can't read what's playing" and Check Again. Both send `.checkAgain`.
 - The play button label is Play or Pause from `status`. VoiceOver reads the widget as "Now Playing: title, artist" and the slider as "0:42 of 3:35".
 - The parent owns the media adapter, the playback clock and artwork decoding.
 
@@ -347,11 +372,12 @@ widget.update(newState)               // send a new elapsed when the parent want
 let widget = CalendarWidgetController(state: .events(today: todayRows, tomorrow: tomorrowRows)) { action in ... }
 // rows: CalendarWidgetEvent(id:title:location:start:end:isAllDay:color:)
 // color: CalendarWidgetColor(red:green:blue:), sRGB 0...1, nil uses the Flux accent
-widget.update(.needsPermission)       // or .unavailable
+widget.update(.needsPermission)       // or .loading, .unavailable
 ```
 
 - The parent maps `AgendaSnapshot` / `AgendaEntry` to `CalendarWidgetEvent` and splits today and tomorrow. FluxUI has no EventKit and reads no clock.
 - Each day shows at most `CalendarWidgetController.maximumRowsPerDay` (4) rows, then an "N more" button. It sends `.openCalendar(.today)` or `.openCalendar(.tomorrow)`. The parent opens Calendar on that day, so no hidden event is out of reach. Rows show a 7 pt color dot, the title, then "start – end · location" or "All-day · location". Times use `DateFormatter` short style in the user's locale and time zone.
+- `.loading` shows a fixed "Loading events…" card with no button and no error. Use it when access is allowed and the first read has not arrived.
 - Both days empty shows "No upcoming events".
 - `.needsPermission` shows Grant Access (`.requestAccess`). `.unavailable` shows Open Settings (`.openSettings`) and Check Again (`.checkAgain`). The widget never says access is given.
 - `update(_:)` ignores an equal state, so a repeated snapshot rebuilds nothing.
@@ -529,7 +555,6 @@ panel.onWillDismiss = { _ in runtime.apply(demand(visible: nil)); widgets.dismis
 
 ### Known gaps
 
-- `CalendarWidgetState` has no loading case. With access allowed and no read yet, the widget shows `.unavailable` with Check Again until the first read arrives. FluxUI needs a `.loading` case to fix this.
-- `NowPlayingWidgetStatus` has no loading case. `.starting` with no snapshot shows "Nothing playing".
+- FluxUI now has `CalendarWidgetState.loading` and `NowPlayingWidgetStatus.loading`. The root still maps them: allowed calendar access with no read yet goes to `.loading`, and media `.starting` with no snapshot goes to `.loading`.
 - `calshow:` opening a given day on macOS is unproved. A failed open reports `.calendarOpen`.
-- `MediaSnapshot` names one source, so the source menu lists only that app.
+- `MediaSnapshot` names one source, so the source menu lists only that app. This is a known limit. FluxUI shows no invented choices.
