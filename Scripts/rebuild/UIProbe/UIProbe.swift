@@ -15,9 +15,22 @@ import FluxUI
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
             for width in [680, 840] {
-            for page in [SettingsPage.general, .menuBar, .about] {
+            for page in SettingsPage.allCases {
                 let settings = SettingsWindowController(initialPage: page) { page in
                     if page == .menuBar { return menuBarFixture() }
+                    if page == .notch {
+                        return NotchPreferencesController(state: .init(
+                            isEnabled: true, trigger: .hover, hoverCloseDelay: 0.4, showInFullscreen: true,
+                            widgets: Widget.allCases.map { .init(widget: $0, isEnabled: $0 != .clipboard) },
+                            duoEnabled: false, shelfExpiry: .never, clipboardSaving: false,
+                            enabledActivities: Set(NotchActivity.allCases), calendarAccess: .notAsked,
+                            cameraAccess: .notAsked, accessibilityAccess: .allowed), onAction: { _ in })
+                    }
+                    if page == .lockScreen {
+                        return LockScreenPreferencesController(state: .init(
+                            isEnabled: false, showsNowPlaying: true, showsActivities: true, playsUnlockSound: true,
+                            capability: .available, failureCode: nil), onAction: { _ in })
+                    }
                     if page == .about {
                         return AboutPreferencesController(state: .init(version: "UI fixture", build: "fixture"), onAction: { _ in })
                     }

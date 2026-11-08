@@ -279,8 +279,11 @@ final class MenuBarRowView: NSView {
 
         let text = FluxUIStyle.vstack([nameLabel, detailLabel], spacing: 1)
         text.setContentCompressionResistancePriority(.init(200), for: .horizontal)
-        let spacer = FluxUIStyle.spacer()
-        let stack = FluxUIStyle.hstack([iconView, text, spacer, fixedLabel, groupControl], spacing: 10)
+        text.setHuggingPriority(.init(1), for: .horizontal)
+        groupControl.setContentHuggingPriority(.required, for: .horizontal)
+        fixedLabel.setContentHuggingPriority(.required, for: .horizontal)
+        let stack = FluxUIStyle.hstack([iconView, text, fixedLabel, groupControl], spacing: 10)
+        stack.distribution = .fill
         stack.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
