@@ -59,6 +59,10 @@ final class MenuBarIconManager: ObservableObject {
     var extraRows = 0
     var assignments: [String: MenuBarSection] = [:]
     private var identities: [String: UUID] = [:]
+    var delayNextRefresh = false
+    private(set) var delayedRefreshes = 0
+    private(set) var delayedRefreshBeganWithButton = false
+    private(set) var delayedRefreshEndedWithButton = false
     func cancelPendingMoves(for reason: MoveCancellation = .closed) {}
     static func launchToken(for launchDate: Date?) -> Int64 {
         guard let launchDate else { return 0 }
@@ -87,6 +91,17 @@ final class MenuBarIconManager: ObservableObject {
     var onMove: ((String) -> Void)?
     var onVerification: (() -> Void)?
     func refresh() {
+        if delayNextRefresh {
+            delayNextRefresh = false
+            if CGEventSource.buttonState(.combinedSessionState, button: .left) {
+                // Model a slow owner AX reply while the independent input
+                // process completes the user's gesture and releases the mouse.
+                delayedRefreshBeganWithButton = true
+                Thread.sleep(forTimeInterval: 1)
+                delayedRefreshEndedWithButton = CGEventSource.buttonState(.combinedSessionState, button: .left)
+                delayedRefreshes += 1
+            }
+        }
         icons = []
         labels = []
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.flux.menu-drag-fixture")
@@ -262,7 +277,7 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         mouse(.leftMouseDragged, target)
     }
     Thread.sleep(forTimeInterval: 0.15)
-    if !command && kind != "late-command" && kind != "busy" && destination != "invalid" {
+    if !command && kind != "late-command" && kind != "busy" && kind != "slow-inventory" && destination != "invalid" {
         let section = String(destination.split(separator: "-").first!)
         let valid = kind != "disabled"
         guard waitFor({ $0.contains("entered \(section) valid=\(valid)") }) else {
@@ -386,6 +401,11 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "sourceSection": source?.icon?.section.rawValue ?? "",
             "neighborID": sources.first { $0.icon?.title == "Second fixture" }?.icon?.id ?? "",
             "events": events, "commits": commits,
+            "controllerMessage": lanes.first?.controller?.message ?? "",
+            "slowRefreshArmed": manager.delayNextRefresh,
+            "delayedRefreshes": manager.delayedRefreshes,
+            "delayedRefreshBeganWithButton": manager.delayedRefreshBeganWithButton,
+            "delayedRefreshEndedWithButton": manager.delayedRefreshEndedWithButton,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
             "focusedMenu": (window.firstResponder as? MenuBarDragSourceView)?.icon?.isMovable == true,
@@ -470,6 +490,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
                 if FileManager.default.fileExists(atPath: self.state + ".busy") {
                     try? FileManager.default.removeItem(atPath: self.state + ".busy")
                     self.manager.beginVerification(after: 2)
+                }
+                if FileManager.default.fileExists(atPath: self.state + ".slow-inventory") {
+                    try? FileManager.default.removeItem(atPath: self.state + ".slow-inventory")
+                    self.manager.delayNextRefresh = true
                 }
                 if FileManager.default.fileExists(atPath: self.state + ".reset") {
                     try? FileManager.default.removeItem(atPath: self.state + ".reset")
@@ -687,8 +711,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--controller-ref", help="Compile a historical production controller for a failing control")
     parser.add_argument("--case", default="all", choices=("all", "row-hidden", "row-shown", "row-always",
-                        "escape", "invalid", "late-command", "busy", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close", "insert-before", "insert-after", "glyphs"))
+                        "escape", "invalid", "late-command", "busy", "slow-inventory", "inventory-cancel", "menu", "disabled-populated", "scroll", "screen-unchanged", "screen-change", "keyboard", "order-left", "order-right", "stale", "close", "insert-before", "insert-after", "glyphs"))
     parser.add_argument("--empty-title", action="store_true")
     parser.add_argument("--seconds", type=int, default=55, choices=range(25, 91))
     args = parser.parse_args()
@@ -724,7 +749,9 @@ extension EnvironmentValues {
                "MenuBar/MenuBarIconStyle.swift", "Settings/Tabs/MenuBarTab.swift",
                "Settings/MenuBarIconDropZone.swift", "Settings/SettingsRows.swift", "Support/Theme.swift"]
     controller = args.output / "MenuBarDragController.swift"
-    controller.write_text((root / "Sources/Flux" / sources[0]).read_text() + '''
+    controller_source = (run(["git", "show", f"{args.controller_ref}:Sources/Flux/{sources[0]}"], 10)
+                         if args.controller_ref else (root / "Sources/Flux" / sources[0]).read_text())
+    controller.write_text(controller_source + '''
 extension MenuBarDragController {
     func probeChangedDisplay() { displays = [] }
 }
@@ -798,7 +825,8 @@ extension MenuBarDragController {
                 Path(str(state_path) + ".close").touch()
                 state = read_state(state_path, probe_process, lambda value: not value["glyphs"])
                 results.append("PASS actual distinct menu bar glyphs load and their cache clears when Settings closes")
-            scenarios = [("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
+            scenarios = [("slow-inventory", "hidden-header", "slow-inventory", "hidden"),
+                         ("row-hidden", "hidden-header", "normal", "hidden"), ("row-shown", "shown", "normal", "shown"),
                          ("row-always", "alwaysHidden", "normal", "alwaysHidden"), ("escape", "hidden", "escape", None),
                          ("invalid", "invalid", "normal", None), ("late-command", "hidden", "late-command", None),
                          ("busy", "hidden", "busy", None), ("inventory-cancel", "hidden", "inventory-cancel", None),
@@ -810,6 +838,9 @@ extension MenuBarDragController {
                 if kind == "busy":
                     Path(str(state_path) + ".busy").touch()
                     state = read_state(state_path, probe_process, lambda value: value["busy"])
+                if kind == "slow-inventory":
+                    Path(str(state_path) + ".slow-inventory").touch()
+                    state = read_state(state_path, probe_process, lambda value: value["slowRefreshArmed"])
                 if time.monotonic() - started > args.seconds - 15:
                     raise RuntimeError("scenario deadline")
                 before = len(state["commits"])
@@ -817,7 +848,13 @@ extension MenuBarDragController {
                 bounded([str(binary), "--drive", str(state_path), "row", target, kind], 8,
                         args.output / f"drive-{index}.log")
                 state = read_state(state_path, probe_process,
-                                   lambda value: not value["moving"] and not value["busy"] and not value["buttons"])
+                                   lambda value: not value["moving"] and not value["busy"] and not value["buttons"]
+                                   and (kind != "slow-inventory" or value["delayedRefreshes"] == 1
+                                        or len(value["commits"]) > before))
+                if kind == "slow-inventory" and state["delayedRefreshes"]:
+                    if not state["delayedRefreshBeganWithButton"] or state["delayedRefreshEndedWithButton"]:
+                        raise RuntimeError(f"slow inventory did not span a real drag release: {state}")
+                    raise RuntimeError(f"Settings read inventory during the gesture and missed its release: {state}")
                 events = state["events"][offset:]
                 begins = [event for event in events if event.startswith("begin ")]
                 if len(begins) != (0 if kind in ("late-command", "busy") else 1):
