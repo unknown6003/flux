@@ -91,4 +91,32 @@ struct ViewLifetimeTests {
         #expect(view.toggle.state == .off)
         #expect(!requested)
     }
+
+    @Test @MainActor func generalReadbackIsSilentAndItsAnalyticsControlForwardsTypedAction() throws {
+        _ = NSApplication.shared
+        var requested: [GeneralPreferencesAction] = []
+        func state(_ analytics: AnalyticsStatus) -> GeneralPreferencesState {
+            .init(launchAtLoginRequested: false, loginStatus: .disabled, hotkeysEnabled: true,
+                  revealShortcut: .init(keyCode: 3, carbonModifiers: 6400),
+                  notchShortcut: .init(keyCode: 45, carbonModifiers: 6400),
+                  appearance: .system, automaticUpdateChecks: true, analytics: analytics)
+        }
+        let page = GeneralPreferencesController(state: state(.off)) { requested.append($0) }
+        _ = page.view
+        page.update(state: state(.on))
+        #expect(requested.isEmpty)
+        let toggle = try #require(Self.find("analytics.enabled", in: page.view) as? NSSwitch)
+        #expect(toggle.state == .on)
+        toggle.state = .off
+        _ = toggle.sendAction(toggle.action, to: toggle.target)
+        #expect(requested == [.setAnalyticsEnabled(false)])
+    }
+
+    @MainActor private static func find(_ id: String, in root: NSView) -> NSView? {
+        if root.identifier?.rawValue == id { return root }
+        for view in root.subviews {
+            if let found = find(id, in: view) { return found }
+        }
+        return nil
+    }
 }

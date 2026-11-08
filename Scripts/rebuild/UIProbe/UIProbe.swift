@@ -14,25 +14,22 @@ import FluxUI
         NSApp.setActivationPolicy(.prohibited)
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
-            for page in [SettingsPage.general, .menuBar] {
+            for width in [680, 840] {
+            for page in [SettingsPage.general, .menuBar, .about] {
                 let settings = SettingsWindowController(initialPage: page) { page in
                     if page == .menuBar { return menuBarFixture() }
-                    let controller = NSViewController()
-                    let analytics = AnalyticsSettingsView()
-                    let content = NSView()
-                    analytics.translatesAutoresizingMaskIntoConstraints = false
-                    content.addSubview(analytics)
-                    NSLayoutConstraint.activate([
-                        analytics.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-                        analytics.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-                        analytics.topAnchor.constraint(equalTo: content.topAnchor, constant: 24)
-                    ])
-                    controller.view = content
-                    return controller
+                    if page == .about {
+                        return AboutPreferencesController(state: .init(version: "UI fixture", build: "fixture"), onAction: { _ in })
+                    }
+                    return GeneralPreferencesController(state: .init(
+                        launchAtLoginRequested: false, loginStatus: .disabled, hotkeysEnabled: true,
+                        revealShortcut: .init(keyCode: 3, carbonModifiers: 6400),
+                        notchShortcut: .init(keyCode: 45, carbonModifiers: 6400),
+                        appearance: .system, automaticUpdateChecks: true), onAction: { _ in })
                 }
                 guard let window = settings.window, let root = window.contentView else { throw ProbeError.noView }
                 window.appearance = NSAppearance(named: appearance)
-                window.setContentSize(NSSize(width: 840, height: 640))
+                window.setContentSize(NSSize(width: width, height: 900))
                 window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
                 window.orderFrontRegardless()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
@@ -40,11 +37,12 @@ import FluxUI
                 window.displayIfNeeded()
                 var renderingError: (any Error)?
                 window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                    do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme).png")) }
+                    do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme)-\(width).png")) }
                     catch { renderingError = error }
                 }
                 if let renderingError { throw renderingError }
                 settings.close()
+            }
             }
         }
     }
