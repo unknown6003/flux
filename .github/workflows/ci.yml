@@ -144,7 +144,7 @@ jobs:
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'
-                          if case == 'slow-inventory-control' and 'Settings read inventory during the gesture and missed its release' in log:
+                          if case == 'slow-inventory-control' and 'Settings read inventory during an active drag' in log:
                               log = 'Confirmed expected old-controller failure:\n' + log
                               result = 'pass'
                       (source / (case + '-runner.log')).write_text(log)
@@ -335,9 +335,9 @@ jobs:
                        'build/menu-drag-timing-control', '--case', 'slow-inventory', '--seconds', '25',
                        '--controller-ref', '032648486df7ec6603bd53178c0cd2a5b9740172'], 130, capture=True)
               except RuntimeError as error:
-                  if 'Settings read inventory during the gesture and missed its release' not in str(error):
+                  if 'Settings read inventory during an active drag' not in str(error):
                       raise
-                  print('PASS: the old controller fails when an inventory read spans the drag release')
+                  print('PASS: the old controller fails the active-drag inventory responsiveness check')
               else:
                   raise RuntimeError('The old controller unexpectedly passed the timing control')
               run(['python3', 'Scripts/probe_menu_drag.py', '--output',
