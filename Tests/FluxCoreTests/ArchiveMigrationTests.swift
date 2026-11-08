@@ -16,14 +16,14 @@ import Testing
 }
 
 @Test func oldClipboardHistoryRetainsTextAndExcludesExpiredAndNonTextPayloads() throws {
-    let data = Data(#"{"version":1,"entries":[{"capturedAt":"2026-11-08T17:00:00Z","kind":"text","text":"A saved note"},{"capturedAt":"2026-11-08T17:01:00Z","kind":"url","text":"https://example.com/note"},{"capturedAt":"2026-11-08T17:02:00Z","kind":"color","text":"#FF8800"},{"capturedAt":"2026-01-01T00:00:00Z","kind":"text","text":"Expired"},{"capturedAt":"2026-11-08T17:03:00Z","kind":"image","text":"not allowed"}]}"#.utf8)
+    let data = Data(##"{"version":1,"entries":[{"capturedAt":"2026-11-08T17:00:00Z","kind":"text","text":"A saved note"},{"capturedAt":"2026-11-08T17:01:00Z","kind":"url","text":"https://example.com/note"},{"capturedAt":"2026-11-08T17:02:00Z","kind":"color","text":"#FF8800"},{"capturedAt":"2026-01-01T00:00:00Z","kind":"text","text":"Expired"},{"capturedAt":"2026-11-08T17:03:00Z","kind":"image","text":"not allowed"}]}"##.utf8)
     let now = try #require(ISO8601DateFormatter().date(from: "2026-11-08T18:00:00Z"))
     let entries = try ClipboardArchive.decode(data, now: now)
     #expect(entries.map(\.kind) == [.color, .url, .text])
     #expect(entries.map(\.text) == ["#FF8800", "https://example.com/note", "A saved note"])
     #expect(try ClipboardArchive.decode(ClipboardArchive.encode(entries, now: now), now: now) == entries)
     #expect(throws: ArchiveError.self) {
-        try ClipboardArchive.decode(Data(#"{"version":2,"entries":[]}"#.utf8), now: now)
+        try ClipboardArchive.decode(Data(##"{"version":2,"entries":[]}"##.utf8), now: now)
     }
 }
 
