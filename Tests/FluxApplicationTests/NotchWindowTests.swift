@@ -6,14 +6,17 @@ import FluxUI
 
 @Suite(.serialized)
 struct NotchWindowTests {
-    @MainActor private func drainAppearanceChanges(until released: () -> Bool) {
-        let deadline = Date().addingTimeInterval(2)
-        while !released(), Date() < deadline {
-            autoreleasepool { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    @MainActor private func drainAppearanceChanges(until released: @MainActor () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !released(), clock.now < deadline {
+            // AppKit appearance tasks must get the main actor back. A nested
+            // synchronous run loop cannot run queued main-actor tasks.
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 
-    @Test @MainActor func actualPanelStopsWidgetBeforeItReleasesTheController() throws {
+    @Test @MainActor func actualPanelStopsWidgetBeforeItReleasesTheController() async throws {
         _ = NSApplication.shared
         let screen = try #require(NSScreen.screens.first)
         var calls: [String] = []
@@ -39,13 +42,13 @@ struct NotchWindowTests {
         #expect(owner.presentation == .expanded(.mirror))
         autoreleasepool { owner.collapse() }
         #expect(calls == ["demand.mirror", "make.mirror", "stop"])
-        drainAppearanceChanges { child == nil }
+        try await drainAppearanceChanges { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .compact)
         autoreleasepool { owner.expand(.shelf, focus: false) }
         autoreleasepool { owner.setSessionLocked(true) }
         #expect(calls.suffix(3) == ["demand.shelf", "make.shelf", "stop"])
-        drainAppearanceChanges { child == nil }
+        try await drainAppearanceChanges { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .hidden)
         owner.expand(.mirror, focus: true)
