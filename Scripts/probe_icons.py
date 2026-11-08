@@ -173,7 +173,7 @@ func probe() {
     func pause(_ seconds: Double) async {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
-    @MainActor func coverCenter(of icon: MenuBarIconManager.Icon) async {
+    @MainActor func coverSource(_ icon: MenuBarIconManager.Icon, fully: Bool = false) async {
         occluder?.orderOut(nil)
         await pause(0.1)
         guard let identity = MenuBarIconManager.appIconIdentity(from: icon.id) else {
@@ -214,8 +214,9 @@ func probe() {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.level = .screenSaver
-        let frame = NSRect(x: center.x - 4, y: NSScreen.screens[0].frame.maxY - icon.frame.maxY,
-                           width: 8, height: icon.frame.height)
+        let width: CGFloat = fully ? icon.frame.width : 8
+        let frame = NSRect(x: center.x - width / 2, y: NSScreen.screens[0].frame.maxY - icon.frame.maxY,
+                           width: width, height: icon.frame.height)
         panel.setFrame(frame, display: true)
         panel.contentView = NSButton(title: "Cover", target: nil, action: nil)
         panel.orderFrontRegardless()
@@ -228,8 +229,12 @@ func probe() {
         let edges = fractions.map {
             CGPoint(x: icon.frame.minX + icon.frame.width * $0, y: center.y)
         }
-        check(edges.contains { belongsToSource(hit($0)) },
-              "an uncovered edge still resolves to the exact source AX item")
+        if fully {
+            check(!edges.contains { belongsToSource(hit($0)) }, "the panel covers all source grab regions")
+        } else {
+            check(edges.contains { belongsToSource(hit($0)) },
+                  "an uncovered edge still resolves to the exact source AX item")
+        }
         print("COVER source=\(icon.frame) panel=\(frame) centerOwner=\(coveredPID)")
     }
     func completed(_ label: String) async {
@@ -270,6 +275,9 @@ func probe() {
             check(false, "fixture A has a stable accessible title"); return
         }
         let firstID = original.id
+        if selected == "covered-reorder" {
+            check(original.frame.width >= 190, "covered source uses a real wide status item")
+        }
         let initialCommand = CGEventSource.flagsState(.hidSystemState).contains(.maskCommand)
         var hit: AXUIElement?
         let hitResult = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
@@ -404,7 +412,27 @@ func probe() {
                 // Keep the original snapshot through a live title/width change. The
                 // public move must resolve the same AX item at its current frame.
                 let argument = selected == "live-title" ? original : owned().first { $0.id == firstID }!
-                if selected == "covered-reorder" { await coverCenter(of: argument) }
+                if selected == "covered-reorder" && !arguments.contains("--historical-driver") {
+                    await coverSource(argument, fully: true)
+                    let cancelledDowns = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+                    let cancelledFrames = readFrames()
+                    let cancelledPolicy = defaults.dictionary(forKey: key)! as NSDictionary
+                    manager.move(argument, toward: leftInitially ? .towardClock : .towardDrawer)
+                    await pause(0.4)
+                    check(manager.isUpdatingIcons, "covered source keeps native preflight pending")
+                    manager.cancelPendingMoves(for: .focusLost)
+                    occluder?.orderOut(nil)
+                    let cancelledBy = ProcessInfo.processInfo.systemUptime + 7
+                    while manager.isUpdatingIcons && ProcessInfo.processInfo.systemUptime < cancelledBy { await pause(0.05) }
+                    check(!manager.isUpdatingIcons && manager.errorMessage?.contains("cancelled") == true,
+                          "focus loss during source preflight cancels the move")
+                    check(CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == cancelledDowns,
+                          "cancelled preflight posts no native mouse-down")
+                    check(owned().map(\.id) == initialOrder && readFrames() == cancelledFrames
+                          && cancelledPolicy == (defaults.dictionary(forKey: key)! as NSDictionary),
+                          "cancelled preflight preserves physical order and saved policy")
+                }
+                if selected == "covered-reorder" { await coverSource(argument) }
                 let firstDowns = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
                 manager.move(argument, toward: leftInitially ? .towardClock : .towardDrawer)
                 await completed("first physical reorder")
@@ -425,7 +453,7 @@ func probe() {
                     check(moved.identity == original.identity && moved.frame.width > original.frame.width,
                           "live title and width preserve item identity")
                 }
-                if selected == "covered-reorder" { await coverCenter(of: moved) }
+                if selected == "covered-reorder" { await coverSource(moved) }
                 let reverseDowns = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
                 manager.move(moved, toward: leftInitially ? .towardDrawer : .towardClock)
                 await completed("consecutive reverse reorder")
@@ -434,6 +462,9 @@ func probe() {
                           "covered-source reverse reorder posts exactly one native drag")
                 }
                 check(owned().map(\.id) == initialOrder, "second move restores peer order without Refresh")
+                if selected == "covered-reorder" {
+                    check(readFrames() == initialFrames, "independent owner AX frames prove reverse reorder restoration")
+                }
                 policyIs(.hidden)
             }
         }
@@ -455,6 +486,7 @@ MainActor.assumeIsolated { probe() }
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", choices=CASES)
+    parser.add_argument("--driver-ref", help="Compile a historical production driver for a failing control")
     parser.add_argument("--insertion", action="store_true", help="Alias for narrow-reorder")
     parser.add_argument("--wide-item", action="store_true", help="Select wide-reorder")
     parser.add_argument("--drag-context", action="store_true", help="Select actual drag-insertion")
@@ -468,6 +500,33 @@ def main():
     probe_id = "com.flux.icon-probe." + uuid.uuid4().hex
     with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
         temporary = Path(directory)
+        driver_override = None
+        probe_source = PROBE
+        if args.driver_ref:
+            historical = subprocess.run(
+                ["git", "show", f"{args.driver_ref}:Sources/Flux/MenuBar/MenuBarNativeDrag.swift"],
+                cwd=ROOT, capture_output=True, text=True, check=True, timeout=15).stdout
+            driver_override = temporary / "MenuBarNativeDrag.swift"
+            driver_override.write_text(historical)
+            if "expectedElement:" not in historical:
+                probe_source += r'''
+@MainActor
+extension MenuBarNativeDrag {
+    func perform(from frame: CGRect, to target: CGPoint,
+                 expectedProcessID: pid_t?, expectedElement: AXUIElement?,
+                 canContinue: @escaping @MainActor () -> Bool) async -> Bool {
+        await perform(from: frame, to: target, expectedProcessID: expectedProcessID,
+                      canContinue: canContinue)
+    }
+}
+'''
+            if "var hasPostedInput" not in historical:
+                probe_source += r'''
+@MainActor
+extension MenuBarNativeDrag {
+    var hasPostedInput: Bool { isRunning }
+}
+'''
 
         def bundle(name, bundle_id, source, dependencies):
             app = temporary / (name + ".app")
@@ -481,8 +540,10 @@ def main():
             source_folder.mkdir()
             main_source = source_folder / "main.swift"
             main_source.write_text(source)
+            paths = [driver_override if driver_override is not None and item == "MenuBar/MenuBarNativeDrag.swift"
+                     else ROOT / "Sources/Flux" / item for item in dependencies]
             command(["xcrun", "swiftc", "-swift-version", "5", str(main_source)] +
-                    [str(ROOT / "Sources/Flux" / item) for item in dependencies] + ["-o", str(binary)], 120)
+                    [str(path) for path in paths] + ["-o", str(binary)], 120)
             command(["codesign", "--force", "--sign", "-", str(app)], 20)
             return binary
 
@@ -492,15 +553,16 @@ def main():
                         "MenuBar/ControlItem.swift", "MenuBar/MenuBarSection.swift", "MenuBar/MenuBarIconStyle.swift",
                         "MenuBar/MenuBarGeometry.swift", "MenuBar/MenuBarDragController.swift",
                         "Support/Theme.swift", "Support/Log.swift", "Support/AccessibilityAccess.swift"]
-        binary = bundle("FluxIconProbe", probe_id, PROBE, dependencies)
+        binary = bundle("FluxIconProbe", probe_id, probe_source, dependencies)
         control = temporary / "control"
         with ExitStack() as grants:
             grants.enter_context(accessibility_grant(fixture_id))
             grants.enter_context(accessibility_grant(probe_id))
             process = subprocess.Popen([str(fixture), str(control)] +
-                                       (["--wide"] if selected == "wide-reorder" else []), start_new_session=True)
+                                       (["--wide"] if selected in ("wide-reorder", "covered-reorder") else []), start_new_session=True)
             try:
-                command([str(binary), selected, fixture_id, str(fixture), str(control)], 85)
+                command([str(binary), selected, fixture_id, str(fixture), str(control)] +
+                        (["--historical-driver"] if args.driver_ref else []), 85)
             finally:
                 try:
                     # Release only during teardown, after the real consecutive-move checks.
