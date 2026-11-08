@@ -77,8 +77,18 @@ jobs:
         run: swift test --filter FluxCoreTests
       - name: Compile native interface
         run: swift build --target FluxUI
+      - name: Compile native platform adapters
+        run: swift build --target FluxPlatform
       - name: Check native view lifetimes
         run: swift test --filter FluxUITests
+      - name: Render native interface fixtures
+        run: swift run FluxUIProbe build/native-ui
+      - name: Upload native interface fixtures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-ui
+          path: build/native-ui/
+          if-no-files-found: error
       - name: Verify native PostHog transport
         if: ${{ inputs.native_posthog_probe }}
         timeout-minutes: 2

@@ -179,10 +179,10 @@ extension MenuBarGroup {
 enum MenuBarText {
     static func mode(_ mode: MenuBarPageMode) -> String {
         switch mode {
-        case .perApplication: L("menuBar.mode.perApp", "Hiding works per app. All icons from one app move together.")
+        case .perApplication: L("menuBar.mode.perApp", "Hiding works per app. All icons from one app share a group.")
         case .byPosition: L("menuBar.mode.byPosition", "Hiding works by position. Arrange icons in the menu bar after you change a group.")
         case .needsAccessibility: L("menuBar.mode.access", "To read your menu bar, Flux needs Accessibility.")
-        case .paused: L("menuBar.mode.paused", "Hiding is paused: macOS did not confirm the change. Your icons are all visible.")
+        case .paused: L("menuBar.mode.paused", "Hiding is paused. macOS did not confirm the change.")
         case .failed(let code): String(format: L("menuBar.mode.failed", "Flux can't read the menu bar (%@)."), code)
         }
     }

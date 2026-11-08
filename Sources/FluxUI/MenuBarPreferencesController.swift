@@ -349,7 +349,7 @@ private final class ArrangeCardView: NSView {
     init() {
         super.init(frame: .zero)
         let title = FluxUIStyle.label(L("menuBar.arrange.title", "Arrange in the menu bar"), style: .headline)
-        let body = FluxUIStyle.label(L("menuBar.arrange.body", "All icons are visible now. Hold ⌘ and drag icons in the menu bar. Press Esc or Done when finished. Flux reads the new positions when you finish. Flux does not move icons for you."), secondary: true)
+        let body = FluxUIStyle.label(L("menuBar.arrange.body", "Hold ⌘ and drag icons in the menu bar. Press Esc or Done when finished. Flux reads the new positions when you finish. Flux does not move icons for you."), secondary: true)
         let done = NSButton(title: L("menuBar.arrange.done", "Done"), target: nil, action: nil)
         done.keyEquivalent = "\r"
         done.target = self

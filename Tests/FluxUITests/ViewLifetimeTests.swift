@@ -10,22 +10,26 @@ struct ViewLifetimeTests {
         var made: [SettingsPage] = []
         var stopped: [SettingsPage] = []
         weak var previous: NSViewController?
-        let settings = SettingsWindowController { page in
-            made.append(page)
-            let controller = NSViewController()
-            controller.view = NSView()
-            previous = controller
-            return controller
+        let settings = autoreleasepool {
+            SettingsWindowController { page in
+                made.append(page)
+                let controller = NSViewController()
+                controller.view = NSView()
+                previous = controller
+                return controller
+            }
         }
         settings.onPageWillDisappear = { stopped.append($0) }
-        #expect(made == [.general])
-        #expect(previous != nil)
-        settings.select(.menuBar, focusPage: false)
-        #expect(made == [.general, .menuBar])
-        #expect(stopped == [.general])
-        settings.select(.menuBar, focusPage: false)
-        #expect(made.count == 2)
-        settings.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        autoreleasepool {
+            #expect(made == [.general])
+            #expect(previous != nil)
+            settings.select(.menuBar, focusPage: false)
+            #expect(made == [.general, .menuBar])
+            #expect(stopped == [.general])
+            settings.select(.menuBar, focusPage: false)
+            #expect(made.count == 2)
+            settings.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+        }
         #expect(stopped == [.general, .menuBar])
         #expect(previous == nil)
         #expect(settings.currentPage == nil)
@@ -45,15 +49,17 @@ struct ViewLifetimeTests {
             if widget == .mirror { mirror = controller }
             return controller
         }
-        _ = panel.view
-        panel.show(.mirror)
-        panel.onWillSwitch = { from, to in
-            #expect(from == .mirror)
-            #expect(to == .shelf)
-            #expect(mirror != nil)
-            calls.append("stop.mirror")
+        autoreleasepool {
+            _ = panel.view
+            panel.show(.mirror)
+            panel.onWillSwitch = { from, to in
+                #expect(from == .mirror)
+                #expect(to == .shelf)
+                #expect(mirror != nil)
+                calls.append("stop.mirror")
+            }
+            panel.setWidgets([.shelf, .shelf])
         }
-        panel.setWidgets([.shelf, .shelf])
         #expect(calls == ["make.mirror", "stop.mirror", "make.shelf"])
         #expect(mirror == nil)
         #expect(panel.widgets == [.shelf])
