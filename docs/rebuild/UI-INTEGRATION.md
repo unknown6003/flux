@@ -317,7 +317,7 @@ State fields, all `let`, no defaults: `collectionEnabled: Bool`, `submission: Fe
 
 Return one of these from the `NotchPanelController` factory. The panel keeps one child at a time and owns show and hide. The widgets add no dismissal timer, no timer of any kind, and no global monitor. Each one builds its views in `loadView`, so nothing loads before the panel shows that tab. Each root has dark appearance and fills the panel's 440 pt maximum width minus the panel's 16 pt insets.
 
-All three update controls in place. After an update, focus goes back to the control that had it, if that control is still shown. Programmatic value changes send no action. Every action goes to the parent through one typed callback. No widget changes its own state.
+All five update controls in place. After an update, focus goes back to the control that had it, if that control is still shown. Programmatic value changes send no action. Every action goes to the parent through one typed callback. No widget changes its own state.
 
 ### Now Playing
 
@@ -351,7 +351,7 @@ widget.update(.needsPermission)       // or .unavailable
 ```
 
 - The parent maps `AgendaSnapshot` / `AgendaEntry` to `CalendarWidgetEvent` and splits today and tomorrow. FluxUI has no EventKit and reads no clock.
-- Each day shows at most `CalendarWidgetController.maximumRowsPerDay` (4) rows, then "N more". Rows show a 7 pt color dot, the title, then "start – end · location" or "All-day · location". Times use `DateFormatter` short style in the user's locale and time zone.
+- Each day shows at most `CalendarWidgetController.maximumRowsPerDay` (4) rows, then an "N more" button. It sends `.openCalendar(.today)` or `.openCalendar(.tomorrow)`. The parent opens Calendar on that day, so no hidden event is out of reach. Rows show a 7 pt color dot, the title, then "start – end · location" or "All-day · location". Times use `DateFormatter` short style in the user's locale and time zone.
 - Both days empty shows "No upcoming events".
 - `.needsPermission` shows Grant Access (`.requestAccess`). `.unavailable` shows Open Settings (`.openSettings`) and Check Again (`.checkAgain`). The widget never says access is given.
 - `update(_:)` ignores an equal state, so a repeated snapshot rebuilds nothing.
@@ -370,6 +370,49 @@ widget.setPreview(otherView)          // or nil; the parent keeps ownership of t
 - The widget does not start or stop the camera. Stop it from `onWillSwitch` or `onWillDismiss`, which run before the panel removes the widget.
 - No frame capture, snapshot or image cache.
 
+### File Shelf
+
+```swift
+let widget = FileShelfWidgetController(state: FileShelfWidgetState(
+    items: [FileShelfWidgetItem(id: uuid, name: "Report.pdf",
+                                image: thumbnailOrAppIcon,   // nil shows a document symbol
+                                dragURL: ownedFileURL,       // nil turns drag out off
+                                status: .ready)],            // .ready, .copying, .failed
+    status: .ready                                           // .ready, .loading, .busy, .failed
+)) { action in ... }
+```
+
+- `FileShelfWidgetAction`: `.drop([URL])`, `.open(UUID)`, `.showInFinder(UUID)`, `.airDrop(UUID)`, `.copy(UUID)`, `.remove(UUID)`, `.clearAll`, `.retry`.
+- The whole widget takes file URL drops when `status` is `.ready`. One drop sends one `.drop` with every file URL. It reads the drag pasteboard only in that drop. A drag that starts in the shelf list is refused.
+- Drag out writes the row's `dragURL` as a file URL, copy only, for `.ready` rows. The parent checks that the URL is a shelf-owned file before it sends it.
+- Double click or Enter sends `.open`. Delete sends `.remove`. The row menu has Open, Show in Finder, AirDrop, Copy, then Remove. A `.copying` or `.failed` row allows only Remove.
+- Clear All shows "Remove all files from the shelf?" with Cancel and Clear. Only Clear sends `.clearAll`. Escape cancels.
+- `.copying` rows show "Copying…". `.loading` and `.busy` show one fixed line. `.failed` shows "Can't read the shelf" with Try Again (`.retry`). No spinner or timer.
+- Empty and `.ready` shows "Drop files here". The list shows 4 rows of 36 pt, then scrolls. Cells are reused.
+- The parent owns copying, checks, expiry, persistence, the share picker, thumbnails and the item cap. The widget does no file work.
+
+### Clipboard
+
+```swift
+let widget = ClipboardWidgetController(state: ClipboardWidgetState(
+    items: [ClipboardWidgetItem(id: uuid, preview: text,   // cut to 200 characters
+                                kind: .text,               // .text, .url, .color, .file, .image, .other
+                                image: smallThumbnail,     // never the full image
+                                color: ClipboardWidgetColor(red: 1, green: 0.5, blue: 0),
+                                hasPayload: true,
+                                link: checkedURL)],        // Open in Browser only for http and https
+    copiedID: lastCopiedID                                 // shows "Copied" until the parent clears it
+)) { action in ... }
+```
+
+- `ClipboardWidgetAction`: `.copy(UUID)`, `.remove(UUID)`, `.openLink(UUID)`, `.clearAll`.
+- The widget shows at most `ClipboardWidgetController.maximumItems` (50) rows, newest first as given. The parent caps history and keeps every payload.
+- The search field filters previews in the widget. Down moves into the list. Enter in the field copies the first match.
+- Click or Enter on a row sends `.copy`. Delete sends `.remove`. The row menu has Copy, Open in Browser for a checked http or https link, then Remove. Rows with `hasPayload: false` read "No longer available" and do not copy.
+- Clear All shows "Remove all clipboard items?" with Cancel and Clear. Only Clear sends `.clearAll`.
+- Empty shows "Nothing copied yet". No match shows "No matching items".
+- The widget never reads the pasteboard, polls, or stores history. The parent copies back with the exact type and opens links.
+
 ## Teardown
 
 These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
@@ -378,5 +421,5 @@ These pages and the rating form hold no timers, monitors, tasks or observers. Co
 
 - "Show on displays without a notch". FluxCore has no key for it, so the Notch page has no switch.
 - Clipboard check rate and lock-state check cost text. Both wait for measurement.
-- Slice 6 widgets are not compiled or run. They need a macOS build, a capture of each state in the panel, and keyboard and VoiceOver passes.
+- Slice 6 widgets, File Shelf and Clipboard are not compiled or run. They need a macOS build, a capture of each state in the panel, and keyboard and VoiceOver passes.
 - Slices 4 and 5 are not compiled or run. This host has no Swift. The root's macOS build, capture at 680 and 840 pt, keyboard and VoiceOver passes must prove them. The slice 5 focus fallback needs a keyboard check: move the second widget up, then confirm focus is on its Down button.

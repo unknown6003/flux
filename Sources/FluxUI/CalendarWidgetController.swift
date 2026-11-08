@@ -52,6 +52,12 @@ public enum CalendarWidgetAction: Equatable, Sendable {
     case requestAccess
     case openSettings
     case checkAgain
+    /// The user chose "N more". The parent opens Calendar on that day.
+    case openCalendar(CalendarWidgetDay)
+}
+
+public enum CalendarWidgetDay: Equatable, Sendable {
+    case today, tomorrow
 }
 
 /// The Calendar notch widget. It shows today and tomorrow from parent values.
@@ -122,13 +128,15 @@ public final class CalendarWidgetController: NSViewController {
             card.hide()
             list.isHidden = false
             for view in list.arrangedSubviews { view.removeFromSuperview() }
-            for (title, events) in [(L("calendar.today", "Today"), today), (L("calendar.tomorrow", "Tomorrow"), tomorrow)] where !events.isEmpty {
+            let days: [(CalendarWidgetDay, String, [CalendarWidgetEvent])] = [
+                (.today, L("calendar.today", "Today"), today),
+                (.tomorrow, L("calendar.tomorrow", "Tomorrow"), tomorrow),
+            ]
+            for (day, title, events) in days where !events.isEmpty {
                 list.addArrangedSubview(dayHeader(title))
                 for event in events.prefix(Self.maximumRowsPerDay) { list.addArrangedSubview(row(event)) }
                 let more = events.count - Self.maximumRowsPerDay
-                if more > 0 {
-                    list.addArrangedSubview(FluxUIStyle.label(String(format: L("calendar.more", "%d more"), more), style: .caption1, secondary: true, wraps: false))
-                }
+                if more > 0 { list.addArrangedSubview(moreButton(more, day: day, dayTitle: title)) }
             }
             view.setAccessibilityLabel(String(format: L("calendar.summary", "%@: %d today, %d tomorrow"),
                                               Widget.calendar.displayName, today.count, tomorrow.count))
@@ -141,6 +149,25 @@ public final class CalendarWidgetController: NSViewController {
         list.isHidden = true
         card.show(key: key, content, onAction: onAction, onSecondary: onSecondary)
         view.setAccessibilityLabel("\(Widget.calendar.displayName): \(content.title.isEmpty ? content.message : content.title)")
+    }
+
+    /// "N more" opens Calendar, so no hidden event is out of reach.
+    private func moreButton(_ count: Int, day: CalendarWidgetDay, dayTitle: String) -> NSButton {
+        let title = String(format: L("calendar.more", "%d more"), count)
+        let button = NSButton(title: title, target: self, action: #selector(moreClicked(_:)))
+        button.isBordered = false
+        button.bezelStyle = .inline
+        button.font = .preferredFont(forTextStyle: .caption1)
+        button.contentTintColor = FluxUIStyle.accent
+        button.tag = day == .today ? 0 : 1
+        button.setAccessibilityLabel(String(format: L("calendar.more.label", "%@: %d more events. Open in Calendar"),
+                                            dayTitle, count))
+        button.toolTip = L("calendar.openCalendar", "Open in Calendar")
+        return button
+    }
+
+    @objc private func moreClicked(_ sender: NSButton) {
+        onAction(.openCalendar(sender.tag == 0 ? .today : .tomorrow))
     }
 
     private func dayHeader(_ title: String) -> NSTextField {
