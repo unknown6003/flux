@@ -73,6 +73,68 @@ import FluxUI
             }
             }
         }
+        for (name, controller) in widgetFixtures() {
+            let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 408, height: 440),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = .black
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.contentViewController = controller
+            window.orderFrontRegardless()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            let root = controller.view
+            root.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            var failure: (any Error)?
+            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                do { try render(root, to: output.appendingPathComponent("widget-\(name).png")) }
+                catch { failure = error }
+            }
+            window.close()
+            if let failure { throw failure }
+        }
+    }
+
+    @MainActor private static func widgetFixtures() -> [(String, NSViewController)] {
+        var fixtures: [(String, NSViewController)] = []
+        let source = ApplicationID(rawValue: "org.fluxfixture.player")!
+        for (name, status) in [("playing", NowPlayingWidgetStatus.playing), ("paused", .paused), ("empty", .empty), ("noAccess", .noAccess)] {
+            fixtures.append(("nowPlaying-" + name, NowPlayingWidgetController(state: .init(
+                status: status, title: "A long track title that still leaves room for the player controls",
+                artist: "Example Artist", sources: [.init(id: source, name: "Example Player")],
+                selectedSource: source, elapsed: 65, duration: 240), onAction: { _ in })))
+        }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let events = (0..<6).map { index in
+            CalendarWidgetEvent(id: "fixture-\(index)", title: index == 0 ? "A long event name that should fit in the narrow notch panel" : "Example event \(index)",
+                                location: "Example room", start: now.addingTimeInterval(Double(index) * 3600),
+                                end: now.addingTimeInterval(Double(index) * 3600 + 1800), isAllDay: index == 0,
+                                color: .init(red: 0.2, green: 0.6, blue: 0.9))
+        }
+        for (name, state) in [("events", CalendarWidgetState.events(today: events, tomorrow: Array(events.prefix(2)))),
+                              ("empty", .events(today: [], tomorrow: [])), ("permission", .needsPermission), ("unavailable", .unavailable)] {
+            fixtures.append(("calendar-" + name, CalendarWidgetController(state: state, onAction: { _ in })))
+        }
+        for (name, status) in [("starting", MirrorWidgetStatus.starting), ("running", .running), ("permission", .needsPermission),
+                               ("unavailable", .unavailable), ("interrupted", .interrupted), ("failed", .failed)] {
+            fixtures.append(("mirror-" + name, MirrorWidgetController(status: status, preview: nil, onAction: { _ in })))
+        }
+        let files = (0..<6).map { index in
+            FileShelfWidgetItem(id: UUID(), name: index == 0 ? "An example file with a long name.pdf" : "Example file \(index).txt")
+        }
+        for (name, state) in [("files", FileShelfWidgetState(items: files)), ("empty", .init()),
+                              ("loading", .init(status: .loading)), ("busy", .init(items: files, status: .busy)), ("failed", .init(status: .failed))] {
+            fixtures.append(("shelf-" + name, FileShelfWidgetController(state: state, onAction: { _ in })))
+        }
+        let clips = [ClipboardWidgetItem(id: UUID(), preview: "Example copied text", kind: .text),
+                     .init(id: UUID(), preview: "https://example.com", kind: .url, link: URL(string: "https://example.com")),
+                     .init(id: UUID(), preview: "#AABBCC", kind: .color, color: .init(red: 0.67, green: 0.73, blue: 0.8)),
+                     .init(id: UUID(), preview: "Image 2000 × 1000", kind: .image, hasPayload: false),
+                     .init(id: UUID(), preview: "Example file.txt", kind: .file)]
+        fixtures.append(("clipboard-rows", ClipboardWidgetController(state: .init(items: clips), onAction: { _ in })))
+        fixtures.append(("clipboard-empty", ClipboardWidgetController(state: .init(), onAction: { _ in })))
+        fixtures.append(("clipboard-copied", ClipboardWidgetController(state: .init(items: clips, copiedID: clips[0].id), onAction: { _ in })))
+        return fixtures
     }
 
     @MainActor private static func menuBarFixture() -> NSViewController {
