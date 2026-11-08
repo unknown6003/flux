@@ -19,6 +19,8 @@ Compare two native designs before choosing the final stack:
 1. Swift6 with AppKit views and Core Animation for the notch. It gives explicit window, view and service lifetimes. It requires more custom accessibility and layout work.
 2. Swift6 with an AppKit shell and SwiftUI content that exists only while visible. It may simplify the interface, but its memory and update work must be measured on the same workload.
 
+The shell trial selected Swift6 with AppKit. Median shown physical footprint was27.252MiB for AppKit and30.330MiB for SwiftUI. After20 create/display/release cycles the medians were29.814 and33.408MiB. The median cycle cost was152.309ms and174.515ms. Three alternating trials on a CI Mac are evidence for this small UI, not whole-app performance or a universal framework ranking. See SHELL-TRIAL.md.
+
 The language alone cannot fix a broken OS assumption. First prove the menu-bar backend. Research a native macOS27 per-app allow-list preference path as an alternative to assessment assertions. It is not approved for production until its schema, ownership, notification and physical behavior are proved. Keep physical icon order separate from app visibility. Do not add another timed synthetic-drag workaround.
 
 ## Checked sequence
@@ -43,7 +45,7 @@ The language alone cannot fix a broken OS assumption. First prove the menu-bar b
 
 ## Working ownership
 
-Parent: app architecture, OS experiments, code, integration and release. Opus field study: reference evidence only. Opus experience design: flows and visual artifacts only. Inventory/capabilities agent: read-only evidence. Terra: real Mac probes and media, each with a bounded task. Keep at most three repository spaces and serialize integration.
+Parent: app architecture, OS experiments, core/services, integration and release. Opus field study: reference evidence only. Opus experience design: flows and visual artifacts. An isolated Opus implementation task will own Sources/FluxUI only; parent owns Package.swift and the app wiring. Inventory/capabilities agent: read-only evidence. Terra: real Mac probes and media, each with a bounded task. Keep at most three repository spaces and serialize integration.
 
 ## PostHog
 
@@ -53,6 +55,6 @@ Only fixed event names, enum values and a resettable random ID may enter usage r
 
 Analytics off constructs no client and sends nothing. Turning it off cancels sends and drops unsent data. No analytics code runs during drawing, hover, clipboard checks or icon-control transactions. Network requests, flag fetches and experiments must never delay startup or a user action. Use bounded memory and action-triggered batching, with no idle polling.
 
-The official SDK audit found periodic queues and data added outside its event callback. Compare an audited narrow native API client with a patched SDK before choosing. No PostHog dependency or live project is configured yet. The first core module only encodes typed records. It does not send them and is not wired into the old app.
+The official SDK audit found periodic queues and data added outside its event callback. Choose a small native API client for strict final-request control. Twenty macOS tests passed at0f4b0c4 after two independent risk findings were fixed. The native client, transport, encoders and opt-in controller are implemented, but are not wired into the old app. There is no PostHog SDK dependency or live project configuration. No live data has been sent.
 
 Zero cost is not a testable promise. Measure analytics on and off on the same signed app. Include total process footprint, CPU, wakeups, networking, startup and menu-bar latency. Set release limits before acceptance and reject a change that exceeds them. Test all outgoing requests with private-content canaries and test opt-out and ID reset during an in-flight send.
