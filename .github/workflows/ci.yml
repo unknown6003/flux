@@ -207,6 +207,16 @@ jobs:
           cat build/visibility-red-control.log
           grep -F 'FAIL: explicit assignment needs no grant, position, or divider' build/visibility-red-control.log
 
+      - name: Prove the old engine rejects late native geometry
+        timeout-minutes: 3
+        run: |
+          if python3 Scripts/probe_arrangement.py --engine-ref 22a9a7abef98909e489d1a6a1d99a2762496b63f > build/arrangement-red-control.log 2>&1; then
+            cat build/arrangement-red-control.log
+            exit 1
+          fi
+          cat build/arrangement-red-control.log
+          grep -F 'FAIL: delayed owner AX order is verified with one drag and one policy save' build/arrangement-red-control.log
+
       - name: Import release signing identity
         if: ${{ github.event_name != 'pull_request' }}
         env:
