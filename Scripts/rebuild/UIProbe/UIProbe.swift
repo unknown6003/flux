@@ -38,9 +38,12 @@ import FluxUI
                 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
                 root.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
-                try window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                    try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme).png"))
+                var renderingError: (any Error)?
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme).png")) }
+                    catch { renderingError = error }
                 }
+                if let renderingError { throw renderingError }
                 settings.close()
             }
         }
