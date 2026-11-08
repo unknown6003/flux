@@ -75,6 +75,12 @@ let package = Package(
             dependencies: ["FluxCore", "FluxPlatform"],
             path: "Tests/FluxPlatformTests",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "FluxApplication",
+            dependencies: ["FluxCore", "FluxPlatform", "FluxUI"],
+            path: "Sources/FluxApplication",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )
