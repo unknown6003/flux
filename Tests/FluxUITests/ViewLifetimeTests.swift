@@ -112,6 +112,30 @@ struct ViewLifetimeTests {
         #expect(requested == [.setAnalyticsEnabled(false)])
     }
 
+    @Test @MainActor func shortAndLongSettingsSectionsFillTheSameAvailableWidth() {
+        _ = NSApplication.shared
+        let short = FluxUIStyle.section("Short", [FluxUIStyle.label("A")])
+        let long = FluxUIStyle.section("Long", [FluxUIStyle.label("A longer row of text that needs more width")])
+        let stack = FluxUIStyle.vstack([short, long])
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 400))
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: root.topAnchor)
+        ])
+        let window = NSWindow(contentRect: root.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = root
+        root.layoutSubtreeIfNeeded()
+        #expect(abs(short.frame.width - 480) < 1)
+        #expect(abs(long.frame.width - 480) < 1)
+        #expect(abs(short.frame.minX - long.frame.minX) < 1)
+        #expect(short.frame.height > 30)
+        #expect(long.frame.maxY <= short.frame.minY || short.frame.maxY <= long.frame.minY)
+        window.close()
+    }
+
     @MainActor private static func find(_ id: String, in root: NSView) -> NSView? {
         if root.identifier?.rawValue == id { return root }
         for view in root.subviews {

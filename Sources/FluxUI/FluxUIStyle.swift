@@ -51,9 +51,9 @@ public enum FluxUIStyle {
 
     /// A vertical stack. `fill` makes every child as wide as the stack.
     static func vstack(_ views: [NSView], spacing: CGFloat = 8, fill: Bool = true) -> NSStackView {
-        let stack = NSStackView(views: views)
+        let stack = fill ? WidthStackView(views: views) : NSStackView(views: views)
         stack.orientation = .vertical
-        stack.alignment = fill ? .width : .leading
+        stack.alignment = .leading
         stack.spacing = spacing
         stack.setHuggingPriority(.defaultHigh, for: .vertical)
         return stack
@@ -154,6 +154,28 @@ public enum FluxUIStyle {
         let stack = hstack(views, spacing: 12)
         stack.distribution = .fill
         return stack
+    }
+}
+
+/// AppKit alignment chooses an edge; it does not stretch arranged views.
+/// Keep the width constraints current when a page replaces its sections.
+@MainActor
+private final class WidthStackView: NSStackView {
+    private var filledViews: [NSView] = []
+    private var widths: [NSLayoutConstraint] = []
+    private var horizontalInset: CGFloat = -1
+
+    override func updateConstraints() {
+        let attached = arrangedSubviews.filter { $0.superview === self }
+        let inset = edgeInsets.left + edgeInsets.right
+        if attached != filledViews || inset != horizontalInset {
+            NSLayoutConstraint.deactivate(widths)
+            filledViews = attached
+            horizontalInset = inset
+            widths = attached.map { $0.widthAnchor.constraint(equalTo: widthAnchor, constant: -inset) }
+            NSLayoutConstraint.activate(widths)
+        }
+        super.updateConstraints()
     }
 }
 

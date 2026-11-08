@@ -61,7 +61,6 @@ public final class AnalyticsSettingsView: NSView {
         let header = FluxUIStyle.label(L("analytics.header", "Analytics"), style: .headline)
         let box = FluxUIStyle.group(stack)
         let outer = FluxUIStyle.vstack([header, box], spacing: 6)
-        outer.alignment = .width
         outer.translatesAutoresizingMaskIntoConstraints = false
         addSubview(outer)
         NSLayoutConstraint.activate([

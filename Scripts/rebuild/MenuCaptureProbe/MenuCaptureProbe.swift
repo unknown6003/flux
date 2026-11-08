@@ -7,6 +7,10 @@ import ScreenCaptureKit
     @MainActor static func main() async {
         do { try await capture() }
         catch {
+            if let check = error as? ProbeError {
+                print("Capture probe check failed: \(check)")
+                exit(1)
+            }
             let error = error as NSError
             print("Capture probe failed: \(error.domain) \(error.code)")
             exit(1)

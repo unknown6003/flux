@@ -209,7 +209,6 @@ private final class ReviewButton: NSButton {
 private final class LaneView: NSView {
     private let rows: NSStackView = {
         let stack = FluxUIStyle.vstack([], spacing: 0)
-        stack.alignment = .width
         return stack
     }()
     private let empty: NSTextField
