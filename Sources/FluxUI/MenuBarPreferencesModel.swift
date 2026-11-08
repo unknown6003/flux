@@ -79,6 +79,47 @@ public struct MenuBarAppRow {
     }
 }
 
+/// Saved Menu Bar options outside the app list. The parent reads them from
+/// `Preferences` and sends them back after each change. FluxUI never writes them.
+public struct MenuBarOptions: Equatable, Sendable {
+    /// Mirrors `Preferences.autoRehide`. Default on.
+    public var autoRehide: Bool
+    /// Mirrors `Preferences.autoRehideDelay`, in seconds. Default 8.
+    public var autoRehideDelay: TimeInterval
+    /// Mirrors `Preferences.iconStyle`. Default chevron.
+    public var iconStyle: MenuBarIcon
+    /// Compact spacing as the parent last read it. Nil hides the row,
+    /// because Core has no saved key for it. The parent owns the macOS value.
+    public var compactSpacing: Bool?
+
+    public init(autoRehide: Bool = true, autoRehideDelay: TimeInterval = 8, iconStyle: MenuBarIcon = .chevron, compactSpacing: Bool? = nil) {
+        self.autoRehide = autoRehide
+        self.autoRehideDelay = autoRehideDelay
+        self.iconStyle = iconStyle
+        self.compactSpacing = compactSpacing
+    }
+
+    /// Delay choices. The old Settings range was 2 to 30 seconds.
+    static let delayRange: ClosedRange<TimeInterval> = 2...30
+    static let delayChoices: [TimeInterval] = [2, 3, 5, 8, 10, 15, 20, 30]
+
+    /// The choices plus the saved value, so an old saved value still shows.
+    var delayOptions: [TimeInterval] {
+        let saved = min(max(autoRehideDelay, Self.delayRange.lowerBound), Self.delayRange.upperBound)
+        return Array(Set(Self.delayChoices + [saved])).sorted()
+    }
+}
+
+/// Requests for the saved Menu Bar options. Each one only asks the parent.
+public enum MenuBarOptionAction: Equatable, Sendable {
+    case setAlwaysHiddenEnabled(Bool)
+    case setAutoRehide(Bool)
+    /// Always within 2 to 30 seconds.
+    case setAutoRehideDelay(TimeInterval)
+    case setIconStyle(MenuBarIcon)
+    case setCompactSpacing(Bool)
+}
+
 /// Full page state. The parent sends a new value after every change.
 @MainActor
 public struct MenuBarPageState {
@@ -94,6 +135,7 @@ public struct MenuBarPageState {
     public var savedLayoutStillApplies: Bool
     /// Real previews are on for this page visit.
     public var showsRealIcons: Bool
+    public var options: MenuBarOptions
 
     public init(
         mode: MenuBarPageMode,
@@ -102,7 +144,8 @@ public struct MenuBarPageState {
         isRefreshing: Bool = false,
         isArranging: Bool = false,
         savedLayoutStillApplies: Bool = false,
-        showsRealIcons: Bool = false
+        showsRealIcons: Bool = false,
+        options: MenuBarOptions = MenuBarOptions()
     ) {
         self.mode = mode
         self.rows = rows
@@ -111,6 +154,7 @@ public struct MenuBarPageState {
         self.isArranging = isArranging
         self.savedLayoutStillApplies = savedLayoutStillApplies
         self.showsRealIcons = showsRealIcons
+        self.options = options
     }
 }
 
@@ -129,6 +173,8 @@ public struct MenuBarPageActions {
     public var openAccessibilitySettings: () -> Void
     public var checkAccessibility: () -> Void
     public var reviewIdentity: (ApplicationID) -> Void
+    /// Saved option changes. The parent saves to `Preferences` and sends new state.
+    public var setOption: (MenuBarOptionAction) -> Void
 
     public init(
         assign: @escaping (ApplicationID, MenuBarGroup) -> Void,
@@ -138,7 +184,8 @@ public struct MenuBarPageActions {
         refresh: @escaping () -> Void,
         openAccessibilitySettings: @escaping () -> Void,
         checkAccessibility: @escaping () -> Void,
-        reviewIdentity: @escaping (ApplicationID) -> Void
+        reviewIdentity: @escaping (ApplicationID) -> Void,
+        setOption: @escaping (MenuBarOptionAction) -> Void
     ) {
         self.assign = assign
         self.beginArrange = beginArrange
@@ -148,6 +195,7 @@ public struct MenuBarPageActions {
         self.openAccessibilitySettings = openAccessibilitySettings
         self.checkAccessibility = checkAccessibility
         self.reviewIdentity = reviewIdentity
+        self.setOption = setOption
     }
 }
 
@@ -172,6 +220,16 @@ extension MenuBarGroup {
         switch self {
         case .alwaysHidden: L("menuBar.group.alwaysAX", "Always Hidden")
         default: title
+        }
+    }
+}
+
+extension MenuBarIcon {
+    var title: String {
+        switch self {
+        case .chevron: L("menuBar.icon.chevron", "Chevron")
+        case .dot: L("menuBar.icon.dot", "Dot")
+        case .line: L("menuBar.icon.line", "Line")
         }
     }
 }

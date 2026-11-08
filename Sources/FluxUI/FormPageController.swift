@@ -6,10 +6,9 @@ import AppKit
 @MainActor
 public class FormPageController: NSViewController, SettingsPageFocus {
     private let stack = FluxUIStyle.vstack([], spacing: 20)
-    private var targets: [ControlTarget] = []
-    private weak var firstControl: NSView?
+    private let controls = FormControls()
 
-    public var preferredFirstResponder: NSView? { firstControl }
+    public var preferredFirstResponder: NSView? { controls.firstControl }
 
     init() { super.init(nibName: nil, bundle: nil) }
 
@@ -26,19 +25,35 @@ public class FormPageController: NSViewController, SettingsPageFocus {
 
     func rebuild() {
         guard isViewLoaded else { return }
-        let focused = (view.window?.firstResponder as? NSView)?.identifier
-        targets.removeAll()
-        firstControl = nil
+        let focused = FormControls.focusedID(in: view.window)
+        controls.reset()
         stack.setViews(makeSections(), in: .top)
-        if let focused, let match = Self.find(focused, in: stack) {
-            view.window?.makeFirstResponder(match)
-        }
+        FormControls.restoreFocus(focused, in: stack)
     }
 
-    private static func find(_ id: NSUserInterfaceItemIdentifier, in root: NSView) -> NSView? {
-        if root.identifier == id { return root }
-        for sub in root.subviews { if let hit = find(id, in: sub) { return hit } }
-        return nil
+    func toggle(_ id: String, _ isOn: Bool, enabled: Bool = true, _ handler: @escaping (Bool) -> Void) -> NSSwitch {
+        controls.toggle(id, isOn, enabled: enabled, handler)
+    }
+
+    func popup<T: Equatable>(_ id: String, _ options: [(String, T)], selected: T, enabled: Bool = true, _ handler: @escaping (T) -> Void) -> NSPopUpButton {
+        controls.popup(id, options, selected: selected, enabled: enabled, handler)
+    }
+
+    func button(_ id: String, _ title: String, enabled: Bool = true, _ handler: @escaping () -> Void) -> NSButton {
+        controls.button(id, title, enabled: enabled, handler)
+    }
+}
+
+/// Makes native form controls and owns their targets. A page calls `reset()`
+/// before it builds new controls, so old closures do not stay alive.
+@MainActor
+final class FormControls {
+    private var targets: [ControlTarget] = []
+    private(set) weak var firstControl: NSView?
+
+    func reset() {
+        targets.removeAll()
+        firstControl = nil
     }
 
     private func bind(_ control: NSControl, _ id: String, _ handler: @escaping (NSControl) -> Void) {
@@ -77,6 +92,42 @@ public class FormPageController: NSViewController, SettingsPageFocus {
         control.setAccessibilityLabel(title)
         bind(control, id) { _ in handler() }
         return control
+    }
+
+    /// The identifier of the focused control, read before a rebuild.
+    static func focusedID(in window: NSWindow?) -> NSUserInterfaceItemIdentifier? {
+        (window?.firstResponder as? NSView)?.identifier
+    }
+
+    /// Gives focus back to the control with `id` after a rebuild. If that
+    /// control is now disabled, for example Move Up on the first row, focus
+    /// goes to the nearest enabled control in the same row. If the row has
+    /// none, focus does not move to a disabled control.
+    static func restoreFocus(_ id: NSUserInterfaceItemIdentifier?, in root: NSView) {
+        guard let id, let window = root.window, let match = find(id, in: root) else { return }
+        if let target = focusTarget(for: match) { window.makeFirstResponder(target) }
+    }
+
+    static func focusTarget(for view: NSView) -> NSView? {
+        if isFocusable(view) { return view }
+        guard let peers = view.superview?.subviews, let index = peers.firstIndex(of: view) else { return nil }
+        // Same distance: the later control wins, so a disabled Up goes to Down.
+        let order = peers.indices.filter { $0 != index }.sorted {
+            let a = abs($0 - index), b = abs($1 - index)
+            return a == b ? $0 > $1 : a < b
+        }
+        return order.lazy.map { peers[$0] }.first(where: isFocusable)
+    }
+
+    private static func isFocusable(_ view: NSView) -> Bool {
+        guard !view.isHiddenOrHasHiddenAncestor, view.acceptsFirstResponder else { return false }
+        return (view as? NSControl)?.isEnabled ?? true
+    }
+
+    private static func find(_ id: NSUserInterfaceItemIdentifier, in root: NSView) -> NSView? {
+        if root.identifier == id { return root }
+        for sub in root.subviews { if let hit = find(id, in: sub) { return hit } }
+        return nil
     }
 }
 

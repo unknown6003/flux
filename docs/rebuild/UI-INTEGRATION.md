@@ -7,6 +7,7 @@ FluxUI is an AppKit-only Swift 6 library. It has no SwiftUI, WebKit, timers, bac
 - **Slice 4 not compiled.** This Linux host has no Swift or macOS SDK. The parent reports that General and About compiled and four UI tests passed on Mac CI run 42517294441 at 430ad53. The Notch, Lock Screen and rating files have no compile yet.
 - **Not run.** No layout, focus, VoiceOver or keyboard behavior is proven yet.
 - The fixed 1 to 5 rating form is written but not compiled or run.
+- **Slice 5 not compiled.** Menu Bar options, General Permissions, the About crash notice and the focus fallback have no compile yet. The parent's CI at c380847 stopped at Platform isolation before tests, so it does not prove that FluxUI compiles at the latest commit.
 
 ## Manifest (root owns it)
 
@@ -72,7 +73,44 @@ settings.show()           // or settings.show(.menuBar)
 - `refresh`, `checkAccessibility`, `openAccessibilitySettings`, `reviewIdentity(id)` only call the parent. Rows with `needsIdentityReview` also show a Review row at the top.
 - `isRefreshing` shows the static text "Reading the menu bar…". There is no spinner.
 - Search is local and matches the name or the bundle ID.
-- Parent owns: backend, deadlines, undo of a saved choice, read-back, and the Always Hidden, re-hide delay, icon style and spacing options below the lanes.
+- Parent owns: backend, deadlines, undo of a saved choice, read-back, and saving the options below the lanes.
+
+## Menu Bar options (slice 5)
+
+`MenuBarPageState.options: MenuBarOptions` (default `MenuBarOptions()`) and the existing `alwaysHiddenEnabled` drive two sections below the tools. They show in every mode, also without Accessibility, because they are saved values only.
+
+| Row | Identifier | State | Action | Saved key |
+|---|---|---|---|---|
+| Always Hidden group | `menuBar.option.always` | `alwaysHiddenEnabled` | `.setAlwaysHiddenEnabled(Bool)` | `Preferences.alwaysHiddenEnabled` |
+| Hide icons again | `menuBar.option.rehide` | `options.autoRehide` (true) | `.setAutoRehide(Bool)` | `Preferences.autoRehide` |
+| Delay | `menuBar.option.delay` | `options.autoRehideDelay` (8) | `.setAutoRehideDelay(TimeInterval)` | `Preferences.autoRehideDelay` |
+| Compact icon spacing | `menuBar.option.spacing` | `options.compactSpacing: Bool?` (nil) | `.setCompactSpacing(Bool)` | none in Core |
+| Flux icon in the menu bar | `menuBar.option.icon` | `options.iconStyle` (`.chevron`) | `.setIconStyle(MenuBarIcon)` | `Preferences.iconStyle` |
+
+- **Breaking:** `MenuBarPageActions.init` now needs `setOption: (MenuBarOptionAction) -> Void`. It has no default, so a missing handler fails the build instead of dropping saves. `Scripts/rebuild/UIProbe/UIProbe.swift:74` must pass one.
+- Delay is a pop-up: 2, 3, 5, 8, 10, 15, 20, 30 s, plus the saved value if it is another value. The old range 2 to 30 s clamps the shown value. Delay is off while re-hide is off.
+- Compact spacing is hidden while `compactSpacing` is nil. Core has no saved key. The old app wrote `NSStatusItemSpacing` in the current-host global domain. The parent owns that write and the read-back. The helper text says only that it may need a new login.
+- The section rebuilds only when `options` or `alwaysHiddenEnabled` change, and keeps focus by identifier. FluxUI makes no OS calls for these rows.
+
+## General Permissions (slice 5)
+
+`GeneralPreferencesState.permissions: [PermissionRow]` (default empty, which hides the section). The section sits before Analytics, in the order the parent sends.
+
+- `PermissionRow(kind: PermissionKind, status: PermissionStatus)`.
+- `PermissionKind`: `.accessibility`, `.screenRecording`, `.calendar`, `.camera`, `.bluetooth`. Each has a fixed title and a fixed line that names the feature that uses it.
+- `PermissionStatus`: `.allowed`, `.notAsked`, `.notAllowed`, `.unknown`. Fixed text only.
+- Rows that are not `.allowed` show Open Settings, identifier `general.permission.<kind>`, which sends `.openPermissionSettings(kind)`. The parent opens the System Settings pane. It must not show a macOS permission prompt for this action, and must not read Screen Recording status in a way that prompts. Send `.unknown` when it can't read a status without a prompt.
+
+## About crash notice (slice 5)
+
+`AboutPreferencesState.crashNotice: CrashNotice` (default `.none`).
+
+- `.previousSessionUnclean(cameraWasRunning: Bool)` shows a banner under the version: a fixed title, a fixed detail that names crash, Force Quit and logout as causes, and one more fixed line when the camera was on. It shows no log text, paths, codes or error content.
+- Copy Diagnostic Report (`about.crash.copy`) sends the existing `.copyDiagnosticReport` and follows `diagnostics`. Dismiss (`about.crash.dismiss`) sends `.dismissCrashNotice`. The parent saves the dismissal and sends `.none`.
+
+## Focus fallback (slice 5)
+
+`FormPageController.rebuild()` and the Menu Bar options section use `FormControls.restoreFocus`. If the focused control is disabled after the new state, for example Move Up on the new first widget, focus goes to the nearest enabled control in the same row. On a tie the later control wins, so a disabled Up goes to Down and a disabled Down goes to Up. If the row has no enabled control, focus does not move to a disabled one. The control helpers moved from `FormPageController` into `FormControls`. The page methods `toggle`, `popup` and `button` keep their signatures.
 
 ## Analytics group (General)
 
@@ -276,8 +314,6 @@ These pages and the rating form hold no timers, monitors, tasks or observers. Co
 
 ## Not written yet
 
-- Menu Bar global options below the lanes: Always Hidden, re-hide delay, icon style and spacing. The parent still owns them.
-- General Permissions list and the crash diagnostics banner from the design.
 - "Show on displays without a notch". FluxCore has no key for it, so the Notch page has no switch.
 - Clipboard check rate and lock-state check cost text. Both wait for measurement.
-- Slice 4 (Notch, Lock Screen, rating form) is not compiled or run. This host has no Swift. The root's macOS build, capture at 680 and 840 pt, keyboard and VoiceOver passes must prove them.
+- Slices 4 and 5 are not compiled or run. This host has no Swift. The root's macOS build, capture at 680 and 840 pt, keyboard and VoiceOver passes must prove them. The slice 5 focus fallback needs a keyboard check: move the second widget up, then confirm focus is on its Down button.

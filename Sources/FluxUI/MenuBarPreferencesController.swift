@@ -18,6 +18,9 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     private let lanesStack = FluxUIStyle.vstack([], spacing: 16)
     private let toolsStack = FluxUIStyle.hstack([])
     private let arrangeCard = ArrangeCardView()
+    private let optionsStack = FluxUIStyle.vstack([], spacing: 20)
+    private let optionControls = FormControls()
+    private var shownOptions: (MenuBarOptions, Bool)?
     private var accessCard: PermissionCardView?
     private var laneViews: [MenuBarGroup: LaneView] = [:]
     private var rowViews: [ApplicationID: MenuBarRowView] = [:]
@@ -61,7 +64,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         }
 
         searchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let content = FluxUIStyle.vstack([modeLabel, searchField, reviewStack, arrangeCard, lanesStack, statusLabel, toolsStack], spacing: 14)
+        let content = FluxUIStyle.vstack([modeLabel, searchField, reviewStack, arrangeCard, lanesStack, statusLabel, toolsStack, optionsStack], spacing: 14)
         toolsStack.setHuggingPriority(.defaultLow, for: .horizontal)
         contentStack = content
         view = FluxUIStyle.page(content)
@@ -119,6 +122,8 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         reviewStack.setViews(reviewRows, in: .top)
         reviewStack.isHidden = reviewRows.isEmpty || !usable
 
+        renderOptions()
+
         statusLabel.stringValue = statusText()
         statusLabel.isHidden = statusLabel.stringValue.isEmpty || !usable
         if !statusLabel.isHidden, statusLabel.stringValue != announced {
@@ -131,6 +136,57 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         if let focusedID, let row = rowViews[focusedID], let window = view.window {
             window.makeFirstResponder(row.groupControl)
         }
+    }
+
+    /// Saved options do not need Accessibility, so they show in every mode.
+    /// The section rebuilds only when its values change, and keeps focus.
+    private func renderOptions() {
+        let current = (state.options, state.alwaysHiddenEnabled)
+        if let shown = shownOptions, shown == current { return }
+        shownOptions = current
+        let focused = FormControls.focusedID(in: view.window)
+        optionControls.reset()
+        optionsStack.setViews(makeOptionSections(), in: .top)
+        FormControls.restoreFocus(focused, in: optionsStack)
+    }
+
+    private func makeOptionSections() -> [NSView] {
+        let options = state.options
+        let send: (MenuBarOptionAction) -> Void = { [weak self] in self?.actions.setOption($0) }
+        let always = optionControls.toggle("menuBar.option.always", state.alwaysHiddenEnabled) { send(.setAlwaysHiddenEnabled($0)) }
+        let rehide = optionControls.toggle("menuBar.option.rehide", options.autoRehide) { send(.setAutoRehide($0)) }
+        let delay = optionControls.popup(
+            "menuBar.option.delay",
+            options.delayOptions.map { (String(format: L("menuBar.option.delay.value", "%.0f s"), $0), $0) },
+            selected: min(max(options.autoRehideDelay, MenuBarOptions.delayRange.lowerBound), MenuBarOptions.delayRange.upperBound),
+            enabled: options.autoRehide
+        ) { send(.setAutoRehideDelay($0)) }
+        var behavior: [NSView] = [
+            FluxUIStyle.row(L("menuBar.option.always", "Always Hidden group"), helper: L(
+                "menuBar.option.always.helper", "Off moves its apps to Hidden in this list."
+            ), control: always),
+            FluxUIStyle.row(L("menuBar.option.rehide", "Hide icons again"), helper: L(
+                "menuBar.option.rehide.helper", "Hide shown icons again after the delay below."
+            ), control: rehide),
+            FluxUIStyle.row(L("menuBar.option.delay", "Delay"), control: delay),
+        ]
+        if let compact = options.compactSpacing {
+            let spacing = optionControls.toggle("menuBar.option.spacing", compact) { send(.setCompactSpacing($0)) }
+            behavior.append(FluxUIStyle.row(L("menuBar.option.spacing", "Compact icon spacing"), helper: L(
+                "menuBar.option.spacing.helper", "Flux saves this in macOS. It may need a new login to apply."
+            ), control: spacing))
+        }
+        let style = optionControls.popup(
+            "menuBar.option.icon",
+            MenuBarIcon.allCases.map { ($0.title, $0) },
+            selected: options.iconStyle
+        ) { send(.setIconStyle($0)) }
+        return [
+            FluxUIStyle.section(L("menuBar.options", "Behavior"), behavior),
+            FluxUIStyle.section(L("menuBar.appearance", "Appearance"), [
+                FluxUIStyle.row(L("menuBar.option.icon", "Flux icon in the menu bar"), control: style),
+            ]),
+        ]
     }
 
     private func statusText() -> String {

@@ -19,6 +19,30 @@ public enum ShortcutConflict: Equatable, Sendable {
     case unavailable
 }
 
+/// A macOS permission that one Flux feature uses.
+public enum PermissionKind: String, CaseIterable, Equatable, Sendable {
+    case accessibility, screenRecording, calendar, camera, bluetooth
+}
+
+/// What the parent last read for one permission. FluxUI never asks macOS.
+public enum PermissionStatus: Equatable, Sendable {
+    case allowed
+    case notAsked
+    case notAllowed
+    /// The parent could not read the status.
+    case unknown
+}
+
+public struct PermissionRow: Equatable, Sendable {
+    public let kind: PermissionKind
+    public let status: PermissionStatus
+
+    public init(kind: PermissionKind, status: PermissionStatus) {
+        self.kind = kind
+        self.status = status
+    }
+}
+
 /// Everything Settings › General shows. The parent sends a new value after each change.
 public struct GeneralPreferencesState: Equatable, Sendable {
     public let launchAtLoginRequested: Bool
@@ -32,6 +56,8 @@ public struct GeneralPreferencesState: Equatable, Sendable {
     public let automaticUpdateChecks: Bool
     public let update: UpdateStatus
     public let analytics: AnalyticsStatus
+    /// Rows in the order the parent wants. Empty hides the section.
+    public let permissions: [PermissionRow]
 
     public init(
         launchAtLoginRequested: Bool,
@@ -44,7 +70,8 @@ public struct GeneralPreferencesState: Equatable, Sendable {
         appearance: Appearance,
         automaticUpdateChecks: Bool,
         update: UpdateStatus = .idle,
-        analytics: AnalyticsStatus = .off
+        analytics: AnalyticsStatus = .off,
+        permissions: [PermissionRow] = []
     ) {
         self.launchAtLoginRequested = launchAtLoginRequested
         self.loginStatus = loginStatus
@@ -57,6 +84,7 @@ public struct GeneralPreferencesState: Equatable, Sendable {
         self.automaticUpdateChecks = automaticUpdateChecks
         self.update = update
         self.analytics = analytics
+        self.permissions = permissions
     }
 }
 
@@ -73,6 +101,9 @@ public enum GeneralPreferencesAction: Equatable, Sendable {
     case installUpdate
     case setAnalyticsEnabled(Bool)
     case resetAnalyticsID
+    /// Open the System Settings pane for this permission. The parent never
+    /// shows a macOS permission prompt for this action.
+    case openPermissionSettings(PermissionKind)
 }
 
 /// Settings › General page. It only shows state and sends actions.
@@ -100,7 +131,29 @@ public final class GeneralPreferencesController: FormPageController {
     }
 
     override func makeSections() -> [NSView] {
-        [startupSection(), shortcutSection(), appearanceSection(), updateSection(), analytics]
+        var sections = [startupSection(), shortcutSection(), appearanceSection(), updateSection()]
+        if !state.permissions.isEmpty { sections.append(permissionSection()) }
+        sections.append(analytics)
+        return sections
+    }
+
+    private func permissionSection() -> NSView {
+        let rows: [NSView] = state.permissions.map { row in
+            let id = "general.permission.\(row.kind.rawValue)"
+            let open: NSView?
+            if row.status == .allowed {
+                open = nil
+            } else {
+                let control = button(id, L("general.permission.open", "Open Settings")) { [weak self] in
+                    self?.onAction(.openPermissionSettings(row.kind))
+                }
+                control.setAccessibilityLabel(String(format: L("general.permission.open.ax", "Open %@ settings"), row.kind.title))
+                open = control
+            }
+            let helper = row.kind.use + " " + row.status.text
+            return FluxUIStyle.row(row.kind.title, helper: helper, control: open)
+        }
+        return FluxUIStyle.section(L("general.permissions", "Permissions"), rows)
     }
 
     private func startupSection() -> NSView {
@@ -201,4 +254,38 @@ func updateRow(_ page: FormPageController, id: String, status: UpdateStatus, _ h
     let action = page.button(id, title, enabled: !status.isBusy) { handler(install) }
     let text = status.text
     return FluxUIStyle.row(L("update.title", "Flux updates"), helper: text.isEmpty ? nil : text, control: action)
+}
+
+extension PermissionKind {
+    var title: String {
+        switch self {
+        case .accessibility: L("permission.accessibility", "Accessibility")
+        case .screenRecording: L("permission.screenRecording", "Screen Recording")
+        case .calendar: L("permission.calendar", "Calendar")
+        case .camera: L("permission.camera", "Camera")
+        case .bluetooth: L("permission.bluetooth", "Bluetooth")
+        }
+    }
+
+    /// The feature that uses this permission. Fixed text only.
+    var use: String {
+        switch self {
+        case .accessibility: L("permission.accessibility.use", "Menu Bar uses this to read your menu bar icons.")
+        case .screenRecording: L("permission.screenRecording.use", "Menu Bar uses this only for Show Real Icons.")
+        case .calendar: L("permission.calendar.use", "The Calendar widget and event alerts use this.")
+        case .camera: L("permission.camera.use", "Mirror uses this while it is open.")
+        case .bluetooth: L("permission.bluetooth.use", "Bluetooth device alerts use this.")
+        }
+    }
+}
+
+extension PermissionStatus {
+    var text: String {
+        switch self {
+        case .allowed: L("permission.status.allowed", "Allowed.")
+        case .notAsked: L("permission.status.notAsked", "Not asked yet.")
+        case .notAllowed: L("permission.status.notAllowed", "Not allowed. Change it in System Settings › Privacy & Security.")
+        case .unknown: L("permission.status.unknown", "Flux can't read this status now.")
+        }
+    }
 }

@@ -7,6 +7,14 @@ public enum DiagnosticStatus: Equatable, Sendable {
     case unavailable
 }
 
+/// The parent's typed result from its last-session check. It holds no log
+/// text, paths or error content. FluxUI shows fixed messages only.
+public enum CrashNotice: Equatable, Sendable {
+    case none
+    /// The last run did not end cleanly. A crash, Force Quit or logout can cause this.
+    case previousSessionUnclean(cameraWasRunning: Bool)
+}
+
 /// Everything Settings › About shows. `version` and `build` come from the
 /// app bundle. The parent sends a new value after each change.
 public struct AboutPreferencesState: Equatable, Sendable {
@@ -14,12 +22,20 @@ public struct AboutPreferencesState: Equatable, Sendable {
     public let build: String
     public let update: UpdateStatus
     public let diagnostics: DiagnosticStatus
+    public let crashNotice: CrashNotice
 
-    public init(version: String, build: String, update: UpdateStatus = .idle, diagnostics: DiagnosticStatus = .ready) {
+    public init(
+        version: String,
+        build: String,
+        update: UpdateStatus = .idle,
+        diagnostics: DiagnosticStatus = .ready,
+        crashNotice: CrashNotice = .none
+    ) {
         self.version = version
         self.build = build
         self.update = update
         self.diagnostics = diagnostics
+        self.crashNotice = crashNotice
     }
 }
 
@@ -28,6 +44,8 @@ public enum AboutPreferencesAction: Equatable, Sendable {
     case checkForUpdates
     case installUpdate
     case copyDiagnosticReport
+    /// Hide the last-session notice. The parent saves that it was dismissed.
+    case dismissCrashNotice
     /// Show the MediaRemoteAdapter BSD 3-Clause license text.
     case openMediaRemoteAdapterLicense
     case openSourceRepository
@@ -53,9 +71,38 @@ public final class AboutPreferencesController: FormPageController {
     }
 
     override func makeSections() -> [NSView] {
-        [brand(), FluxUIStyle.section(L("about.updates", "Updates"), [
+        var sections = [brand()]
+        if case .previousSessionUnclean(let camera) = state.crashNotice { sections.append(crashBanner(cameraWasRunning: camera)) }
+        sections += [FluxUIStyle.section(L("about.updates", "Updates"), [
             updateRow(self, id: "about.updates.action", status: state.update) { [weak self] in self?.onAction($0 ? .installUpdate : .checkForUpdates) },
         ]), diagnosticSection(), creditSection()]
+        return sections
+    }
+
+    private func crashBanner(cameraWasRunning: Bool) -> NSView {
+        let icon = NSImageView(image: FluxUIStyle.symbol("exclamationmark.triangle.fill", label: "") ?? NSImage())
+        icon.contentTintColor = .systemYellow
+        icon.setAccessibilityElement(false)
+        let title = FluxUIStyle.label(L("about.crash.title", "The last Flux session did not close cleanly"), style: .headline)
+        var detail = L("about.crash.detail", "This notice is from the last run. Flux is running now. A crash, Force Quit or logout can cause it.")
+        if cameraWasRunning { detail += " " + L("about.crash.camera", "The camera was on when that run ended.") }
+        detail += " " + L("about.crash.next", "Copy the report to check that run.")
+        let body = FluxUIStyle.label(detail, style: .callout, secondary: true)
+        let copy = button("about.crash.copy", L("about.diagnostics.copy", "Copy Diagnostic Report"), enabled: state.diagnostics != .unavailable) { [weak self] in
+            self?.onAction(.copyDiagnosticReport)
+        }
+        let dismiss = button("about.crash.dismiss", L("about.crash.dismiss", "Dismiss")) { [weak self] in
+            self?.onAction(.dismissCrashNotice)
+        }
+        dismiss.setAccessibilityLabel(L("about.crash.dismiss.ax", "Dismiss last session notice"))
+        let text = FluxUIStyle.vstack([title, body, FluxUIStyle.hstack([copy, dismiss])], spacing: 6)
+        let row = FluxUIStyle.hstack([icon, text], spacing: 12)
+        row.alignment = .top
+        let box = FluxUIStyle.group(row)
+        box.setAccessibilityElement(true)
+        box.setAccessibilityRole(.group)
+        box.setAccessibilityLabel(L("about.crash.title", "The last Flux session did not close cleanly"))
+        return box
     }
 
     private func brand() -> NSView {
