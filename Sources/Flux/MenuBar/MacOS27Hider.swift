@@ -1,6 +1,66 @@
 import AppKit
 import ApplicationServices
 
+/// App visibility is independent of the system-owned physical icon order.
+struct MenuBarVisibilityPolicy: Equatable {
+    static let alwaysAllowed: Set<String> = [
+        "com.apple.controlcenter", "com.apple.MenuBarAgent",
+        "com.apple.systemuiserver", "com.apple.TextInputMenuAgent",
+        "com.apple.Siri", "com.apple.Spotlight", "com.apple.wifi.WiFiAgent",
+        "com.apple.ScreenTimeAgent", "com.apple.AirPlayUIAgent",
+        "com.apple.UserNotificationCenter", "com.apple.notificationcenterui",
+        "com.apple.loginwindow", "com.flux.menubar",
+    ]
+
+    private(set) var hidden = Set<String>()
+    private(set) var alwaysHidden = Set<String>()
+    private(set) var hasSavedLayout = false
+
+    init(document: [String: Any]? = nil) {
+        guard let document,
+              document["schemaVersion"] == nil || document["schemaVersion"] as? Int == 2,
+              let hidden = document["hidden"] as? [String],
+              let alwaysHidden = document["alwaysHidden"] as? [String] else { return }
+        self.hidden = Set(hidden.filter(Self.isAssignable))
+        self.alwaysHidden = Set(alwaysHidden.filter(Self.isAssignable)).intersection(self.hidden)
+        hasSavedLayout = true
+    }
+
+    static func isAssignable(_ bundleID: String) -> Bool {
+        !bundleID.isEmpty
+            && bundleID == bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+            && !bundleID.hasPrefix("com.apple.")
+            && !alwaysAllowed.contains(bundleID)
+    }
+
+    func section(for bundleID: String) -> MenuBarSection {
+        if alwaysHidden.contains(bundleID) { return .alwaysHidden }
+        return hidden.contains(bundleID) ? .hidden : .shown
+    }
+
+    @discardableResult
+    mutating func assign(_ section: MenuBarSection, to bundleID: String) -> Bool {
+        guard Self.isAssignable(bundleID) else { return false }
+        if section == .shown { hidden.remove(bundleID) }
+        else { hidden.insert(bundleID) }
+        if section == .alwaysHidden { alwaysHidden.insert(bundleID) }
+        else { alwaysHidden.remove(bundleID) }
+        hasSavedLayout = true
+        return true
+    }
+
+    func excluded(revealHidden: Bool, revealAlwaysHidden: Bool,
+                  alwaysHiddenEnabled: Bool) -> Set<String> {
+        if revealAlwaysHidden { return [] }
+        if revealHidden { return alwaysHiddenEnabled ? alwaysHidden : [] }
+        return hidden
+    }
+
+    var document: [String: Any] {
+        ["schemaVersion": 2, "hidden": hidden.sorted(), "alwaysHidden": alwaysHidden.sorted()]
+    }
+}
+
 // macOS 27 hosts third-party status items in MenuBarAgent. The old width
 // trick only creates the system overflow button. This bridge follows the
 // MIT-licensed MenuBarHider implementation by happy666End:
@@ -125,41 +185,29 @@ private final class MenuBarAssessment {
 @MainActor
 final class MacOS27Hider {
     typealias PositionScan = (positions: [(bundleID: String, x: CGFloat)], replies: [String])
-    private static let alwaysAllowed: Set<String> = [
-        "com.apple.controlcenter", "com.apple.MenuBarAgent",
-        "com.apple.systemuiserver", "com.apple.TextInputMenuAgent",
-        "com.apple.Siri", "com.apple.Spotlight", "com.apple.wifi.WiFiAgent",
-        "com.apple.ScreenTimeAgent", "com.apple.AirPlayUIAgent",
-        "com.apple.UserNotificationCenter", "com.apple.notificationcenterui",
-        "com.apple.loginwindow", "com.flux.menubar",
-    ]
+    private static let alwaysAllowed = MenuBarVisibilityPolicy.alwaysAllowed
 
     private let assessment = MenuBarAssessment()
     private let trustProvider: () -> Bool
     private let defaults: UserDefaults
     private let positionReader: (String?) -> PositionScan
     private static let layoutKey = "flux.macOS27IconLayout"
-    private(set) var hasSavedLayout = false
+    var hasSavedLayout: Bool { policy.hasSavedLayout }
     var onStatus: ((String?) -> Void)?
     var onReadState: ((Bool) -> Void)?
     private(set) var latestError: String?
-    private var hidden = Set<String>()
-    private var alwaysHidden = Set<String>()
+    private var policy: MenuBarVisibilityPolicy
     private var revealHidden = false
     private var revealAlwaysHidden = false
     private var alwaysHiddenEnabled = true
     private var chevronX: () -> CGFloat? = { nil }
     private var alwaysX: () -> CGFloat? = { nil }
-    private var generation = 0
-    private var layoutScanPending = false
-    private var layoutReadyAt: TimeInterval = 0
     private var overClock = false
     private var isManagingVisibility = false
     private var mouseMonitor: Any?
     private var appObservers: [NSObjectProtocol] = []
     private var clockFrameCache: (frame: CGRect?, date: Date)?
     private var lastAccessGranted = AXIsProcessTrusted()
-    private var accessGeneration = 0
     private var lastCollapsedScan = "No collapsed scan has run."
     private var lastCollapsedRequest = "No collapsed hide request has run."
     private var runningBundleIDs = Set<String>()
@@ -194,13 +242,7 @@ final class MacOS27Hider {
         } else {
             self.positionReader = { Self.scanPositions(for: $0) }
         }
-        if let layout = defaults.dictionary(forKey: Self.layoutKey),
-           let hidden = layout["hidden"] as? [String],
-           let alwaysHidden = layout["alwaysHidden"] as? [String] {
-            self.hidden = Set(hidden.filter { !Self.alwaysAllowed.contains($0) && !$0.hasPrefix("com.apple.") })
-            self.alwaysHidden = Set(alwaysHidden).intersection(self.hidden)
-            hasSavedLayout = true
-        }
+        policy = MenuBarVisibilityPolicy(document: defaults.dictionary(forKey: Self.layoutKey))
         assessment.onStatus = { [weak self] message in
             self?.latestError = message
             self?.onStatus?(message)
@@ -228,19 +270,6 @@ final class MacOS27Hider {
             [weak self] _ in
             Task { @MainActor in self?.updateClockHover() }
         }
-        if trustProvider == nil {
-            let initialAccessGeneration = accessGeneration
-            Task { [weak self] in
-                let granted = await Task.detached(priority: .utility) {
-                    AccessibilityAccess.isGranted()
-                }.value
-                guard let self, self.accessGeneration == initialAccessGeneration else { return }
-                self.lastAccessGranted = granted
-                if !granted && self.hasSavedLayout {
-                    Log.menuBar.info("Using saved icon layout without Accessibility access")
-                }
-            }
-        }
     }
 
     deinit {
@@ -251,9 +280,7 @@ final class MacOS27Hider {
     var isAvailable: Bool { assessment.isAvailable }
 
     func section(for bundleID: String) -> MenuBarSection? {
-        guard hasSavedLayout else { return nil }
-        if alwaysHidden.contains(bundleID) { return .alwaysHidden }
-        return hidden.contains(bundleID) ? .hidden : .shown
+        policy.section(for: bundleID)
     }
 
     func canReadPosition(for bundleID: String) -> Bool {
@@ -270,8 +297,16 @@ final class MacOS27Hider {
     @discardableResult
     func recordAppSection(_ section: MenuBarSection, for bundleID: String,
                           canCommit: () -> Bool = { true }) -> Bool {
-        commitLayoutChanges(for: [bundleID], requireAll: true,
-                            assignments: [bundleID: section], canCommit: canCommit) == [bundleID]
+        guard MenuBarVisibilityPolicy.isAssignable(bundleID), canCommit() else { return false }
+        guard assessment.isAvailable else {
+            setError("This macOS build does not provide the menu-bar hiding interface.")
+            return false
+        }
+        policy.assign(section, to: bundleID)
+        persistPolicy()
+        setError(nil)
+        reconcile()
+        return true
     }
 
     @discardableResult
@@ -284,35 +319,51 @@ final class MacOS27Hider {
     }
 
     private func commitLayoutChanges(for bundleIDs: Set<String>, requireAll: Bool,
-                                     assignments: [String: MenuBarSection] = [:],
                                      canCommit: () -> Bool) -> Set<String> {
-        guard !bundleIDs.isEmpty,
-              bundleIDs.allSatisfy({ !$0.hasPrefix("com.apple.") && !Self.alwaysAllowed.contains($0) }),
-              let chevronX = chevronX() else { return [] }
+        guard !bundleIDs.isEmpty, bundleIDs.allSatisfy(MenuBarVisibilityPolicy.isAssignable),
+              let chevronX = chevronX(), chevronX.isFinite else { return [] }
         onReadState?(true)
         defer { onReadState?(false) }
         guard trustProvider() else { return [] }
-        let positions = hasSavedLayout
-            ? bundleIDs.sorted().flatMap { bundleID in
-                positionReader(bundleID).positions.filter { $0.bundleID == bundleID }
-            }
-            : positionReader(nil).positions
-        let available = bundleIDs.intersection(Set(positions.map(\.bundleID)))
-        guard !available.isEmpty, (!requireAll && hasSavedLayout) || available == bundleIDs,
+        var positions: [(bundleID: String, x: CGFloat)] = []
+        for bundleID in bundleIDs.sorted() where canReadPosition(for: bundleID) {
+            let appPositions = positionReader(bundleID).positions.filter { $0.bundleID == bundleID }
+            guard !appPositions.isEmpty, appPositions.allSatisfy({ $0.x.isFinite }) else { continue }
+            positions += appPositions
+        }
+        let available = Set(positions.map(\.bundleID))
+        guard !available.isEmpty, !requireAll || available == bundleIDs,
               canCommit() else { return [] }
-        generation += 1
-        layoutScanPending = false
-        updateLayout(from: positions, chevronX: chevronX, assignments: assignments)
+        let hidden = Self.hiddenBundleIDs(positions, leftOf: chevronX)
+        let alwaysHidden = alwaysHiddenEnabled
+            ? Self.hiddenBundleIDs(positions, leftOf: alwaysX()) : []
+        for bundleID in available {
+            let section: MenuBarSection = hidden.contains(bundleID)
+                ? (alwaysHidden.contains(bundleID) ? .alwaysHidden : .hidden) : .shown
+            policy.assign(section, to: bundleID)
+        }
+        persistPolicy()
+        lastCollapsedScan = "Imported an observed native drag for: \(available.sorted().joined(separator: ", "))"
+        setError(nil)
         reconcile()
         return available
     }
 
+    private func persistPolicy() {
+        defaults.set(policy.document, forKey: Self.layoutKey)
+    }
+
+    private func setError(_ message: String?) {
+        latestError = message
+        onStatus?(message)
+    }
+
     static func hiddenBundleIDs(_ positions: [(bundleID: String, x: CGFloat)],
                                 leftOf boundary: CGFloat?) -> Set<String> {
-        guard let boundary else { return [] }
+        guard let boundary, boundary.isFinite else { return [] }
         let groups = Dictionary(grouping: positions) { $0.bundleID }
         return Set(groups.compactMap { id, items in
-            items.allSatisfy { $0.x < boundary } ? id : nil
+            items.allSatisfy { $0.x.isFinite && $0.x < boundary } ? id : nil
         })
     }
 
@@ -321,15 +372,10 @@ final class MacOS27Hider {
         hidden: Set<String>,
         alwaysHidden: Set<String>
     ) -> (hidden: Set<String>, alwaysHidden: Set<String>) {
-        var hidden = hidden
-        var alwaysHidden = alwaysHidden
-        for (bundleID, section) in assignments {
-            if section == .shown { hidden.remove(bundleID) }
-            else { hidden.insert(bundleID) }
-            if section == .alwaysHidden { alwaysHidden.insert(bundleID) }
-            else { alwaysHidden.remove(bundleID) }
-        }
-        return (hidden, alwaysHidden.intersection(hidden))
+        var policy = MenuBarVisibilityPolicy(document: ["hidden": Array(hidden),
+                                                       "alwaysHidden": Array(alwaysHidden)])
+        for (bundleID, section) in assignments { policy.assign(section, to: bundleID) }
+        return (policy.hidden, policy.alwaysHidden)
     }
 
     static func allowedBundleIDs(running: Set<String>, excluded: Set<String>) -> [String] {
@@ -341,7 +387,7 @@ final class MacOS27Hider {
     }
 
     nonisolated static func completePositions(for bundleID: String, centers: [CGFloat?]) -> [(bundleID: String, x: CGFloat)] {
-        guard centers.allSatisfy({ $0 != nil }) else { return [] }
+        guard centers.allSatisfy({ $0?.isFinite == true }) else { return [] }
         return centers.compactMap { $0.map { (bundleID, $0) } }
     }
 
@@ -373,144 +419,25 @@ final class MacOS27Hider {
         self.alwaysHiddenEnabled = alwaysHiddenEnabled
         self.chevronX = chevronX
         self.alwaysX = alwaysX
-        if hasSavedLayout && assessment.isAvailable {
-            generation += 1
-            layoutScanPending = false
-            reconcile()
-        } else {
-            retry()
-        }
+        reconcile()
     }
 
     func retry() {
         guard isManagingVisibility else { return }
-        generation += 1
-        if hasSavedLayout {
-            layoutScanPending = false
-            guard assessment.isAvailable else {
-                latestError = "This macOS build does not provide the menu-bar hiding interface."
-                onStatus?(latestError)
-                return
-            }
-            onReadState?(true)
-            defer { onReadState?(false) }
-            refreshAccess()
-            latestError = lastAccessGranted ? nil
-                : "Using the saved icon layout. Allow Accessibility to change it."
-            onStatus?(latestError)
-            if !lastAccessGranted {
-                Log.menuBar.info("Using saved icon layout without Accessibility access")
-            }
-            if !revealHidden && !revealAlwaysHidden {
-                lastCollapsedScan = "Using saved icon assignments. No layout edit was requested."
-            }
-            reconcile()
+        lastAccessGranted = trustProvider()
+        guard assessment.isAvailable else {
+            setError("This macOS build does not provide the menu-bar hiding interface.")
+            assessment.release()
             return
         }
-        let current = generation
-        layoutScanPending = true
-        releaseAssessment()
-        let delay = max(0, layoutReadyAt - ProcessInfo.processInfo.systemUptime)
-        scanAfterLayout(generation: current, attempts: 0, delay: delay)
+        setError(hasSavedLayout && !lastAccessGranted
+                 ? "Using the saved icon layout. Allow Accessibility to change it." : nil)
+        lastCollapsedScan = "Using app assignments. No physical layout scan was requested."
+        reconcile()
     }
 
     private func releaseAssessment() {
-        if assessment.isRestricting {
-            layoutReadyAt = ProcessInfo.processInfo.systemUptime + 0.35
-        }
         assessment.release()
-    }
-
-    private func scanAfterLayout(generation: Int, attempts: Int, delay: TimeInterval = 0.35) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.generation == generation else { return }
-            let remaining = self.layoutReadyAt - ProcessInfo.processInfo.systemUptime
-            if remaining > 0 {
-                self.scanAfterLayout(generation: generation, attempts: attempts, delay: remaining)
-                return
-            }
-            self.onReadState?(true)
-            defer { self.onReadState?(false) }
-            guard self.assessment.isAvailable else {
-                self.layoutScanPending = false
-                let message = "This macOS build does not provide the menu-bar hiding interface."
-                self.latestError = message
-                self.onStatus?(message)
-                return
-            }
-            self.refreshAccess()
-            guard self.lastAccessGranted else {
-                self.layoutScanPending = false
-                let message = self.hasSavedLayout
-                    ? "Using the saved icon layout. Allow Accessibility to change it."
-                    : "Allow Accessibility once to save your menu-bar icon layout."
-                self.latestError = message
-                self.onStatus?(message)
-                if self.hasSavedLayout {
-                    Log.menuBar.info("Using saved icon layout without Accessibility access")
-                }
-                if !self.revealHidden && !self.revealAlwaysHidden {
-                    self.lastCollapsedScan = "Accessibility is off. Saved layout=\(self.hasSavedLayout)."
-                }
-                self.reconcile()
-                return
-            }
-            guard let chevronX = self.chevronX() else {
-                if attempts < 5 { self.scanAfterLayout(generation: generation, attempts: attempts + 1) }
-                else {
-                    self.layoutScanPending = false
-                    if !self.revealHidden && !self.revealAlwaysHidden {
-                        self.lastCollapsedScan = "Flux could not read its arrow position after six attempts."
-                        self.latestError = self.lastCollapsedScan
-                        self.onStatus?(self.latestError)
-                    }
-                    self.reconcile()
-                }
-                return
-            }
-            self.latestError = nil
-            self.onStatus?(nil)
-            let scan = self.positionReader(nil)
-            let positions = scan.positions
-            if !self.hasSavedLayout && !positions.isEmpty {
-                self.updateLayout(from: positions, chevronX: chevronX)
-            }
-            if !self.revealHidden && !self.revealAlwaysHidden {
-                self.lastCollapsedScan = """
-                Arrow x: \(chevronX)
-                Icon positions: \(positions.count)
-                Hidden app IDs: \(self.hidden.sorted().joined(separator: ", "))
-                Positions: \(positions.map { "\($0.bundleID)=\($0.x)" }.sorted().joined(separator: ", "))
-                AX replies: \(scan.replies.sorted().joined(separator: "; "))
-                """
-            }
-            self.layoutScanPending = false
-            self.reconcile()
-        }
-    }
-
-    private func updateLayout(from positions: [(bundleID: String, x: CGFloat)],
-                              chevronX: CGFloat,
-                              assignments: [String: MenuBarSection] = [:]) {
-        let readIDs = Set(positions.map(\.bundleID))
-        hidden = hidden.subtracting(readIDs)
-            .union(Self.hiddenBundleIDs(positions, leftOf: chevronX))
-        alwaysHidden = alwaysHidden.subtracting(readIDs)
-            .union(alwaysHiddenEnabled ? Self.hiddenBundleIDs(positions, leftOf: alwaysX()) : [])
-            .intersection(hidden)
-        let assigned = Self.applyingSectionAssignments(assignments,
-                                                       hidden: hidden,
-                                                       alwaysHidden: alwaysHidden)
-        hidden = assigned.hidden
-        alwaysHidden = assigned.alwaysHidden
-        defaults.set(["hidden": hidden.sorted(), "alwaysHidden": alwaysHidden.sorted()],
-                     forKey: Self.layoutKey)
-        hasSavedLayout = true
-    }
-
-    private func refreshAccess() {
-        accessGeneration += 1
-        lastAccessGranted = trustProvider()
     }
 
     private func reconcile() {
@@ -519,13 +446,13 @@ final class MacOS27Hider {
             releaseAssessment()
             return
         }
-        guard !layoutScanPending else { return }
         guard assessment.isAvailable, hasSavedLayout else {
             releaseAssessment()
             return
         }
-        let excluded = revealAlwaysHidden ? Set<String>()
-            : (revealHidden ? (alwaysHiddenEnabled ? alwaysHidden : []) : hidden)
+        let excluded = policy.excluded(revealHidden: revealHidden,
+                                       revealAlwaysHidden: revealAlwaysHidden,
+                                       alwaysHiddenEnabled: alwaysHiddenEnabled)
         guard !excluded.isEmpty else {
             if !revealHidden && !revealAlwaysHidden {
                 lastCollapsedRequest = "No apps were found to hide."
