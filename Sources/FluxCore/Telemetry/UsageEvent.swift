@@ -23,13 +23,21 @@ public enum UsageEvent: Sendable, Equatable {
     case opened(Feature)
     case completed(Action, Result)
     case failed(Failure)
+    case exposure(UsageFlag, UsageVariant)
+    case surveyShown(UUID)
+    case surveyDismissed(UUID)
+    case surveyAnswered(survey: UUID, question: UUID, rating: UsageRating, submission: UUID)
 
     var name: String {
         switch self {
         case .launched: "flux_launched"
         case .opened: "flux_feature_opened"
         case .completed: "flux_action_completed"
-        case .failed: "flux_operation_failed"
+        case .failed: "$exception"
+        case .exposure: "$feature_flag_called"
+        case .surveyShown: "survey shown"
+        case .surveyDismissed: "survey dismissed"
+        case .surveyAnswered: "survey sent"
         }
     }
 
@@ -39,6 +47,13 @@ public enum UsageEvent: Sendable, Equatable {
         case .opened(let feature): ["feature": feature.rawValue]
         case .completed(let action, let result): ["action": action.rawValue, "result": result.rawValue]
         case .failed(let failure): ["failure_code": failure.rawValue]
+        case .exposure(let flag, let variant): ["$feature_flag": flag.rawValue, "$feature_flag_response": variant.rawValue]
+        case .surveyShown(let id), .surveyDismissed(let id): ["$survey_id": id.uuidString.lowercased()]
+        case .surveyAnswered(let survey, let question, let rating, let submission): [
+            "$survey_id": survey.uuidString.lowercased(),
+            "$survey_response_" + question.uuidString.lowercased(): rating.rawValue,
+            "$survey_submission_id": submission.uuidString.lowercased()
+        ]
         }
     }
 }
@@ -68,11 +83,13 @@ public struct UsageRecord: Sendable, Equatable {
     public let id: UUID
     public let event: UsageEvent
     public let time: Date
+    public let assignments: [UsageFlag: UsageVariant]
 
-    public init(id: UUID = UUID(), event: UsageEvent, time: Date = Date()) {
+    public init(id: UUID = UUID(), event: UsageEvent, time: Date = Date(), assignments: [UsageFlag: UsageVariant] = [:]) {
         self.id = id
         self.event = event
         self.time = time
+        self.assignments = assignments
     }
 }
 
@@ -99,6 +116,18 @@ public enum UsageBatchEncoder {
             var properties: [String: Any] = record.event.properties
             properties["$process_person_profile"] = false
             properties["$geoip_disable"] = true
+            for (flag, variant) in record.assignments {
+                properties["$feature/" + flag.rawValue] = variant.rawValue
+            }
+            if case .failed(let code) = record.event {
+                properties["$exception_list"] = [[
+                    "type": "FluxOperationFailure",
+                    "value": code.rawValue,
+                    "mechanism": ["type": "generic", "handled": true]
+                ]]
+                properties["$exception_fingerprint"] = ["flux", code.rawValue]
+            }
+            if case .surveyAnswered = record.event { properties["$survey_completed"] = true }
             return [
                 "event": record.event.name,
                 "distinct_id": identity.value.uuidString.lowercased(),

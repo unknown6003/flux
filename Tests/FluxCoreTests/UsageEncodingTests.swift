@@ -17,7 +17,7 @@ import Testing
         #expect(Set(event.keys) == ["event", "distinct_id", "uuid", "timestamp", "properties"])
         #expect(event["distinct_id"] as? String == identity.value.uuidString.lowercased())
         let properties = try #require(event["properties"] as? [String: Any])
-        #expect(Set(properties.keys).isSubset(of: ["$process_person_profile", "$geoip_disable", "feature", "action", "result", "failure_code"]))
+        #expect(Set(properties.keys).isSubset(of: ["$process_person_profile", "$geoip_disable", "feature", "action", "result", "failure_code", "$exception_list", "$exception_fingerprint"]))
         #expect(properties["$process_person_profile"] as? Bool == false)
         #expect(properties["$geoip_disable"] as? Bool == true)
     }

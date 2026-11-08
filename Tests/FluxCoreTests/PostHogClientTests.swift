@@ -1,0 +1,120 @@
+import Foundation
+import Testing
+@testable import FluxCore
+
+private actor RecordingUsageTransport: UsageTransport {
+    private var requests: [UsageRequest] = []
+    private let response: UsageResponse
+
+    init(response: UsageResponse = UsageResponse(status: 200)) { self.response = response }
+
+    func send(_ request: UsageRequest) async throws -> UsageResponse {
+        requests.append(request)
+        return response
+    }
+
+    func snapshot() -> [UsageRequest] { requests }
+}
+
+private actor BlockingUsageTransport: UsageTransport {
+    let started: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private var requests: [UsageRequest] = []
+    private(set) var cancelled = false
+
+    init() {
+        (started, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    }
+
+    func send(_ request: UsageRequest) async throws -> UsageResponse {
+        requests.append(request)
+        continuation.yield(())
+        do { try await Task.sleep(for: .seconds(30)) }
+        catch { cancelled = true; throw error }
+        return UsageResponse(status: 200)
+    }
+
+    func snapshot() -> [UsageRequest] { requests }
+}
+
+@Test func emptyAndDisabledClientsMakeNoRequests() async throws {
+    let transport = RecordingUsageTransport()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport)
+    await client.flush()
+    #expect(await transport.snapshot().isEmpty)
+    await client.record(.launched)
+    await client.disable()
+    await client.record(.opened(.settings))
+    await client.log(.serviceStarted)
+    await client.reloadFlags()
+    await client.flush()
+    #expect(await transport.snapshot().isEmpty)
+}
+
+@Test func eventQueueIsBoundedAndDoesNotSpoolToDisk() async throws {
+    let transport = RecordingUsageTransport()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport)
+    for _ in 0..<1_000 { await client.record(.opened(.settings)) }
+    for _ in 0..<5 { await client.flush() }
+    let requests = await transport.snapshot()
+    let batches = try requests.map { request -> [[String: Any]] in
+        let object = try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
+        return try #require(object["batch"] as? [[String: Any]])
+    }
+    #expect(batches.reduce(0) { $0 + $1.count } == PostHogClient.eventLimit)
+    #expect(batches.allSatisfy { $0.count <= 20 })
+    await client.disable()
+}
+
+@Test(.timeLimit(.minutes(1))) func optOutCancelsAnInflightSendAndDropsQueuedRecords() async throws {
+    let transport = BlockingUsageTransport()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport)
+    await client.record(.launched)
+    let flush = Task { await client.flush() }
+    var iterator = await transport.started.makeAsyncIterator()
+    _ = await iterator.next()
+    await client.record(.opened(.shelf))
+    await client.disable()
+    await flush.value
+    await client.flush()
+    #expect(await transport.cancelled)
+    #expect(await transport.snapshot().count == 1)
+}
+
+@Test func resetDiscardsOldPendingRecordsAndChangesTheNextID() async throws {
+    let transport = RecordingUsageTransport()
+    let original = UsageIdentity(), replacement = UsageIdentity()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: original, transport: transport)
+    await client.record(.opened(.clipboard))
+    await client.resetIdentity(replacement)
+    await client.record(.opened(.settings))
+    await client.flush()
+    let request = try #require(await transport.snapshot().first)
+    let text = try #require(String(data: request.body, encoding: .utf8))
+    #expect(!text.contains(original.value.uuidString.lowercased()))
+    #expect(!text.contains("clipboard"))
+    #expect(text.contains(replacement.value.uuidString.lowercased()))
+    await client.disable()
+}
+
+@Test func experimentExposureIsDeduplicatedAndConversionsCarryTheUsedVariant() async throws {
+    let flags = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true,"variant":"compact"}}}"#.utf8)
+    let transport = RecordingUsageTransport(response: UsageResponse(status: 200, body: flags))
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport)
+    #expect(await client.variant(.welcomeLayout) == .control)
+    await client.reloadFlags()
+    #expect(await client.variant(.welcomeLayout) == .compact)
+    #expect(await client.variant(.welcomeLayout) == .compact)
+    await client.record(.completed(.changeGroup, .succeeded))
+    await client.flush()
+    let requests = await transport.snapshot()
+    #expect(requests.count == 2)
+    #expect(requests[0].endpoint == .flags)
+    let object = try #require(JSONSerialization.jsonObject(with: requests[1].body) as? [String: Any])
+    let batch = try #require(object["batch"] as? [[String: Any]])
+    #expect(batch.count == 2)
+    #expect(batch[0]["event"] as? String == "$feature_flag_called")
+    let properties = try #require(batch[1]["properties"] as? [String: Any])
+    #expect(properties["$feature/flux-welcome-layout"] as? String == "compact")
+    await client.disable()
+}
