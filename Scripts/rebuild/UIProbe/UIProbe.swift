@@ -33,8 +33,14 @@ import FluxUI
                 guard let window = settings.window, let root = window.contentView else { throw ProbeError.noView }
                 window.appearance = NSAppearance(named: appearance)
                 window.setContentSize(NSSize(width: 840, height: 640))
+                window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+                window.orderFrontRegardless()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
                 root.layoutSubtreeIfNeeded()
-                try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme).png"))
+                window.displayIfNeeded()
+                try window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme).png"))
+                }
                 settings.close()
             }
         }
