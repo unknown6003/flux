@@ -86,10 +86,27 @@ public final class CompactNotchController: NSViewController {
         let height = max(g.topInset, minimumHeight)
         let limit = min(NotchGeometry.maximumExpandedWidth, max(0, g.screenFrame.width))
         let gap = g.hasNotch ? g.cameraWidth : flatGap
+        let extent = state.currentActivity.map { max(wingWidth($0.leading), wingWidth($0.trailing)) }
+            ?? NotchGeometry.wingExtent
         let width = state.currentActivity == nil
             ? (g.hasNotch ? g.cameraWidth : NotchGeometry.wingExtent * 2)
-            : gap + NotchGeometry.wingExtent * 2
+            : gap + extent * 2
         return NSSize(width: min(width, limit), height: height)
+    }
+
+    private static func wingWidth(_ wing: ActivityWing) -> CGFloat {
+        let text: String
+        let extra: CGFloat
+        switch wing {
+        case .text(let value): text = value; extra = 24
+        case .symbolText(_, let value): text = value; extra = 38
+        default: return NotchGeometry.wingExtent
+        }
+        // Include the field's interior padding and the wing's six-point edges.
+        // Percentages and timer clocks fit at the normal font size. Long
+        // captions still truncate inside a bounded wing.
+        let measured = ceil((text as NSString).size(withAttributes: [.font: CompactWingView.textFont]).width)
+        return min(96, max(NotchGeometry.wingExtent, measured + extra))
     }
 
     override public func loadView() {
@@ -371,6 +388,7 @@ struct ScrollAccumulator {
 /// level bar. All drawing is static. Content is clipped to the wing.
 @MainActor
 final class CompactWingView: NSView {
+    static let textFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
     private let image = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let ring = CAShapeLayer()
@@ -387,7 +405,7 @@ final class CompactWingView: NSView {
         image.wantsLayer = true
         image.layer?.masksToBounds = true
         image.setAccessibilityElement(false)
-        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        label.font = Self.textFont
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         label.cell?.truncatesLastVisibleLine = true

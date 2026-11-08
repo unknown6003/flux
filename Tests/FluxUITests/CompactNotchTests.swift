@@ -20,7 +20,15 @@ struct CompactNotchTests {
         button.onKey?(.cycle)
         #expect(actions.isEmpty)
         controller.update(.init(geometry: geometry, currentActivity: item, queueCount: 2, restorableCount: 1))
-        #expect(controller.preferredSize == NSSize(width: 260, height: 33))
+        #expect(controller.preferredSize.height == 33)
+        #expect(controller.preferredSize.width <= 440)
+        root.setFrameSize(controller.preferredSize)
+        root.layoutSubtreeIfNeeded()
+        let wings = root.subviews.flatMap(\.subviews).compactMap { $0 as? CompactWingView }
+        #expect(wings.count == 2)
+        if wings.count == 2 { #expect(wings[1].frame.minX - wings[0].frame.maxX == 180) }
+        let label = try #require(wings.flatMap(\.subviews).compactMap { $0 as? NSTextField }.first { $0.stringValue == "1:05" })
+        #expect(label.frame.width >= label.intrinsicContentSize.width)
         #expect(actions.isEmpty)
         button.onKey?(.dismissActivity)
         button.onKey?(.restoreActivity)
