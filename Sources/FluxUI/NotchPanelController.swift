@@ -6,7 +6,7 @@ extension Widget {
     var displayName: String {
         switch self {
         case .nowPlaying: L("notch.nowPlaying", "Now Playing")
-        case .shelf: L("notch.shelf", "Shelf")
+        case .shelf: L("notch.shelf", "File Shelf")
         case .calendar: L("notch.calendar", "Calendar")
         case .mirror: L("notch.mirror", "Mirror")
         case .clipboard: L("notch.clipboard", "Clipboard")

@@ -4,9 +4,9 @@ FluxUI is an AppKit-only Swift 6 library. It has no SwiftUI, WebKit, timers, bac
 
 ## Status
 
-- **Not compiled.** This Linux host has no Swift or macOS SDK. The root must compile on macOS.
+- **Slice 4 not compiled.** This Linux host has no Swift or macOS SDK. The parent reports that General and About compiled and four UI tests passed on Mac CI run 42517294441 at 430ad53. The Notch, Lock Screen and rating files have no compile yet.
 - **Not run.** No layout, focus, VoiceOver or keyboard behavior is proven yet.
-- The optional 1–5 rating view is not written.
+- The fixed 1 to 5 rating form is written but not compiled or run.
 
 ## Manifest (root owns it)
 
@@ -14,7 +14,7 @@ FluxUI is an AppKit-only Swift 6 library. It has no SwiftUI, WebKit, timers, bac
 .target(name: "FluxUI", dependencies: ["FluxCore"], path: "Sources/FluxUI")
 ```
 
-FluxUI uses these FluxCore types: `ApplicationID`, `MenuBarGroup`, `MenuBarCapability`, `Widget`, `Appearance`. It adds an internal `Widget.displayName` extension. It declares no public name that FluxCore already has.
+FluxUI uses these FluxCore types: `ApplicationID`, `MenuBarGroup`, `MenuBarCapability`, `Widget`, `ExpansionTrigger`, `Appearance`, `UsageRating`. It adds an internal `Widget.displayName` extension with the five existing names: Now Playing, File Shelf, Calendar, Mirror, Clipboard. It declares no public name that FluxCore already has.
 
 Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The English text is the fallback.
 
@@ -33,6 +33,9 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/ShortcutRecorderView.swift` | `Shortcut` |
 | `Sources/FluxUI/GeneralPreferencesController.swift` | `LoginStatus`, `ShortcutConflict`, `GeneralPreferencesState`, `GeneralPreferencesAction`, `GeneralPreferencesController` |
 | `Sources/FluxUI/AboutPreferencesController.swift` | `DiagnosticStatus`, `AboutPreferencesState`, `AboutPreferencesAction`, `AboutPreferencesController` |
+| `Sources/FluxUI/NotchPreferencesController.swift` | `WidgetPreference`, `ShelfExpiry`, `NotchActivity`, `NotchAccessKind`, `NotchAccessStatus`, `NotchPreferencesState`, `NotchPreferencesAction`, `NotchPreferencesController` |
+| `Sources/FluxUI/LockScreenPreferencesController.swift` | `LockScreenCapability`, `LockScreenPreferencesState`, `LockScreenPreferencesAction`, `LockScreenPreferencesController` |
+| `Sources/FluxUI/FeedbackRatingController.swift` | `FeedbackSubmission`, `FeedbackRatingState`, `FeedbackRatingAction`, `FeedbackRatingController` |
 
 ## Settings window
 
@@ -53,7 +56,7 @@ settings.show()           // or settings.show(.menuBar)
 - A page that adopts `SettingsPageFocus` gets its `preferredFirstResponder` focused when `show(_:)` opens it.
 - Teardown: `onClose` runs once, after the page is discarded. Release the controller there. The window has `isReleasedWhenClosed = false`.
 - Sidebar groups follow the design: **Flux** (Menu Bar, Notch, Lock Screen) and **System** (General, About).
-- FluxUI now gives the General and About pages. Root must still build the Notch and Lock Screen page contents. FluxUI gives the permission cards for them.
+- FluxUI gives all five pages: `MenuBarPreferencesController`, `NotchPreferencesController`, `LockScreenPreferencesController`, `GeneralPreferencesController`, `AboutPreferencesController`.
 
 ## Menu Bar page
 
@@ -123,7 +126,7 @@ The fixture captures at `build/native-ui-d8a951d` and `build/native-ui-51d1d63` 
 
 - `FluxUIStyle.group` now returns `GroupView`. It pins its content with constraints and 10/12 pt insets, so its height follows the content. It fills with `quaternarySystemFill`, resolved for the view's appearance in `updateLayer`.
 - `FluxUIStyle.page(_:)` is the shared page root: a vertical scroll view with a flipped document that is as wide as the clip view and as tall as the content.
-- `vstack` uses `.width` alignment by default, so the search field, groups and rows fill the page width at 680 and 840 pt.
+- `vstack` uses `.leading` alignment and `WidthStackView`, which gives each arranged view an explicit width constraint equal to the stack. Groups and rows fill the page width at 680 and 840 pt. No FluxUI code uses `.alignment = .width`.
 - Wrapping labels have low horizontal compression resistance. App names use one line with tail truncation and a tooltip. Segmented controls, buttons and "Managed by macOS" resist compression, so the group choices stay reachable.
 - Not proven: no new capture has run with this fix. The root probe must capture again on macOS.
 - The probe's General fixture hosts `AnalyticsSettingsView` with no bottom constraint. That is valid, because the view now has a fitting height.
@@ -186,13 +189,95 @@ State fields, all `let`: `version: String`, `build: String`, `update: UpdateStat
 - Credits name MediaRemoteAdapter by Jonas van den Berg and contributors, BSD 3-Clause (`Vendor/mediaremote-adapter/LICENSE`). The parent opens the license and the source repository.
 - Identifiers: `about.updates.action`, `about.diagnostics.copy`, `about.credits.license`, `about.credits.source`.
 
+## Notch page (slice 4)
+
+```swift
+let notch = NotchPreferencesController(state: NotchPreferencesState(
+    isEnabled: store.value(for: Preferences.notchEnabled),
+    trigger: store.value(for: Preferences.expansionTrigger),
+    hoverCloseDelay: store.value(for: Preferences.hoverCloseDelay),
+    showInFullscreen: store.value(for: Preferences.showInFullscreen),
+    widgets: savedOrder.map { WidgetPreference(widget: $0, isEnabled: enabled($0)) },
+    duoEnabled: store.value(for: Preferences.duoEnabled),
+    shelfExpiry: ShelfExpiry(rawValue: Int(store.value(for: Preferences.shelfExpiryDays))) ?? .never,
+    clipboardSaving: store.value(for: Preferences.clipboardPersistenceEnabled),
+    enabledActivities: savedActivities,      // Set<NotchActivity>
+    calendarAccess: .notAsked, cameraAccess: .notAsked, accessibilityAccess: .allowed  // parent reads, never prompts
+)) { action in parentHandle(action) }
+notch.update(state: next)
+```
+
+The `store` reads, `savedOrder`, `enabled(_:)` and `savedActivities` are the parent's. Every field is required. There are no defaults.
+
+State fields, all `let`: `isEnabled: Bool`, `trigger: ExpansionTrigger`, `hoverCloseDelay: Double` (seconds), `showInFullscreen: Bool`, `widgets: [WidgetPreference]` (all five in saved order; `WidgetPreference(widget: Widget, isEnabled: Bool)`), `duoEnabled: Bool`, `shelfExpiry: ShelfExpiry` (`.never` = 0, `.oneDay` = 1, `.threeDays` = 3, `.sevenDays` = 7, the raw value of `flux.notch.shelf.expiryDays`), `clipboardSaving: Bool`, `enabledActivities: Set<NotchActivity>` (`.battery`, `.bluetooth`, `.calendarEvent`, `.timer`, `.soundHUD`), `calendarAccess`, `cameraAccess`, `accessibilityAccess: NotchAccessStatus` (`.allowed`, `.notAsked`, `.denied`, `.unavailable`).
+
+`NotchPreferencesAction` cases: `.setEnabled(Bool)`, `.setTrigger(ExpansionTrigger)`, `.setHoverCloseDelay(Double)`, `.setShowInFullscreen(Bool)`, `.setWidgetEnabled(Widget, Bool)`, `.moveWidgetUp(Widget)`, `.moveWidgetDown(Widget)`, `.setDuoEnabled(Bool)`, `.setShelfExpiry(ShelfExpiry)`, `.setClipboardSaving(Bool)`, `.clearClipboardHistory`, `.setActivity(NotchActivity, Bool)`, `.requestAccess(NotchAccessKind)`, `.openAccessSettings(NotchAccessKind)`. `NotchAccessKind`: `.calendar`, `.camera`, `.accessibility`.
+
+- Sections: Notch, Behavior, Widgets, Clipboard, Live Activities, Access.
+- The Clipboard widget switch is collection (`flux.notch.clipboard.enabled`). Its helper says Flux checks the clipboard for new copies while it is on. It names no rate; add one only after measurement. Save clipboard history is a separate switch (`flux.notch.clipboard.persistence.enabled`). Its helper says only text, links and colors are saved, never image or file contents.
+- Clear Saved History opens an `NSAlert` sheet. `.clearClipboardHistory` is sent only on Clear History. With no window, the button does nothing.
+- Widget rows show a switch, then up and down buttons named "Move <name> earlier/later". Up is off on the first row and down is off on the last. The page never reorders by itself; the parent sends the new order.
+- Master off turns off every dependent control and keeps its value. Close delay is off when the trigger is Click. Duo is off unless Now Playing and Calendar are on. Auto-clear is off when File Shelf is off. Save history is off when Clipboard is off. Clear Saved History stays on.
+- Access rows show fixed status text. `.notAsked` shows Allow (`.requestAccess`). `.denied` shows Open Settings (`.openAccessSettings`). FluxUI never asks macOS. The parent asks only after Allow, never at launch.
+- A saved close delay outside the menu values (0.1, 0.2, 0.4, 0.7, 1.0, 1.5, 2.0 s) is added to the menu, so it shows as is.
+- Identifiers: `notch.enabled`, `notch.trigger`, `notch.closeDelay`, `notch.fullscreen`, `notch.widget.<rawValue>`, `notch.widget.<rawValue>.up`, `notch.widget.<rawValue>.down`, `notch.duo`, `notch.shelf.expiry`, `notch.clipboard.save`, `notch.clipboard.clear`, `notch.activity.<battery|bluetooth|calendarEvent|timer|soundHUD>`, `notch.access.<calendar|camera|accessibility>`.
+- This page only edits settings. Widgets, their in-panel Allow cards and the notch panel stay as they are.
+
+## Lock Screen page (slice 4)
+
+```swift
+let lock = LockScreenPreferencesController(state: LockScreenPreferencesState(
+    isEnabled: store.value(for: Preferences.lockScreenEnabled),
+    showsNowPlaying: store.value(for: Preferences.lockScreenNowPlaying),
+    showsActivities: store.value(for: Preferences.lockScreenActivities),
+    playsUnlockSound: store.value(for: Preferences.lockScreenUnlockSound),
+    capability: .available,      // parent's check
+    failureCode: nil             // or a short code from the last failed attempt
+)) { action in parentHandle(action) }
+```
+
+State fields, all `let`, no defaults: `isEnabled`, `showsNowPlaying`, `showsActivities`, `playsUnlockSound: Bool`, `capability: LockScreenCapability` (`.available`, `.unavailable`, `.needsPermission`), `failureCode: String?`.
+
+`LockScreenPreferencesAction` cases: `.setEnabled(Bool)`, `.setNowPlaying(Bool)`, `.setActivities(Bool)`, `.setUnlockSound(Bool)`, `.openSystemSettings`, `.checkAgain`.
+
+- Sections: Lock Screen (master switch and one status row), then Show (three switches).
+- The three switches are on for input only when the master is on and capability is `.available`. They keep their values.
+- `.unavailable` turns off the master switch for input and keeps its value. `.needsPermission` shows one row with Open Settings and Check Again. A `failureCode` shows "Last attempt failed (<code>)" and Check Again. Only one status row shows at a time. The text claims nothing about how macOS shows the lock screen.
+- Identifiers: `lockScreen.enabled`, `lockScreen.nowPlaying`, `lockScreen.activities`, `lockScreen.unlockSound`, `lockScreen.open`, `lockScreen.check`.
+- Parent owns: the lock-state checks, their cost text after measurement, and the private window bridge.
+
+## Rating form (slice 4)
+
+```swift
+let rating = FeedbackRatingController(state: FeedbackRatingState(
+    collectionEnabled: collection.enabled,   // saved opt-in
+    submission: .ready
+)) { action in
+    switch action {
+    case .submit(let value): parentSend(.surveyAnswered(survey: config.survey, question: config.question, rating: value, submission: UUID()))
+    case .cancel: parentClose()
+    }
+}
+presentingController.presentAsSheet(rating)   // only from a user action
+```
+
+State fields, all `let`, no defaults: `collectionEnabled: Bool`, `submission: FeedbackSubmission` (`.ready`, `.sending`, `.sent`, `.failed(code:)`).
+
+`FeedbackRatingAction` cases: `.submit(UsageRating)`, `.cancel`. `UsageRating` is the FluxCore type in `Sources/FluxCore/Telemetry/PostHogWire.swift` (`.one` ... `.five`, raw values "1" to "5").
+
+- One `NSSegmentedControl` with segments 1 to 5, no first choice, labels "1 Poor" and "5 Great". Submit is off until a choice exists, while sending, after `.sent`, and whenever `collectionEnabled` is false. Return submits. Esc and Cancel send `.cancel`.
+- With collection off, the text says Flux can't send a rating. It never shows "sent" unless the parent sets `.sent`. Set `.sent` only after the client reports a send.
+- No text field, no IDs, no network, no timers. FluxUI never opens it. About does not open it. The parent holds the survey config, opens the form only on a user action, and sends only after opt-in.
+- Identifiers: `feedback.rating`, `feedback.cancel`, `feedback.submit`.
+
 ## Teardown
 
-Both pages hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
+These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
 
 ## Not written yet
 
-- The Notch and Lock Screen page controllers.
-- The fixed 1–5 feedback form. A later About action can carry a FluxCore `UsageRating`.
-- The General Permissions list and the About crash report banner from the design.
-- General and About are not compiled or run. This host has no Swift. The root's macOS build and capture must prove them.
+- Menu Bar global options below the lanes: Always Hidden, re-hide delay, icon style and spacing. The parent still owns them.
+- General Permissions list and the crash diagnostics banner from the design.
+- "Show on displays without a notch". FluxCore has no key for it, so the Notch page has no switch.
+- Clipboard check rate and lock-state check cost text. Both wait for measurement.
+- Slice 4 (Notch, Lock Screen, rating form) is not compiled or run. This host has no Swift. The root's macOS build, capture at 680 and 840 pt, keyboard and VoiceOver passes must prove them.
