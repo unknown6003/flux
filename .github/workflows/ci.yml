@@ -17,6 +17,10 @@ on:
         description: Test the isolated Swift 6 rebuild core without building or publishing the old app
         type: boolean
         default: false
+      native_shell_probe:
+        description: Compare throwaway AppKit and SwiftUI shells as part of the native core run
+        type: boolean
+        default: false
       menu_bar_probe:
         description: Run the live macOS 27 visibility probe before building
         type: boolean
@@ -67,6 +71,17 @@ jobs:
         run: git rev-parse HEAD
       - name: Test native core
         run: swift test --filter FluxCoreTests
+      - name: Compare native shells
+        if: ${{ inputs.native_shell_probe }}
+        timeout-minutes: 3
+        run: python3 Scripts/rebuild/probe_shells.py
+      - name: Upload shell measurements
+        if: ${{ always() && inputs.native_shell_probe }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-shells
+          path: build/native-shells/samples.json
+          if-no-files-found: warn
 
   drag-probes:
     if: ${{ inputs.drag_probe_plan && !inputs.native_core_only }}
