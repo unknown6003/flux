@@ -19,6 +19,12 @@ public struct GlobalKeyChord: Equatable, Sendable {
 
 public enum GlobalShortcutError: Error { case invalidChord, unavailable(OSStatus) }
 
+@MainActor public protocol GlobalKeyRegistering: AnyObject {
+    func register(_ chord: GlobalKeyChord, action: @escaping @MainActor () -> Void) throws -> UInt32
+    func remove(_ id: UInt32)
+    func stop()
+}
+
 private struct ShortcutReference: @unchecked Sendable {
     // The pointer is immutable. Only main-actor Carbon calls consume it.
     let raw: EventHotKeyRef
@@ -26,7 +32,7 @@ private struct ShortcutReference: @unchecked Sendable {
 
 /// Carbon routes registered chords without an Accessibility grant or a
 /// keyboard monitor. One handler dispatches only this app's registered IDs.
-@MainActor public final class GlobalShortcuts {
+@MainActor public final class GlobalShortcuts: GlobalKeyRegistering {
     private static let signature: OSType = 0x46584C58
     private static var handler: EventHandlerRef?
     private static var nextID: UInt32 = 0
@@ -50,8 +56,7 @@ private struct ShortcutReference: @unchecked Sendable {
     public func register(_ chord: GlobalKeyChord, action: @escaping @MainActor () -> Void) throws -> UInt32 {
         guard chord.isValid else { throw GlobalShortcutError.invalidChord }
         try Self.installHandler()
-        Self.nextID &+= 1
-        if Self.nextID == 0 { Self.nextID = 1 }
+        repeat { Self.nextID &+= 1 } while Self.nextID == 0 || Self.actions[Self.nextID] != nil
         let id = Self.nextID
         var reference: EventHotKeyRef?
         let result = RegisterEventHotKey(chord.keyCode, chord.modifiers,

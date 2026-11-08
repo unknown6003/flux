@@ -2,7 +2,7 @@ import FluxCore
 import FluxUI
 
 /// One of the two Flux global shortcuts.
-public enum ShortcutRole: Sendable {
+public enum ShortcutRole: Hashable, Sendable {
     /// `flux.hotkey.*`. Reveals hidden menu bar icons.
     case reveal
     /// `flux.notch.hotkey.*`. Opens the notch.
