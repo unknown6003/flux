@@ -49,11 +49,11 @@ private struct CopyMonitorToken: @unchecked Sendable { let value: Any }
 
     public func suppressOwnWrite(changeCount: Int) { suppressedChange = changeCount }
 
-    public func copyBack(_ payload: ClipboardPayload) async -> Bool {
+    public func copyBack(_ payload: ClipboardPayload, authorization: ClipboardWriteAuthorization? = nil) async -> Bool {
         guard active, !writing else { return false }
         writing = true
         defer { writing = false; check() }
-        guard let count = await channel.write(payload), active else { return false }
+        guard let count = await channel.write(payload, authorization: authorization), active else { return false }
         suppressedChange = count
         return true
     }

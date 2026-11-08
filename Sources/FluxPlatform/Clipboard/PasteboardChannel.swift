@@ -12,7 +12,26 @@ public struct ClipboardSample: Equatable, Sendable {
 public protocol ClipboardChannel: Sendable {
     func changeCount() async -> Int
     func capture(expectedChange: Int) async -> ClipboardSample?
-    func write(_ payload: ClipboardPayload) async -> Int?
+    func write(_ payload: ClipboardPayload, authorization: ClipboardWriteAuthorization?) async -> Int?
+}
+
+public extension ClipboardChannel {
+    func write(_ payload: ClipboardPayload) async -> Int? { await write(payload, authorization: nil) }
+}
+
+/// A widget revokes this when it closes or the session locks. Check it in
+/// the same synchronous transaction as the write, after any actor wait.
+public final class ClipboardWriteAuthorization: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+
+    public init() {}
+
+    public func revoke() { lock.withLock { valid = false } }
+
+    func commit<T>(_ write: () -> T?) -> T? {
+        lock.withLock { valid ? write() : nil }
+    }
 }
 
 /// Clipboard IPC, rich-text parsing and image work stay on this actor.
@@ -50,7 +69,7 @@ public actor PasteboardChannel: ClipboardChannel {
         return .init(changeCount: expectedChange, capturedAt: .now, payload: payload)
     }
 
-    public func write(_ payload: ClipboardPayload) -> Int? {
+    public func write(_ payload: ClipboardPayload, authorization: ClipboardWriteAuthorization? = nil) -> Int? {
         let items: [NSPasteboardItem]
         switch payload {
         case .text(let string, _):
@@ -73,10 +92,14 @@ public actor PasteboardChannel: ClipboardChannel {
             items = [item]
         default: return nil
         }
-        let pasteboard = board()
-        pasteboard.clearContents()
-        guard pasteboard.writeObjects(items) else { return nil }
-        return pasteboard.changeCount
+        let write = {
+            let pasteboard = self.board()
+            pasteboard.clearContents()
+            guard pasteboard.writeObjects(items) else { return nil as Int? }
+            return pasteboard.changeCount
+        }
+        if let authorization { return authorization.commit(write) }
+        return write()
     }
 
     private func board() -> NSPasteboard {

@@ -45,6 +45,7 @@ public final class WidgetCoordinator {
 
     // The one visible widget.
     private var visible: Widget?
+    private var writeAuthorization: ClipboardWriteAuthorization?
     private weak var nowPlayingView: NowPlayingWidgetController?
     private weak var calendarView: CalendarWidgetController?
     private weak var mirrorView: MirrorWidgetController?
@@ -62,7 +63,11 @@ public final class WidgetCoordinator {
     private var lastSnapshot: MediaSnapshot?
     private var artworkID: UUID?
     private var artwork: NSImage?
-    private var artworkTask: Task<Void, Never>?
+    private lazy var artworkPipeline = ArtworkPipeline { [weak self] id, decoded in
+        guard let self, self.visible == .nowPlaying, self.artworkID == id else { return }
+        self.artwork = decoded.map { NSImage(cgImage: $0.image, size: NSSize(width: $0.image.width, height: $0.image.height)) }
+        self.nowPlayingView?.update(self.nowPlayingState())
+    }
     private var sourceNames: [ApplicationID: String] = [:]
     private var agenda: AgendaReadResult?
     private var camera: CameraState?
@@ -75,7 +80,7 @@ public final class WidgetCoordinator {
     private var shelfURLs: [UUID: URL] = [:]
     private var shelfFailed = false
     private var shelfLoaded = false
-    private var copyJob: Task<Void, Never>?
+    private var copyJob: ShelfCopyBatch?
     private var copyingRows: [FileShelfWidgetItem] = []
 
     public init(preferences: PreferenceStore, shelf: ShelfFiles, clipboard: ClipboardRepository,
@@ -96,6 +101,7 @@ public final class WidgetCoordinator {
     public func makeWidget(_ widget: Widget) -> NSViewController {
         hideVisible()
         visible = widget
+        writeAuthorization = ClipboardWriteAuthorization()
         switch widget {
         case .nowPlaying:
             if case .some(.ready(_)) = media { loadArtwork(lastSnapshot) }
@@ -144,10 +150,12 @@ public final class WidgetCoordinator {
     }
 
     private func hideVisible() {
+        writeAuthorization?.revoke()
+        writeAuthorization = nil
         elapsedTask?.cancel(); elapsedTask = nil
         clipboardSubscription?.cancel(); clipboardSubscription = nil
         shelfLoad?.cancel(); shelfLoad = nil
-        artworkTask?.cancel(); artworkTask = nil
+        artworkPipeline.clear()
         artworkID = nil
         artwork = nil
         clipboardRecords = []
@@ -229,7 +237,7 @@ public final class WidgetCoordinator {
         mediaLease = nil
         media = nil
         lastSnapshot = nil
-        artworkTask?.cancel(); artworkTask = nil
+        artworkPipeline.clear()
         artworkID = nil
         artwork = nil
         refreshNowPlaying()
@@ -245,8 +253,10 @@ public final class WidgetCoordinator {
         case nil, .unavailable?:
             return NowPlayingWidgetState(status: .noAccess)
         case .starting?, .ready?:
-            // `.starting` keeps the last real snapshot. With none it shows empty.
-            guard let snapshot = lastSnapshot else { return .empty }
+            guard let snapshot = lastSnapshot else {
+                if case .starting? = media { return NowPlayingWidgetState(status: .loading) }
+                return .empty
+            }
             let sources = snapshot.source.map { [NowPlayingSourceOption(id: $0, name: sourceNames[$0] ?? $0.rawValue)] } ?? []
             return NowPlayingWidgetState(
                 status: snapshot.playing ? .playing : .paused,
@@ -280,22 +290,15 @@ public final class WidgetCoordinator {
 
     private func loadArtwork(_ snapshot: MediaSnapshot?) {
         guard let snapshot, let id = snapshot.artworkID, let data = snapshot.artwork else {
-            artworkTask?.cancel(); artworkTask = nil
+            artworkPipeline.clear()
             artworkID = nil
             artwork = nil
             return
         }
         guard id != artworkID else { return }
-        artworkTask?.cancel()
         artworkID = id
         artwork = nil
-        artworkTask = Task { @MainActor [weak self] in
-            let decoded = await Task.detached(priority: .utility) { ArtworkThumbnail.make(data) }.value
-            guard let self, !Task.isCancelled, self.artworkID == id else { return }
-            self.artworkTask = nil
-            self.artwork = decoded.map { NSImage(cgImage: $0.image, size: NSSize(width: $0.image.width, height: $0.image.height)) }
-            self.nowPlayingView?.update(self.nowPlayingState())
-        }
+        artworkPipeline.submit(id: id, bytes: data)
     }
 
     private func rememberName(_ id: ApplicationID) {
@@ -373,12 +376,8 @@ public final class WidgetCoordinator {
                            tomorrow: rows(snapshot.tomorrow, afterTomorrow, upcomingOnly: false))
         }
         if agenda == .needsPermission { return .needsPermission }
-        switch PermissionAccess.status(.calendar) {
-        case .notAsked: return .needsPermission
-        // Allowed with no read yet has no loading card in FluxUI. Unavailable
-        // offers Check Again and claims no events.
-        case .allowed, .notAllowed, .unknown: return .unavailable
-        }
+        if agenda == nil { return .loading }
+        return .unavailable
     }
 
     private func calendar(_ action: CalendarWidgetAction) {
@@ -541,13 +540,16 @@ public final class WidgetCoordinator {
         let clipboard = clipboard
         switch action {
         case .copy(let id):
+            guard visible == .clipboard, let authorization = writeAuthorization else { return }
             Task { @MainActor [weak self] in
-                guard let record = await clipboard.record(for: id), record.canCopy,
-                      let self, await self.writePasteboard(record.payload) else {
-                    self?.effects.report(.clipboardCopy)
+                let record = await clipboard.record(for: id)
+                guard let self, self.visible == .clipboard, self.writeAuthorization === authorization else { return }
+                guard let record, record.canCopy,
+                      await self.writePasteboard(record.payload, authorization: authorization) else {
+                    if self.writeAuthorization === authorization { self.effects.report(.clipboardCopy) }
                     return
                 }
-                guard self.visible == .clipboard else { return }
+                guard self.visible == .clipboard, self.writeAuthorization === authorization else { return }
                 self.copiedID = id
                 self.clipboardView?.update(self.clipboardState())
             }
@@ -570,9 +572,10 @@ public final class WidgetCoordinator {
 
     /// Writes through the running feed so it skips its own change, or through
     /// the shared channel when collection is off. True only on a write ack.
-    private func writePasteboard(_ payload: ClipboardPayload) async -> Bool {
-        if let feed = clipboardLease?.feed { return await feed.copyBack(payload) }
-        return await pasteboard.write(payload) != nil
+    private func writePasteboard(_ payload: ClipboardPayload, authorization: ClipboardWriteAuthorization) async -> Bool {
+        guard writeAuthorization === authorization else { return false }
+        if let feed = clipboardLease?.feed { return await feed.copyBack(payload, authorization: authorization) }
+        return await pasteboard.write(payload, authorization: authorization) != nil
     }
 
     // MARK: File Shelf
@@ -628,13 +631,23 @@ public final class WidgetCoordinator {
                   service.canPerform(withItems: [url]) else { effects.report(.shelfShare); return }
             service.perform(withItems: [url])
         case .copy(let id):
-            guard let url = shelfURLs[id] else { effects.report(.shelfPasteboard); return }
+            guard visible == .shelf, let authorization = writeAuthorization,
+                  let url = shelfURLs[id] else { effects.report(.shelfPasteboard); return }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                if !(await self.writePasteboard(.files([url]))) { self.effects.report(.shelfPasteboard) }
+                guard let self, self.writeAuthorization === authorization else { return }
+                if !(await self.writePasteboard(.files([url]), authorization: authorization)),
+                   self.writeAuthorization === authorization { self.effects.report(.shelfPasteboard) }
             }
-        case .remove(let id): removeShelf { try await $0.remove([id]) }
-        case .clearAll: removeShelf { try await $0.clear() }
+        case .remove(let id):
+            if copyingRows.contains(where: { $0.id == id }) {
+                copyJob?.cancel(id)
+                copyingRows.removeAll { $0.id == id }
+                shelfView?.update(shelfState())
+            } else { removeShelf { try await $0.remove([id]) } }
+        case .clearAll:
+            copyJob?.cancelAll()
+            copyingRows = []
+            removeShelf { try await $0.clear() }
         case .retry: loadShelf(reload: true)
         }
     }
@@ -655,20 +668,17 @@ public final class WidgetCoordinator {
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { effects.report(.shelfCopy); return }
         if files.count > Self.maximumDropFiles { effects.report(.shelfDropLimited) }
-        let batch = Array(files.prefix(Self.maximumDropFiles))
-        copyingRows = batch.map { FileShelfWidgetItem(id: UUID(), name: $0.lastPathComponent, status: .copying) }
-        let rowIDs = copyingRows.map(\.id)
+        let batch = files.prefix(Self.maximumDropFiles).map { ShelfCopyBatch.Request(source: $0) }
+        copyingRows = batch.map { FileShelfWidgetItem(id: $0.id, name: $0.source.lastPathComponent, status: .copying) }
         let shelf = shelf
-        copyJob = Task { @MainActor [weak self] in
-            var added = 0
-            var failed = 0
-            for (index, source) in batch.enumerated() {
-                do { _ = try await shelf.addCopy(of: source); added += 1 } catch { failed += 1 }
-                self?.copyingRows.removeAll { $0.id == rowIDs[index] }
+        copyJob = ShelfCopyBatch(requests: batch, copy: { try await shelf.addCopy(of: $0) },
+            remove: { try await shelf.remove([$0]) }, progress: { [weak self] id in
+                self?.copyingRows.removeAll { $0.id == id }
                 if self?.visible == .shelf { self?.loadShelf(reload: false) }
-            }
+            }, finished: { [weak self] added, failed in
             self?.copyFinished(added: added, failed: failed)
-        }
+        })
+        copyJob?.start()
         shelfView?.update(shelfState())
     }
 

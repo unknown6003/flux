@@ -104,12 +104,42 @@ import FluxUI
             window.close()
             if let failure { throw failure }
         }
+        for notched in [false, true] {
+            let geometry = NotchGeometry(screenFrame: NSRect(x: 0, y: 0, width: 1728, height: 1117),
+                                         cameraWidth: notched ? 180 : 0, topInset: 33)
+            let samples: [(String, ActivityItem?)] = [
+                ("idle", nil),
+                ("battery", try ActivityItem(kind: .battery, leading: .symbol("battery.25percent"),
+                    trailing: .text("18%"), priority: 10, tint: .warning, duration: 5)),
+                ("timer", try ActivityItem(kind: .timer, leading: .gauge(value: 0.6, symbol: "timer"),
+                    trailing: .text("1:05"), priority: 10, duration: nil)),
+                ("media", try ActivityItem(kind: .nowPlaying, leading: .artwork,
+                    trailing: .symbol("waveform"), priority: 1, duration: nil)),
+                ("volume", try ActivityItem(kind: .soundHUD, leading: .symbol("speaker.wave.2"),
+                    trailing: .soundGauge(value: 0.6, symbol: "speaker.wave.2"), priority: 10, duration: 2))
+            ]
+            for (name, item) in samples {
+                let controller = CompactNotchController(state: .init(geometry: geometry, currentActivity: item,
+                    queueCount: item == nil ? 0 : 2, restorableCount: 1), onAction: { _ in })
+                let window = NSWindow(contentRect: NSRect(origin: .init(x: -10_000, y: -10_000), size: controller.preferredSize),
+                                      styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.backgroundColor = .clear
+                window.contentViewController = controller
+                window.setContentSize(controller.preferredSize)
+                window.orderFrontRegardless()
+                controller.view.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                try render(controller.view, to: output.appendingPathComponent("compact-\(notched ? "notch" : "flat")-\(name).png"))
+                window.close()
+            }
+        }
     }
 
     @MainActor private static func widgetFixtures() -> [(String, NSViewController)] {
         var fixtures: [(String, NSViewController)] = []
         let source = ApplicationID(rawValue: "org.fluxfixture.player")!
-        for (name, status) in [("playing", NowPlayingWidgetStatus.playing), ("paused", .paused), ("empty", .empty), ("noAccess", .noAccess)] {
+        for (name, status) in [("playing", NowPlayingWidgetStatus.playing), ("paused", .paused), ("empty", .empty), ("noAccess", .noAccess), ("loading", .loading)] {
             fixtures.append(("nowPlaying-" + name, NowPlayingWidgetController(state: .init(
                 status: status, title: "A long track title that still leaves room for the player controls",
                 artist: "Example Artist", sources: [.init(id: source, name: "Example Player")],
@@ -125,7 +155,7 @@ import FluxUI
                                        start: start, end: end, isAllDay: index == 0, color: color)
         }
         for (name, state) in [("events", CalendarWidgetState.events(today: events, tomorrow: Array(events.prefix(2)))),
-                              ("empty", .events(today: [], tomorrow: [])), ("permission", .needsPermission), ("unavailable", .unavailable)] {
+                              ("empty", .events(today: [], tomorrow: [])), ("permission", .needsPermission), ("unavailable", .unavailable), ("loading", .loading)] {
             fixtures.append(("calendar-" + name, CalendarWidgetController(state: state, onAction: { _ in })))
         }
         for (name, status) in [("starting", MirrorWidgetStatus.starting), ("running", .running), ("permission", .needsPermission),

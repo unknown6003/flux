@@ -5,6 +5,28 @@ import FluxCore
 @testable import FluxPlatform
 
 @MainActor @Test(.timeLimit(.minutes(1)))
+func closedWidgetCannotWriteThroughAQueuedPasteboardAction() async throws {
+    let name = "org.fluxfixture.clipboard." + UUID().uuidString
+    let pasteboard = NSPasteboard(name: .init(name))
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.clearContents()
+    pasteboard.setString("Current clipboard", forType: .string)
+    let channel = PasteboardChannel(name: name)
+    let previous = pasteboard.changeCount
+    let closed = ClipboardWriteAuthorization()
+    closed.revoke()
+    #expect(await channel.write(.text("Stale widget copy", .text), authorization: closed) == nil)
+    #expect(pasteboard.changeCount == previous)
+    #expect(pasteboard.string(forType: .string) == "Current clipboard")
+    let reopened = ClipboardWriteAuthorization()
+    #expect(await channel.write(.text("New widget copy", .text), authorization: reopened) != nil)
+    #expect(pasteboard.string(forType: .string) == "New widget copy")
+    // An old task cannot borrow the new widget's authorization.
+    #expect(await channel.write(.text("Old task resumed", .text), authorization: closed) == nil)
+    #expect(pasteboard.string(forType: .string) == "New widget copy")
+}
+
+@MainActor @Test(.timeLimit(.minutes(1)))
 func clipboardSecretTypesAndHTMLNeverBecomeHistoryContent() async throws {
     let name = "org.fluxfixture.clipboard." + UUID().uuidString
     let pasteboard = NSPasteboard(name: .init(name))
