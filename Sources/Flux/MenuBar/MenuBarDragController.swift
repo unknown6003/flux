@@ -64,7 +64,8 @@ final class MenuBarDragController: ObservableObject {
                         guard self.displays != current else { return }
                         self.displays = current
                     }
-                    self.invalidate()
+                    self.invalidate(reason: name == NSApplication.didResignActiveNotification
+                                    ? .focusLost : .screenChanged)
                 }
             })
         }
@@ -73,12 +74,12 @@ final class MenuBarDragController: ObservableObject {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     if name == NSWindow.willCloseNotification { self?.onWindowClose?() }
-                    self?.invalidate()
+                    self?.invalidate(reason: name == NSWindow.didResignKeyNotification ? .focusLost : .closed)
                 }
             })
         }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            MainActor.assumeIsolated { if event.keyCode == 53 { self?.invalidate() } }
+            MainActor.assumeIsolated { if event.keyCode == 53 { self?.invalidate(reason: .escape) } }
             return event
         }
     }
@@ -95,12 +96,12 @@ final class MenuBarDragController: ObservableObject {
         settingsWindow = nil
     }
 
-    private func invalidate() {
+    private func invalidate(reason: MenuBarIconManager.MoveCancellation = .closed) {
         generation += 1
         active = nil
         pending = nil
         isDragging = false
-        manager?.cancelPendingMoves()
+        manager?.cancelPendingMoves(for: reason)
     }
 
     func refreshIcons() {

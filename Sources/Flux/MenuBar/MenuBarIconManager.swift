@@ -8,6 +8,7 @@ final class MenuBarIconManager: ObservableObject {
     typealias Boundaries = (hidden: CGFloat?, alwaysHidden: CGFloat?)
 
     enum MoveDirection { case towardDrawer, towardClock }
+    enum MoveCancellation { case focusLost, closed, screenChanged, escape }
 
     struct Icon: Identifiable, Equatable {
         let id: String
@@ -215,8 +216,10 @@ final class MenuBarIconManager: ObservableObject {
         applyDesiredVisibility()
     }
 
-    func cancelPendingMoves() {
+    func cancelPendingMoves(for reason: MoveCancellation = .closed) {
+        if reason == .focusLost && driver.isRunning { return }
         cancellationGeneration += 1
+        lastMoveReport += "; cancelled=\(reason)"
     }
 
     func copyMenuBarReport() {

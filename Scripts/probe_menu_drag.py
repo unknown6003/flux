@@ -30,6 +30,7 @@ enum ControlItem { static let usesMacOS27Model = true }
 @MainActor
 final class MenuBarIconManager: ObservableObject {
     enum MoveDirection { case towardDrawer, towardClock }
+    enum MoveCancellation { case focusLost, closed, screenChanged, escape }
     @Published private(set) var isUpdatingIcons = false
     private(set) var pendingVerifications = 0
     struct Icon: Identifiable, Equatable {
@@ -58,7 +59,7 @@ final class MenuBarIconManager: ObservableObject {
     var extraRows = 0
     var assignments: [String: MenuBarSection] = [:]
     private var identities: [String: UUID] = [:]
-    func cancelPendingMoves() {}
+    func cancelPendingMoves(for reason: MoveCancellation = .closed) {}
     static func launchToken(for launchDate: Date?) -> Int64 {
         guard let launchDate else { return 0 }
         return Int64((launchDate.timeIntervalSince1970 * 1_000).rounded())

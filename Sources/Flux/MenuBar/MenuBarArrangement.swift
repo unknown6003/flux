@@ -180,7 +180,9 @@ final class MenuBarArrangement {
         if let target {
             onTrace?("drag \(item.handle.id) source=\(item.frame) target=\(target) section=\(section.rawValue)")
             guard canCommit() else { return .failure(.cancelled) }
-            guard await environment.drag(item, target) else { return .failure(.notMoved(item.title)) }
+            let posted = await environment.drag(item, target)
+            guard canCommit() else { return .failure(.cancelled) }
+            guard posted else { return .failure(.notMoved(item.title)) }
             await pause(0.45)
             let quietBy = ProcessInfo.processInfo.systemUptime + 3
             while !environment.canStart() {
