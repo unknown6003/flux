@@ -63,6 +63,8 @@ final class MenuBarIconManager: ObservableObject {
     private(set) var delayedRefreshes = 0
     private(set) var delayedRefreshBeganWithButton = false
     private(set) var delayedRefreshEndedWithButton = false
+    private(set) var delayedRefreshStarted: TimeInterval = 0
+    private(set) var delayedRefreshEnded: TimeInterval = 0
     func cancelPendingMoves(for reason: MoveCancellation = .closed) {}
     static func launchToken(for launchDate: Date?) -> Int64 {
         guard let launchDate else { return 0 }
@@ -94,10 +96,12 @@ final class MenuBarIconManager: ObservableObject {
         if delayNextRefresh {
             delayNextRefresh = false
             if CGEventSource.buttonState(.combinedSessionState, button: .left) {
-                // Model a slow owner AX reply while the independent input
-                // process completes the user's gesture and releases the mouse.
+                // Model a slow owner AX reply during the user's gesture.
+                // The input driver remains independent of the blocked UI thread.
                 delayedRefreshBeganWithButton = true
+                delayedRefreshStarted = ProcessInfo.processInfo.systemUptime
                 Thread.sleep(forTimeInterval: 1)
+                delayedRefreshEnded = ProcessInfo.processInfo.systemUptime
                 delayedRefreshEndedWithButton = CGEventSource.buttonState(.combinedSessionState, button: .left)
                 delayedRefreshes += 1
             }
@@ -250,6 +254,10 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         if kind == "held" { Thread.sleep(forTimeInterval: 0.25) }
     }
     mouse(.leftMouseDown, start, command ? .maskCommand : [])
+    if kind == "slow-inventory" {
+        print("driver mouse-down uptime=\(ProcessInfo.processInfo.systemUptime) button=\(CGEventSource.buttonState(.combinedSessionState, button: .left))")
+        fflush(stdout)
+    }
     Thread.sleep(forTimeInterval: 0.06)
     if kind == "late-command" { key(55, true, .maskCommand) }
     for step in 1...24 {
@@ -296,7 +304,15 @@ func drive(statePath: String, source: String, destination: String, kind: String)
         key(53, true); key(53, false)
         guard waitFor({ $0.contains("ended operation=0") }) else { fail("Escape did not end the session") }
     }
+    if kind == "slow-inventory" {
+        print("driver before mouse-up uptime=\(ProcessInfo.processInfo.systemUptime) button=\(CGEventSource.buttonState(.combinedSessionState, button: .left))")
+        fflush(stdout)
+    }
     mouse(.leftMouseUp, target, command || kind == "late-command" ? .maskCommand : [])
+    if kind == "slow-inventory" {
+        print("driver after mouse-up uptime=\(ProcessInfo.processInfo.systemUptime) button=\(CGEventSource.buttonState(.combinedSessionState, button: .left))")
+        fflush(stdout)
+    }
     key(55, false)
     Thread.sleep(forTimeInterval: 0.35)
 }
@@ -406,6 +422,8 @@ func drive(statePath: String, source: String, destination: String, kind: String)
             "delayedRefreshes": manager.delayedRefreshes,
             "delayedRefreshBeganWithButton": manager.delayedRefreshBeganWithButton,
             "delayedRefreshEndedWithButton": manager.delayedRefreshEndedWithButton,
+            "delayedRefreshStarted": manager.delayedRefreshStarted,
+            "delayedRefreshEnded": manager.delayedRefreshEnded,
             "moving": lanes.first?.controller?.isDragging == true,
             "busy": manager.isUpdatingIcons, "buttons": NSEvent.pressedMouseButtons,
             "focusedMenu": (window.firstResponder as? MenuBarDragSourceView)?.icon?.isMovable == true,
@@ -854,9 +872,10 @@ extension MenuBarDragController {
                                    and (kind != "slow-inventory" or value["delayedRefreshes"] == 1
                                         or len(value["commits"]) > before))
                 if kind == "slow-inventory" and state["delayedRefreshes"]:
-                    if not state["delayedRefreshBeganWithButton"] or state["delayedRefreshEndedWithButton"]:
-                        raise RuntimeError(f"slow inventory did not span a real drag release: {state}")
-                    raise RuntimeError(f"Settings read inventory during the gesture and missed its release: {state}")
+                    elapsed = state["delayedRefreshEnded"] - state["delayedRefreshStarted"]
+                    if not state["delayedRefreshBeganWithButton"] or elapsed < 0.9:
+                        raise RuntimeError(f"slow inventory did not exercise a blocked active gesture: {state}")
+                    raise RuntimeError(f"Settings read inventory during an active drag; blocked {elapsed:.3f}s: {state}")
                 events = state["events"][offset:]
                 begins = [event for event in events if event.startswith("begin ")]
                 if len(begins) != (0 if kind in ("late-command", "busy") else 1):
