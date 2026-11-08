@@ -92,7 +92,7 @@ public final class CalendarWidgetController: NSViewController {
         root.setAccessibilityElement(true)
         root.setAccessibilityRole(.group)
         root.setAccessibilityLabel(Widget.calendar.displayName)
-        FluxUIStyle.pin(FluxUIStyle.vstack([list, card], spacing: 0), in: root)
+        NotchWidgetStyle.pinTop(FluxUIStyle.vstack([list, card], spacing: 0), in: root)
         view = root
         apply()
     }
@@ -159,6 +159,7 @@ public final class CalendarWidgetController: NSViewController {
         button.bezelStyle = .inline
         button.font = .preferredFont(forTextStyle: .caption1)
         button.contentTintColor = FluxUIStyle.accent
+        button.alignment = .left
         button.tag = day == .today ? 0 : 1
         button.setAccessibilityLabel(String(format: L("calendar.more.label", "%@: %d more events. Open in Calendar"),
                                             dayTitle, count))
@@ -197,6 +198,7 @@ public final class CalendarWidgetController: NSViewController {
         if let location = event.location, !location.isEmpty { detail += " \u{00B7} \(location)" }
         let detailLabel = FluxUIStyle.label(detail, style: .caption1, secondary: true, wraps: false)
         detailLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        NotchWidgetStyle.fillWidth(titleLabel, detailLabel)
 
         let texts = FluxUIStyle.vstack([titleLabel, detailLabel], spacing: 1)
         let row = FluxUIStyle.hstack([dot, texts], spacing: 8)

@@ -68,7 +68,7 @@ public final class MirrorWidgetController: NSViewController {
             statusLabel.trailingAnchor.constraint(equalTo: frameView.trailingAnchor, constant: -12),
         ])
 
-        FluxUIStyle.pin(FluxUIStyle.vstack([frameView, card], spacing: 0), in: root)
+        NotchWidgetStyle.pinTop(FluxUIStyle.vstack([frameView, card], spacing: 0), in: root)
         view = root
         attachPreview()
         apply()

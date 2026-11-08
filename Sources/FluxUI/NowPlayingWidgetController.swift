@@ -123,9 +123,9 @@ public final class NowPlayingWidgetController: NSViewController {
         sourcePopup.setAccessibilityLabel(L("nowPlaying.source", "Source"))
         sourcePopup.setContentCompressionResistancePriority(.required, for: .horizontal)
 
+        NotchWidgetStyle.fillWidth(titleLabel, artistLabel)
         let texts = FluxUIStyle.vstack([titleLabel, artistLabel], spacing: 2)
-        texts.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let header = FluxUIStyle.hstack([artwork, texts, sourcePopup, openButton], spacing: 10)
+        let header = FluxUIStyle.hstack([artwork, texts, FluxUIStyle.spacer(), sourcePopup, openButton], spacing: 10)
 
         slider.isContinuous = false
         slider.target = self
@@ -137,9 +137,10 @@ public final class NowPlayingWidgetController: NSViewController {
         remainingLabel.font = elapsedLabel.font
         elapsedLabel.setAccessibilityElement(false)
         remainingLabel.setAccessibilityElement(false)
+        for label in [elapsedLabel, remainingLabel] { label.setContentCompressionResistancePriority(.required, for: .horizontal) }
         let progress = FluxUIStyle.hstack([elapsedLabel, slider, remainingLabel], spacing: 8)
 
-        let transport = FluxUIStyle.hstack([FluxUIStyle.spacer(), previousButton, playButton, nextButton, FluxUIStyle.spacer()], spacing: 18)
+        let transport = NotchWidgetStyle.centered([previousButton, playButton, nextButton], spacing: 18)
 
         content.orientation = .vertical
         content.alignment = .leading
@@ -150,7 +151,7 @@ public final class NowPlayingWidgetController: NSViewController {
             view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
 
-        FluxUIStyle.pin(FluxUIStyle.vstack([content, card], spacing: 0), in: root)
+        NotchWidgetStyle.pinTop(FluxUIStyle.vstack([content, card], spacing: 0), in: root)
         view = root
         apply()
     }

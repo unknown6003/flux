@@ -132,7 +132,7 @@ public final class ClipboardWidgetController: NSViewController, NSTableViewDataS
         height.isActive = true
         scrollHeight = height
 
-        FluxUIStyle.pin(FluxUIStyle.vstack([header, search, scroll, card], spacing: 6), in: root)
+        NotchWidgetStyle.pinTop(FluxUIStyle.vstack([header, search, scroll, card], spacing: 6), in: root)
         view = root
         apply()
     }

@@ -413,6 +413,20 @@ let widget = ClipboardWidgetController(state: ClipboardWidgetState(
 - Empty shows "Nothing copied yet". No match shows "No matching items".
 - The widget never reads the pasteboard, polls, or stores history. The parent copies back with the exact type and opens links.
 
+## Widget layout fix
+
+The widget captures at `build/native-ui-75d067c` showed four layout faults in the 408 x 440 pt host. File Shelf and Clipboard had the header in mid-panel and the list at the bottom. Calendar stretched its first row to about 200 pt. Row titles were 0 to 130 pt wide, and the Now Playing controls sat at the left.
+
+The causes were in FluxUI:
+
+- Each widget pinned its stack to all four edges of its root. The panel container and the fixture host both set a fixed height, so the stack stretched its lowest-hugging view. Widgets now use `NotchWidgetStyle.pinTop`. The stack's bottom edge may leave space, so rows keep their own height and sit at the top.
+- One-line labels had horizontal compression resistance 250, the same as the stack hugging. The text column then took the width of the shortest label. `NotchWidgetStyle.fillWidth` sets 490 on row titles, details, the Clear All header and the Now Playing title, so text gets the free width and truncates at the row edge.
+- The list column kept the default `NSTableColumn` width. `NotchListScrollView` sets the column to the visible width on each layout.
+- The Now Playing transport used two spacers with equal priority. `NotchWidgetStyle.centered` now centers the buttons with a constraint. A spacer puts the source menu and Open button at the trailing edge. The elapsed and remaining times no longer compress.
+- Calendar "N more" text is leading-aligned.
+
+The production host matches the fixture. `NotchPanelController` pins the widget to a container that is 440 - 2 x 16 = 408 pt wide, and the parent sets the height. The root must rebuild on macOS and capture each widget state again. This change has no capture yet.
+
 ## Teardown
 
 These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.

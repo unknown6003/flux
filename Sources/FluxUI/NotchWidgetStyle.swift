@@ -13,6 +13,41 @@ enum NotchWidgetStyle {
         return view
     }
 
+    /// Pins `content` to the top, leading and trailing edges of `root`.
+    /// The bottom may leave space, so a tall host never stretches rows.
+    static func pinTop(_ content: NSView, in root: NSView) {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            content.topAnchor.constraint(equalTo: root.topAnchor),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor),
+        ])
+    }
+
+    /// Lets one-line labels take the free width in a row. Their compression
+    /// resistance is above the stack hugging (250) and below the required
+    /// row edges, so text fills the row and truncates only at its end.
+    static func fillWidth(_ labels: NSTextField...) {
+        for label in labels { label.setContentCompressionResistancePriority(.init(490), for: .horizontal) }
+    }
+
+    /// Centers `views` in a row as wide as its parent stack.
+    static func centered(_ views: [NSView], spacing: CGFloat) -> NSView {
+        let row = NSView()
+        let stack = FluxUIStyle.hstack(views, spacing: spacing)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: row.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            stack.centerXAnchor.constraint(equalTo: row.centerXAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: row.leadingAnchor),
+        ])
+        return row
+    }
+
     /// A borderless symbol button with a VoiceOver label and tooltip.
     static func iconButton(_ symbol: String, label: String, size: CGFloat, target: AnyObject, action: Selector) -> NSButton {
         let button = NSButton(image: FluxUIStyle.symbol(symbol, label: label) ?? NSImage(), target: target, action: action)
@@ -102,12 +137,20 @@ final class NotchListTable: NSTableView {
         table.backgroundColor = .clear
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.allowsMultipleSelection = false
-        let scroll = NSScrollView()
+        let scroll = NotchListScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         return (scroll, table)
+    }
+
+    /// Makes the one column as wide as the visible area, so cells never
+    /// keep the default 100 pt column width.
+    func fitColumn(to width: CGFloat) {
+        guard let column = tableColumns.first else { return }
+        let target = max(0, (width - intercellSpacing.width).rounded(.down))
+        if abs(column.width - target) > 0.5 { column.width = target }
     }
 
     /// Height for `rows` visible rows, at most `limit`.
@@ -131,6 +174,16 @@ final class NotchListTable: NSTableView {
         guard row >= 0 else { return nil }
         if !selectedRowIndexes.contains(row) { selectRowIndexes([row], byExtendingSelection: false) }
         return menuForRow?(row)
+    }
+}
+
+/// The scroll view around a `NotchListTable`. Each layout fits the table
+/// column to the visible width.
+@MainActor
+final class NotchListScrollView: NSScrollView {
+    override func layout() {
+        super.layout()
+        (documentView as? NotchListTable)?.fitColumn(to: contentView.bounds.width)
     }
 }
 
@@ -173,6 +226,7 @@ final class NotchListRowView: NSTableCellView {
             icon.heightAnchor.constraint(equalToConstant: 28),
         ])
         title.lineBreakMode = .byTruncatingMiddle
+        NotchWidgetStyle.fillWidth(title, detail)
         let texts = FluxUIStyle.vstack([title, detail], spacing: 1)
         let row = FluxUIStyle.hstack([icon, texts], spacing: 8)
         FluxUIStyle.pin(row, in: self, inset: NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4))
@@ -221,6 +275,7 @@ final class NotchClearHeader: NSStackView {
         cancelButton = NSButton(title: L("notch.cancel", "Cancel"), target: nil, action: nil)
         confirmButton = NSButton(title: L("notch.clear", "Clear"), target: nil, action: nil)
         super.init(frame: .zero)
+        NotchWidgetStyle.fillWidth(titleLabel, self.question)
         orientation = .horizontal
         alignment = .centerY
         spacing = 8

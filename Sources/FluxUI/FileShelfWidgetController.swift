@@ -114,7 +114,7 @@ public final class FileShelfWidgetController: NSViewController, NSTableViewDataS
         height.isActive = true
         scrollHeight = height
 
-        FluxUIStyle.pin(FluxUIStyle.vstack([header, note, scroll, card], spacing: 6), in: root)
+        NotchWidgetStyle.pinTop(FluxUIStyle.vstack([header, note, scroll, card], spacing: 6), in: root)
         view = root
         apply()
     }
