@@ -469,7 +469,7 @@ func probe() {
         guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
         print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
         afterMove {
-            let expiryError = manager.errorMessage
+            let menuError = manager.errorMessage
             manager.refresh()
             let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
             if expires {
@@ -479,7 +479,7 @@ func probe() {
                 }
                 guard ProbeMenuClock.advanced, !manager.isUpdatingIcons, fixture()?.frame == icon.frame,
                       (saved as NSDictionary?) == initialLayout,
-                      expiryError == "Close the menu, then try moving the icon again." else {
+                      menuError == "Close the menu, then try moving the icon again." else {
                     print("FAIL: an expired menu request did not cancel and clear pending state")
                     exit(1)
                 }
@@ -487,12 +487,12 @@ func probe() {
                 finish()
                 return
             }
-            guard !manager.isUpdatingIcons, let current = fixture(),
+            guard menuError == nil, !manager.isUpdatingIcons, let current = fixture(),
                   MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
                   current.section == .shown,
                   (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
                 print("FAIL: a real menu action did not move and save the fixture as Shown")
-                print("MENU actual=\(String(describing: fixture()?.frame)) boundaries=\(manager.boundaryProvider()) error=\(manager.errorMessage ?? "none")")
+                print("MENU actual=\(String(describing: fixture()?.frame)) boundaries=\(manager.boundaryProvider()) error=\(menuError ?? "none")")
                 manager.copyMenuBarReport()
                 print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                 exit(1)
@@ -543,9 +543,10 @@ func probe() {
                                 String(Double(to.x)), String(Double(to.y))]
             driver.terminationHandler = { driver in
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    let moveError = manager.errorMessage
                     manager.refresh()
                     let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                    guard driver.terminationStatus == 0,
+                    guard moveError == nil, driver.terminationStatus == 0,
                           events.contains(where: { $0.hasPrefix("native began ") }),
                           events.contains("ended operation=16"),
                           events.contains(where: { $0.hasPrefix("commit shown ") }),
@@ -556,6 +557,7 @@ func probe() {
                         manager.copyMenuBarReport()
                         print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
                         print("FAIL: real drag callbacks did not move and save the fixture as Shown")
+                        print("Move error: \(moveError ?? "none")")
                         exit(1)
                     }
                     controller.close()
@@ -1228,11 +1230,13 @@ func probe() {
             exit(1)
         }
         afterMove {
+            let moveError = manager.errorMessage
             manager.refresh()
             guard !manager.isUpdatingIcons, let current = fixture(),
+                  moveError == nil,
                   MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == section,
                   current.section == section else {
-                print("FAIL: the real fixture did not move to \(section.rawValue); \(manager.errorMessage ?? "no error")")
+                print("FAIL: the real fixture did not move to \(section.rawValue); \(moveError ?? "no error")")
                 if let current = fixture() { print("Actual frame: \(current.frame); boundaries=\(manager.boundaryProvider())") }
                 manager.copyMenuBarReport()
                 print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
