@@ -5,6 +5,14 @@ import FluxCore
 
 @Suite(.serialized)
 struct ViewLifetimeTests {
+    @Test @MainActor func malformedMediaTimesNeverOverflowClockFormatting() {
+        #expect(NotchWidgetStyle.clock(.nan) == "0:00")
+        #expect(NotchWidgetStyle.clock(.infinity) == "0:00")
+        #expect(NotchWidgetStyle.clock(-10) == "0:00")
+        #expect(NotchWidgetStyle.clock(65) == "1:05")
+        #expect(!NotchWidgetStyle.clock(.greatestFiniteMagnitude).isEmpty)
+    }
+
     @Test @MainActor func settingsBuildsOnePageAndReleasesItOnSwitchAndClose() {
         _ = NSApplication.shared
         var made: [SettingsPage] = []

@@ -79,10 +79,21 @@ import FluxUI
             window.isReleasedWhenClosed = false
             window.backgroundColor = .black
             window.appearance = NSAppearance(named: .darkAqua)
-            window.contentViewController = controller
+            let host = NSView(frame: NSRect(x: 0, y: 0, width: 408, height: 440))
+            window.contentView = host
+            let widget = controller.view
+            widget.translatesAutoresizingMaskIntoConstraints = false
+            host.addSubview(widget)
+            NSLayoutConstraint.activate([
+                widget.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                widget.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                widget.topAnchor.constraint(equalTo: host.topAnchor),
+                widget.bottomAnchor.constraint(equalTo: host.bottomAnchor)
+            ])
+            window.setContentSize(NSSize(width: 408, height: 440))
             window.orderFrontRegardless()
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-            let root = controller.view
+            let root = host
             root.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
             var failure: (any Error)?
