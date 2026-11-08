@@ -84,12 +84,14 @@ public struct UsageRecord: Sendable, Equatable {
     public let event: UsageEvent
     public let time: Date
     public let assignments: [UsageFlag: UsageVariant]
+    public let isVerification: Bool
 
-    public init(id: UUID = UUID(), event: UsageEvent, time: Date = Date(), assignments: [UsageFlag: UsageVariant] = [:]) {
+    public init(id: UUID = UUID(), event: UsageEvent, time: Date = Date(), assignments: [UsageFlag: UsageVariant] = [:], isVerification: Bool = false) {
         self.id = id
         self.event = event
         self.time = time
         self.assignments = assignments
+        self.isVerification = isVerification
     }
 }
 
@@ -116,6 +118,7 @@ public enum UsageBatchEncoder {
             var properties: [String: Any] = record.event.properties
             properties["$process_person_profile"] = false
             properties["$geoip_disable"] = true
+            if record.isVerification { properties["flux_validation"] = true }
             for (flag, variant) in record.assignments {
                 properties["$feature/" + flag.rawValue] = variant.wireValue
             }

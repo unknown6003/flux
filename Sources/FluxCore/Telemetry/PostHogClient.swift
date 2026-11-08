@@ -8,6 +8,7 @@ public actor PostHogClient {
     private let projectToken: String
     private let transport: any UsageTransport
     private let flushDelay: Duration
+    private let isVerification: Bool
     private var identity: UsageIdentity
     private var enabled = true
     private var generation = UUID()
@@ -27,13 +28,14 @@ public actor PostHogClient {
 
     public init(
         projectToken: String, identity: UsageIdentity, transport: any UsageTransport,
-        flushDelay: Duration = .seconds(30)
+        flushDelay: Duration = .seconds(30), isVerification: Bool = false
     ) throws {
         _ = try UsageBatchEncoder.encode([], identity: identity, projectToken: projectToken)
         self.projectToken = projectToken
         self.identity = identity
         self.transport = transport
         self.flushDelay = flushDelay
+        self.isVerification = isVerification
     }
 
     deinit {
@@ -45,7 +47,7 @@ public actor PostHogClient {
         if let expectedIdentity, expectedIdentity != identity { return }
         guard admitRecord() else { return }
         if events.count == Self.eventLimit { events.removeFirst() }
-        events.append(UsageRecord(event: event, assignments: usedAssignments))
+        events.append(UsageRecord(event: event, assignments: usedAssignments, isVerification: isVerification))
         schedule()
     }
 
@@ -69,7 +71,7 @@ public actor PostHogClient {
         if !exposures.contains(key), admitRecord() {
             exposures.insert(key)
             if events.count == Self.eventLimit { events.removeFirst() }
-            events.append(UsageRecord(event: .exposure(flag, variant), assignments: usedAssignments))
+            events.append(UsageRecord(event: .exposure(flag, variant), assignments: usedAssignments, isVerification: isVerification))
             schedule()
         }
         return variant
@@ -114,7 +116,7 @@ public actor PostHogClient {
         } else {
             let batch = Array(logs.prefix(20))
             logs.removeFirst(batch.count)
-            guard let data = try? PostHogWire.logs(batch, identity: identity) else { return }
+            guard let data = try? PostHogWire.logs(batch, identity: identity, isVerification: isVerification) else { return }
             payload = UsageRequest(endpoint: .logs, body: data, projectToken: projectToken)
             preferLogs = false
         }

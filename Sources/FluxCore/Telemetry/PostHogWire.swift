@@ -120,7 +120,7 @@ public enum PostHogWire {
         return result
     }
 
-    public static func logs(_ records: [UsageLogRecord], identity: UsageIdentity) throws -> Data {
+    public static func logs(_ records: [UsageLogRecord], identity: UsageIdentity, isVerification: Bool = false) throws -> Data {
         guard records.count <= UsageBatchEncoder.maximumRecords else { throw UsageEncodingError.tooManyRecords }
         let logs: [[String: Any]] = try records.map { record in
             let seconds = record.time.timeIntervalSince1970
@@ -134,9 +134,11 @@ public enum PostHogWire {
                 "attributes": [["key": "posthogDistinctId", "value": ["stringValue": identity.value.uuidString.lowercased()]]]
             ]
         }
+        var resourceAttributes: [[String: Any]] = [["key": "service.name", "value": ["stringValue": "Flux"]]]
+        if isVerification { resourceAttributes.append(["key": "flux_validation", "value": ["boolValue": true]]) }
         return try JSONSerialization.data(withJSONObject: [
             "resourceLogs": [[
-                "resource": ["attributes": [["key": "service.name", "value": ["stringValue": "Flux"]]]],
+                "resource": ["attributes": resourceAttributes],
                 "scopeLogs": [["scope": ["name": "Flux"], "logRecords": logs]]
             ]]
         ], options: [.sortedKeys])

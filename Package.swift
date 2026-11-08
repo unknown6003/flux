@@ -28,6 +28,12 @@ let package = Package(
                 // main-actor surfaces explicitly. Pragmatic for a menu-bar agent.
                 .swiftLanguageMode(.v5)
             ]
+        ),
+        .executableTarget(
+            name: "FluxTelemetryProbe",
+            dependencies: ["FluxCore"],
+            path: "Scripts/rebuild/TelemetryProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )

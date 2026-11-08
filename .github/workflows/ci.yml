@@ -21,6 +21,10 @@ on:
         description: Compare throwaway AppKit and SwiftUI shells as part of the native core run
         type: boolean
         default: false
+      native_posthog_probe:
+        description: Send fixed synthetic records through the new native client to the Flux EU project
+        type: boolean
+        default: false
       menu_bar_probe:
         description: Run the live macOS 27 visibility probe before building
         type: boolean
@@ -71,6 +75,22 @@ jobs:
         run: git rev-parse HEAD
       - name: Test native core
         run: swift test --filter FluxCoreTests
+      - name: Verify native PostHog transport
+        if: ${{ inputs.native_posthog_probe }}
+        timeout-minutes: 2
+        env:
+          FLUX_ALLOW_POSTHOG_PROBE: '1'
+        run: |
+          mkdir -p build/native-posthog
+          swift run FluxTelemetryProbe > build/native-posthog/transport.json
+          cat build/native-posthog/transport.json
+      - name: Upload native PostHog result
+        if: ${{ always() && inputs.native_posthog_probe }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-posthog
+          path: build/native-posthog/transport.json
+          if-no-files-found: warn
       - name: Compare native shells
         if: ${{ inputs.native_shell_probe }}
         timeout-minutes: 3
