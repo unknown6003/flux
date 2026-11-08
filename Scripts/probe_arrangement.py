@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the production move transaction through its inventory/input/policy seam."""
 
+import argparse
 from pathlib import Path
 import tempfile
 from probe_update import run
@@ -34,9 +35,21 @@ import CoreGraphics
         var trace: [String] = []
         var appScoped = true
         var saveAllowed = true
+        var deferredRows: [A.Item]?
+        var staleVerificationReads = 0
+        var verificationReads = 0
+        var interruptWhenRowsPublish = false
         func make() -> A {
             let engine = A(environment: .init(appScoped: appScoped, read: {
                 reads += 1
+                if let pending = deferredRows {
+                    verificationReads += 1
+                    if verificationReads > staleVerificationReads {
+                        rows = pending
+                        deferredRows = nil
+                        if interruptWhenRowsPublish { revision += 1 }
+                    }
+                }
                 return readable ? rows : nil
             }, canStart: { inputReady }, inputRevision: { revision }, sectionTarget: { source, _ in
                 CGPoint(x: 10, y: source.frame.midY)
@@ -44,10 +57,12 @@ import CoreGraphics
                 drags += 1
                 if interrupt { revision += 1 }
                 if movePhysically {
-                    rows = rows.map { row in
+                    let moved = rows.map { row in
                         item(row.handle, row.handle == source.handle ? 220 : row.frame.minX,
                              section: row.section, title: row.title, width: row.frame.width)
                     }
+                    if staleVerificationReads > 0 { deferredRows = moved }
+                    else { rows = moved }
                 }
                 return true
             }, physicalSection: { _ in .shown }, assign: { source, section, canCommit in
@@ -106,6 +121,28 @@ import CoreGraphics
         check(succeeded() && drags == 1, "already satisfied slot does not send native events")
 
         rows = [item(a, 100), item(b, 150, section: .hidden)]
+        staleVerificationReads = 2
+        verificationReads = 0
+        let delayedDrags = drags, delayedSaves = saves
+        await run(engine, slot)
+        check(succeeded() && verificationReads == 3 && drags == delayedDrags + 1 && saves == delayedSaves + 1,
+              "delayed owner AX order is verified with one drag and one policy save")
+        check(rows.first(where: { $0.handle == a })?.frame.minX == 220,
+              "delayed verification requires the actual requested neighbor order")
+
+        rows = [item(a, 100), item(b, 150, section: .hidden)]
+        verificationReads = 0
+        interruptWhenRowsPublish = true
+        let interruptedDrags = drags, interruptedSaves = saves
+        await run(engine, slot)
+        check(failed(.cancelled) && verificationReads == 3 && drags == interruptedDrags + 1 && saves == interruptedSaves,
+              "external input during delayed verification cancels even when the correct order arrives")
+        check(rows.first(where: { $0.handle == a })?.frame.minX == 220,
+              "a correct late AX result cannot override cancellation")
+        staleVerificationReads = 0
+        interruptWhenRowsPublish = false
+
+        rows = [item(a, 100), item(b, 150, section: .hidden)]
         movePhysically = false
         let beforeSaves = saves
         await run(engine, slot)
@@ -162,13 +199,22 @@ import CoreGraphics
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--engine-ref", help="Compile a historical production engine for a failing control")
+    args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="flux-arrangement-") as directory:
         path = Path(directory)
         source = path / "Probe.swift"
         source.write_text(FIXTURE)
+        engine = ROOT / "Sources/Flux/MenuBar/MenuBarArrangement.swift"
+        if args.engine_ref:
+            historical = run(["git", "show", f"{args.engine_ref}:Sources/Flux/MenuBar/MenuBarArrangement.swift"],
+                             20, cwd=ROOT).stdout
+            engine = path / "MenuBarArrangement.swift"
+            engine.write_text(historical)
         binary = path / "probe"
         run(["swiftc", "-swift-version", "5", str(source),
-                        str(ROOT / "Sources/Flux/MenuBar/MenuBarArrangement.swift"),
+                        str(engine),
                         str(ROOT / "Sources/Flux/MenuBar/MenuBarSection.swift"),
                         "-o", str(binary)], 90)
         print(run([str(binary)], 30).stdout, end="")
