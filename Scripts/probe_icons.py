@@ -222,6 +222,18 @@ func probe() {
         check(initialFrames.count == 2, "fresh app-owner AX frames are complete")
         if selected == "settings" {
             let downs = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+            let guardedDriver = MenuBarNativeDrag()
+            let offBar = await guardedDriver.perform(from: CGRect(x: 100, y: 200, width: 34, height: 24),
+                                                     to: CGPoint(x: 180, y: 212), canContinue: { true })
+            check(!offBar && !guardedDriver.isRunning,
+                  "off-menu-bar AX frames cannot start native input")
+            let wrongOwner = await guardedDriver.perform(from: original.frame,
+                                                         to: CGPoint(x: original.frame.midX, y: original.frame.midY),
+                                                         expectedProcessID: getpid(), canContinue: { true })
+            check(!wrongOwner && !guardedDriver.isRunning,
+                  "a mismatched visible owner cannot start native input")
+            check(CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downs,
+                  "rejected source frames post zero mouse-down events")
             for section: MenuBarSection in [.hidden, .alwaysHidden, .shown, .hidden, .shown] {
                 guard let item = owned().first(where: { $0.id == firstID }) else { check(false, "source exists"); return }
                 manager.move(item, to: section)

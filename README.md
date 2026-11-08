@@ -71,7 +71,8 @@ Flux saves the last valid layout. If macOS later denies Accessibility access,
 hide and reveal still work with that layout. From 0.21.27, Flux checks the
 current grant through a short-lived process of the same signed app when macOS
 retains an old denied result. Access changes can take effect while Flux stays
-open. New apps stay visible until Flux can read their positions.
+open. New apps start in Shown. A Settings move or a native Command-drag changes
+their section.
 
 From 0.21.36, Menu Bar Settings saves visibility and icon order separately on
 macOS 27. Choose Shown, Hidden or Always Hidden to set an app's visibility.
