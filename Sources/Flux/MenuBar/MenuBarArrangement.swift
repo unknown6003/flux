@@ -11,6 +11,7 @@ final class MenuBarArrangement {
 
     struct Item {
         let handle: Handle
+        let bundleID: String
         let title: String
         let section: MenuBarSection
         let frame: CGRect
@@ -130,10 +131,9 @@ final class MenuBarArrangement {
 
     private func assigning(_ section: MenuBarSection, to item: Item, in items: [Item]) -> [Item] {
         guard environment.appScoped else { return items }
-        let bundle = item.handle.id.split(separator: "|").first
         return items.map { peer in
-            Item(handle: peer.handle, title: peer.title,
-                 section: peer.handle.id.split(separator: "|").first == bundle ? section : peer.section,
+            Item(handle: peer.handle, bundleID: peer.bundleID, title: peer.title,
+                 section: peer.bundleID == item.bundleID ? section : peer.section,
                  frame: peer.frame)
         }
     }

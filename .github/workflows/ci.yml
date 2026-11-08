@@ -96,6 +96,7 @@ jobs:
                   run(['git', 'archive', '--format=tar', '--output', str(archive), ref,
                        'Scripts', 'Sources/Flux'], 15)
                   run(['tar', '-xf', str(archive), '-C', str(source)], 15)
+                  current_arranger = (source / 'Sources/Flux/MenuBar/MenuBarArrangement.swift').exists()
                   if item.get('prepare_update'):
                       log = run(['python3', str(source / 'Scripts/probe_update.py')],
                                 180, capture=True)
@@ -111,14 +112,22 @@ jobs:
                               command = ['python3', str(source / 'Scripts/probe_clipboard_images.py'),
                                          '--out', str(source / case)]
                           elif case in ('physical-overlap', 'physical-retry-overlap'):
+                              if current_arranger:
+                                  raise RuntimeError('Retired physical-overlap fixture. Use an exact pre-rewrite ref, or select arrangement in icon-suite for current cancellation checks.')
                               command = ['python3', str(source / 'Scripts/probe_icons.py'),
                                          '--move-overlap' if case == 'physical-overlap' else '--move-retry-overlap']
                           elif case.startswith('native-move') or case == 'native-insertion':
-                              command = ['python3', str(source / 'Scripts/probe_icons.py'), '--trace-drag']
-                              if case.startswith('native-move-baseline'):
-                                  command += ['--manager-ref', '6fde90817068d06ecfae8eb6ec85c19e68af997b']
-                              elif case == 'native-insertion':
-                                  command += ['--insertion']
+                              if current_arranger:
+                                  if case.startswith('native-move-baseline'):
+                                      raise RuntimeError('Retired manager-ref fixture. Choose the exact pre-rewrite source ref for this baseline.')
+                                  command = ['python3', str(source / 'Scripts/probe_icons.py'), '--case',
+                                             'drag-insertion' if case == 'native-insertion' else 'narrow-reorder']
+                              else:
+                                  command = ['python3', str(source / 'Scripts/probe_icons.py'), '--trace-drag']
+                                  if case.startswith('native-move-baseline'):
+                                      command += ['--manager-ref', '6fde90817068d06ecfae8eb6ec85c19e68af997b']
+                                  elif case == 'native-insertion':
+                                      command += ['--insertion']
                           else:
                               command = ['python3', str(source / 'Scripts/probe_menu_drag.py'),
                                          '--output', str(source / case), '--case', case,

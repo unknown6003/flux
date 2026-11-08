@@ -349,7 +349,9 @@ final class MenuBarIconManager: ObservableObject {
         refresh()
         guard inventoryReadable else { return nil }
         return icons.filter(\.isMovable).map {
-            MenuBarArrangement.Item(handle: $0.handle, title: $0.title, section: $0.section, frame: $0.frame)
+            MenuBarArrangement.Item(handle: $0.handle,
+                                    bundleID: Self.appIconIdentity(from: $0.id)?.bundleID ?? "system-ui",
+                                    title: $0.title, section: $0.section, frame: $0.frame)
         }
     }
 

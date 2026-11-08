@@ -73,6 +73,13 @@ current grant through a short-lived process of the same signed app when macOS
 retains an old denied result. Access changes can take effect while Flux stays
 open. New apps stay visible until Flux can read their positions.
 
+From 0.21.36, Menu Bar Settings saves visibility and icon order separately on
+macOS 27. Choose Shown, Hidden or Always Hidden to set an app's visibility.
+All menu bar icons from that app share the setting. Drag between icons to
+change their native order. Flux waits for the Settings drag to end, reads the
+current positions, then checks the resulting order before saving the change.
+Valid saved assignments remain in place across the update.
+
 ## Features (MVP)
 
 - Click the chevron (or press the global hotkey, **⌃⌥⌘F** by default and fully

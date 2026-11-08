@@ -18,7 +18,7 @@ import CoreGraphics
         let c = A.Handle(id: "calendar|1|1|1", identity: UUID())
         func item(_ handle: A.Handle, _ x: CGFloat, section: MenuBarSection = .shown,
                   title: String = "Notion Calendar", width: CGFloat = 34) -> A.Item {
-            .init(handle: handle, title: title, section: section,
+            .init(handle: handle, bundleID: String(handle.id.split(separator: "|")[0]), title: title, section: section,
                   frame: CGRect(x: x, y: 4.5, width: width, height: 24))
         }
         var rows = [item(a, 100), item(b, 150), item(c, 250)]
