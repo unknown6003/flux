@@ -133,6 +133,10 @@ jobs:
                                          '--output', str(source / case), '--case', 'slow-inventory',
                                          '--seconds', '25', '--controller-ref',
                                          '032648486df7ec6603bd53178c0cd2a5b9740172']
+                          elif case == 'covered-source-control':
+                              command = ['python3', str(source / 'Scripts/probe_icons.py'),
+                                         '--case', 'covered-reorder', '--driver-ref',
+                                         'a22a431dba41a84366974157e5d5c095935ac763']
                           elif case == 'visibility':
                               command = ['python3', str(source / 'Scripts/probe_menu_bar.py'), '--dual-display']
                           else:
@@ -143,11 +147,16 @@ jobs:
                               log = run(command, budget, capture=True)
                           if case == 'slow-inventory-control':
                               raise RuntimeError('The old controller unexpectedly passed the timing control')
+                          if case == 'covered-source-control':
+                              raise RuntimeError('The old center-only driver unexpectedly passed the covered-source control')
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'
                           if case == 'slow-inventory-control' and 'Settings read inventory during an active drag' in log:
                               log = 'Confirmed expected old-controller failure:\n' + log
+                              result = 'pass'
+                          if case == 'covered-source-control' and 'FAIL: covered-reorder: first physical reorder has no error before any Refresh' in log:
+                              log = 'Confirmed expected center-only source failure:\n' + log
                               result = 'pass'
                       (source / (case + '-runner.log')).write_text(log)
                       results.append(dict(ref=ref, case=case, empty_title=item.get('empty_title', False), result=result))
