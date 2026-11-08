@@ -105,11 +105,13 @@ import FluxUI
                 selectedSource: source, elapsed: 65, duration: 240), onAction: { _ in })))
         }
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let events = (0..<6).map { index in
-            CalendarWidgetEvent(id: "fixture-\(index)", title: index == 0 ? "A long event name that should fit in the narrow notch panel" : "Example event \(index)",
-                                location: "Example room", start: now.addingTimeInterval(Double(index) * 3600),
-                                end: now.addingTimeInterval(Double(index) * 3600 + 1800), isAllDay: index == 0,
-                                color: .init(red: 0.2, green: 0.6, blue: 0.9))
+        let events: [CalendarWidgetEvent] = (0..<6).map { (index: Int) -> CalendarWidgetEvent in
+            let title = index == 0 ? "A long event name that should fit in the narrow notch panel" : "Example event \(index)"
+            let start = now.addingTimeInterval(Double(index) * 3600)
+            let end = start.addingTimeInterval(1800)
+            let color = CalendarWidgetColor(red: 0.2, green: 0.6, blue: 0.9)
+            return CalendarWidgetEvent(id: "fixture-\(index)", title: title, location: "Example room",
+                                       start: start, end: end, isAllDay: index == 0, color: color)
         }
         for (name, state) in [("events", CalendarWidgetState.events(today: events, tomorrow: Array(events.prefix(2)))),
                               ("empty", .events(today: [], tomorrow: [])), ("permission", .needsPermission), ("unavailable", .unavailable)] {
