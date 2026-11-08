@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""Verify Settings section moves against real menu-bar icon positions."""
+"""Exercise the compiled menu-bar module against two real disposable status items."""
 
 import argparse
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import plistlib
 import signal
-import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
-from probe_tcc import _stop
+from probe_tcc import _stop, accessibility_grant
 
-
-if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
-    raise SystemExit("FAIL: icon moves are tested only on a disposable macOS CI desktop")
+ROOT = Path(__file__).resolve().parents[1]
+CASES = ("settings", "narrow-reorder", "wide-reorder", "drag-insertion", "live-title", "identity-replacement")
 
 
 def command(arguments, seconds):
@@ -24,7 +22,7 @@ def command(arguments, seconds):
     try:
         status = process.wait(timeout=seconds)
         if status:
-            raise RuntimeError(f"FAIL: {arguments[0]} exited with {status}")
+            raise RuntimeError(f"{arguments[0]} exited {status}")
     finally:
         _stop(process)
 
@@ -33,1476 +31,389 @@ def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
 
 
-signal.signal(signal.SIGTERM, interrupted)
-root = Path(__file__).resolve().parents[1]
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--native-close", action="store_true")
-parser.add_argument("--move-close", action="store_true")
-parser.add_argument("--move-refresh-retry", action="store_true")
-parser.add_argument("--move-refresh-failure", action="store_true")
-parser.add_argument("--move-save-retry", action="store_true")
-parser.add_argument("--move-save-failure", action="store_true")
-parser.add_argument("--menu-context", action="store_true")
-parser.add_argument("--menu-expired", action="store_true")
-parser.add_argument("--drag-context", action="store_true")
-parser.add_argument("--stale-frame", choices=["section", "arrow"],
-                    help="Pass an old UI row frame to the public move action")
-parser.add_argument("--removed-row", action="store_true",
-                    help="Reject a row whose AX index was reused after item removal")
-parser.add_argument("--native-overlap", action="store_true")
-parser.add_argument("--native-geometry", action="store_true")
-parser.add_argument("--native-sibling", action="store_true")
-parser.add_argument("--native-refresh-retry", action="store_true")
-parser.add_argument("--move-overlap", action="store_true")
-parser.add_argument("--move-retry-overlap", action="store_true")
-parser.add_argument("--trace-drag", action="store_true", help="Record actual event-post completion times in a temporary manager copy")
-parser.add_argument("--insertion", action="store_true", help="Use the exact strip insertion interface for physical reorder")
-parser.add_argument("--wide-item", action="store_true", help="Reorder an icon with a wide status title")
-parser.add_argument("--saved-section-reorder", action="store_true",
-                    help="Reorder saved Hidden icons outside the physical Hidden divider span")
-parser.add_argument("--evidence-output", type=Path, help="Save real menu bar screenshots and a bounded recording")
-parser.add_argument("--manager-ref", help="Compile a committed manager with the current native fixture")
-parser.add_argument("--hider-ref", help="Compile a committed hider with the native fixture")
-options = parser.parse_args()
-fixture_bundle_id = "com.flux.icon-fixture." + uuid.uuid4().hex
-fixture_source = r'''
+FIXTURE = r'''
 import AppKit
-if CommandLine.arguments.count == 8 && CommandLine.arguments[1] == "--drag-siblings" {
-    let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
-    guard values.count == 6 else { exit(2) }
-    func post(_ type: CGEventType, _ point: CGPoint) {
-        let event = CGEvent(mouseEventSource: nil, mouseType: type,
+import ApplicationServices
+setbuf(stdout, nil)
+if CommandLine.arguments.count == 2 && CommandLine.arguments[1] == "--release-input" {
+    let point = CGEvent(source: nil)?.location ?? .zero
+    for type: CGEventType in [.leftMouseUp, .mouseMoved] {
+        let event = CGEvent(mouseEventSource: CGEventSource(stateID: .privateState), mouseType: type,
                             mouseCursorPosition: point, mouseButton: .left)!
-        event.flags = .maskCommand
+        event.flags = []
         event.post(tap: .cghidEventTap)
     }
-    let first = CGPoint(x: values[0], y: values[1])
-    let second = CGPoint(x: values[2], y: values[3])
-    let target = CGPoint(x: values[4], y: values[5])
-    post(.leftMouseDown, first)
-    Thread.sleep(forTimeInterval: 0.08)
-    for step in 1...24 {
-        let distance = CGFloat(step <= 12 ? step : 24 - step) / 12 * 8
-        post(.leftMouseDragged, CGPoint(x: first.x - distance, y: first.y))
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    post(.leftMouseUp, first)
-    Thread.sleep(forTimeInterval: 0.08)
-    post(.leftMouseDown, second)
-    Thread.sleep(forTimeInterval: 0.08)
-    for step in 1...24 {
-        let progress = CGFloat(step) / 24
-        post(.leftMouseDragged, CGPoint(x: second.x + (target.x - second.x) * progress,
-                                        y: second.y))
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-    post(.leftMouseUp, target)
     exit(0)
 }
-if CommandLine.arguments.count == 6 && ["--drag", "--drag-overlap", "--drag-held-return", "--drag-row"].contains(CommandLine.arguments[1]) {
+if CommandLine.arguments.count == 6 && CommandLine.arguments[1] == "--drag-row" {
     let values = CommandLine.arguments.dropFirst(2).compactMap(Double.init)
-    guard values.count == 4 else { exit(2) }
+    guard values.count == 4, CGPreflightPostEventAccess() else { exit(2) }
     let start = CGPoint(x: values[0], y: values[1])
     let target = CGPoint(x: values[2], y: values[3])
+    let source = CGEventSource(stateID: .privateState)!
     func post(_ type: CGEventType, _ point: CGPoint) {
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type,
-                                  mouseCursorPosition: point, mouseButton: .left) else { exit(2) }
-        event.flags = CommandLine.arguments[1] == "--drag-row" ? [] : .maskCommand
+        let event = CGEvent(mouseEventSource: source, mouseType: type,
+                            mouseCursorPosition: point, mouseButton: .left)!
+        event.flags = []
         event.post(tap: .cghidEventTap)
     }
+    post(.mouseMoved, start)
+    Thread.sleep(forTimeInterval: 0.05)
     post(.leftMouseDown, start)
     Thread.sleep(forTimeInterval: 0.08)
-    let steps = 24
-    for step in 1...steps {
-        let progress = CGFloat(step) / CGFloat(steps)
-        post(.leftMouseDragged, CGPoint(x: start.x + (target.x - start.x) * progress,
-                                        y: start.y + (target.y - start.y) * progress))
+    for step in 1...24 {
+        let fraction = CGFloat(step) / 24
+        post(.leftMouseDragged, CGPoint(x: start.x + (target.x - start.x) * fraction,
+                                        y: start.y + (target.y - start.y) * fraction))
         Thread.sleep(forTimeInterval: 0.02)
     }
-    if CommandLine.arguments[1] == "--drag-overlap" {
-        Thread.sleep(forTimeInterval: 0.8)
-    }
-    if CommandLine.arguments[1] == "--drag-held-return" {
-        Thread.sleep(forTimeInterval: 1)
-        for step in 1...24 {
-            let progress = CGFloat(step) / 24
-            post(.leftMouseDragged, CGPoint(x: target.x + (start.x - target.x) * progress, y: start.y))
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        post(.leftMouseUp, start)
-        exit(0)
-    }
+    Thread.sleep(forTimeInterval: 0.12)
     post(.leftMouseUp, target)
     exit(0)
 }
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-let item = NSStatusBar.system.statusItem(withLength: CommandLine.arguments.contains("--wide-item") ? 240 : 28)
-item.button?.title = CommandLine.arguments.contains("--wide-item") ? "Home workout · in 2 h 37 m" : "FXA"
-item.button?.setAccessibilityTitle("Flux fixture A")
-if let index = CommandLine.arguments.firstIndex(of: "--geometry-output") {
-    let output = URL(fileURLWithPath: CommandLine.arguments[index + 1])
-    let marker = NSImage(size: NSSize(width: 18, height: 18))
-    marker.lockFocus()
-    NSColor(srgbRed: 1, green: 0, blue: 1, alpha: 1).setFill()
-    NSRect(x: 0, y: 0, width: 18, height: 18).fill()
-    marker.unlockFocus()
-    marker.isTemplate = false
-    item.button?.title = ""
-    item.button?.image = marker
-    let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
-        let value: [String: Any] = ["time": ProcessInfo.processInfo.systemUptime,
-            "pid": getpid(), "window": String(describing: item.button?.window?.frame),
-            "button": String(describing: item.button?.frame)]
-        if let data = try? JSONSerialization.data(withJSONObject: value) {
-            try? data.write(to: output, options: .atomic)
-        }
+var first = NSStatusBar.system.statusItem(withLength: CommandLine.arguments.contains("--wide") ? 200 : 34)
+func configureFirst() {
+    first.button?.title = "FXA"
+    first.button?.setAccessibilityTitle("Flux fixture A")
+}
+configureFirst()
+let second = NSStatusBar.system.statusItem(withLength: 69)
+second.button?.title = "FXB"
+second.button?.setAccessibilityTitle("Flux fixture B")
+let control = URL(fileURLWithPath: CommandLine.arguments[1])
+var last = ""
+let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
+    guard let command = try? String(contentsOf: control), command != last else { return }
+    last = command
+    if command == "live" {
+        first.length = 200
+        first.button?.title = "Notion Calendar · in 2 h 37 m"
+        first.button?.setAccessibilityTitle("Notion Calendar")
+    } else if command == "replace" {
+        NSStatusBar.system.removeStatusItem(first)
+        first = NSStatusBar.system.statusItem(withLength: 34)
+        configureFirst()
     }
-    RunLoop.main.add(timer, forMode: .common)
 }
-var second: NSStatusItem?
-if !CommandLine.arguments.contains("--single") {
-    second = NSStatusBar.system.statusItem(withLength: 28)
-    second?.button?.title = "FXB"
-    second?.button?.setAccessibilityTitle(CommandLine.arguments.contains("--duplicate-title")
-        ? "Flux fixture A" : "Flux fixture B")
-}
-if let index = CommandLine.arguments.firstIndex(of: "--remove-first") {
-    let request = URL(fileURLWithPath: CommandLine.arguments[index + 1])
-    var removalTimer: Timer?
-    removalTimer = Timer(timeInterval: 0.05, repeats: true) { _ in
-        guard FileManager.default.fileExists(atPath: request.path) else { return }
-        NSStatusBar.system.removeStatusItem(item)
-        removalTimer?.invalidate()
-        removalTimer = nil
-    }
-    RunLoop.main.add(removalTimer!, forMode: .common)
-}
-DispatchQueue.main.asyncAfter(deadline: .now() + 60) { exit(1) }
+RunLoop.main.add(timer, forMode: .common)
+DispatchQueue.main.asyncAfter(deadline: .now() + 100) { exit(1) }
 app.run()
 '''
-source = r'''
+
+PROBE = r'''
 import AppKit
 import ApplicationServices
 setbuf(stdout, nil)
 
 @MainActor
-final class MenuMoveAction: NSObject {
-    var invoke: (() -> Void)?
-    @objc func performMove() { invoke?() }
-}
-
-@MainActor
-enum ProbeMenuClock {
-    static var expiresAfterClose = false
-    static var advanced = false
-    static var now: TimeInterval {
-        let real = ProcessInfo.processInfo.systemUptime
-        guard expiresAfterClose,
-              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                       kCGNullWindowID) as? [[String: Any]],
-              !windows.contains(where: {
-                  ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
-                      && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
-              }) else { return real }
-        advanced = true
-        print("MENU clock advanced four seconds after actual popup closure")
-        return real + 4
+final class CheckedDestination: MenuBarDragDestinationView {
+    var inspect: (() -> Void)?
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let result = super.performDragOperation(sender)
+        if result { inspect?() }
+        return result
     }
 }
 
 @MainActor
 func probe() {
-    print("PROBE arguments: \(CommandLine.arguments)")
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    guard Bundle.main.bundleIdentifier == "com.flux.icon-probe" else { exit(2) }
-    UserDefaults.standard.removePersistentDomain(forName: "com.flux.icon-probe")
-    // macOS 27 keeps both dividers narrow. A drop target must still lie in Hidden.
-    let compact: MenuBarIconManager.Boundaries = (hidden: 300, alwaysHidden: 297)
-    guard let x = MenuBarIconManager.insertionX(for: .hidden, iconWidth: 28, boundaries: compact),
-          MenuBarIconManager.section(for: CGRect(x: x, y: 0, width: 28, height: 24),
-                                     boundaries: compact) == .hidden else {
-        print("FAIL: Move to Hidden targets another section when the dividers are adjacent")
-        exit(1)
+    let arguments = CommandLine.arguments
+    let selected = arguments[1]
+    let fixtureBundle = arguments[2]
+    let helper = arguments[3]
+    let control = URL(fileURLWithPath: arguments[4])
+    let suite = "flux.icon-policy.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    let key = "flux.macOS27IconLayout"
+    let hider = MacOS27Hider(defaults: defaults)
+    let manager = MenuBarIconManager(hider: hider)
+    manager.alwaysHiddenEnabledProvider = { true }
+    manager.boundaryProvider = { (nil, nil) }
+    manager.chevronBoundaryProvider = { nil }
+    func check(_ condition: @autoclosure () -> Bool, _ label: String) {
+        guard condition() else {
+            print("FAIL: \(selected): \(label)")
+            defaults.removePersistentDomain(forName: suite)
+            exit(1)
+        }
+        print("PASS: \(selected): \(label)")
     }
-    let runID = UUID().uuidString
-    let chevron = ControlItem(role: .chevron, autosaveName: "flux.icon-probe.\(runID).chevron")
-    let hidden = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).hidden")
-    let always = ControlItem(role: .divider, autosaveName: "flux.icon-probe.\(runID).always")
-    var inventoryFailures = 0
-    var saveFailures = 0
-    let saveTest = CommandLine.arguments.contains("--move-save-retry")
-        || CommandLine.arguments.contains("--move-save-failure")
-    let hider = saveTest ? MacOS27Hider(trustProvider: {
-        if saveFailures > 0 {
-            saveFailures -= 1
-            print("SAVE injected one failed position read")
-            return false
-        }
-        return AccessibilityAccess.isGranted()
-    }) : nil
-    let manager = MenuBarIconManager(trustProvider: {
-        if inventoryFailures > 0 {
-            inventoryFailures -= 1
-            print("INVENTORY injected one failed read")
-            return false
-        }
-        return AccessibilityAccess.isGranted()
-    }, hider: hider)
-    manager.boundaryProvider = {
-        (hidden: chevron.statusItem.button?.window?.frame.minX,
-         alwaysHidden: always.statusItem.button?.window?.frame.maxX)
+    func owned(_ source: MenuBarIconManager? = nil) -> [MenuBarIconManager.Icon] {
+        (source ?? manager).icons.filter { $0.id.hasPrefix(fixtureBundle + "|") }.sorted { $0.frame.minX < $1.frame.minX }
     }
-    manager.chevronBoundaryProvider = { chevron.statusItem.button?.window?.frame.minX }
-    let closeTest = CommandLine.arguments.contains("--native-close")
-        || CommandLine.arguments.contains("--move-close")
-        || CommandLine.arguments.contains("--move-refresh-retry")
-        || CommandLine.arguments.contains("--move-refresh-failure")
-        || CommandLine.arguments.contains("--menu-context")
-        || CommandLine.arguments.contains("--menu-expired")
-        || CommandLine.arguments.contains("--drag-context")
-        || saveTest
-        || CommandLine.arguments.contains("--native-overlap")
-        || CommandLine.arguments.contains("--move-retry-overlap")
-        || CommandLine.arguments.contains("--native-geometry")
-        || CommandLine.arguments.contains("--native-refresh-retry")
-    let sections: [MenuBarSection] = [.hidden, .alwaysHidden, .shown]
-    func fixture() -> MenuBarIconManager.Icon? {
-        manager.icons.first { $0.title == "Flux fixture A" }
+    func readFrames() -> [CGRect] {
+        guard let owner = NSRunningApplication.runningApplications(withBundleIdentifier: fixtureBundle).first else { return [] }
+        let application = AXUIElementCreateApplication(owner.processIdentifier)
+        AXUIElementSetMessagingTimeout(application, 0.2)
+        func attribute(_ item: AXUIElement, _ name: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(item, name as CFString, &value) == .success ? value : nil
+        }
+        guard let bar = attribute(application, kAXExtrasMenuBarAttribute),
+              CFGetTypeID(bar) == AXUIElementGetTypeID(),
+              let children = attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
+        return children.compactMap { child in
+            guard let position = attribute(child, kAXPositionAttribute),
+                  let size = attribute(child, kAXSizeAttribute),
+                  CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+            var point = CGPoint.zero
+            var dimensions = CGSize.zero
+            guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
+                  AXValueGetValue(size as! AXValue, .cgSize, &dimensions) else { return nil }
+            return CGRect(origin: point, size: dimensions)
+        }
     }
-    let staleFrameKind = CommandLine.arguments.firstIndex(of: "--stale-frame").map {
-        CommandLine.arguments[$0 + 1]
+    func pause(_ seconds: Double) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
-    func moveArgument(_ icon: MenuBarIconManager.Icon, kind: String) -> MenuBarIconManager.Icon {
-        guard staleFrameKind == kind, let screen = NSScreen.screens.first else { return icon }
-        let oldFrame = CGRect(x: 7, y: screen.frame.maxY - 12,
-                              width: icon.frame.width, height: icon.frame.height)
-        print("UI_SNAPSHOT id=\(icon.id) old=\(oldFrame) live=\(icon.frame) action=\(kind)")
-        return MenuBarIconManager.Icon(id: icon.id, title: icon.title, source: icon.source,
-                                      section: icon.section, isMovable: icon.isMovable, frame: oldFrame)
+    func completed(_ label: String) async {
+        let deadline = ProcessInfo.processInfo.systemUptime + 7
+        while manager.isUpdatingIcons && ProcessInfo.processInfo.systemUptime < deadline { await pause(0.05) }
+        check(!manager.isUpdatingIcons, "\(label) completes before its deadline")
+        check(manager.errorMessage == nil, "\(label) has no error before any Refresh: \(manager.errorMessage ?? "none")")
     }
-    @MainActor
-    func captureEvidence(_ stage: String) {
-        guard let index = CommandLine.arguments.firstIndex(of: "--evidence-output"),
-              let screen = NSScreen.screens.first else { return }
-        let path = URL(fileURLWithPath: CommandLine.arguments[index + 1])
-            .appendingPathComponent(stage + ".png")
-        let capture = Process()
-        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        capture.arguments = ["-x", "-R0,0,\(Int(screen.frame.width)),80", path.path]
-        do { try capture.run() }
-        catch { print("FAIL: evidence capture could not start: \(error)"); exit(1) }
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        while capture.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        if capture.isRunning { kill(capture.processIdentifier, SIGKILL) }
-        capture.waitUntilExit()
-        guard capture.terminationStatus == 0 else { print("FAIL: evidence capture failed"); exit(1) }
+    func policyIs(_ section: MenuBarSection) {
+        check(owned().count == 2 && owned().allSatisfy { $0.section == section },
+              "both same-app icons follow \(section.rawValue)")
+        check(hider.section(for: fixtureBundle) == section, "policy readback agrees")
     }
-    var captureDeadlines: [String: TimeInterval] = [:]
-    @MainActor
-    @discardableResult
-    func geometry(_ stage: String) -> CGPoint? {
-        guard let index = CommandLine.arguments.firstIndex(of: "--geometry-output"),
-              let screen = NSScreen.screens.first else { return nil }
-        let output = URL(fileURLWithPath: CommandLine.arguments[index + 1])
-        let image = output.appendingPathComponent(stage + ".png")
-        let capture = Process()
-        capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        capture.arguments = ["-x", "-R0,0,\(Int(screen.frame.width)),48", image.path]
-        do { try capture.run() }
-        catch { print("FAIL: geometry capture could not start: \(error)"); exit(1) }
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        while capture.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
+    let controller = MenuBarDragController()
+    let window = NSWindow(contentRect: NSRect(x: 300, y: 250, width: 520, height: 300),
+                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.title = "Flux native arrangement fixture"
+    var traces: [String] = []
+    controller.trace = { traces.append($0); print("DRAG \($0)") }
+    manager.beginIconManagement()
+    Task { @MainActor in
+        defer { controller.close(); manager.endIconManagement(); defaults.removePersistentDomain(forName: suite) }
+        let readyBy = ProcessInfo.processInfo.systemUptime + 8
+        while ProcessInfo.processInfo.systemUptime < readyBy {
+            manager.refresh()
+            if owned().count == 2 && !manager.isUpdatingIcons { break }
+            await pause(0.15)
         }
-        if capture.isRunning { kill(capture.processIdentifier, SIGKILL) }
-        capture.waitUntilExit()
-        guard capture.terminationStatus == 0, let data = try? Data(contentsOf: image),
-              let bitmap = NSBitmapImageRep(data: data), bitmap.bitsPerSample == 8,
-              !bitmap.isPlanar, [3, 4].contains(bitmap.samplesPerPixel),
-              let bytes = bitmap.bitmapData else {
-            print("FAIL: geometry capture did not produce an RGB bitmap"); exit(1)
+        await pause(0.6)
+        check(ControlItem.usesMacOS27Model, "runner exercises macOS 27 app policy")
+        check(manager.isTrusted && CGPreflightPostEventAccess(), "Accessibility and event posting are ready")
+        check(owned().count == 2, "both real fixture status items are readable")
+        guard let original = owned().first(where: { $0.title.contains("fixture A") || $0.title == "FXA" }) else {
+            check(false, "fixture A has a stable accessible title"); return
         }
-        let stride = bitmap.samplesPerPixel
-        let alphaFirst = bitmap.bitmapFormat.contains(.alphaFirst)
-        let offset = alphaFirst && stride == 4 ? 1 : 0
-        var count = 0, sumX = 0, sumY = 0
-        var minX = bitmap.pixelsWide, maxX = 0
-        for y in 0..<bitmap.pixelsHigh {
-            for x in 0..<bitmap.pixelsWide {
-                let pixel = y * bitmap.bytesPerRow + x * stride
-                if bytes[pixel + offset] > 178, bytes[pixel + offset + 1] < 102,
-                   bytes[pixel + offset + 2] > 178 {
-                    count += 1; sumX += x; sumY += y
-                    minX = min(minX, x); maxX = max(maxX, x)
-                }
-            }
-        }
-        let scale = CGFloat(bitmap.pixelsWide) / screen.frame.width
-        let fullMarkerPixels = 18 * 18 * scale * scale
-        if CGFloat(count) < fullMarkerPixels * 0.95 {
-            let deadline = captureDeadlines[stage] ?? ProcessInfo.processInfo.systemUptime + 1
-            captureDeadlines[stage] = deadline
-            guard ProcessInfo.processInfo.systemUptime < deadline else {
-                print("FAIL: geometry control marker is not visible after bounded settling")
-                exit(1)
-            }
-            print("GEOMETRY_SETTLE \(stage) pixels=\(count)")
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-            return geometry(stage)
-        }
-        captureDeadlines.removeValue(forKey: stage)
-        let center = CGPoint(x: (CGFloat(sumX) / CGFloat(count) + 0.5) / scale,
-                             y: (CGFloat(sumY) / CGFloat(count) + 0.5) / scale)
+        let firstID = original.id
+        let initialCommand = CGEventSource.flagsState(.hidSystemState).contains(.maskCommand)
         var hit: AXUIElement?
-        let result = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
-                                                      Float(center.x), Float(center.y), &hit)
-        var pid: pid_t = 0
-        var title: CFTypeRef?
-        var hitPosition: CFTypeRef?
-        var hitSize: CFTypeRef?
+        let hitResult = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
+            Float(original.frame.midX), Float(original.frame.midY), &hit)
         if let hit {
-            AXUIElementGetPid(hit, &pid)
-            AXUIElementCopyAttributeValue(hit, kAXTitleAttribute as CFString, &title)
-            AXUIElementCopyAttributeValue(hit, kAXPositionAttribute as CFString, &hitPosition)
-            AXUIElementCopyAttributeValue(hit, kAXSizeAttribute as CFString, &hitSize)
+            var hitPID: pid_t = 0
+            AXUIElementGetPid(hit, &hitPID)
+            var role: CFTypeRef?
+            AXUIElementCopyAttributeValue(hit, kAXRoleAttribute as CFString, &role)
+            print("SOURCE HIT result=\(hitResult.rawValue) pid=\(hitPID) role=\(String(describing: role)) frame=\(original.frame)")
+        } else {
+            print("SOURCE HIT unavailable=\(hitResult.rawValue) frame=\(original.frame)")
         }
-        var barValue: CFTypeRef?
-        var childValue: CFTypeRef?
-        let owner = AXUIElementCreateApplication(pid)
-        AXUIElementCopyAttributeValue(owner, kAXExtrasMenuBarAttribute as CFString, &barValue)
-        var fresh: [String] = []
-        if let barValue, CFGetTypeID(barValue) == AXUIElementGetTypeID() {
-            AXUIElementCopyAttributeValue(barValue as! AXUIElement, kAXChildrenAttribute as CFString, &childValue)
-            for element in childValue as? [AXUIElement] ?? [] {
-                var position: CFTypeRef?, size: CFTypeRef?, label: CFTypeRef?
-                AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position)
-                AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size)
-                AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &label)
-                fresh.append("title=\(String(describing: label)) pos=\(String(describing: position)) size=\(String(describing: size)) equalHit=\(hit.map { CFEqual(element, $0) } ?? false)")
+        let initialOrder = owned().map(\.id)
+        let initialFrames = readFrames()
+        check(initialFrames.count == 2, "fresh app-owner AX frames are complete")
+        if selected == "settings" {
+            let downs = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
+            for section: MenuBarSection in [.hidden, .alwaysHidden, .shown, .hidden, .shown] {
+                guard let item = owned().first(where: { $0.id == firstID }) else { check(false, "source exists"); return }
+                manager.move(item, to: section)
+                await completed(section.rawValue)
+                policyIs(section)
+                check(owned().map(\.id) == initialOrder && readFrames() == initialFrames,
+                      "section assignment preserves physical order and geometry")
+            }
+            check(CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == downs,
+                  "section-only changes post no native mouse input")
+            manager.endIconManagement()
+            let reopenedHider = MacOS27Hider(defaults: defaults)
+            let reopened = MenuBarIconManager(hider: reopenedHider)
+            reopened.beginIconManagement()
+            await pause(0.7)
+            check(owned(reopened).count == 2 && owned(reopened).allSatisfy { $0.section == .shown },
+                  "reopened management retains saved app policy")
+            check(owned(reopened).map(\.id) == initialOrder, "reopen preserves physical order")
+            reopened.endIconManagement()
+        } else if selected == "identity-replacement" {
+            try! Data("replace".utf8).write(to: control, options: .atomic)
+            await pause(0.5)
+            manager.move(original, to: .hidden)
+            let deadline = ProcessInfo.processInfo.systemUptime + 7
+            while manager.isUpdatingIcons && ProcessInfo.processInfo.systemUptime < deadline { await pause(0.05) }
+            check(!manager.isUpdatingIcons && manager.errorMessage != nil,
+                  "removed AX element cannot assign its replacement")
+            check(hider.section(for: fixtureBundle) == .shown, "replacement retains Shown policy")
+            check(defaults.dictionary(forKey: key) == nil, "rejected stale row writes no policy")
+        } else {
+            manager.move(original, to: .hidden)
+            await completed("prepare Hidden")
+            policyIs(.hidden)
+            if selected == "live-title" {
+                try! Data("live".utf8).write(to: control, options: .atomic)
+                await pause(0.5)
+            }
+            let leftInitially = initialOrder.first == firstID
+            if selected == "drag-insertion" {
+                window.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+                controller.open(manager: manager, window: window)
+                await pause(0.4)
+                check(app.isActive && NSApp.keyWindow === window, "real drag source window is active")
+                for iteration in 0..<2 {
+                    let rows = owned()
+                    guard let moving = rows.first(where: { $0.id == firstID }),
+                          let peer = rows.first(where: { $0.id != firstID }) else { check(false, "drag rows exist"); return }
+                    let towardClock = rows.first?.id == firstID
+                    let slot = MenuBarIconManager.Insertion(section: .hidden,
+                        before: towardClock ? nil : peer, after: towardClock ? peer : nil)
+                    let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 300))
+                    let source = controller.makeSourceView(for: moving)
+                    source.frame = NSRect(x: 30, y: 170, width: 60, height: 50)
+                    let destination = CheckedDestination(frame: NSRect(x: 190, y: 100, width: 260, height: 160))
+                    destination.controller = controller
+                    destination.section = .hidden
+                    destination.insertionAt = { _ in slot }
+                    var staged = false
+                    let physicalBefore = readFrames()
+                    destination.inspect = {
+                        staged = true
+                        check(!traces.contains(where: { $0.hasPrefix("commit ") }), "drop is staged before native session end")
+                        check(readFrames() == physicalBefore, "staged drop posts no physical menu-bar move")
+                    }
+                    root.addSubview(source); root.addSubview(destination)
+                    window.contentView = root
+                    traces = []
+                    func global(_ view: NSView) -> CGPoint {
+                        let local = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+                        let point = window.convertPoint(toScreen: local)
+                        return CGPoint(x: point.x, y: NSScreen.screens[0].frame.maxY - point.y)
+                    }
+                    let start = global(source), target = global(destination)
+                    let helperProcess = Process()
+                    helperProcess.executableURL = URL(fileURLWithPath: helper)
+                    helperProcess.arguments = ["--drag-row", "\(start.x)", "\(start.y)", "\(target.x)", "\(target.y)"]
+                    try! helperProcess.run()
+                    let helperBy = ProcessInfo.processInfo.systemUptime + 4
+                    while helperProcess.isRunning && ProcessInfo.processInfo.systemUptime < helperBy { await pause(0.02) }
+                    if helperProcess.isRunning { helperProcess.terminate(); check(false, "row input helper deadline") }
+                    check(helperProcess.terminationStatus == 0, "row input helper finishes")
+                    let commitBy = ProcessInfo.processInfo.systemUptime + 5
+                    while !traces.contains(where: { $0.hasPrefix("commit ") })
+                            && ProcessInfo.processInfo.systemUptime < commitBy { await pause(0.05) }
+                    check(staged, "actual NSDraggingSession reached its destination")
+                    guard let stage = traces.firstIndex(where: { $0.hasPrefix("staged ") }),
+                          let end = traces.firstIndex(where: { $0.hasPrefix("ended ") }),
+                          let commit = traces.firstIndex(where: { $0.hasPrefix("commit ") }) else {
+                        check(false, "stage, native end and commit receipts exist"); return
+                    }
+                    check(stage < end && end < commit, "native session ends before transaction submission")
+                    await completed("row drop \(iteration)")
+                    check(owned().first?.id == (towardClock ? peer.id : firstID), "row drop changes real neighbor order")
+                    policyIs(.hidden)
+                }
+            } else {
+                // Keep the original snapshot through a live title/width change. The
+                // public move must resolve the same AX item at its current frame.
+                let argument = selected == "live-title" ? original : owned().first { $0.id == firstID }!
+                manager.move(argument, toward: leftInitially ? .towardClock : .towardDrawer)
+                await completed("first physical reorder")
+                check(CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) == initialCommand,
+                      "native move restores the original Command state")
+                check(owned().map(\.id) == Array(initialOrder.reversed()), "fresh AX inventory proves physical peer swap")
+                let reorderedFrames = readFrames()
+                check(reorderedFrames.count == 2 && zip(reorderedFrames, initialFrames).contains {
+                    abs($0.0.midX - $0.1.midX) >= 3
+                }, "independent app-owner AX scan confirms physical movement")
+                policyIs(.hidden)
+                let moved = owned().first { $0.id == firstID }!
+                if selected == "live-title" {
+                    check(moved.identity == original.identity && moved.frame.width > original.frame.width,
+                          "live title and width preserve item identity")
+                }
+                manager.move(moved, toward: leftInitially ? .towardDrawer : .towardClock)
+                await completed("consecutive reverse reorder")
+                check(owned().map(\.id) == initialOrder, "second move restores peer order without Refresh")
+                policyIs(.hidden)
             }
         }
-        let own = (try? String(contentsOf: output.appendingPathComponent("fixture.json"), encoding: .utf8)) ?? "missing"
-        print("GEOMETRY \(stage) t=\(ProcessInfo.processInfo.systemUptime) pixels=\(count) marker=\(center) pixelX=\(CGFloat(minX)/scale)..\(CGFloat(maxX+1)/scale) AX=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) chevron=\(String(describing: chevron.statusItem.button?.window?.frame)) hitResult=\(result.rawValue) hitPID=\(pid) hitTitle=\(String(describing: title)) hitPosition=\(String(describing: hitPosition)) hitSize=\(String(describing: hitSize)) freshOwner=\(fresh) own=\(own)")
-        if stage == "programmatic-shown" {
-            var point = CGPoint.zero, size = CGSize.zero
-            guard result == .success, title as? String == "Flux fixture A",
-                  NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.flux.icon-fixture",
-                  let hitPosition, let hitSize,
-                  CFGetTypeID(hitPosition) == AXValueGetTypeID(), CFGetTypeID(hitSize) == AXValueGetTypeID(),
-                  AXValueGetValue(hitPosition as! AXValue, .cgPoint, &point),
-                  AXValueGetValue(hitSize as! AXValue, .cgSize, &size),
-                  abs(center.x - point.x - size.width / 2) <= 1,
-                  abs(center.y - point.y - size.height / 2) <= 1,
-                  MenuBarIconManager.section(for: CGRect(x: center.x-1, y: center.y-1, width: 2, height: 2),
-                                             boundaries: manager.boundaryProvider()) == .shown else {
-                print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
-                exit(1)
-            }
-        }
-        return center
-    }
-    @MainActor
-    func finish() {
+        print("PASS: native product interface \(selected)")
+        controller.close()
         manager.endIconManagement()
-        chevron.removeFromStatusBar()
-        hidden.removeFromStatusBar()
-        always.removeFromStatusBar()
+        defaults.removePersistentDomain(forName: suite)
         exit(0)
     }
-    @MainActor
-    func moveFromMenu() {
-        manager.refresh()
-        let expires = CommandLine.arguments.contains("--menu-expired")
-        guard let icon = fixture(), expires || icon.section == .hidden else { exit(1) }
-        let initialLayout = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout") as NSDictionary?
-        var requestedDown: UInt32 = 0
-        let target = MenuMoveAction()
-        let menu = NSMenu()
-        let item = NSMenuItem(title: "Move fixture to Shown", action: #selector(MenuMoveAction.performMove), keyEquivalent: "")
-        item.target = target
-        menu.addItem(item)
-        var invoked = false
-        target.invoke = {
-            invoked = true
-            print("MENU action mode=\(RunLoop.current.currentMode?.rawValue ?? "nil") frame=\(icon.frame) boundaries=\(manager.boundaryProvider())")
-            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                           kCGNullWindowID) as? [[String: Any]],
-                  windows.contains(where: {
-                      ($0[kCGWindowOwnerPID as String] as? Int) == Int(getpid())
-                          && ($0[kCGWindowLayer as String] as? Int) == NSWindow.Level.popUpMenu.rawValue
-                  }) else {
-                print("FAIL: the native menu action had no visible popup window")
-                exit(1)
-            }
-            let beforeDown = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
-            requestedDown = beforeDown
-            manager.move(icon, to: .shown)
-            guard manager.isUpdatingIcons,
-                  CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == beforeDown else {
-                print("FAIL: native move started before its menu window closed")
-                exit(1)
-            }
-            ProbeMenuClock.expiresAfterClose = expires
-        }
-        let select = Timer(timeInterval: 0.2, repeats: false) { _ in
-            for down in [true, false] {
-                let event = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: down)!
-                event.flags = []
-                event.post(tap: .cghidEventTap)
-            }
-        }
-        let deadline = Timer(timeInterval: 2, repeats: false) { _ in
-            print("FAIL: native menu control did not invoke the selected action")
-            exit(1)
-        }
-        RunLoop.main.add(select, forMode: .common)
-        RunLoop.main.add(deadline, forMode: .common)
-        app.activate(ignoringOtherApps: true)
-        menu.popUp(positioning: item, at: NSPoint(x: 400, y: 400), in: nil)
-        deadline.invalidate()
-        select.invalidate()
-        target.invoke = nil
-        guard invoked else { print("FAIL: native menu closed without invoking the move"); exit(1) }
-        print("MENU closed mode=\(RunLoop.current.currentMode?.rawValue ?? "nil")")
-        afterMove {
-            let menuError = manager.errorMessage
-            manager.refresh()
-            let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-            if expires {
-                guard CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == requestedDown else {
-                    print("FAIL: an expired menu request posted native input")
-                    exit(1)
-                }
-                guard ProbeMenuClock.advanced, !manager.isUpdatingIcons, fixture()?.frame == icon.frame,
-                      (saved as NSDictionary?) == initialLayout,
-                      menuError == "Close the menu, then try moving the icon again." else {
-                    print("FAIL: an expired menu request did not cancel and clear pending state")
-                    exit(1)
-                }
-                print("PASS: an expired menu request posts no input or layout change and clears pending state")
-                finish()
-                return
-            }
-            guard menuError == nil, !manager.isUpdatingIcons, let current = fixture(),
-                  MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
-                  current.section == .shown,
-                  (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                print("FAIL: a real menu action did not move and save the fixture as Shown")
-                print("MENU actual=\(String(describing: fixture()?.frame)) boundaries=\(manager.boundaryProvider()) error=\(menuError ?? "none")")
-                manager.copyMenuBarReport()
-                print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
-                exit(1)
-            }
-            print("PASS: a real menu action moves the fixture and saves Shown")
-            finish()
-        }
-    }
-    @MainActor
-    func moveFromDrag() {
-        manager.refresh()
-        guard let icon = fixture(), icon.section == .hidden,
-              let screen = NSScreen.screens.first else { exit(1) }
-        let window = NSWindow(contentRect: NSRect(x: 40, y: 80, width: 500, height: 360),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Flux real manager drag probe"
-        window.isReleasedWhenClosed = false
-        let controller = MenuBarDragController()
-        let row = controller.makeSourceView(for: icon)
-        row.frame = NSRect(x: 30, y: 260, width: 160, height: 32)
-        let destination = MenuBarDragDestinationView(frame: NSRect(x: 270, y: 60, width: 190, height: 90))
-        destination.controller = controller
-        destination.section = .shown
-        window.contentView!.addSubview(row)
-        window.contentView!.addSubview(destination)
-        var events: [String] = []
-        controller.trace = { value in events.append(value); print("REAL_DRAG \(value)") }
-        window.makeKeyAndOrderFront(nil)
-        app.activate(ignoringOtherApps: true)
-        let readyDeadline = ProcessInfo.processInfo.systemUptime + 5
-        @MainActor func start() {
-            guard NSApp.isActive, NSApp.keyWindow === window else {
-                guard ProcessInfo.processInfo.systemUptime < readyDeadline else {
-                    print("FAIL: real manager drag window was not active and key"); exit(1)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { start() }
-                return
-            }
-            controller.open(manager: manager, window: window)
-            func center(_ view: NSView) -> CGPoint {
-                let p = window.convertPoint(toScreen: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
-                return CGPoint(x: p.x, y: screen.frame.maxY - p.y)
-            }
-            let from = center(row), to = center(destination)
-            let driver = Process()
-            driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-            driver.arguments = ["--drag-row", String(Double(from.x)), String(Double(from.y)),
-                                String(Double(to.x)), String(Double(to.y))]
-            driver.terminationHandler = { driver in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    let moveError = manager.errorMessage
-                    manager.refresh()
-                    let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                    guard moveError == nil, driver.terminationStatus == 0,
-                          events.contains(where: { $0.hasPrefix("native began ") }),
-                          events.contains("ended operation=16"),
-                          events.contains(where: { $0.hasPrefix("commit shown ") }),
-                          let current = fixture(), !manager.isUpdatingIcons,
-                          MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == .shown,
-                          current.section == .shown,
-                          (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                        manager.copyMenuBarReport()
-                        print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
-                        print("FAIL: real drag callbacks did not move and save the fixture as Shown")
-                        print("Move error: \(moveError ?? "none")")
-                        exit(1)
-                    }
-                    controller.close()
-                    window.close()
-                    print("PASS: real drag callbacks move the actual icon and save Shown")
-                    finish()
-                }
-            }
-            do { try driver.run() }
-            catch { print("FAIL: real drag driver could not start: \(error)"); exit(1) }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { start() }
-    }
-    @MainActor
-    func moveAndClose() {
-        manager.refresh()
-        guard let icon = fixture(), icon.section == .hidden else { exit(1) }
-        manager.move(icon, to: .shown)
-        @MainActor
-        func closeAfterMovement(started: TimeInterval) {
-            manager.refresh()
-            guard let current = fixture(), MenuBarIconManager.section(
-                for: current.frame, boundaries: manager.boundaryProvider()) == .shown else {
-                guard ProcessInfo.processInfo.systemUptime - started < 0.3 else {
-                    print("FAIL: programmatic close test did not reach Shown before verification")
-                    exit(1)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { closeAfterMovement(started: started) }
-                return
-            }
-            guard manager.isUpdatingIcons, ProcessInfo.processInfo.systemUptime - started < 0.45 else {
-                print("FAIL: programmatic close missed the pending verification interval")
-                exit(1)
-            }
-            manager.endIconManagement()
-            manager.copyMenuBarReport()
-            guard NSPasteboard.general.string(forType: .string)?
-                .contains("Current reveal: hidden=true, always=true") == true else {
-                print("FAIL: closing management applied hiding before the pending move was verified")
-                exit(1)
-            }
-            print("Closed management during programmatic verification after reaching actual Shown geometry")
-            let failedRead = CommandLine.arguments.contains("--move-refresh-retry")
-                || CommandLine.arguments.contains("--move-save-retry")
-            let exhausted = CommandLine.arguments.contains("--move-refresh-failure")
-                || CommandLine.arguments.contains("--move-save-failure")
-            if failedRead || exhausted {
-                if saveTest { saveFailures = exhausted ? 3 : 1 }
-                else { inventoryFailures = exhausted ? 3 : 1 }
-                guard geometry("programmatic-shown") != nil else {
-                    print("FAIL: programmatic inventory control did not reach drawn Shown geometry")
-                    exit(1)
-                }
-            }
-            afterMove {
-                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                if exhausted {
-                    manager.refresh()
-                    guard inventoryFailures == 0, saveFailures == 0, !manager.isUpdatingIcons,
-                          manager.errorMessage?.contains("could not save") == true,
-                          fixture()?.section == .hidden,
-                          (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true else {
-                        print("FAIL: exhausted programmatic inventory retries left a false Shown assignment or no notice")
-                        exit(1)
-                    }
-                    print("PASS: programmatic inventory retries stop, clear the override and retain a save notice")
-                    if saveTest {
-                        manager.beginIconManagement()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                            guard let retry = fixture(), manager.errorMessage?.contains("could not save") == true else {
-                                print("FAIL: the same-manager retry lost its failed-save control")
-                                exit(1)
-                            }
-                            manager.move(retry, to: .shown)
-                            afterMove {
-                                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                                guard !manager.isUpdatingIcons,
-                                      (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                                    print("FAIL: the same-manager retry did not save Shown")
-                                    exit(1)
-                                }
-                                guard manager.errorMessage == nil else {
-                                    print("FAIL: a successful retry retained the old save warning")
-                                    exit(1)
-                                }
-                                print("PASS: a successful same-app retry clears its saved failure notice")
-                                finish()
-                            }
-                        }
-                        return
-                    }
-                    finish()
-                }
-                guard !manager.isUpdatingIcons,
-                      inventoryFailures == 0,
-                      saveFailures == 0,
-                      (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                    print(failedRead
-                        ? (saveTest ? "FAIL: a transient position save lost the programmatic Shown assignment"
-                            : "FAIL: a transient programmatic inventory read lost the Shown assignment")
-                        : "FAIL: closing management lost the pending programmatic Shown assignment")
-                    exit(1)
-                }
-                let fresh = MenuBarIconManager()
-                fresh.boundaryProvider = manager.boundaryProvider
-                fresh.refresh()
-                let icons = fresh.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-                guard icons.count == 1, icons[0].section == .shown else {
-                    print("FAIL: fresh manager lost the programmatic Shown assignment")
-                    exit(1)
-                }
-                print("PASS: closing management preserves a pending programmatic move and reloads Shown")
-                finish()
-            }
-        }
-        afterPostingDrag { closeAfterMovement(started: ProcessInfo.processInfo.systemUptime) }
-    }
-    @MainActor
-    func moveSibling(_ items: [MenuBarIconManager.Icon]) {
-        let first = items[0], second = items[1]
-        guard let boundary = manager.boundaryProvider().hidden else { exit(1) }
-        let targetX = max(boundary + 80, second.frame.midX + 80)
-        let driver = Process()
-        driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-        driver.arguments = ["--drag-siblings", String(Double(first.frame.midX)), String(Double(first.frame.midY)),
-                            String(Double(second.frame.midX)), String(Double(second.frame.midY)),
-                            String(Double(targetX)), String(Double(second.frame.midY))]
-        var releases = 0
-        let monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
-            if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(driver.processIdentifier) {
-                releases += 1
-            }
-        }
-        driver.terminationHandler = { driver in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                if let monitor { NSEvent.removeMonitor(monitor) }
-                manager.refresh()
-                let current = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-                guard driver.terminationStatus == 0, releases == 2,
-                      let a = current.first(where: { $0.title == first.title }),
-                      let b = current.first(where: { $0.title == second.title }),
-                      abs(a.frame.midX - first.frame.midX) < 1,
-                      MenuBarIconManager.section(for: b.frame, boundaries: manager.boundaryProvider()) == .shown else {
-                    print("FAIL: sibling native control needs unchanged first icon and a second icon moved to Shown; before=\(items.map { ($0.title, $0.frame) }), after=\(current.map { ($0.title, $0.frame) }), releases=\(releases)")
-                    exit(1)
-                }
-                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                    print("FAIL: an unchanged first icon discarded the second icon's native Shown move")
-                    exit(1)
-                }
-                let fresh = MenuBarIconManager()
-                fresh.boundaryProvider = manager.boundaryProvider
-                fresh.refresh()
-                guard fresh.icons.filter({ $0.id.hasPrefix("com.flux.icon-fixture|") })
-                    .allSatisfy({ $0.section == .shown }) else {
-                    print("FAIL: the sibling native assignment did not survive manager reload")
-                    exit(1)
-                }
-                print("PASS: an unchanged pending icon preserves another icon's completed move from the same app")
-                finish()
-            }
-        }
-        do { try driver.run() }
-        catch { print("FAIL: sibling native driver could not start: \(error)"); exit(1) }
-    }
-    @MainActor
-    func afterMove(_ action: @escaping () -> Void) {
-        let deadline = ProcessInfo.processInfo.systemUptime + 5
-        @MainActor func poll() {
-            guard ProcessInfo.processInfo.systemUptime < deadline else {
-                print("FAIL: the icon move did not complete within five seconds")
-                exit(1)
-            }
-            if manager.isUpdatingIcons {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
-            } else { action() }
-        }
-        poll()
-    }
-    @MainActor
-    func afterPostingDrag(_ action: @escaping () -> Void) {
-        let deadline = ProcessInfo.processInfo.systemUptime + 3
-        @MainActor func poll() {
-            guard ProcessInfo.processInfo.systemUptime < deadline else {
-                print("FAIL: programmatic event posting did not finish before native-overlap setup")
-                exit(1)
-            }
-            if manager.probePostingDrag {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { poll() }
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: action)
-            }
-        }
-        poll()
-    }
-
-    @MainActor
-    func overlapProgrammaticMove(_ items: [MenuBarIconManager.Icon]) {
-        let moving = items[0], other = items[1]
-        manager.move(moving, toward: .towardClock)
-        afterPostingDrag {
-            manager.refresh()
-            guard manager.isUpdatingIcons,
-                  let current = manager.icons.first(where: { $0.title == other.title }),
-                  let boundary = manager.boundaryProvider().hidden else {
-                print("FAIL: programmatic overlap missed pending arrow verification")
-                exit(1)
-            }
-            let driver = Process()
-            driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-            driver.arguments = ["--drag-held-return", String(Double(current.frame.midX)),
-                                String(Double(current.frame.midY)), String(Double(boundary + 140)),
-                                String(Double(current.frame.midY))]
-            var released = false
-            let monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
-                if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(driver.processIdentifier) {
-                    released = true
-                }
-            }
-            driver.terminationHandler = { driver in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    if let monitor { NSEvent.removeMonitor(monitor) }
-                    manager.refresh()
-                    let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                    let current = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-                    guard driver.terminationStatus == 0, released, !manager.isUpdatingIcons,
-                          current.count == 2, current.allSatisfy({ MenuBarIconManager.section(
-                            for: $0.frame, boundaries: manager.boundaryProvider()) == .hidden }),
-                          (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
-                          (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                        print("FAIL: an overlapping arrow and returned native drag changed the saved Hidden assignment")
-                        exit(1)
-                    }
-                    print("PASS: programmatic verification waits for native input to finish before saving")
-                    finish()
-                }
-            }
-            do { try driver.run() }
-            catch { print("FAIL: programmatic overlap driver could not start: \(error)"); exit(1) }
-            Thread.sleep(forTimeInterval: 0.75)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                manager.refresh()
-                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                guard NSEvent.pressedMouseButtons & 1 != 0,
-                      let held = manager.icons.first(where: { $0.title == other.title }),
-                      MenuBarIconManager.section(for: held.frame,
-                                                boundaries: manager.boundaryProvider()) == .shown else {
-                    print("FAIL: programmatic overlap did not hold the sibling in Shown")
-                    exit(1)
-                }
-                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true else {
-                    print("FAIL: programmatic verification saved an unfinished native sibling drag")
-                    exit(1)
-                }
-                print("PASS: a held native sibling drag cannot change saved visibility")
-            }
-        }
-    }
-    @MainActor
-    func overlappingNativeMove(from icon: MenuBarIconManager.Icon) {
-        let retryOverlap = CommandLine.arguments.contains("--move-retry-overlap")
-        guard let x = MenuBarIconManager.insertionX(for: .alwaysHidden, iconWidth: icon.frame.width,
-                                                    boundaries: manager.boundaryProvider()) else { exit(1) }
-        let driver = Process()
-        let source = retryOverlap ? CGPoint(x: icon.frame.midX, y: icon.frame.midY)
-            : (geometry("before-overlap") ?? CGPoint(x: icon.frame.midX, y: icon.frame.midY))
-        driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-        driver.arguments = ["--drag-overlap", String(Double(source.x)), String(Double(source.y)),
-                            String(Double(x + icon.frame.width / 2)), String(Double(icon.frame.midY))]
-        var released = false
-        var beganWhilePending = false
-        var monitor: Any?
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { event in
-            if event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) == Int64(driver.processIdentifier) {
-                if event.type == .leftMouseDown { beganWhilePending = manager.isUpdatingIcons }
-                else { released = true }
-            }
-        }
-        driver.terminationHandler = { driver in
-            DispatchQueue.main.asyncAfter(deadline: .now() + (retryOverlap ? 1.5 : 0.5)) {
-                if let current = monitor { NSEvent.removeMonitor(current); monitor = nil }
-                guard driver.terminationStatus == 0, released, NSEvent.pressedMouseButtons & 1 == 0 else {
-                    print("FAIL: the overlapping native driver did not deliver mouse-up")
-                    exit(1)
-                }
-                let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-                let physical = geometry("after-overlap-release")
-                if retryOverlap {
-                    manager.refresh()
-                    guard beganWhilePending, let current = fixture(), let physical,
-                          abs(physical.x - current.frame.midX) <= 1 else {
-                        print("FAIL: the retry overlap missed pending verification or physical geometry")
-                        exit(1)
-                    }
-                    guard MenuBarIconManager.section(for: current.frame,
-                        boundaries: manager.boundaryProvider()) == .alwaysHidden else {
-                        print("FAIL: programmatic retry undid the later native move")
-                        exit(1)
-                    }
-                }
-                let fresh = MenuBarIconManager()
-                fresh.boundaryProvider = manager.boundaryProvider
-                fresh.refresh()
-                let items = fresh.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-                print("OVERLAP after release saved=\(String(describing: saved)) items=\(items.map { ($0.title, $0.section, $0.frame) }) boundaries=\(manager.boundaryProvider())")
-                guard items.count == 1, MenuBarIconManager.section(for: items[0].frame,
-                    boundaries: manager.boundaryProvider()) == .alwaysHidden else {
-                    print("FAIL: the completed second native drag did not reach Always Hidden")
-                    exit(1)
-                }
-                guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
-                      (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
-                      items.count == 1, items[0].section == .alwaysHidden,
-                      MenuBarIconManager.section(for: items[0].frame,
-                                                boundaries: manager.boundaryProvider()) == .alwaysHidden else {
-                    print("FAIL: delayed callbacks lost the latest completed native move")
-                    exit(1)
-                }
-                print("PASS: delayed callbacks save the latest completed native move after held input ends")
-                finish()
-            }
-        }
-        do { try driver.run() }
-        catch { print("FAIL: overlapping native driver launch: \(error)"); exit(1) }
-        if !retryOverlap { Thread.sleep(forTimeInterval: 0.75) }
-        let heldDeadline = ProcessInfo.processInfo.systemUptime + (retryOverlap ? 1.55 : 0.8)
-        @MainActor func verifyHeld() {
-            let pointer = CGEvent(source: nil)?.location
-            if NSEvent.pressedMouseButtons & 1 != 0,
-               let pointer, pointer.x >= x + icon.frame.width / 2 + 2,
-               ProcessInfo.processInfo.systemUptime < heldDeadline {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { verifyHeld() }
-                return
-            }
-            let saved = UserDefaults.standard.dictionary(forKey: "flux.macOS27IconLayout")
-            manager.refresh()
-            print("OVERLAP held buttons=\(NSEvent.pressedMouseButtons) pointer=\(String(describing: pointer)) actual=\(String(describing: fixture()?.frame)) controls=\(manager.boundaryProvider()) saved=\(String(describing: saved))")
-            guard NSEvent.pressedMouseButtons & 1 != 0, let pointer,
-                  let alwaysX = manager.boundaryProvider().alwaysHidden,
-                  pointer.x < alwaysX - 12 else {
-                print("FAIL: the overlapping native control did not hold its drag across Always Hidden")
-                exit(1)
-            }
-            guard (saved?["hidden"] as? [String])?.contains("com.flux.icon-fixture") == true,
-                  (saved?["alwaysHidden"] as? [String])?.contains("com.flux.icon-fixture") == false else {
-                print("FAIL: an older native callback saved while a later drag was held")
-                exit(1)
-            }
-            print("PASS: the held second native drag has not overwritten saved assignments")
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + (retryOverlap ? 0.8 : 0.05)) { verifyHeld() }
-    }
-    @MainActor
-    func nativeMove() {
-        let layoutKey = "flux.macOS27IconLayout"
-        let fixtureID = "com.flux.icon-fixture"
-        guard let layout = UserDefaults.standard.dictionary(forKey: layoutKey),
-              (layout["hidden"] as? [String])?.contains(fixtureID) == true,
-              (layout["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
-            print("FAIL: Settings moves did not persist the fixture's Hidden assignment")
-            exit(1)
-        }
-        let reloaded = MenuBarIconManager()
-        reloaded.boundaryProvider = manager.boundaryProvider
-        reloaded.refresh()
-        guard reloaded.icons.filter({ $0.id.hasPrefix(fixtureID + "|") })
-            .allSatisfy({ $0.section == .hidden }) else {
-            print("FAIL: a fresh manager lost the saved Hidden assignment")
-            exit(1)
-        }
-        manager.refresh()
-        guard let icon = fixture(),
-              MenuBarIconManager.section(for: icon.frame,
-                                        boundaries: manager.boundaryProvider()) == .hidden,
-              let x = MenuBarIconManager.insertionX(for: .shown, iconWidth: icon.frame.width,
-                                                    boundaries: manager.boundaryProvider()) else {
-            print("FAIL: native move needs a real Hidden fixture and Shown boundary")
-            exit(1)
-        }
-        let driver = Process()
-        let targetX = max(x + icon.frame.width / 2,
-                          (chevron.statusItem.button?.window?.frame.maxX ?? x) + icon.frame.width)
-        let physicalSource = geometry("before-native") ?? CGPoint(x: icon.frame.midX, y: icon.frame.midY)
-        print("Native source=\(icon.frame), physicalSource=\(physicalSource), targetX=\(targetX), boundaries=\(manager.boundaryProvider())")
-        driver.executableURL = URL(fileURLWithPath: CommandLine.arguments[1])
-        driver.arguments = ["--drag", String(Double(physicalSource.x)), String(Double(physicalSource.y)),
-                            String(Double(targetX)), String(Double(physicalSource.y))]
-        var releasedAt: TimeInterval?
-        var releaseMonitor: Any?
-        releaseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { event in
-            guard event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID)
-                == Int64(driver.processIdentifier) else { return }
-            releasedAt = ProcessInfo.processInfo.systemUptime
-            if CommandLine.arguments.contains("--native-refresh-retry") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { inventoryFailures = 1 }
-            }
-        }
-        @MainActor
-        func verifyRelease(until deadline: TimeInterval) {
-            guard let releasedAt else {
-                guard ProcessInfo.processInfo.systemUptime < deadline else {
-                    print("FAIL: macOS did not deliver the independent native mouse-up")
-                    exit(1)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { verifyRelease(until: deadline) }
-                return
-            }
-            if let monitor = releaseMonitor {
-                NSEvent.removeMonitor(monitor)
-                releaseMonitor = nil
-            }
-            if CommandLine.arguments.contains("--native-geometry") { geometry("after-native") }
-            manager.refresh()
-            guard let actual = fixture() else {
-                print("FAIL: the native fixture disappeared after mouse-up")
-                exit(1)
-            }
-            guard MenuBarIconManager.section(for: actual.frame,
-                                            boundaries: manager.boundaryProvider()) == .shown else {
-                if ProcessInfo.processInfo.systemUptime - releasedAt < 0.25 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { verifyRelease(until: deadline) }
-                    return
-                }
-                print("FAIL: the native Command driver did not move the real icon to Shown; actual=\(actual.frame), boundaries=\(manager.boundaryProvider())")
-                exit(1)
-            }
-            print("PASS: native Command changed Hidden to Shown after delivered mouse-up")
-            if CommandLine.arguments.contains("--native-overlap") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    manager.refresh()
-                    let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
-                    guard let settled = fixture(),
-                          (saved?["hidden"] as? [String])?.contains(fixtureID) == true,
-                          MenuBarIconManager.section(for: settled.frame,
-                                                    boundaries: manager.boundaryProvider()) == .shown else {
-                        print("FAIL: overlapping native setup missed the first move's pending interval")
-                        exit(1)
-                    }
-                    print("OVERLAP pending first move, settled source=\(settled.frame)")
-                    overlappingNativeMove(from: settled)
-                }
-                return
-            }
-            if CommandLine.arguments.contains("--native-close") {
-                manager.endIconManagement()
-                let delay = ProcessInfo.processInfo.systemUptime - releasedAt
-                guard delay < 0.35 else {
-                    print("FAIL: the close test missed the 350ms verification interval: \(delay)s")
-                    exit(1)
-                }
-                print("Closed management \(delay)s after native mouse-up")
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                geometry("after-native-1s")
-                let saved = UserDefaults.standard.dictionary(forKey: layoutKey)
-                guard (saved?["hidden"] as? [String])?.contains(fixtureID) == false,
-                      (saved?["alwaysHidden"] as? [String])?.contains(fixtureID) == false else {
-                    print(CommandLine.arguments.contains("--native-refresh-retry")
-                        ? "FAIL: a transient inventory read discarded the completed native move"
-                        : "FAIL: the native Command move to Shown did not persist")
-                    exit(1)
-                }
-                let fresh = MenuBarIconManager()
-                fresh.boundaryProvider = manager.boundaryProvider
-                fresh.refresh()
-                let items = fresh.icons.filter { $0.id.hasPrefix(fixtureID + "|") }
-                guard items.count == 1, items.allSatisfy({ $0.section == .shown }),
-                      items.contains(where: {
-                          $0.title == icon.title && MenuBarIconManager.section(
-                            for: $0.frame, boundaries: manager.boundaryProvider()) == .shown
-                      }) else {
-                    print("FAIL: a fresh manager or actual geometry lost the native Shown move")
-                    exit(1)
-                }
-                print("PASS: native Command moved the real icon and persisted Shown across manager reload")
-                finish()
-            }
-        }
-        driver.terminationHandler = { driver in
-            DispatchQueue.main.async {
-                guard driver.terminationStatus == 0 else {
-                    print("FAIL: the independent native Command driver failed")
-                    exit(1)
-                }
-                verifyRelease(until: ProcessInfo.processInfo.systemUptime + 1)
-            }
-        }
-        do { try driver.run() }
-        catch { print("FAIL: could not start the native Command driver: \(error)"); exit(1) }
-    }
-    manager.beginProvider = {
-        hidden.setCollapsed(false, reservingDropSpace: true)
-        always.setCollapsed(false, reservingDropSpace: true)
-    }
-    manager.endProvider = { [weak manager] in
-        hidden.setCollapsed(false)
-        always.setCollapsed(false)
-        if ControlItem.usesMacOS27Model {
-            guard [hidden, always].allSatisfy({ $0.statusItem.button?.window?.frame.width == 1 }) else {
-                print("FAIL: closing icon management left divider padding in the menu bar")
-                exit(1)
-            }
-            print("SPACING: closing icon management restored compact divider windows")
-        }
-        manager?.applyDrawerVisibility(revealHidden: false, revealAlwaysHidden: false)
-    }
-    @MainActor
-    func reorder(prepared: Int = 0, arrowPass: Int = 0) {
-        manager.refresh()
-        let items = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-        let expected = closeTest ? 1 : 2
-        guard items.count == expected else {
-            print("FAIL: the reorder fixture needs \(expected) readable icons")
-            exit(1)
-        }
-        if CommandLine.arguments.contains("--menu-expired") {
-            moveFromMenu()
-            return
-        }
-        let reorderSection: MenuBarSection = .hidden
-        if prepared < expected {
-            manager.move(items[prepared], to: .hidden)
-            guard manager.isUpdatingIcons else {
-                print("FAIL: the section move did not publish its pending verification")
-                exit(1)
-            }
-            afterMove { reorder(prepared: prepared + 1) }
-            return
-        }
-        let ordered = items.sorted { $0.frame.minX < $1.frame.minX }
-        let savedSectionReorder = CommandLine.arguments.contains("--saved-section-reorder")
-        if savedSectionReorder {
-            print("SAVED_SECTION_REORDER frames=\(ordered.map(\.frame)) boundaries=\(manager.boundaryProvider())")
-            guard ordered.allSatisfy({ $0.section == .hidden }),
-                  let hiddenX = manager.boundaryProvider().hidden else { exit(1) }
-            // Keep the saved assignment, but inject the real Mac's mismatch
-            // between the saved section and the narrow divider span.
-            manager.boundaryProvider = { (hidden: hiddenX, alwaysHidden: hiddenX - 1) }
-            guard ordered.allSatisfy({ MenuBarIconManager.section(
-                for: $0.frame, boundaries: manager.boundaryProvider()) == .alwaysHidden }) else {
-                print("FAIL: saved-section fixture must be outside physical Hidden")
-                exit(1)
-            }
-        }
-        let moving = staleFrameKind == "arrow" || CommandLine.arguments.contains("--wide-item") ? fixture()! : ordered[0]
-        let towardClock = ordered.first?.id == moving.id
-        let direction: MenuBarIconManager.MoveDirection = towardClock ? .towardClock : .towardDrawer
-        let pixelIcon = fixture()
-        if let physical = geometry("prepared-\(reorderSection.rawValue)") {
-            guard let pixelIcon, abs(physical.x - pixelIcon.frame.midX) <= 1,
-                  MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1, width: 2, height: 2),
-                                             boundaries: manager.boundaryProvider()) == reorderSection else {
-                print("FAIL: AX position disagrees with the drawn fixture before reordering \(reorderSection.rawValue)")
-                exit(1)
-            }
-        }
-        guard savedSectionReorder || ordered.allSatisfy({ MenuBarIconManager.section(for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
-            print("FAIL: the reorder fixture could not enter \(reorderSection.rawValue)")
-            exit(1)
-        }
-        if CommandLine.arguments.contains("--menu-context") {
-            moveFromMenu()
-            return
-        }
-        if CommandLine.arguments.contains("--drag-context") {
-            moveFromDrag()
-            return
-        }
-        if CommandLine.arguments.contains("--native-sibling") {
-            moveSibling(ordered)
-            return
-        }
-        if CommandLine.arguments.contains("--move-overlap") {
-            overlapProgrammaticMove(ordered)
-            return
-        }
-        if CommandLine.arguments.contains("--move-retry-overlap") {
-            guard let icon = fixture() else { exit(1) }
-            manager.move(icon, to: .hidden)
-            afterPostingDrag {
-                manager.refresh()
-                guard manager.isUpdatingIcons, let current = fixture(),
-                      MenuBarIconManager.section(for: current.frame,
-                        boundaries: manager.boundaryProvider()) == .hidden else {
-                    print("FAIL: retry overlap missed the pending Hidden move")
-                    exit(1)
-                }
-                overlappingNativeMove(from: current)
-            }
-            return
-        }
-        if CommandLine.arguments.contains("--native-close") || CommandLine.arguments.contains("--native-overlap")
-            || CommandLine.arguments.contains("--native-geometry")
-            || CommandLine.arguments.contains("--native-refresh-retry") {
-            nativeMove()
-            return
-        }
-        if CommandLine.arguments.contains("--move-close")
-            || CommandLine.arguments.contains("--move-refresh-retry")
-            || CommandLine.arguments.contains("--move-refresh-failure") {
-            moveAndClose()
-            return
-        }
-        if saveTest {
-            moveAndClose()
-            return
-        }
-        guard manager.canMove(moving, toward: direction) else { exit(1) }
-        captureEvidence("before-reorder-\(arrowPass)")
-        let actionStart = ProcessInfo.processInfo.systemUptime
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
-            print("PERF_NATIVE_MOVE_PULSE_MS \((ProcessInfo.processInfo.systemUptime - actionStart) * 1_000)")
-        }
-        manager.move(moveArgument(moving, kind: "arrow"), toward: direction)
-        print("PERF_NATIVE_MOVE_CALL_MS \((ProcessInfo.processInfo.systemUptime - actionStart) * 1_000)")
-        guard manager.isUpdatingIcons else {
-            print("FAIL: the arrow move did not publish its pending verification")
-            exit(1)
-        }
-        afterMove {
-            let moveError = manager.errorMessage
-            manager.refresh()
-            let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-                .sorted { $0.frame.minX < $1.frame.minX }
-            let edge = towardClock ? next.last : next.first
-            guard !manager.isUpdatingIcons, edge?.id == moving.id,
-                  moveError == nil,
-                  next.allSatisfy({ $0.section == reorderSection }),
-                  savedSectionReorder || next.allSatisfy({ MenuBarIconManager.section(
-                    for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
-                print("FAIL: the Settings arrow did not change the real icon order")
-                print("Move error: \(moveError ?? "none")")
-                print("Actual frames: \(next.map { ($0.title, $0.frame) }); boundaries=\(manager.boundaryProvider())")
-                manager.copyMenuBarReport()
-                print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
-                exit(1)
-            }
-            if staleFrameKind == "arrow", let physical = geometry("reordered-\(reorderSection.rawValue)") {
-                guard let current = fixture(), abs(physical.x - current.frame.midX) <= 1,
-                      MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1,
-                                                            width: 2, height: 2),
-                                                 boundaries: manager.boundaryProvider()) == reorderSection else {
-                    print("FAIL: the stale-row arrow disagrees with the drawn fixture")
-                    exit(1)
-                }
-            }
-            captureEvidence("after-reorder-\(arrowPass)")
-            print("PASS: the Settings arrow changed the real icon order")
-            if (staleFrameKind == "arrow" || CommandLine.arguments.contains("--wide-item")) && arrowPass == 0 {
-                reorder(prepared: expected, arrowPass: 1)
-            } else {
-                finish()
-            }
-        }
-    }
-    @MainActor
-    func move(index: Int) {
-        manager.refresh()
-        guard let icon = fixture() else {
-            print("FAIL: the fixture icon was not readable")
-            exit(1)
-        }
-        let section = sections[index]
-        captureEvidence("before-\(section.rawValue)")
-        print("Moving fixture to \(section.rawValue), from \(icon.frame); boundaries=\(manager.boundaryProvider())")
-        manager.move(moveArgument(icon, kind: "section"), to: section)
-        guard manager.isUpdatingIcons else {
-            print("FAIL: the section move did not publish its pending verification")
-            exit(1)
-        }
-        afterMove {
-            let moveError = manager.errorMessage
-            manager.refresh()
-            guard !manager.isUpdatingIcons, let current = fixture(),
-                  moveError == nil,
-                  MenuBarIconManager.section(for: current.frame, boundaries: manager.boundaryProvider()) == section,
-                  current.section == section else {
-                print("FAIL: the real fixture did not move to \(section.rawValue); \(moveError ?? "no error")")
-                if let current = fixture() { print("Actual frame: \(current.frame); boundaries=\(manager.boundaryProvider())") }
-                manager.copyMenuBarReport()
-                print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
-                exit(1)
-            }
-            captureEvidence("after-\(section.rawValue)")
-            print("PASS: Settings moved the real fixture to \(section.rawValue)")
-            if let physical = geometry("section-\(section.rawValue)") {
-                guard abs(physical.x - current.frame.midX) <= 1,
-                      MenuBarIconManager.section(for: CGRect(x: physical.x-1, y: physical.y-1,
-                                                            width: 2, height: 2),
-                                                 boundaries: manager.boundaryProvider()) == section else {
-                    print("FAIL: AX position disagrees with the drawn fixture after moving to \(section.rawValue)")
-                    exit(1)
-                }
-            }
-            if index + 1 < sections.count { move(index: index + 1) }
-            else {
-                reorder()
-            }
-        }
-    }
-    @MainActor
-    func removedRow() {
-        guard let index = CommandLine.arguments.firstIndex(of: "--removed-row"),
-              let old = manager.icons.first(where: { $0.id.hasPrefix("com.flux.icon-fixture|") && $0.id.hasSuffix("|0") }),
-              old.title == "Flux fixture A" else {
-            print("FAIL: the removed-row fixture did not expose A at index zero")
-            exit(1)
-        }
-        let request = URL(fileURLWithPath: CommandLine.arguments[index + 1])
-        try! Data("remove".utf8).write(to: request, options: .atomic)
-        let deadline = ProcessInfo.processInfo.systemUptime + 2
-        func awaitRemoval() {
-            manager.refresh()
-            let remaining = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
-            guard remaining.count == 1, let replacement = remaining.first,
-                  replacement.title == old.title, replacement.id == old.id else {
-                guard ProcessInfo.processInfo.systemUptime < deadline else {
-                    print("FAIL: native removal did not reuse the first AX index")
-                    exit(1)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { awaitRemoval() }
-                return
-            }
-            print("REUSED_INDEX old=\(old.title) current=\(replacement.title) id=\(old.id)")
-            let layoutKey = "flux.macOS27IconLayout"
-            let saved = UserDefaults.standard.dictionary(forKey: layoutKey) as NSDictionary?
-            manager.move(old, to: .hidden)
-            guard !manager.isUpdatingIcons, manager.errorMessage != nil else {
-                print("FAIL: a removed icon row started a move of its replacement")
-                exit(1)
-            }
-            manager.move(old, toward: .towardClock)
-            guard !manager.isUpdatingIcons, manager.errorMessage != nil else {
-                print("FAIL: a removed icon row reached the replacement's arrow action")
-                exit(1)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                manager.refresh()
-                let current = manager.icons.first { $0.id == replacement.id }
-                let after = UserDefaults.standard.dictionary(forKey: layoutKey) as NSDictionary?
-                guard current?.title == replacement.title, current?.frame == replacement.frame,
-                      saved == after else {
-                    print("FAIL: a rejected removed row changed the replacement or saved layout")
-                    exit(1)
-                }
-                print("PASS: both public actions reject the removed row and preserve its replacement")
-                finish()
-            }
-        }
-        awaitRemoval()
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-        manager.beginIconManagement()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            if CommandLine.arguments.contains("--removed-row") { removedRow() }
-            else if closeTest || staleFrameKind == "arrow" { reorder() }
-            else { move(index: 0) }
-        }
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
-        print("FAIL: the icon move probe reached its deadline")
-        exit(1)
-    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 75) { print("FAIL: product fixture deadline"); exit(1) }
     app.run()
 }
 AccessibilityAccess.exitIfRequested()
 MainActor.assumeIsolated { probe() }
 '''
 
-with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
-    temporary = Path(directory)
-    manager_path = "Sources/Flux/MenuBar/MenuBarIconManager.swift"
-    hider_path = "Sources/Flux/MenuBar/MacOS27Hider.swift"
-    hider_source = root / hider_path
-    manager_source = root / manager_path
-    controller_path = "Sources/Flux/MenuBar/MenuBarDragController.swift"
-    controller_source = root / controller_path
-    if options.manager_ref:
-        manager_source = temporary / "MenuBarIconManager.swift"
-        manager_source.write_text(subprocess.check_output(
-            ["git", "show", options.manager_ref + ":" + manager_path],
-            cwd=root, text=True, timeout=15))
-    if options.hider_ref:
-        hider_source = temporary / "MacOS27Hider.swift"
-        hider_source.write_text(subprocess.check_output(
-            ["git", "show", options.hider_ref + ":" + hider_path],
-            cwd=root, text=True, timeout=15))
-    if "struct Insertion:" not in manager_source.read_text():
-        # Historical manager checks predate the insertion interface. Keep the
-        # prior controller used by those native fixtures, without changing it.
-        controller_source = temporary / "MenuBarDragController.swift"
-        controller_source.write_text(subprocess.check_output(
-            ["git", "show", "6fde90817068d06ecfae8eb6ec85c19e68af997b:" + controller_path],
-            cwd=root, text=True, timeout=15))
-    if options.insertion:
-        source = source.replace('destination.section = .shown', '''destination.section = .shown
-        destination.insertionAt = { _ in
-            MenuBarIconManager.Insertion(section: .shown, before: nil, after: nil)
-        }''')
-        if "struct Insertion:" not in manager_source.read_text():
-            raise RuntimeError("selected manager has no insertion interface")
-        source = source.replace('manager.move(moveArgument(moving, kind: "arrow"), toward: direction)', '''
-        let neighbor = ordered.first { $0.id != moving.id }!
-        let placement = MenuBarIconManager.Insertion(section: reorderSection,
-            before: towardClock ? nil : neighbor, after: towardClock ? neighbor : nil)
-        manager.move(moving, to: placement)''')
-    manager_text = manager_source.read_text()
-    posting = "isPostingDrag" if "private var isPostingDrag" in manager_text else "false"
-    manager_source = temporary / "FixtureMenuBarIconManager.swift"
-    manager_source.write_text(manager_text + "\nextension MenuBarIconManager { var probePostingDrag: Bool { " + posting + " } }\n")
-    if options.trace_drag:
-        text = manager_source.read_text()
-        start = text.index("    private func drag(")
-        end = text.index("    private func isFluxItem", start)
-        body = text[start:end]
-        for event in ("down", "move", "up"):
-            post = event + ".post(tap: .cghidEventTap)"
-            body = body.replace(post, post + '\n            print("TRACE_NATIVE_' + event.upper() + ' \\(ProcessInfo.processInfo.systemUptime)")')
-        manager_source = temporary / "TracedMenuBarIconManager.swift"
-        manager_source.write_text(text[:start] + body + text[end:])
-    if options.menu_expired:
-        manager_text = manager_source.read_text()
-        start = manager_text.index("    private func deferMoveUntilMenuCloses(")
-        end = manager_text.index("    private func move(_ icon: Icon, toX", start)
-        waiter = manager_text[start:end]
-        assert waiter.count("ProcessInfo.processInfo.systemUptime") == 2
-        # Advance only the clock boundary; compile the actual waiter and public move bodies.
-        waiter = waiter.replace("ProcessInfo.processInfo.systemUptime", "ProbeMenuClock.now")
-        manager_source = temporary / "MenuBarIconManager.swift"
-        manager_source.write_text(manager_text[:start] + waiter + manager_text[end:])
 
-    def bundle(name, bundle_id, code, dependencies):
-        app = temporary / f"{name}.app"
-        binary = app / f"Contents/MacOS/{name}"
-        binary.parent.mkdir(parents=True)
-        with (app / "Contents/Info.plist").open("wb") as output:
-            plistlib.dump({"CFBundleIdentifier": bundle_id, "CFBundleExecutable": name,
-                          "CFBundlePackageType": "APPL", "LSUIElement": True}, output)
-        sources = temporary / name
-        sources.mkdir()
-        main = sources / "main.swift"
-        if "private let injectedHider:" not in manager_source.read_text():
-            code = code.replace("}, hider: hider)", "})")
-        code = code.replace("com.flux.icon-fixture", fixture_bundle_id)
-        main.write_text(code)
-        command(["swiftc", "-swift-version", "5", str(main)] +
-                [str({manager_path: manager_source, hider_path: hider_source, controller_path: controller_source}.get(dependency, root / dependency))
-                 for dependency in dependencies] + ["-o", str(binary)], 120)
-        command(["codesign", "--force", "--sign", "-", str(app)], 20)
-        return binary
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case", choices=CASES)
+    parser.add_argument("--insertion", action="store_true", help="Alias for narrow-reorder")
+    parser.add_argument("--wide-item", action="store_true", help="Select wide-reorder")
+    parser.add_argument("--drag-context", action="store_true", help="Select actual drag-insertion")
+    parser.add_argument("--saved-section-reorder", action="store_true", help="Compatibility alias; all reorders use saved policy")
+    args = parser.parse_args()
+    selected = args.case or ("drag-insertion" if args.drag_context else "wide-reorder" if args.wide_item
+                             else "narrow-reorder" if args.insertion or args.saved_section_reorder else "settings")
+    if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
+        raise SystemExit("FAIL: icon fixtures and grants require a disposable GitHub macOS runner")
+    fixture_id = "com.flux.icon-fixture." + uuid.uuid4().hex
+    probe_id = "com.flux.icon-probe." + uuid.uuid4().hex
+    with tempfile.TemporaryDirectory(prefix="flux-icon-probe-") as directory:
+        temporary = Path(directory)
 
-    fixture = bundle("FluxIconFixture", fixture_bundle_id, fixture_source, [])
-    binary = bundle("FluxIconProbe", "com.flux.icon-probe", source, [
-        "Sources/Flux/MenuBar/MenuBarIconManager.swift", "Sources/Flux/MenuBar/MacOS27Hider.swift",
-        "Sources/Flux/MenuBar/ControlItem.swift", "Sources/Flux/MenuBar/MenuBarSection.swift",
-        "Sources/Flux/MenuBar/MenuBarIconStyle.swift", "Sources/Flux/MenuBar/MenuBarGeometry.swift",
-        "Sources/Flux/MenuBar/MenuBarDragController.swift",
-        "Sources/Flux/Support/Theme.swift", "Sources/Flux/Support/Log.swift",
-        "Sources/Flux/Support/AccessibilityAccess.swift"])
-    close_test = (options.native_close or options.move_close or options.native_overlap
-                  or options.native_geometry or options.native_refresh_retry
-                  or options.move_refresh_retry or options.move_refresh_failure
-                  or options.move_save_retry or options.move_save_failure or options.menu_context or options.menu_expired or options.drag_context
-                  or options.move_retry_overlap)
-    capture_geometry = (options.native_geometry or options.move_refresh_retry or options.move_refresh_failure
-                        or options.move_save_retry or options.move_save_failure or options.stale_frame is not None
-                        or options.move_retry_overlap)
-    geometry = temporary / "geometry"
-    geometry.mkdir()
-    fixture_flags = (["--single"] if close_test else [])
-    if options.wide_item:
-        fixture_flags += ["--wide-item"]
-    removal_request = temporary / "remove-first"
-    if options.removed_row:
-        fixture_flags += ["--remove-first", str(removal_request), "--duplicate-title"]
-    if capture_geometry:
-        fixture_flags += ["--geometry-output", str(geometry / "fixture.json")]
-    if options.evidence_output:
-        options.evidence_output = options.evidence_output.resolve()
-        options.evidence_output.mkdir(parents=True, exist_ok=True)
-    recording = None
-    recording_log = None
-    process = subprocess.Popen([str(fixture)] + fixture_flags, start_new_session=True)
-    started_at = time.time()
-    try:
-        selected = [("--native-sibling", options.native_sibling), ("--native-close", options.native_close),
-                    ("--move-close", options.move_close), ("--native-overlap", options.native_overlap),
-                    ("--move-refresh-retry", options.move_refresh_retry),
-                    ("--move-refresh-failure", options.move_refresh_failure),
-                    ("--move-save-retry", options.move_save_retry),
-                    ("--move-save-failure", options.move_save_failure),
-                    ("--menu-context", options.menu_context),
-                    ("--menu-expired", options.menu_expired),
-                    ("--drag-context", options.drag_context),
-                    ("--native-geometry", options.native_geometry), ("--native-refresh-retry", options.native_refresh_retry),
-                    ("--move-overlap", options.move_overlap), ("--move-retry-overlap", options.move_retry_overlap)]
-        flags = [flag for flag, enabled in selected if enabled]
-        if options.wide_item:
-            flags += ["--wide-item"]
-        if options.saved_section_reorder:
-            flags += ["--saved-section-reorder"]
-        if options.stale_frame:
-            flags += ["--stale-frame", options.stale_frame]
-        if options.removed_row:
-            flags += ["--removed-row", str(removal_request)]
-        if capture_geometry:
-            flags += ["--geometry-output", str(geometry)]
-        if options.evidence_output:
-            flags += ["--evidence-output", str(options.evidence_output)]
-            recording_log = (options.evidence_output / "recording.log").open("w")
-            recording = subprocess.Popen(["/usr/sbin/screencapture", "-v", "-V", "22",
-                "-R0,0,1024,160", str(options.evidence_output / "moves.mov")],
-                stdout=recording_log, stderr=subprocess.STDOUT, start_new_session=True)
-        command([str(binary), str(fixture)] + flags, 30)
-        if recording:
-            status = recording.wait(timeout=25)
-            if status or not (options.evidence_output / "moves.mov").is_file():
-                raise RuntimeError("native screen recording failed; see recording.log")
-        _stop(process)
-        if capture_geometry:
-            shutil.copytree(geometry, root / "build/icon-probe/geometry", dirs_exist_ok=True)
-    except BaseException:
-        _stop(process)
-        label = (options.manager_ref or "current")[:8] + ("-overlap" if options.native_overlap else
-                ("-native" if options.native_close else ("-close" if options.move_close else "-settings")))
-        if options.stale_frame:
-            label += "-stale-" + options.stale_frame
-        evidence = root / "build/icon-probe" / label
-        shutil.copytree(temporary, evidence, dirs_exist_ok=True)
-        reports = Path.home() / "Library/Logs/DiagnosticReports"
-        deadline = time.monotonic() + 3
-        while True:
-            crashes = [path for path in reports.glob("FluxIconProbe*.ips")
-                       if path.stat().st_mtime >= started_at]
-            if crashes or time.monotonic() >= deadline:
-                break
-            time.sleep(0.1)
-        for path in crashes:
-            shutil.copy2(path, evidence / path.name)
-        print(f"FAIL evidence: {evidence}", flush=True)
-        raise
-    finally:
-        _stop(process)
-        if recording:
-            _stop(recording)
-        if recording_log:
-            recording_log.close()
+        def bundle(name, bundle_id, source, dependencies):
+            app = temporary / (name + ".app")
+            binary = app / "Contents/MacOS" / name
+            binary.parent.mkdir(parents=True)
+            with (app / "Contents/Info.plist").open("wb") as stream:
+                plistlib.dump({"CFBundleIdentifier": bundle_id, "CFBundleExecutable": name,
+                              "CFBundlePackageType": "APPL", "LSUIElement": True}, stream)
+            # Top-level executable statements use main.swift in a separate folder.
+            source_folder = temporary / name
+            source_folder.mkdir()
+            main_source = source_folder / "main.swift"
+            main_source.write_text(source)
+            command(["xcrun", "swiftc", "-swift-version", "5", str(main_source)] +
+                    [str(ROOT / "Sources/Flux" / item) for item in dependencies] + ["-o", str(binary)], 120)
+            command(["codesign", "--force", "--sign", "-", str(app)], 20)
+            return binary
+
+        fixture = bundle("FluxIconFixture", fixture_id, FIXTURE, [])
+        dependencies = ["MenuBar/MenuBarIconManager.swift", "MenuBar/MenuBarArrangement.swift",
+                        "MenuBar/MenuBarNativeDrag.swift", "MenuBar/MacOS27Hider.swift",
+                        "MenuBar/ControlItem.swift", "MenuBar/MenuBarSection.swift", "MenuBar/MenuBarIconStyle.swift",
+                        "MenuBar/MenuBarGeometry.swift", "MenuBar/MenuBarDragController.swift",
+                        "Support/Theme.swift", "Support/Log.swift", "Support/AccessibilityAccess.swift"]
+        binary = bundle("FluxIconProbe", probe_id, PROBE, dependencies)
+        control = temporary / "control"
+        with ExitStack() as grants:
+            grants.enter_context(accessibility_grant(fixture_id))
+            grants.enter_context(accessibility_grant(probe_id))
+            process = subprocess.Popen([str(fixture), str(control)] +
+                                       (["--wide"] if selected == "wide-reorder" else []), start_new_session=True)
+            try:
+                command([str(binary), selected, fixture_id, str(fixture), str(control)], 85)
+            finally:
+                try:
+                    # Release only during teardown, after the real consecutive-move checks.
+                    command([str(fixture), "--release-input"], 5)
+                finally:
+                    _stop(process)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, interrupted)
+    main()
