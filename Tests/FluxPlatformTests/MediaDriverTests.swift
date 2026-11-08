@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import FluxPlatform
 
-private struct MediaFixture {
+private struct MediaFixture: Sendable {
     let root: URL
     let script: URL
 
@@ -51,7 +51,7 @@ private struct MediaFixture {
     }
 }
 
-private func mediaEventually(seconds: Double = 3, _ predicate: () async -> Bool) async -> Bool {
+private func mediaEventually(seconds: Double = 3, _ predicate: @Sendable () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(seconds)
     while ContinuousClock.now < deadline {
         if await predicate() { return true }
