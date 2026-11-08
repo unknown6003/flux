@@ -93,6 +93,15 @@ jobs:
           name: native-ui
           path: build/native-ui/
           if-no-files-found: error
+      - name: Build guarded native visibility diagnostic
+        timeout-minutes: 4
+        run: python3 Scripts/rebuild/build_visibility_probe.py
+      - name: Upload native visibility diagnostic
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-visibility-probe
+          path: build/native-visibility-probe/
+          if-no-files-found: error
       - name: Import identity for capture-only probe
         if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
         env:

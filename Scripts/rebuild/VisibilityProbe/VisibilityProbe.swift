@@ -55,7 +55,8 @@ import FluxPlatform
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         guard attrs[.type] as? FileAttributeType == .typeRegular,
               (attrs[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
-              (attrs[.size] as? NSNumber)?.intValue ?? Int.max <= 65536 else { throw Check.unsafeJournal }
+              (attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+              ((attrs[.size] as? NSNumber)?.intValue ?? Int.max) <= 65536 else { throw Check.unsafeJournal }
         return try JSONDecoder().decode(Journal.self, from: Data(contentsOf: url))
     }
 
