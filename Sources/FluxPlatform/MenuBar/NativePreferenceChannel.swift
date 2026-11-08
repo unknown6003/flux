@@ -41,7 +41,7 @@ public actor NativePreferenceChannel {
         }
         let value = Unmanaged<CFTypeRef>.fromOpaque(pointer).takeRetainedValue()
         guard CFGetTypeID(value) == CFDataGetTypeID() else { throw NativePreferenceError.invalidValue }
-        let data = unsafeBitCast(value, to: CFData.self)
+        let data = unsafeDowncast(value, to: CFData.self)
         guard CFDataGetLength(data) <= 8 * 1024 * 1024 else { throw NativePreferenceError.invalidValue }
         return try NativeVisibilityDocument(data: data as Data)
     }
@@ -66,11 +66,10 @@ public actor NativePreferenceChannel {
     }
 
     private func write(_ document: NativeVisibilityDocument) throws {
-        let value = document.data as CFData
-        withExtendedLifetime(value) {
-            set(Self.ptr(key), UnsafeRawPointer(Unmanaged.passUnretained(value).toOpaque()), Self.ptr(domain),
-                Self.ptr(kCFPreferencesCurrentUser), Self.ptr(kCFPreferencesAnyHost), Self.ptr(container))
-        }
+        let retained = Unmanaged.passRetained(document.data as CFData)
+        set(Self.ptr(key), UnsafeRawPointer(retained.toOpaque()), Self.ptr(domain),
+            Self.ptr(kCFPreferencesCurrentUser), Self.ptr(kCFPreferencesAnyHost), Self.ptr(container))
+        retained.release()
         try sync()
     }
 
