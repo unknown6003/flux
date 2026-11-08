@@ -282,7 +282,7 @@ private final class CompactNotchRootView: NSView {
 final class CompactNotchButton: NSButton {
     var onKey: ((CompactNotchAction) -> Void)?
     var onScroll: ((CompactNotchAction) -> Void)?
-    var onMenu: (() -> NSMenu)?
+    var onMenu: (() -> NSMenu?)?
     var shapePath: CGPath? { didSet { noteFocusRingMaskChanged() } }
     private var scroll = ScrollAccumulator()
 
