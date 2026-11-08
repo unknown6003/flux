@@ -126,6 +126,7 @@ struct ViewLifetimeTests {
             stack.topAnchor.constraint(equalTo: root.topAnchor)
         ])
         let window = NSWindow(contentRect: root.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         window.contentView = root
         root.layoutSubtreeIfNeeded()
         #expect(abs(short.frame.width - 480) < 1)

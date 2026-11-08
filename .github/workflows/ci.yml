@@ -87,6 +87,25 @@ jobs:
         run: swift test --filter FluxPlatformTests
       - name: Check native view lifetimes
         run: swift test --filter FluxUITests
+      - name: Collect native test crash report
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          destination = Path('build/native-test-crashes')
+          destination.mkdir(parents=True, exist_ok=True)
+          for source in (Path.home() / 'Library/Logs/DiagnosticReports').glob('swift*.ips'):
+              if source.stat().st_size <= 2_000_000:
+                  shutil.copy2(source, destination / source.name)
+          PY
+      - name: Upload native test crash report
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-test-crashes
+          path: build/native-test-crashes/
+          if-no-files-found: warn
       - name: Render native interface fixtures
         run: swift run FluxUIProbe build/native-ui
       - name: Upload native interface fixtures
