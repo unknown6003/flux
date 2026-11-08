@@ -44,3 +44,15 @@ The language alone cannot fix a broken OS assumption. First prove the menu-bar b
 ## Working ownership
 
 Parent: app architecture, OS experiments, code, integration and release. Opus field study: reference evidence only. Opus experience design: flows and visual artifacts only. Inventory/capabilities agent: read-only evidence. Terra: real Mac probes and media, each with a bounded task. Keep at most three repository spaces and serialize integration.
+
+## PostHog
+
+The user added PostHog to the whole-app scope. Implement all applicable native macOS capabilities behind a strict data contract. Do not claim parity with web or iOS-only replay, surveys or interaction autocapture. Do not add a web runtime to emulate them.
+
+Only fixed event names, enum values and a resettable random ID may enter usage records. Never collect clipboard, calendar, media or screen content, file names, app inventory, raw error descriptions, user names, emails or OS device identifiers. Random IDs still link events. Explain that limit. IP and GeoIP suppression need project settings and transport verification, not only an event callback.
+
+Analytics off constructs no client and sends nothing. Turning it off cancels sends and drops unsent data. No analytics code runs during drawing, hover, clipboard checks or icon-control transactions. Network requests, flag fetches and experiments must never delay startup or a user action. Use bounded memory and action-triggered batching, with no idle polling.
+
+The official SDK audit found periodic queues and data added outside its event callback. Compare an audited narrow native API client with a patched SDK before choosing. No PostHog dependency or live project is configured yet. The first core module only encodes typed records. It does not send them and is not wired into the old app.
+
+Zero cost is not a testable promise. Measure analytics on and off on the same signed app. Include total process footprint, CPU, wakeups, networking, startup and menu-bar latency. Set release limits before acceptance and reject a change that exceeds them. Test all outgoing requests with private-content canaries and test opt-out and ID reset during an in-flight send.

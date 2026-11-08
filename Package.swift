@@ -8,6 +8,17 @@ let package = Package(
         .macOS(.v14)
     ],
     targets: [
+        .target(
+            name: "FluxCore",
+            path: "Sources/FluxCore",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "FluxCoreTests",
+            dependencies: ["FluxCore"],
+            path: "Tests/FluxCoreTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .executableTarget(
             name: "Flux",
             path: "Sources/Flux",
