@@ -10,6 +10,26 @@ import FluxPlatform
 
 @Suite(.serialized)
 struct ActivityCoordinatorTests {
+    @Test @MainActor func overflowScansRespectDismissalUntilTheBarFitsAgain() throws {
+        let domain = "org.fluxfixture.activities.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        let owner = ActivityCoordinator(preferences: preferences, publish: { _, _, _, _ in }, timerCompleted: { _ in })
+        defer { owner.stop() }
+        owner.start()
+        owner.setOverflowCount(3)
+        owner.perform(.dismissActivity)
+        owner.setOverflowCount(3)
+        owner.setOverflowCount(4)
+        #expect(owner.queue.current == nil)
+        #expect(owner.queue.restorableCount == 1)
+        owner.setOverflowCount(0)
+        owner.setOverflowCount(2)
+        #expect(owner.queue.current?.trailing == .text("2"))
+        #expect(owner.queue.restorableCount == 0)
+    }
+
     @Test(.timeLimit(.minutes(1))) @MainActor
     func dismissingCompletionStillRestoresTheNextTimerAtItsDeadline() async throws {
         let domain = "org.fluxfixture.activities.\(UUID())"

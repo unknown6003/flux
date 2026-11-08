@@ -21,6 +21,7 @@ public final class ActivityCoordinator {
     private var refreshingCalendar = false
     private var power = PowerTransitions()
     private var lowWarning = false
+    private var overflowCount = 0
     private var lastVolume: VolumeSnapshot?
     private var agenda: [AgendaEntry] = []
     private var calendarID: String?
@@ -62,7 +63,7 @@ public final class ActivityCoordinator {
         timerTask?.cancel(); timerTask = nil
         images.clear(); artworkID = nil; artwork = nil; media = nil; mediaKey = nil
         agenda = []; calendarID = nil; timerID = nil; completionUntil = nil
-        power = PowerTransitions(); lowWarning = false; lastVolume = nil
+        power = PowerTransitions(); lowWarning = false; lastVolume = nil; overflowCount = 0
         timers.cancelAll()
         queue.clear()
         publish(nil, nil, 0, 0)
@@ -80,6 +81,7 @@ public final class ActivityCoordinator {
     public func refreshPreferences() {
         guard active else { return }
         for kind in ActivityKind.allCases where !enabled(kind) { queue.remove(kind) }
+        if !enabled(.menuBarOverflow) { overflowCount = 0 }
         if !enabled(.battery) { power = PowerTransitions(); lowWarning = false }
         if !enabled(.nowPlaying) { media = nil; mediaKey = nil; images.clear(); artworkID = nil; artwork = nil }
         if !enabled(.calendarEvent) { agenda = []; calendarID = nil }
@@ -170,8 +172,17 @@ public final class ActivityCoordinator {
 
     public func setOverflowCount(_ count: Int) {
         guard active else { return }
-        guard count > 0, enabled(.menuBarOverflow) else { queue.remove(.menuBarOverflow); return }
-        post(.menuBarOverflow, .symbol("exclamationmark.triangle.fill"), .text(String(min(count, 512))), priority: 150, duration: nil)
+        guard count > 0, enabled(.menuBarOverflow) else {
+            overflowCount = 0
+            queue.remove(.menuBarOverflow)
+            return
+        }
+        // One overflow episode lasts until the bar fits again. Repeated
+        // scans and count changes do not undo dismissal during that episode.
+        let newEpisode = overflowCount == 0
+        overflowCount = min(count, 512)
+        post(.menuBarOverflow, .symbol("exclamationmark.triangle.fill"), .text(String(overflowCount)),
+             priority: 150, duration: nil, updateOnly: !newEpisode)
     }
 
     private func postBattery(_ percent: Int, charging: Bool, warning: Bool, updateOnly: Bool = false) {
