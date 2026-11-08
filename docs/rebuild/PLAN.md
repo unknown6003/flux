@@ -47,6 +47,8 @@ The language alone cannot fix a broken OS assumption. First prove the menu-bar b
 
 Parent: app architecture, OS experiments, core/services, integration and release. Opus field study: reference evidence only. Opus experience design: flows and visual artifacts. An isolated Opus implementation task will own Sources/FluxUI only; parent owns Package.swift and the app wiring. Inventory/capabilities agent: read-only evidence. Terra: real Mac probes and media, each with a bounded task. Keep at most three repository spaces and serialize integration.
 
+Opus's native UI implementation failed before editing at the provider's429 rate limit, including one retry after nine minutes. Its prepared third worktree stays locked. No fallback model was selected. Core migration and storage work continued independently. See MIGRATION.md for the tested source contract. FeatureDemand now defines service requirements from one settings/session/presentation snapshot. It does not construct listeners. The future app must stop removed services before removing their views or starting replacements. Camera demand requires an unlocked session, the visible Mirror tab, its enabled setting and an existing grant. Clipboard capture pauses while locked. Useful media and activity listeners may remain while the notch is closed. This is a state-policy implementation, not hardware lifecycle proof.
+
 ## PostHog
 
 The user added PostHog to the whole-app scope. Implement all applicable native macOS capabilities behind a strict data contract. Do not claim parity with web or iOS-only replay, surveys or interaction autocapture. Do not add a web runtime to emulate them.

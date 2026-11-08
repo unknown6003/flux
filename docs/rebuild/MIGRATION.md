@@ -26,4 +26,4 @@ UpdateLaunch accepts one UUID token and one startup path in the updater's tempor
 
 The reviewed delta was b8c3d8f..41dce23. Standards found no issue. Spec and Risk independently found the same clipboard ellipsis compatibility gap. The parent checked the old writer and accepted the finding. The fix keeps the exact legacy text and adds a literal version-one fixture. The old-failure control was established from source, not an executed red test. A test fixture quoting error was also fixed before the archive tests could run.
 
-Mac CI passed 27 core tests at411d407 and 30 at4c290fa. Native file-service tests and the new legacy regression are a later delta and require their own run. No result here proves physical hiding, the new interface, a real upgrade, complete data migration, or final memory use.
+Mac CI passed 27 core tests at411d407, 30 at4c290fa, 33 atb9b4fa9 and 36 atf57c12e. The last run covers the lazy file service and the legacy regression. No result here proves physical hiding, the new interface, a real upgrade, complete data migration, or final memory use.
