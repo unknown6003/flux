@@ -50,7 +50,7 @@ import FluxUI
 @Suite(.serialized)
 struct SettingsCoordinatorTests {
     @MainActor private static func find(_ id: String) -> NSView? {
-        func walk(_ view: NSView) -> NSView? {
+        @MainActor func walk(_ view: NSView) -> NSView? {
             if view.identifier?.rawValue == id { return view }
             return view.subviews.lazy.compactMap(walk).first
         }
@@ -79,7 +79,7 @@ struct SettingsCoordinatorTests {
         _ = hotkeys.sendAction(hotkeys.action, to: hotkeys.target)
         #expect(!preferences.value(for: Preferences.enableHotkey))
         #expect(effects.changes.count == 1)
-        if case .hotkeysEnabled(false) = effects.changes.first {} else { Issue.record("Wrong runtime effect") }
+        if case .some(.hotkeysEnabled(false)) = effects.changes.first {} else { Issue.record("Wrong runtime effect") }
         settings.refresh()
         #expect(effects.changes.count == 1)
 
@@ -91,7 +91,7 @@ struct SettingsCoordinatorTests {
         #expect(preferences.value(for: Preferences.clipboardEnabled))
         #expect(!preferences.value(for: Preferences.clipboardPersistenceEnabled))
         #expect(effects.changes.count == 2)
-        if case .features(let config) = effects.changes.last {
+        if case .some(.features(let config)) = effects.changes.last {
             #expect(config.enabledWidgets.contains(.clipboard))
         } else { Issue.record("Clipboard did not update service demand") }
         #expect(effects.failures.isEmpty)
