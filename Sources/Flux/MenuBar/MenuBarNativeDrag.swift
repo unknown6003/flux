@@ -4,24 +4,32 @@ import ApplicationServices
 @MainActor
 final class MenuBarNativeDrag {
     private(set) var isRunning = false
+    private(set) var diagnostics = "none"
 
     func perform(from frame: CGRect, to target: CGPoint,
                  expectedProcessID: pid_t? = nil,
                  canContinue: @escaping @MainActor () -> Bool) async -> Bool {
+        diagnostics = "preflight"
         guard !isRunning, canContinue(), CGPreflightPostEventAccess(),
               frame.width > 0, frame.height > 0,
               frame.midX.isFinite, frame.midY.isFinite,
               target.x.isFinite, target.y.isFinite,
               Self.isInMenuBar(CGPoint(x: frame.midX, y: frame.midY)), Self.isInMenuBar(target),
               !CGEventSource.buttonState(.combinedSessionState, button: .left),
-              let source = CGEventSource(stateID: .privateState) else { return false }
+              let source = CGEventSource(stateID: .privateState) else {
+            diagnostics = "input unavailable, held, cancelled, or outside the menu bar; source=\(frame), target=\(target)"
+            return false
+        }
         if let expectedProcessID {
             var hit: AXUIElement?
             var hitPID: pid_t = 0
             guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
                                                    Float(frame.midX), Float(frame.midY), &hit) == .success,
                   let hit, AXUIElementGetPid(hit, &hitPID) == .success,
-                  hitPID == expectedProcessID else { return false }
+                  hitPID == expectedProcessID else {
+                diagnostics = "source hit owner=\(hitPID), expected=\(expectedProcessID), frame=\(frame)"
+                return false
+            }
         }
         isRunning = true
         let origin = CGEvent(source: nil)?.location ?? target
@@ -32,6 +40,7 @@ final class MenuBarNativeDrag {
                     guard event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) != Int64(getpid()) else { return }
                     if event.type == .flagsChanged { physicalFlags = event.cgEvent?.flags ?? physicalFlags }
                     interrupted = true
+                    self.diagnostics = "external input \(event.type.rawValue), pid=\(event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1)"
         }
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .rightMouseDown, .keyDown, .flagsChanged]
         let monitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { event in
@@ -61,21 +70,34 @@ final class MenuBarNativeDrag {
             isRunning = false
         }
         let flags = physicalFlags.union(.maskCommand)
-        guard post(.leftMouseDown, at: lastPoint, flags: flags) else { return false }
+        guard post(.leftMouseDown, at: lastPoint, flags: flags) else {
+            diagnostics = "could not create mouse-down"
+            return false
+        }
         pressed = true
         let paced = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
         if paced { try? await Task.sleep(nanoseconds: 60_000_000) }
         let start = lastPoint
         for step in 1...5 {
-            guard !interrupted, canContinue() else { return false }
+            guard !interrupted, canContinue() else {
+                if !interrupted { diagnostics = "transaction cancelled at step \(step)" }
+                return false
+            }
             let fraction = CGFloat(step) / 5
             lastPoint = CGPoint(x: start.x + (target.x - start.x) * fraction,
                                 y: start.y + (target.y - start.y) * fraction)
-            guard post(.leftMouseDragged, at: lastPoint, flags: flags) else { return false }
+            guard post(.leftMouseDragged, at: lastPoint, flags: flags) else {
+                diagnostics = "could not create drag step \(step)"
+                return false
+            }
             try? await Task.sleep(nanoseconds: paced ? 120_000_000 : 18_000_000)
         }
-        guard !interrupted, canContinue(), post(.leftMouseUp, at: target, flags: flags) else { return false }
+        guard !interrupted, canContinue(), post(.leftMouseUp, at: target, flags: flags) else {
+            if !interrupted { diagnostics = "transaction cancelled before mouse-up" }
+            return false
+        }
         pressed = false
+        diagnostics = "posted complete drag; source=\(frame), target=\(target)"
         return true
     }
 

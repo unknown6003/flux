@@ -108,12 +108,14 @@ final class MenuBarIconManager: ObservableObject {
                 let generation = self.cancellationGeneration
                 let expectedPID = ControlItem.usesMacOS27Model
                     ? Self.appIconIdentity(from: item.handle.id)?.processID : nil
-                return await self.driver.perform(from: item.frame, to: target,
+                let posted = await self.driver.perform(from: item.frame, to: target,
                                                  expectedProcessID: expectedPID) { [weak self] in
                     guard let self else { return false }
                     return self.trustProvider() && self.nativeInputGeneration == revision
                         && self.cancellationGeneration == generation
                 }
+                self.lastMoveReport += "; native=\(self.driver.diagnostics)"
+                return posted
             },
             physicalSection: { [weak self] item in
                 Self.section(for: item.frame, boundaries: self?.boundaryProvider() ?? (nil, nil))
@@ -126,7 +128,7 @@ final class MenuBarIconManager: ObservableObject {
                     && self.macOS27Hider.section(for: owner.bundleID) == section
             }))
         result.onBusy = { [weak self] _ in self?.publishBusy() }
-        result.onTrace = { [weak self] trace in self?.lastMoveReport = trace }
+        result.onTrace = { [weak self] trace in self?.lastMoveReport += "; \(trace)" }
         result.onResult = { [weak self] result in
             guard let self else { return }
             switch result {
@@ -228,6 +230,7 @@ final class MenuBarIconManager: ObservableObject {
         Last move request: \(lastMoveReport)
         Last move verification: \(lastMoveVerification)
         Move busy: \(arrangement.isBusy), input revision: \(nativeInputGeneration)
+        Management: \(isManaging), cancellation revision: \(cancellationGeneration)
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report + moveReport, forType: .string)
@@ -382,6 +385,7 @@ final class MenuBarIconManager: ObservableObject {
         let generation = cancellationGeneration
         let revision = nativeInputGeneration
         moveError = nil
+        lastMoveReport = "request \(icon.id) section=\(destination.section.rawValue)"
         lastMoveVerification = "pending"
         let accepted = arrangement.submit(.init(item: icon.handle, destination: destination)) { [weak self] in
             guard let self else { return false }

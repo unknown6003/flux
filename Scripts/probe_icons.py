@@ -85,14 +85,15 @@ second.button?.setAccessibilityTitle("Flux fixture B")
 let control = URL(fileURLWithPath: CommandLine.arguments[1])
 var last = ""
 let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
-    guard let command = try? String(contentsOf: control), command != last else { return }
+    guard let command = try? String(contentsOf: control, encoding: .utf8), command != last else { return }
     last = command
     if command == "live" {
         first.length = 200
         first.button?.title = "Notion Calendar · in 2 h 37 m"
         first.button?.setAccessibilityTitle("Notion Calendar")
-    } else if command == "replace" {
+    } else if command == "remove" {
         NSStatusBar.system.removeStatusItem(first)
+    } else if command == "restore" {
         first = NSStatusBar.system.statusItem(withLength: 34)
         configureFirst()
     }
@@ -174,6 +175,10 @@ func probe() {
         let deadline = ProcessInfo.processInfo.systemUptime + 7
         while manager.isUpdatingIcons && ProcessInfo.processInfo.systemUptime < deadline { await pause(0.05) }
         check(!manager.isUpdatingIcons, "\(label) completes before its deadline")
+        if manager.errorMessage != nil {
+            manager.copyMenuBarReport()
+            print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
+        }
         check(manager.errorMessage == nil, "\(label) has no error before any Refresh: \(manager.errorMessage ?? "none")")
     }
     func policyIs(_ section: MenuBarSection) {
@@ -254,7 +259,11 @@ func probe() {
             check(owned(reopened).map(\.id) == initialOrder, "reopen preserves physical order")
             reopened.endIconManagement()
         } else if selected == "identity-replacement" {
-            try! Data("replace".utf8).write(to: control, options: .atomic)
+            try! Data("remove".utf8).write(to: control, options: .atomic)
+            await pause(0.3)
+            manager.refresh()
+            check(owned().count == 1, "source removal is observed before the AX slot is reused")
+            try! Data("restore".utf8).write(to: control, options: .atomic)
             await pause(0.5)
             manager.move(original, to: .hidden)
             let deadline = ProcessInfo.processInfo.systemUptime + 7
@@ -302,7 +311,7 @@ func probe() {
                     root.addSubview(source); root.addSubview(destination)
                     window.contentView = root
                     traces = []
-                    func global(_ view: NSView) -> CGPoint {
+                    @MainActor func global(_ view: NSView) -> CGPoint {
                         let local = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
                         let point = window.convertPoint(toScreen: local)
                         return CGPoint(x: point.x, y: NSScreen.screens[0].frame.maxY - point.y)
