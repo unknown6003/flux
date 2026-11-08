@@ -220,7 +220,7 @@ final class MenuBarIconManager: ObservableObject {
     }
 
     func cancelPendingMoves(for reason: MoveCancellation = .closed) {
-        if reason == .focusLost && driver.isRunning { return }
+        if reason == .focusLost && driver.hasPostedInput { return }
         cancellationGeneration += 1
         lastMoveReport += "; cancelled=\(reason)"
     }

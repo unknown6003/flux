@@ -4,6 +4,7 @@ import ApplicationServices
 @MainActor
 final class MenuBarNativeDrag {
     private(set) var isRunning = false
+    private(set) var hasPostedInput = false
     private(set) var diagnostics = "none"
 
     func perform(from frame: CGRect, to target: CGPoint,
@@ -67,6 +68,7 @@ final class MenuBarNativeDrag {
             }
             if let monitor { NSEvent.removeMonitor(monitor) }
             if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+            hasPostedInput = false
             isRunning = false
         }
         if let expectedProcessID {
@@ -106,6 +108,7 @@ final class MenuBarNativeDrag {
         }
         pressed = true
         postedInput = true
+        hasPostedInput = true
         let paced = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
         if paced { try? await Task.sleep(nanoseconds: 60_000_000) }
         let start = lastPoint
