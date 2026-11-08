@@ -161,9 +161,9 @@ public actor CameraDriver: CameraDriving {
         let driver = driver
         let layer = preview
         preview = nil
-        Task { @MainActor in
-            await driver.stop()
-            layer?.session = nil
-        }
+        // Detach before another feed can reuse this layer. The old driver's
+        // delayed shutdown must never clear a replacement session.
+        layer?.session = nil
+        Task { await driver.stop() }
     }
 }

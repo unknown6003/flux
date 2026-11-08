@@ -8,7 +8,7 @@ private struct NoCameraPreview: CameraPreviewSource {
 }
 
 private actor GatedCameraDriver: CameraDriving {
-    nonisolated let previewSource: any CameraPreviewSource = NoCameraPreview()
+    nonisolated let previewSource: any CameraPreviewSource
     private let stream: AsyncStream<CameraState>
     private let output: AsyncStream<CameraState>.Continuation
     private var pending: CheckedContinuation<CameraState, Never>?
@@ -17,7 +17,8 @@ private actor GatedCameraDriver: CameraDriving {
     private var startWaiter: CheckedContinuation<Void, Never>?
     private var stopWaiter: CheckedContinuation<Void, Never>?
 
-    init() {
+    init(previewSource: any CameraPreviewSource = NoCameraPreview()) {
+        self.previewSource = previewSource
         let channel = AsyncStream<CameraState>.makeStream()
         stream = channel.stream
         output = channel.continuation
@@ -47,6 +48,38 @@ private actor GatedCameraDriver: CameraDriving {
         await withCheckedContinuation { stopWaiter = $0 }
     }
     func completeStart() { pending?.resume(returning: .running); pending = nil }
+}
+
+private final class SessionPreview: CameraPreviewSource, @unchecked Sendable {
+    let session = AVCaptureSession()
+    @MainActor func connect(to layer: AVCaptureVideoPreviewLayer) { layer.session = session }
+}
+
+@MainActor @Test(.timeLimit(.minutes(1)))
+func retryingMirrorCannotLetOldShutdownDetachItsNewPreview() async {
+    let originalSource = SessionPreview()
+    let replacementSource = SessionPreview()
+    let originalDriver = GatedCameraDriver(previewSource: originalSource)
+    let replacementDriver = GatedCameraDriver(previewSource: replacementSource)
+    let layer = AVCaptureVideoPreviewLayer()
+    let original = CameraFeed(driver: originalDriver) { _ in }
+    await originalDriver.waitForStart()
+    original.connectPreview(to: layer)
+    #expect(layer.session === originalSource.session)
+    original.stop()
+    // No actor hop: stop must release the layer before retry attaches it.
+    #expect(layer.session == nil)
+    let replacement = CameraFeed(driver: replacementDriver) { _ in }
+    replacement.connectPreview(to: layer)
+    await replacementDriver.waitForStart()
+    await originalDriver.waitForStop()
+    await originalDriver.completeStart()
+    // Let the old feed's main-actor teardown finish too.
+    try? await Task.sleep(for: .milliseconds(20))
+    #expect(layer.session === replacementSource.session)
+    replacement.stop()
+    await replacementDriver.waitForStop()
+    await replacementDriver.completeStart()
 }
 
 @MainActor @Test(.timeLimit(.minutes(1)))
