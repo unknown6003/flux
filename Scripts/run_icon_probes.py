@@ -21,6 +21,7 @@ CASES = [
     ("drag-insertion", "probe_icons.py", ["--case", "drag-insertion"], None),
     ("live-title", "probe_icons.py", ["--case", "live-title"], None),
     ("identity-replacement", "probe_icons.py", ["--case", "identity-replacement"], None),
+    ("covered-reorder", "probe_icons.py", ["--case", "covered-reorder"], None),
 ]
 
 ALIASES = {
