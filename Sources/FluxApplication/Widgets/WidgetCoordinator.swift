@@ -95,6 +95,8 @@ public final class WidgetCoordinator {
         self.effects = effects
     }
 
+    deinit { writeAuthorization?.revoke() }
+
     // MARK: Panel
 
     /// The `NotchPanelController` factory. Hides the previous widget first.

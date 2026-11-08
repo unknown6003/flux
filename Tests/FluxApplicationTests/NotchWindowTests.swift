@@ -6,6 +6,13 @@ import FluxUI
 
 @Suite(.serialized)
 struct NotchWindowTests {
+    @MainActor private func drainAppearanceChanges(until released: () -> Bool) {
+        let deadline = Date().addingTimeInterval(2)
+        while !released(), Date() < deadline {
+            autoreleasepool { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        }
+    }
+
     @Test @MainActor func actualPanelStopsWidgetBeforeItReleasesTheController() throws {
         _ = NSApplication.shared
         let screen = try #require(NSScreen.screens.first)
@@ -32,11 +39,13 @@ struct NotchWindowTests {
         #expect(owner.presentation == .expanded(.mirror))
         autoreleasepool { owner.collapse() }
         #expect(calls == ["demand.mirror", "make.mirror", "stop"])
+        drainAppearanceChanges { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .compact)
         autoreleasepool { owner.expand(.shelf, focus: false) }
         autoreleasepool { owner.setSessionLocked(true) }
         #expect(calls.suffix(3) == ["demand.shelf", "make.shelf", "stop"])
+        drainAppearanceChanges { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .hidden)
         owner.expand(.mirror, focus: true)
