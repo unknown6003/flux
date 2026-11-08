@@ -3,6 +3,15 @@ import Testing
 import FluxCore
 @testable import FluxPlatform
 
+@MainActor @Test func sessionDictionaryRecognizesOmittedUnlockedKeyAndRefusesMalformedValues() {
+    let console = kCGSessionOnConsoleKey as String
+    #expect(SessionMonitor.phase(from: [console: true]) == .unlocked)
+    #expect(SessionMonitor.phase(from: [console: true, "CGSSessionScreenIsLocked": true]) == .locked)
+    #expect(SessionMonitor.phase(from: [console: false, "CGSSessionScreenIsLocked": false]) == .locked)
+    #expect(SessionMonitor.phase(from: [console: true, "CGSSessionScreenIsLocked": "false"]) == .locked)
+    #expect(SessionMonitor.phase(from: nil) == .locked)
+}
+
 @MainActor @Test(.timeLimit(.minutes(1)))
 func sessionMonitorPausesOnSleepAndResignAndDropsQueuedEventsAfterStop() async {
     let workspace = NotificationCenter()

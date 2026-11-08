@@ -14,8 +14,8 @@ private final class DistributedObservation: @unchecked Sendable {
     deinit { center.removeObserver(token) }
 }
 
-/// One owner routes session transitions. Unknown initial lock state pauses
-/// private-content services until a confirmed unlock or a fresh known state.
+/// One owner routes session transitions. Unavailable or malformed session data
+/// pauses private-content services until a fresh known state.
 /// The two distributed lock notifications and dictionary key are empirical
 /// macOS interfaces. They need signed hardware checks on each supported OS.
 @MainActor public final class SessionMonitor {
@@ -101,10 +101,18 @@ private final class DistributedObservation: @unchecked Sendable {
     }
 
     private static func currentPhase() -> SessionPhase {
-        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+        phase(from: CGSessionCopyCurrentDictionary() as? [String: Any])
+    }
+
+    static func phase(from session: [String: Any]?) -> SessionPhase {
+        guard let session,
               let onConsole = session[kCGSessionOnConsoleKey as String] as? NSNumber,
-              onConsole.boolValue,
-              let locked = session["CGSSessionScreenIsLocked"] as? NSNumber else { return .locked }
+              CFGetTypeID(onConsole) == CFBooleanGetTypeID(), onConsole.boolValue else { return .locked }
+        // macOS 27 omits this key in the observed active, unlocked session.
+        // A present key must be a Boolean. The lock notifications pause work
+        // even if a subsequent dictionary read fails or changes its schema.
+        guard let raw = session["CGSSessionScreenIsLocked"] else { return .unlocked }
+        guard let locked = raw as? NSNumber, CFGetTypeID(locked) == CFBooleanGetTypeID() else { return .locked }
         return locked.boolValue ? .locked : .unlocked
     }
 }
