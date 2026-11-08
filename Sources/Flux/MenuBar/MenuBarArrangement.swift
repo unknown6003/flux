@@ -105,6 +105,7 @@ final class MenuBarArrangement {
         let matches = items.filter { $0.handle == handle }
         guard matches.count == 1, let item = matches.first,
               item.frame.width > 0, item.frame.height > 0,
+              item.frame.width.isFinite, item.frame.height.isFinite,
               item.frame.minX.isFinite, item.frame.minY.isFinite else { return nil }
         return item
     }
@@ -156,7 +157,10 @@ final class MenuBarArrangement {
                 target = CGPoint(x: x, y: item.frame.midY)
             }
         }
-        if target == nil && !environment.appScoped { return .failure(.changed) }
+        if target == nil && !environment.appScoped {
+            guard let slot, neighbors(item, slot: slot, in: items),
+                  environment.physicalSection(item) == section else { return .failure(.changed) }
+        }
         if let target {
             onTrace?("drag \(item.handle.id) source=\(item.frame) target=\(target) section=\(section.rawValue)")
             guard canCommit() else { return .failure(.cancelled) }
