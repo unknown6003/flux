@@ -99,7 +99,16 @@ def worker(args):
         failed = True
     finally:
         # Read the current system value inside the probe. Never restore a full snapshot.
-        restored, output = invoke(args.probe, 'restore', journal, args.command_seconds)
+        output = 'Restore did not run'
+        for attempt in range(3):
+            try:
+                restored, output = invoke(args.probe, 'restore', journal, args.command_seconds)
+            except (OSError, subprocess.SubprocessError) as error:
+                output = type(error).__name__
+            if restored:
+                break
+            if attempt < 2:
+                time.sleep(0.25)
         if pending is not None:
             atomic(folder / 'response.json', {'nonce': pending.get('nonce'), 'ok': restored, 'output': output})
         atomic(folder / 'finished.json', {'restored': restored, 'failed': failed, 'output': output})
@@ -148,7 +157,7 @@ def send(args):
             raise RuntimeError('A command is already pending')
         nonce = str(uuid.uuid4())
         atomic(folder / 'request.json', {'action': args.action, 'nonce': nonce})
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + 70
         while time.monotonic() < deadline:
             response = folder / 'response.json'
             if response.exists():

@@ -83,6 +83,8 @@ jobs:
         run: swift build --target FluxUI
       - name: Compile native platform adapters
         run: swift build --target FluxPlatform
+      - name: Check native platform lifetimes
+        run: swift test --filter FluxPlatformTests
       - name: Check native view lifetimes
         run: swift test --filter FluxUITests
       - name: Render native interface fixtures

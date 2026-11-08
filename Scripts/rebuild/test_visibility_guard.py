@@ -16,6 +16,11 @@ action, journal = sys.argv[1:]
 folder = pathlib.Path(journal).parent
 state = folder / 'state.json'
 value = json.loads(state.read_text())
+if action == 'restore' and (folder / 'restore-fail-once').exists():
+    (folder / 'restore-fail-once').unlink()
+    sys.exit(1)
+if action == 'restore' and (folder / 'restore-fail-always').exists():
+    sys.exit(1)
 if action == 'hide':
     value['allowed'] = False
 elif action == 'restore':
@@ -115,6 +120,22 @@ class GuardTests(unittest.TestCase):
         os.kill(self.pid, signal.SIGTERM)
         self.assertTrue(self.wait_finished()['restored'])
         self.assert_restored()
+
+    def test_transient_final_restore_failure_is_retried(self):
+        self.start()
+        self.send('hide')
+        (self.folder / 'restore-fail-once').touch()
+        self.send('finish')
+        self.assertTrue(self.wait_finished()['restored'])
+        self.assert_restored()
+
+    def test_persistent_restore_failure_is_reported(self):
+        self.start()
+        self.send('hide')
+        (self.folder / 'restore-fail-always').touch()
+        self.assertNotEqual(self.send('finish', check=False).returncode, 0)
+        self.assertFalse(self.wait_finished()['restored'])
+        self.assertFalse(json.loads((self.folder / 'state.json').read_text())['allowed'])
 
     def test_nonprivate_journal_is_refused(self):
         self.journal.chmod(0o644)

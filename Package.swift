@@ -69,6 +69,12 @@ let package = Package(
             dependencies: ["FluxCore", "FluxPlatform"],
             path: "Scripts/rebuild/VisibilityProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "FluxPlatformTests",
+            dependencies: ["FluxCore", "FluxPlatform"],
+            path: "Tests/FluxPlatformTests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )
