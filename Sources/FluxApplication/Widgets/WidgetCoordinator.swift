@@ -416,12 +416,14 @@ public final class WidgetCoordinator {
 
     private func cameraChanged(_ state: CameraState) {
         camera = state
+        effects.widgetEvent(.camera(state))
         mirrorView?.update(mirrorStatus())
     }
 
     private func cameraStopped() {
         cameraLease = nil
         camera = nil
+        effects.widgetEvent(.camera(nil))
         mirrorView?.update(mirrorStatus())
     }
 

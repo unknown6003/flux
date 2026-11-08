@@ -41,6 +41,7 @@ public enum WidgetFailure: String, Sendable {
 public enum WidgetEvent: Sendable {
     case media(MediaFeedState)
     case calendar(AgendaReadResult)
+    case camera(CameraState?)
     /// A shelf copy job ended. Counts only.
     case shelfCopyFinished(added: Int, failed: Int)
 }
