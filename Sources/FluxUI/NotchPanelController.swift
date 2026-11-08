@@ -211,13 +211,19 @@ public final class NotchPanelController: NSViewController {
 
     /// Replaces the widget list, for example after a Settings change.
     public func setWidgets(_ newWidgets: [Widget]) {
-        widgets = newWidgets
-        if let current, !newWidgets.contains(current) {
-            removeChild()
-            self.current = nil
-        }
+        widgets = Array(newWidgets.reduce(into: [Widget]()) { result, widget in
+            if !result.contains(widget) { result.append(widget) }
+        })
         if isViewLoaded { reloadTabs() }
-        if current == nil, let first = newWidgets.first, isViewLoaded { show(first) }
+        if let current, !widgets.contains(current) {
+            if let first = widgets.first {
+                show(first)
+            } else {
+                dismiss()
+            }
+        } else if current == nil, let first = widgets.first, isViewLoaded {
+            show(first)
+        }
     }
 
     /// Removes the widget content. The parent closes the window after this.

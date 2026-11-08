@@ -1,6 +1,6 @@
 # PostHog contract
 
-Status: isolated Swift 6 client, transport and opt-in controller implemented. Fifteen tests passed on macOS at c6356b4. Later edits need their own check. No live project is configured, and this module is not wired into the old app.
+Status: the Swift 6 client, transport and opt-in controller are implemented. Forty-one core tests passed on macOS at22fcc49. The Flux EU project is configured. A live native probe and server readback passed. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
 
 ## Data
 
@@ -26,7 +26,7 @@ A default SDK installation is insufficient for this contract. Its event filter d
 
 ## Project access
 
-No PostHog entry exists in the shared credential store. A project token and the correct region are needed for live integration. Project-admin access may be needed to verify IP and GeoIP settings and to configure flags, experiments and reports. Never put a personal API key in the app.
+The owner account and restricted maintenance key are in the shared credential store. The public ingestion token and EU region are configured in FluxUsageProject. The private maintenance key and account password are excluded from the app and repository.
 
 ## Chosen client
 

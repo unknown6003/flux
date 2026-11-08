@@ -77,6 +77,8 @@ jobs:
         run: swift test --filter FluxCoreTests
       - name: Compile native interface
         run: swift build --target FluxUI
+      - name: Check native view lifetimes
+        run: swift test --filter FluxUITests
       - name: Verify native PostHog transport
         if: ${{ inputs.native_posthog_probe }}
         timeout-minutes: 2
