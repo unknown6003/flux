@@ -34,6 +34,12 @@ let package = Package(
             dependencies: ["FluxCore"],
             path: "Scripts/rebuild/TelemetryProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "FluxUI",
+            dependencies: ["FluxCore"],
+            path: "Sources/FluxUI",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )

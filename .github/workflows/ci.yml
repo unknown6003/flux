@@ -75,6 +75,8 @@ jobs:
         run: git rev-parse HEAD
       - name: Test native core
         run: swift test --filter FluxCoreTests
+      - name: Compile native interface
+        run: swift build --target FluxUI
       - name: Verify native PostHog transport
         if: ${{ inputs.native_posthog_probe }}
         timeout-minutes: 2
