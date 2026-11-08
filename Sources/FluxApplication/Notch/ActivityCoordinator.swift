@@ -195,7 +195,18 @@ public final class ActivityCoordinator {
         timerTask?.cancel(); timerTask = nil
         guard active, enabled(.timer) else { completionUntil = nil; timerID = nil; queue.remove(.timer); return }
         let date = now()
-        if let completionUntil, date < completionUntil { return }
+        if let completionUntil, date < completionUntil {
+            // Dismissing the completion removes the queue's expiry deadline.
+            // Keep our own one-shot boundary so another timer returns on time.
+            if presenting {
+                timerTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .seconds(completionUntil.timeIntervalSince(date))) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    self?.refreshTimer()
+                }
+            }
+            return
+        }
         completionUntil = nil
         let timer = timers.timers.filter { !$0.isPaused }.min { $0.remaining(at: date) < $1.remaining(at: date) }
             ?? timers.timers.first

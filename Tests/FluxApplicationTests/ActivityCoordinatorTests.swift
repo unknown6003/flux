@@ -10,6 +10,32 @@ import FluxPlatform
 
 @Suite(.serialized)
 struct ActivityCoordinatorTests {
+    @Test(.timeLimit(.minutes(1))) @MainActor
+    func dismissingCompletionStillRestoresTheNextTimerAtItsDeadline() async throws {
+        let domain = "org.fluxfixture.activities.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        var completions = 0
+        let owner = ActivityCoordinator(preferences: preferences, publish: { _, _, _, _ in },
+                                        timerCompleted: { _ in completions += 1 })
+        defer { owner.stop() }
+        owner.start()
+        owner.setPresenting(true)
+        try owner.timers.start(duration: 0.05, label: "First")
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while completions == 0, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(completions == 1)
+        try owner.timers.start(duration: 120, label: "Second")
+        owner.perform(.dismissActivity)
+        #expect(owner.queue.current == nil)
+        try await Task.sleep(for: .milliseconds(10_200))
+        #expect(owner.queue.current?.kind == .timer)
+        #expect(owner.queue.current?.priority == 110)
+        #expect(owner.timers.timers.count == 1)
+    }
+
     @Test @MainActor func lowBatteryTicksRespectDismissalAndAPlugIsANewNotice() throws {
         let domain = "org.fluxfixture.activities.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))
