@@ -14,7 +14,7 @@ import uuid
 from probe_tcc import _stop, accessibility_grant
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("settings", "narrow-reorder", "wide-reorder", "drag-insertion", "live-title", "identity-replacement")
+CASES = ("settings", "narrow-reorder", "wide-reorder", "covered-reorder", "drag-insertion", "live-title", "identity-replacement")
 
 
 def command(arguments, seconds):
@@ -130,6 +130,7 @@ func probe() {
     let suite = "flux.icon-policy.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     let key = "flux.macOS27IconLayout"
+    var occluder: NSPanel?
     let hider = MacOS27Hider(defaults: defaults)
     let manager = MenuBarIconManager(hider: hider)
     manager.alwaysHiddenEnabledProvider = { true }
@@ -138,6 +139,7 @@ func probe() {
     func check(_ condition: @autoclosure () -> Bool, _ label: String) {
         guard condition() else {
             print("FAIL: \(selected): \(label)")
+            occluder?.orderOut(nil)
             defaults.removePersistentDomain(forName: suite)
             exit(1)
         }
@@ -170,6 +172,65 @@ func probe() {
     }
     func pause(_ seconds: Double) async {
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+    @MainActor func coverCenter(of icon: MenuBarIconManager.Icon) async {
+        occluder?.orderOut(nil)
+        await pause(0.1)
+        guard let identity = MenuBarIconManager.appIconIdentity(from: icon.id) else {
+            check(false, "covered source has an owner identity"); return
+        }
+        func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+        }
+        let application = AXUIElementCreateApplication(identity.processID)
+        AXUIElementSetMessagingTimeout(application, 0.2)
+        guard let bar = attribute(application, kAXExtrasMenuBarAttribute),
+              CFGetTypeID(bar) == AXUIElementGetTypeID(),
+              let children = attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement],
+              children.indices.contains(identity.index) else {
+            check(false, "covered source has a current app-owner AX element"); return
+        }
+        let source = children[identity.index]
+        func hit(_ point: CGPoint) -> AXUIElement? {
+            var element: AXUIElement?
+            return AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),
+                Float(point.x), Float(point.y), &element) == .success ? element : nil
+        }
+        func belongsToSource(_ candidate: AXUIElement?) -> Bool {
+            guard var element = candidate else { return false }
+            for _ in 0..<8 {
+                if CFEqual(element, source) { return true }
+                guard let parent = attribute(element, kAXParentAttribute),
+                      CFGetTypeID(parent) == AXUIElementGetTypeID() else { return false }
+                element = parent as! AXUIElement
+            }
+            return false
+        }
+        let center = CGPoint(x: icon.frame.midX, y: icon.frame.midY)
+        check(belongsToSource(hit(center)), "uncovered center resolves to the exact source AX item")
+        let panel = occluder ?? NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+                                       backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = .screenSaver
+        let frame = NSRect(x: center.x - 4, y: NSScreen.screens[0].frame.maxY - icon.frame.maxY,
+                           width: 8, height: icon.frame.height)
+        panel.setFrame(frame, display: true)
+        panel.contentView = NSButton(title: "Cover", target: nil, action: nil)
+        panel.orderFrontRegardless()
+        occluder = panel
+        await pause(0.2)
+        var coveredPID: pid_t = 0
+        if let covered = hit(center) { AXUIElementGetPid(covered, &coveredPID) }
+        check(coveredPID == getpid(), "a real foreign-owner panel covers the source center")
+        let fractions: [CGFloat] = [0.1, 0.25, 0.75, 0.9]
+        let edges = fractions.map {
+            CGPoint(x: icon.frame.minX + icon.frame.width * $0, y: center.y)
+        }
+        check(edges.contains { belongsToSource(hit($0)) },
+              "an uncovered edge still resolves to the exact source AX item")
+        print("COVER source=\(icon.frame) panel=\(frame) centerOwner=\(coveredPID)")
     }
     func completed(_ label: String) async {
         let deadline = ProcessInfo.processInfo.systemUptime + 7
@@ -343,8 +404,14 @@ func probe() {
                 // Keep the original snapshot through a live title/width change. The
                 // public move must resolve the same AX item at its current frame.
                 let argument = selected == "live-title" ? original : owned().first { $0.id == firstID }!
+                if selected == "covered-reorder" { await coverCenter(of: argument) }
+                let firstDowns = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
                 manager.move(argument, toward: leftInitially ? .towardClock : .towardDrawer)
                 await completed("first physical reorder")
+                if selected == "covered-reorder" {
+                    check(CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == firstDowns + 1,
+                          "covered-source reorder posts exactly one native drag")
+                }
                 check(CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) == initialCommand,
                       "native move restores the original Command state")
                 check(owned().map(\.id) == Array(initialOrder.reversed()), "fresh AX inventory proves physical peer swap")
@@ -358,12 +425,19 @@ func probe() {
                     check(moved.identity == original.identity && moved.frame.width > original.frame.width,
                           "live title and width preserve item identity")
                 }
+                if selected == "covered-reorder" { await coverCenter(of: moved) }
+                let reverseDowns = CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown)
                 manager.move(moved, toward: leftInitially ? .towardDrawer : .towardClock)
                 await completed("consecutive reverse reorder")
+                if selected == "covered-reorder" {
+                    check(CGEventSource.counterForEventType(.combinedSessionState, eventType: .leftMouseDown) == reverseDowns + 1,
+                          "covered-source reverse reorder posts exactly one native drag")
+                }
                 check(owned().map(\.id) == initialOrder, "second move restores peer order without Refresh")
                 policyIs(.hidden)
             }
         }
+        occluder?.orderOut(nil)
         print("PASS: native product interface \(selected)")
         controller.close()
         manager.endIconManagement()
