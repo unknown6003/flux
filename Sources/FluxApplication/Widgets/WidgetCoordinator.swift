@@ -98,6 +98,7 @@ public final class WidgetCoordinator {
         visible = widget
         switch widget {
         case .nowPlaying:
+            if case .some(.ready(_)) = media { loadArtwork(lastSnapshot) }
             let controller = NowPlayingWidgetController(state: nowPlayingState()) { [weak self] in self?.nowPlaying($0) }
             nowPlayingView = controller
             updateElapsedTask()
@@ -146,6 +147,11 @@ public final class WidgetCoordinator {
         elapsedTask?.cancel(); elapsedTask = nil
         clipboardSubscription?.cancel(); clipboardSubscription = nil
         shelfLoad?.cancel(); shelfLoad = nil
+        artworkTask?.cancel(); artworkTask = nil
+        artworkID = nil
+        artwork = nil
+        clipboardRecords = []
+        clipboardThumbnails = [:]
         mirrorView?.setPreview(nil)
         cameraPreview = nil
         copiedID = nil
@@ -213,7 +219,7 @@ public final class WidgetCoordinator {
         if case .ready(let snapshot) = state {
             lastSnapshot = snapshot
             if let source = snapshot?.source { rememberName(source) }
-            loadArtwork(snapshot)
+            if visible == .nowPlaying { loadArtwork(snapshot) }
         }
         effects.widgetEvent(.media(state))
         refreshNowPlaying()
@@ -223,6 +229,9 @@ public final class WidgetCoordinator {
         mediaLease = nil
         media = nil
         lastSnapshot = nil
+        artworkTask?.cancel(); artworkTask = nil
+        artworkID = nil
+        artwork = nil
         refreshNowPlaying()
     }
 
@@ -251,7 +260,9 @@ public final class WidgetCoordinator {
 
     /// The only timer: one second, while Now Playing is visible and playing.
     private func updateElapsedTask() {
-        let ticking = visible == .nowPlaying && nowPlayingView != nil && lastSnapshot?.playing == true
+        let hasLiveFrame: Bool
+        if case .some(.ready(_)) = media { hasLiveFrame = true } else { hasLiveFrame = false }
+        let ticking = hasLiveFrame && visible == .nowPlaying && nowPlayingView != nil && lastSnapshot?.playing == true
             && lastSnapshot?.duration != nil && mediaLease != nil
         guard ticking else {
             elapsedTask?.cancel(); elapsedTask = nil
@@ -342,6 +353,8 @@ public final class WidgetCoordinator {
     }
 
     private func calendarState(now: Date = .now) -> CalendarWidgetState {
+        let access = PermissionAccess.status(.calendar)
+        guard access == .allowed else { return access == .notAsked ? .needsPermission : .unavailable }
         let calendar = Calendar.current
         if case .ready(let snapshot)? = agenda, snapshot.today == calendar.startOfDay(for: now) {
             let afterTomorrow = calendar.date(byAdding: .day, value: 1, to: snapshot.tomorrow) ?? snapshot.tomorrow
