@@ -32,13 +32,15 @@ import FluxUI
                             capability: .available, failureCode: nil), onAction: { _ in })
                     }
                     if page == .about {
-                        return AboutPreferencesController(state: .init(version: "UI fixture", build: "fixture"), onAction: { _ in })
+                        return AboutPreferencesController(state: .init(version: "UI fixture", build: "fixture",
+                            crashNotice: .previousSessionUnclean(cameraWasRunning: false)), onAction: { _ in })
                     }
                     return GeneralPreferencesController(state: .init(
                         launchAtLoginRequested: false, loginStatus: .disabled, hotkeysEnabled: true,
                         revealShortcut: .init(keyCode: 3, carbonModifiers: 6400),
                         notchShortcut: .init(keyCode: 45, carbonModifiers: 6400),
-                        appearance: .system, automaticUpdateChecks: true), onAction: { _ in })
+                        appearance: .system, automaticUpdateChecks: true,
+                        permissions: PermissionKind.allCases.map { .init(kind: $0, status: $0 == .accessibility ? .allowed : .notAsked) }), onAction: { _ in })
                 }
                 guard let window = settings.window, let root = window.contentView else { throw ProbeError.noView }
                 window.appearance = NSAppearance(named: appearance)
@@ -54,6 +56,19 @@ import FluxUI
                     catch { renderingError = error }
                 }
                 if let renderingError { throw renderingError }
+                for scroll in descendants(root).compactMap({ $0 as? NSScrollView }) {
+                    guard let document = scroll.documentView,
+                          document.frame.height > scroll.contentView.bounds.height + 1 else { continue }
+                    scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height - scroll.contentView.bounds.height)))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    root.layoutSubtreeIfNeeded()
+                    window.displayIfNeeded()
+                    window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                        do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme)-\(width)-bottom.png")) }
+                        catch { renderingError = error }
+                    }
+                    if let renderingError { throw renderingError }
+                }
                 settings.close()
             }
             }
@@ -72,8 +87,12 @@ import FluxUI
                           group: group)
         }
         let actions = MenuBarPageActions(assign: { _, _ in }, beginArrange: {}, endArrange: {},
-            showRealIcons: {}, refresh: {}, openAccessibilitySettings: {}, checkAccessibility: {}, reviewIdentity: { _ in })
+            showRealIcons: {}, refresh: {}, openAccessibilitySettings: {}, checkAccessibility: {}, reviewIdentity: { _ in }, setOption: { _ in })
         return MenuBarPreferencesController(state: .init(mode: .perApplication, rows: rows), actions: actions)
+    }
+
+    @MainActor private static func descendants(_ view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + descendants($0) }
     }
 
     @MainActor private static func render(_ view: NSView, to destination: URL) throws {
