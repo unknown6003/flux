@@ -5,62 +5,66 @@ import Combine
 @MainActor
 final class MenuBarDragController: ObservableObject {
     static let pasteboardType = NSPasteboard.PasteboardType("com.bdwy.flux.menu-bar-icon")
-
     @Published private(set) var message: String?
     @Published private(set) var isDragging = false
     var trace: ((String) -> Void)?
     var onWindowClose: (() -> Void)?
-
     private weak var manager: MenuBarIconManager?
     private weak var settingsWindow: NSWindow?
     private var observers: [NSObjectProtocol] = []
     private var updateObservation: AnyCancellable?
     private var updatingIcons = false
-    private var active: (token: String, icon: MenuBarIconManager.Icon, identity: MenuBarDragIdentity)?
-    var draggedIconID: String? { active?.icon.id }
-    private struct DisplayGeometry: Equatable {
+    private var escapeMonitor: Any?
+    private var generation = 0
+    private var displays: [Display] = []
+    private struct Display: Equatable {
         let id: UInt32
         let frame: CGRect
         let scale: CGFloat
-        let safeArea: [CGFloat]
+        let topInset: CGFloat
     }
-    private var displayGeometry: [DisplayGeometry] = []
-
-    private static func currentDisplayGeometry() -> [DisplayGeometry] {
+    private static func currentDisplays() -> [Display] {
         NSScreen.screens.map {
-            DisplayGeometry(id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0,
-                            frame: $0.frame, scale: $0.backingScaleFactor,
-                            safeArea: [$0.safeAreaInsets.top, $0.safeAreaInsets.left, $0.safeAreaInsets.bottom, $0.safeAreaInsets.right])
+            Display(id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0,
+                    frame: $0.frame, scale: $0.backingScaleFactor, topInset: $0.safeAreaInsets.top)
         }
     }
+    private var active: (token: String, icon: MenuBarIconManager.Icon)?
+    private struct Drop {
+        let generation: Int
+        let icon: MenuBarIconManager.Icon
+        let section: MenuBarSection
+        let insertion: MenuBarIconManager.Insertion?
+    }
+    private var pending: Drop?
+    var draggedIconID: String? { active?.icon.id }
 
-    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+    }
 
     func open(manager: MenuBarIconManager, window: NSWindow) {
         guard settingsWindow !== window || self.manager !== manager else { return }
         close()
         self.manager = manager
         settingsWindow = window
-        displayGeometry = Self.currentDisplayGeometry()
+        displays = Self.currentDisplays()
         updateObservation = manager.$isUpdatingIcons.sink { [weak self] updating in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.updatingIcons = updating
-                if updating, self.active == nil, self.message != nil { self.message = nil }
-            }
+            MainActor.assumeIsolated { self?.updatingIcons = updating }
         }
         let center = NotificationCenter.default
         for name in [NSApplication.didResignActiveNotification, NSApplication.willTerminateNotification,
                      NSApplication.didChangeScreenParametersNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    if name == NSApplication.didChangeScreenParametersNotification, let self {
-                        let current = Self.currentDisplayGeometry()
-                        guard current != self.displayGeometry else { return }
-                        self.displayGeometry = current
+                    guard let self else { return }
+                    if name == NSApplication.didChangeScreenParametersNotification {
+                        let current = Self.currentDisplays()
+                        guard self.displays != current else { return }
+                        self.displays = current
                     }
-                    self?.trace?("cancel notification=\(name.rawValue)")
-                    self?.cancel()
+                    self.invalidate()
                 }
             })
         }
@@ -69,26 +73,38 @@ final class MenuBarDragController: ObservableObject {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     if name == NSWindow.willCloseNotification { self?.onWindowClose?() }
-                    self?.trace?("cancel notification=\(name.rawValue)")
-                    self?.cancel()
+                    self?.invalidate()
                 }
             })
+        }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated { if event.keyCode == 53 { self?.invalidate() } }
+            return event
         }
     }
 
     func close() {
-        trace?("close settings")
-        cancel()
+        invalidate()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        escapeMonitor = nil
         updateObservation = nil
         updatingIcons = false
         manager = nil
         settingsWindow = nil
     }
 
+    private func invalidate() {
+        generation += 1
+        active = nil
+        pending = nil
+        isDragging = false
+        manager?.cancelPendingMoves()
+    }
+
     func refreshIcons() {
-        guard active == nil, !updatingIcons else { return }
+        guard !isDragging, !updatingIcons else { return }
         message = nil
         manager?.refresh()
     }
@@ -100,10 +116,13 @@ final class MenuBarDragController: ObservableObject {
         return view
     }
 
+    private func sameItem(_ lhs: MenuBarIconManager.Icon, _ rhs: MenuBarIconManager.Icon) -> Bool {
+        lhs.id == rhs.id && lhs.identity == rhs.identity && lhs.isMovable && rhs.isMovable
+    }
+
     func accepts(_ sender: NSDraggingInfo) -> Bool {
-        trace?("accept managed=\(canManage) busy=\(updatingIcons) active=\(active != nil) source=\(sender.draggingSource is MenuBarDragSourceView) token=\(sender.draggingPasteboard.string(forType: Self.pasteboardType) == active?.token)")
         guard canManage, !updatingIcons, let active,
-              sender.draggingSource as? MenuBarDragSourceView != nil,
+              sender.draggingSource is MenuBarDragSourceView,
               sender.draggingSourceOperationMask.contains(.move),
               sender.draggingPasteboard.string(forType: Self.pasteboardType) == active.token else { return false }
         return true
@@ -111,52 +130,38 @@ final class MenuBarDragController: ObservableObject {
 
     func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection,
                      insertion: MenuBarIconManager.Insertion? = nil) -> Bool {
-        guard accepts(sender), let pending = active, let manager, AXIsProcessTrusted() else { return false }
-        if let insertion {
-            guard insertion.section == section else { return false }
-            let accepted = manager.move(pending.icon, to: insertion) { [weak self] current in
-                guard let self else { return false }
-                return self.canManage && self.active?.token == pending.token
-                    && current.frame == pending.icon.frame && pending.identity.isCurrent(for: current)
-            }
-            cancel()
-            message = accepted ? nil : "That icon or destination changed. Refresh icons and try again."
-            trace?(accepted ? "commit \(section.rawValue) \(pending.icon.id)" : "drop rejected identity or destination")
-            return accepted
-        }
+        guard accepts(sender), let active, let manager else { return false }
         manager.refresh()
-        let matches = manager.icons.filter { $0.id == pending.icon.id }
-        guard canManage, active?.token == pending.token, matches.count == 1,
-              let current = matches.first, current.isMovable,
-              current.title == pending.icon.title, current.source == pending.icon.source,
-              current.frame == pending.icon.frame, pending.identity.isCurrent(for: current) else {
-            cancel()
-            message = "That icon changed during the drag. Refresh icons and try again."
-            trace?("drop rejected identity")
-            return false
+        guard let current = manager.icons.first(where: { sameItem($0, active.icon) }),
+              insertion == nil || insertion?.section == section else { return false }
+        if let insertion {
+            let peers = manager.icons.filter { $0.section == section && $0.id != current.id }
+                .sorted { $0.frame.minX < $1.frame.minX }
+            guard insertion.matches(peers) else {
+                message = "The destination changed. Try the move again."
+                return false
+            }
         }
-        cancel()
+        pending = Drop(generation: generation, icon: current, section: section, insertion: insertion)
         message = nil
-        trace?("commit \(section.rawValue) \(current.id)")
-        manager.move(current, to: section)
+        trace?("staged \(section.rawValue) \(current.id)")
         return true
     }
 
     fileprivate func begin(icon: MenuBarIconManager.Icon, in view: MenuBarDragSourceView,
                            mouseDown: NSEvent) -> NSDraggingSession? {
-        guard canManage, !updatingIcons, icon.isMovable, active == nil,
-              let manager, AXIsProcessTrusted() else { return nil }
-        let matches = manager.icons.filter { $0.id == icon.id }
-        guard matches.count == 1, let current = matches.first, current == icon,
-              let identity = MenuBarDragIdentity(icon: current) else {
-            message = "That icon changed. Refresh icons and try again."
+        guard canManage, !updatingIcons, active == nil, let manager,
+              !mouseDown.modifierFlags.contains(.command) else { return nil }
+        manager.refresh()
+        guard let current = manager.icons.first(where: { sameItem($0, icon) }),
+              CGEventSource.buttonState(.combinedSessionState, button: .left),
+              !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) else {
+            message = "That icon changed. Try the move again."
             return nil
         }
-        guard canManage, !updatingIcons,
-              CGEventSource.buttonState(.combinedSessionState, button: .left),
-              !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) else { return nil }
         let token = UUID().uuidString
-        active = (token, current, identity)
+        active = (token, current)
+        pending = nil
         isDragging = true
         let writer = NSPasteboardItem()
         writer.setString(token, forType: Self.pasteboardType)
@@ -176,12 +181,26 @@ final class MenuBarDragController: ObservableObject {
 
     fileprivate func ended(operation: NSDragOperation) {
         trace?("ended operation=\(operation.rawValue)")
-        cancel()
-    }
-
-    private func cancel() {
+        let drop = pending
+        pending = nil
         active = nil
-        if isDragging { isDragging = false }
+        isDragging = false
+        guard operation.contains(.move), let drop else { return }
+        Task { [weak self] in
+            await Task.yield()
+            guard let self, self.generation == drop.generation, self.canManage,
+                  let manager = self.manager else { return }
+            if let insertion = drop.insertion {
+                let accepted = manager.move(drop.icon, to: insertion) { [weak self] current in
+                    guard let self else { return false }
+                    return self.generation == drop.generation && self.canManage && self.sameItem(current, drop.icon)
+                }
+                if !accepted { self.message = "That icon or destination changed. Try the move again." }
+            } else {
+                manager.move(drop.icon, to: drop.section)
+            }
+            self.trace?("commit \(drop.section.rawValue) \(drop.icon.id)")
+        }
     }
 
     private var canManage: Bool {
@@ -396,96 +415,5 @@ class MenuBarDragDestinationView: NSView {
             NSBezierPath(roundedRect: NSRect(x: markerX - 1.5, y: 8, width: 3, height: bounds.height - 16),
                          xRadius: 1.5, yRadius: 1.5).fill()
         }
-    }
-}
-
-@MainActor
-private struct MenuBarDragIdentity {
-    let owner: NSRunningApplication
-    let launched: Date?
-    let elements: [AXUIElement]
-    let element: AXUIElement
-    let index: Int
-    let barAttribute: String
-
-    init?(icon: MenuBarIconManager.Icon) {
-        let apps: [NSRunningApplication]
-        let attribute: String
-        let expectedIndex: Int?
-        if ControlItem.usesMacOS27Model {
-            guard let identity = MenuBarIconManager.appIconIdentity(from: icon.id) else { return nil }
-            apps = NSRunningApplication.runningApplications(withBundleIdentifier: identity.bundleID)
-                .filter { $0.processIdentifier == identity.processID }
-            attribute = kAXExtrasMenuBarAttribute
-            expectedIndex = identity.index
-        } else {
-            apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systemuiserver")
-            attribute = kAXMenuBarAttribute
-            expectedIndex = nil
-        }
-        guard apps.count == 1, let owner = apps.first,
-              expectedIndex == nil || MenuBarIconManager.launchToken(for: owner.launchDate)
-                == MenuBarIconManager.appIconIdentity(from: icon.id)?.launchToken,
-              let elements = Self.items(owner: owner, attribute: attribute) else { return nil }
-        let matches = elements.enumerated().filter {
-            Self.matches($0.element, icon: icon, owner: owner, index: $0.offset)
-        }
-        guard matches.count == 1, let match = matches.first else { return nil }
-        if let expectedIndex, match.offset != expectedIndex { return nil }
-        self.owner = owner
-        launched = owner.launchDate
-        self.elements = elements
-        element = match.element
-        index = match.offset
-        barAttribute = attribute
-    }
-
-    func isCurrent(for icon: MenuBarIconManager.Icon) -> Bool {
-        guard !owner.isTerminated, owner.launchDate == launched,
-              let current = Self.items(owner: owner, attribute: barAttribute),
-              current.count == elements.count, current.indices.contains(index),
-              zip(current, elements).allSatisfy({ CFEqual($0.0, $0.1) }),
-              CFEqual(current[index], element),
-              Self.matches(current[index], icon: icon, owner: owner, index: index) else { return false }
-        return current.enumerated().filter {
-            Self.matches($0.element, icon: icon, owner: owner, index: $0.offset)
-        }.count == 1
-    }
-
-    private static func items(owner: NSRunningApplication, attribute: String) -> [AXUIElement]? {
-        let app = AXUIElementCreateApplication(owner.processIdentifier)
-        AXUIElementSetMessagingTimeout(app, 0.15)
-        guard let value = read(app, attribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        let bar = value as! AXUIElement
-        return read(bar, kAXChildrenAttribute) as? [AXUIElement]
-    }
-
-    private static func matches(_ element: AXUIElement, icon: MenuBarIconManager.Icon,
-                                owner: NSRunningApplication, index: Int) -> Bool {
-        let fallback = ControlItem.usesMacOS27Model
-            ? owner.localizedName ?? owner.bundleIdentifier : "Menu bar item \(index + 1)"
-        let title = nonemptyString(element, kAXTitleAttribute)
-            ?? nonemptyString(element, kAXDescriptionAttribute)
-            ?? fallback
-        guard title == icon.title,
-              let p = read(element, kAXPositionAttribute), CFGetTypeID(p) == AXValueGetTypeID(),
-              let s = read(element, kAXSizeAttribute), CFGetTypeID(s) == AXValueGetTypeID() else { return false }
-        var point = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(p as! AXValue, .cgPoint, &point),
-              AXValueGetValue(s as! AXValue, .cgSize, &size) else { return false }
-        return CGRect(origin: point, size: size) == icon.frame
-    }
-
-    private static func nonemptyString(_ element: AXUIElement, _ attribute: String) -> String? {
-        guard let text = read(element, attribute) as? String else { return nil }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func read(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value
     }
 }
