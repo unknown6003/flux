@@ -25,10 +25,26 @@ private func mediaLine(_ payload: [String: Any], diff: Bool) throws -> Data {
     #expect(changed.elapsed(at: changed.sampledAt.addingTimeInterval(10)) == 50)
     let paused = try #require(stream.append(mediaLine(["playing": false, "artworkData": NSNull()], diff: true), now: date).first.flatMap { $0 })
     #expect(paused.artwork == nil)
-    #expect(paused.elapsed(at: date.addingTimeInterval(1000)) == 30)
+    #expect(paused.elapsed(at: date.addingTimeInterval(1000)) == changed.elapsed(at: date))
     let empty = try stream.append(mediaLine([:], diff: false), now: date)
     #expect(empty.count == 1)
     #expect(empty[0] == nil)
+}
+
+@Test func mediaPlayingOnlyDiffFreezesAndResumesTheClockWithoutCountingPausedTime() throws {
+    var stream = MediaStream()
+    let date = Date(timeIntervalSince1970: 1_800_000_000)
+    _ = try stream.append(mediaLine(["title": "Fixture", "playing": true, "elapsedTime": 20,
+                                    "duration": 100], diff: false), now: date)
+    let paused = try #require(stream.append(mediaLine(["playing": false], diff: true),
+                                           now: date.addingTimeInterval(10)).first.flatMap { $0 })
+    #expect(paused.elapsed(at: date.addingTimeInterval(50)) == 30)
+    let resumed = try #require(stream.append(mediaLine(["playing": true], diff: true),
+                                            now: date.addingTimeInterval(50)).first.flatMap { $0 })
+    #expect(resumed.elapsed(at: date.addingTimeInterval(55)) == 35)
+    let seek = try #require(stream.append(mediaLine(["elapsedTime": 5, "timestamp": NSNull()], diff: true),
+                                         now: date.addingTimeInterval(60)).first.flatMap { $0 })
+    #expect(seek.elapsed(at: date.addingTimeInterval(61)) == 6)
 }
 
 @Test func mediaCapsMalformedFramesAndPlaybackNumbers() throws {

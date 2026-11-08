@@ -89,6 +89,8 @@ jobs:
         run: swift test --filter FluxPlatformTests
       - name: Check native view lifetimes
         run: swift test --filter FluxUITests
+      - name: Check native application actions
+        run: swift test --filter FluxApplicationTests
       - name: Collect native test crash report
         if: failure()
         run: |

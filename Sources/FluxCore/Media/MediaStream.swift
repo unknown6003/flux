@@ -35,6 +35,9 @@ public struct MediaStream: Sendable {
     private var artwork: Data?
     private var artworkID: UUID?
     private var artworkHash: SHA256.Digest?
+    private var lastSnapshot: MediaSnapshot?
+    private var anchorElapsed: TimeInterval?
+    private var anchorTimestamp: Date?
     private static let textKeys: Set<String> = ["bundleIdentifier", "title", "artist", "album", "timestamp"]
     private static let numberKeys: Set<String> = ["duration", "elapsedTime", "playbackRate"]
     private static let flagKeys: Set<String> = ["playing", "prohibitsSkip"]
@@ -80,15 +83,32 @@ public struct MediaStream: Sendable {
                 }
             } else { clearArtwork() }
         } else if !diff.boolValue { clearArtwork() }
-        guard let title = text("title"), !title.isEmpty else { return nil }
+        guard let title = text("title"), !title.isEmpty else {
+            lastSnapshot = nil
+            anchorElapsed = nil
+            anchorTimestamp = nil
+            return nil
+        }
         let duration = number("duration").flatMap { $0 > 0 && $0 <= 365 * 86400 ? $0 : nil }
         let elapsed = number("elapsedTime").flatMap { $0 >= 0 && $0 <= 365 * 86400 ? $0 : nil }
         let timestamp = text("timestamp").flatMap { try? Date.ISO8601FormatStyle().parse($0) } ?? now
-        return .init(source: text("bundleIdentifier").flatMap(ApplicationID.init(rawValue:)),
+        if !diff.boolValue || payload["elapsedTime"] != nil || payload["timestamp"] != nil {
+            anchorElapsed = elapsed
+            anchorTimestamp = timestamp
+        } else if payload["playing"] != nil || payload["playbackRate"] != nil {
+            // The adapter's IsPlaying notification may contain only this flag.
+            // Freeze the old clock at the transition, then resume from that
+            // point, so a pause neither rewinds nor adds time spent paused.
+            anchorElapsed = lastSnapshot?.elapsed(at: now)
+            anchorTimestamp = now
+        }
+        let snapshot = MediaSnapshot(source: text("bundleIdentifier").flatMap(ApplicationID.init(rawValue:)),
                      title: title, artist: text("artist") ?? "", album: text("album") ?? "",
-                     playing: flag("playing") ?? false, duration: duration, elapsed: elapsed,
-                     sampledAt: timestamp, rate: min(max(number("playbackRate") ?? 1, 0.25), 4),
+                     playing: flag("playing") ?? false, duration: duration, elapsed: anchorElapsed,
+                     sampledAt: anchorTimestamp ?? now, rate: min(max(number("playbackRate") ?? 1, 0.25), 4),
                      canSkip: !(flag("prohibitsSkip") ?? false), artwork: artwork, artworkID: artworkID)
+        lastSnapshot = snapshot
+        return snapshot
     }
 
     private mutating func clearArtwork() { artwork = nil; artworkID = nil; artworkHash = nil }
