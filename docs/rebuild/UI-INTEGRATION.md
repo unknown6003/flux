@@ -7,6 +7,7 @@ FluxUI is an AppKit-only Swift 6 library. It has no SwiftUI, WebKit, timers, bac
 - **Slice 4 not compiled.** This Linux host has no Swift or macOS SDK. The parent reports that General and About compiled and four UI tests passed on Mac CI run 42517294441 at 430ad53. The Notch, Lock Screen and rating files have no compile yet.
 - **Not run.** No layout, focus, VoiceOver or keyboard behavior is proven yet.
 - The fixed 1 to 5 rating form is written but not compiled or run.
+- **Slice 6 not compiled.** The Now Playing, Calendar and Mirror widget controllers were written on Linux at base 6f1d987. They have no compile or run yet.
 - **Slice 5 not compiled.** Menu Bar options, General Permissions, the About crash notice and the focus fallback have no compile yet. The parent's CI at c380847 stopped at Platform isolation before tests, so it does not prove that FluxUI compiles at the latest commit.
 
 ## Manifest (root owns it)
@@ -37,6 +38,10 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/NotchPreferencesController.swift` | `WidgetPreference`, `ShelfExpiry`, `NotchActivity`, `NotchAccessKind`, `NotchAccessStatus`, `NotchPreferencesState`, `NotchPreferencesAction`, `NotchPreferencesController` |
 | `Sources/FluxUI/LockScreenPreferencesController.swift` | `LockScreenCapability`, `LockScreenPreferencesState`, `LockScreenPreferencesAction`, `LockScreenPreferencesController` |
 | `Sources/FluxUI/FeedbackRatingController.swift` | `FeedbackSubmission`, `FeedbackRatingState`, `FeedbackRatingAction`, `FeedbackRatingController` |
+| `Sources/FluxUI/NowPlayingWidgetController.swift` | `NowPlayingSourceOption`, `NowPlayingWidgetStatus`, `NowPlayingWidgetState`, `NowPlayingWidgetAction`, `NowPlayingWidgetController` |
+| `Sources/FluxUI/CalendarWidgetController.swift` | `CalendarWidgetColor`, `CalendarWidgetEvent`, `CalendarWidgetState`, `CalendarWidgetAction`, `CalendarWidgetController` |
+| `Sources/FluxUI/MirrorWidgetController.swift` | `MirrorWidgetStatus`, `MirrorWidgetAction`, `MirrorWidgetController` |
+| `Sources/FluxUI/NotchWidgetStyle.swift` | none (internal `NotchWidgetStyle`, `NotchCardHost`) |
 
 ## Settings window
 
@@ -308,6 +313,63 @@ State fields, all `let`, no defaults: `collectionEnabled: Bool`, `submission: Fe
 - No text field, no IDs, no network, no timers. FluxUI never opens it. About does not open it. The parent holds the survey config, opens the form only on a user action, and sends only after opt-in.
 - Identifiers: `feedback.rating`, `feedback.cancel`, `feedback.submit`.
 
+## Notch widgets (slice 6)
+
+Return one of these from the `NotchPanelController` factory. The panel keeps one child at a time and owns show and hide. The widgets add no dismissal timer, no timer of any kind, and no global monitor. Each one builds its views in `loadView`, so nothing loads before the panel shows that tab. Each root has dark appearance and fills the panel's 440 pt maximum width minus the panel's 16 pt insets.
+
+All three update controls in place. After an update, focus goes back to the control that had it, if that control is still shown. Programmatic value changes send no action. Every action goes to the parent through one typed callback. No widget changes its own state.
+
+### Now Playing
+
+```swift
+let widget = NowPlayingWidgetController(state: NowPlayingWidgetState(
+    status: .playing,                 // .playing, .paused, .empty, .noAccess
+    title: title, artist: artist,
+    artwork: nsImage,                 // nil shows a music note
+    sources: [NowPlayingSourceOption(id: appID, name: "Music")],
+    selectedSource: appID,
+    elapsed: 42, duration: 215,       // seconds; nil or 0 duration turns seek off
+    canGoPrevious: true, canGoNext: true
+)) { action in parentHandle(action) }
+widget.update(newState)               // send a new elapsed when the parent wants time to move
+```
+
+- `NowPlayingWidgetAction`: `.togglePlayPause`, `.previous`, `.next`, `.seek(TimeInterval)`, `.selectSource(ApplicationID)`, `.openSource`, `.checkAgain`.
+- The seek slider has `isContinuous = false`. It sends one `.seek` when the user lets go. The parent sends the new `elapsed`.
+- The source menu shows only with two or more sources. Choosing the selected source again sends nothing.
+- `.empty` shows "Nothing playing" and a fixed Check Again button. `.noAccess` shows "Flux can't read what's playing" and Check Again. Both send `.checkAgain`.
+- The play button label is Play or Pause from `status`. VoiceOver reads the widget as "Now Playing: title, artist" and the slider as "0:42 of 3:35".
+- The parent owns the media adapter, the playback clock and artwork decoding.
+
+### Calendar
+
+```swift
+let widget = CalendarWidgetController(state: .events(today: todayRows, tomorrow: tomorrowRows)) { action in ... }
+// rows: CalendarWidgetEvent(id:title:location:start:end:isAllDay:color:)
+// color: CalendarWidgetColor(red:green:blue:), sRGB 0...1, nil uses the Flux accent
+widget.update(.needsPermission)       // or .unavailable
+```
+
+- The parent maps `AgendaSnapshot` / `AgendaEntry` to `CalendarWidgetEvent` and splits today and tomorrow. FluxUI has no EventKit and reads no clock.
+- Each day shows at most `CalendarWidgetController.maximumRowsPerDay` (4) rows, then "N more". Rows show a 7 pt color dot, the title, then "start – end · location" or "All-day · location". Times use `DateFormatter` short style in the user's locale and time zone.
+- Both days empty shows "No upcoming events".
+- `.needsPermission` shows Grant Access (`.requestAccess`). `.unavailable` shows Open Settings (`.openSettings`) and Check Again (`.checkAgain`). The widget never says access is given.
+- `update(_:)` ignores an equal state, so a repeated snapshot rebuilds nothing.
+
+### Mirror
+
+```swift
+let widget = MirrorWidgetController(status: .starting, preview: cameraPreviewView) { action in ... }
+widget.update(.running)               // .starting, .running, .needsPermission, .unavailable, .interrupted, .failed
+widget.setPreview(otherView)          // or nil; the parent keeps ownership of the view and its layer
+```
+
+- The preview sits in a black area, 150 pt high, with a 16 pt continuous corner radius that clips it. Mirroring, the session and the layer stay with the parent's `CameraFeed`.
+- `.starting` shows "Starting camera…" over the black area. `.running` shows the preview. With no preview view, it shows "No camera picture".
+- `.needsPermission`: Grant Access (`.requestPermission`). `.unavailable`: "No camera found", Open Settings (`.openSettings`) and Check Again (`.retry`). `.interrupted` and `.failed`: Try Again (`.retry`).
+- The widget does not start or stop the camera. Stop it from `onWillSwitch` or `onWillDismiss`, which run before the panel removes the widget.
+- No frame capture, snapshot or image cache.
+
 ## Teardown
 
 These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
@@ -316,4 +378,5 @@ These pages and the rating form hold no timers, monitors, tasks or observers. Co
 
 - "Show on displays without a notch". FluxCore has no key for it, so the Notch page has no switch.
 - Clipboard check rate and lock-state check cost text. Both wait for measurement.
+- Slice 6 widgets are not compiled or run. They need a macOS build, a capture of each state in the panel, and keyboard and VoiceOver passes.
 - Slices 4 and 5 are not compiled or run. This host has no Swift. The root's macOS build, capture at 680 and 840 pt, keyboard and VoiceOver passes must prove them. The slice 5 focus fallback needs a keyboard check: move the second widget up, then confirm focus is on its Down button.
