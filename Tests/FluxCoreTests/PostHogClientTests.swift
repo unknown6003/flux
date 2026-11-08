@@ -3,17 +3,38 @@ import Testing
 @testable import FluxCore
 
 private actor RecordingUsageTransport: UsageTransport {
+    let received: AsyncStream<UsageRequest>
+    private let continuation: AsyncStream<UsageRequest>.Continuation
     private var requests: [UsageRequest] = []
     private let response: UsageResponse
 
-    init(response: UsageResponse = UsageResponse(status: 200)) { self.response = response }
+    init(response: UsageResponse = UsageResponse(status: 200)) {
+        self.response = response
+        (received, continuation) = AsyncStream<UsageRequest>.makeStream(bufferingPolicy: .bufferingNewest(16))
+    }
 
     func send(_ request: UsageRequest) async throws -> UsageResponse {
         requests.append(request)
+        continuation.yield(request)
         return response
     }
 
     func snapshot() -> [UsageRequest] { requests }
+}
+
+@Test(.timeLimit(.minutes(1))) func oneShotFlushResumesAfterAFlagReload() async throws {
+    let flags = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true,"variant":"compact","metadata":{"payload":"{\"hint_delay_ms\":1500}"}}}}"#.utf8)
+    let transport = RecordingUsageTransport(response: UsageResponse(status: 200, body: flags))
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: UsageIdentity(), transport: transport, flushDelay: .milliseconds(10))
+    await client.record(.launched)
+    await client.reloadFlags()
+    var iterator = await transport.received.makeAsyncIterator()
+    let first = await iterator.next()
+    let second = await iterator.next()
+    #expect(first?.endpoint == .flags)
+    #expect(second?.endpoint == .events)
+    #expect(await client.payload(.welcomeLayout)?.hintDelayMilliseconds == 1500)
+    await client.disable()
 }
 
 private actor BlockingUsageTransport: UsageTransport {
@@ -87,12 +108,16 @@ private actor BlockingUsageTransport: UsageTransport {
     let client = try PostHogClient(projectToken: "phc_fixture", identity: original, transport: transport)
     await client.record(.opened(.clipboard))
     await client.resetIdentity(replacement)
+    // A UI task created before Reset may reach the actor after Reset.
+    await client.record(.opened(.calendar), expectedIdentity: original)
+    await client.log(.serviceStarted, expectedIdentity: original)
     await client.record(.opened(.settings))
     await client.flush()
     let request = try #require(await transport.snapshot().first)
     let text = try #require(String(data: request.body, encoding: .utf8))
     #expect(!text.contains(original.value.uuidString.lowercased()))
     #expect(!text.contains("clipboard"))
+    #expect(!text.contains("calendar"))
     #expect(text.contains(replacement.value.uuidString.lowercased()))
     await client.disable()
 }

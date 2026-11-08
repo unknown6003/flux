@@ -1,6 +1,6 @@
 # PostHog contract
 
-Status: core encoding only. Nothing is installed, configured or sending data.
+Status: isolated Swift 6 client, transport and opt-in controller implemented. Fifteen tests passed on macOS at c6356b4. Later edits need their own check. No live project is configured, and this module is not wired into the old app.
 
 ## Data
 
@@ -27,3 +27,29 @@ A default SDK installation is insufficient for this contract. Its event filter d
 ## Project access
 
 No PostHog entry exists in the shared credential store. A project token and the correct region are needed for live integration. Project-admin access may be needed to verify IP and GeoIP settings and to configure flags, experiments and reports. Never put a personal API key in the app.
+
+## Chosen client
+
+Use the native public HTTP contracts, without the SDK. It has a serial actor, an ephemeral URLSession with no cookies, cache or credential store, one active request, fixed hosts, refused redirects, five-second request and eight-second resource timeouts. Response decoding stops at 64 KiB. There are at most 64 queued events and 32 queued logs. Each send takes at most 20 records. Rate limits apply before the UI controller creates asynchronous work and again at the actor.
+
+A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.
+
+Missing consent keys default to off on both new and upgraded profiles. Only an explicit saved opt-in starts the client. Disabling cancels the pending task and request, drops records and clears cached assignments. A request already received by the server cannot be recalled. Reset drops pending work, clears flags/exposures, and changes the random ID. Late UI submissions carrying the previous local ID are rejected.
+
+The encoders support usage events, presentation flags, experiment exposures/conversions, fixed-code manual exceptions, structured code-only logs and fixed rating survey events. No native crash handler, recorder, AppKit autocapture or survey presentation is installed. Do not label a rating event encoder as a completed survey experience.
+
+## Proposed release budgets
+
+These are gates, not measured results. Use three paired 60-second runs after warmup, with the same feature state and helper tree. Keep the raw samples and variance. Baseline activity must be known before claiming idle results.
+
+| Measure | Limit for analytics on versus off |
+| --- | --- |
+| Closed and empty | No analytics request or scheduled flush task |
+| Physical footprint after warmup | At most 5 MiB extra |
+| CPU over the paired interval | At most 0.1% of one core extra, with uncertainty reported |
+| Wakeups | At most 0.1 per second extra; unavailable counters leave the gate unverified |
+| Synchronous record call, p95 | At most 0.1 ms, measured on the real Mac |
+| Reveal and notch action latency, p95 | At most 1 ms extra, with paired variance reported |
+| Stalled network stress | 1,000 actions finish independently; queues and retries stay within their caps |
+
+If a metric exceeds the limit, fix or reduce the integration. Do not round a small cost to zero.

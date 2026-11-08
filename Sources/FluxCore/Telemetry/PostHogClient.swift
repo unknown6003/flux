@@ -14,6 +14,7 @@ public actor PostHogClient {
     private var events: [UsageRecord] = []
     private var logs: [UsageLogRecord] = []
     private var assignments: [UsageFlag: UsageVariant] = [:]
+    private var payloads: [UsageFlag: UsageFlagPayload] = [:]
     private var exposures: Set<String> = []
     private var scheduled: Task<Void, Never>?
     private var request: Task<UsageResponse, any Error>?
@@ -37,14 +38,16 @@ public actor PostHogClient {
         request?.cancel()
     }
 
-    public func record(_ event: UsageEvent) {
+    public func record(_ event: UsageEvent, expectedIdentity: UsageIdentity? = nil) {
+        if let expectedIdentity, expectedIdentity != identity { return }
         guard admitRecord() else { return }
         if events.count == Self.eventLimit { events.removeFirst() }
         events.append(UsageRecord(event: event, assignments: assignments))
         schedule()
     }
 
-    public func log(_ code: UsageLogCode, level: UsageLogLevel = .info) {
+    public func log(_ code: UsageLogCode, level: UsageLogLevel = .info, expectedIdentity: UsageIdentity? = nil) {
+        if let expectedIdentity, expectedIdentity != identity { return }
         guard admitRecord() else { return }
         if logs.count == Self.logLimit { logs.removeFirst() }
         logs.append(UsageLogRecord(code: code, level: level))
@@ -64,6 +67,10 @@ public actor PostHogClient {
         return variant
     }
 
+    public func payload(_ flag: UsageFlag) -> UsageFlagPayload? {
+        enabled ? payloads[flag] : nil
+    }
+
     /// Call from a noncritical action boundary. Never await from startup or native input.
     public func reloadFlags() async {
         guard enabled, !busy else { return }
@@ -78,6 +85,7 @@ public actor PostHogClient {
         busy = false
         if let result, result.status == 200, let flags = try? PostHogWire.flagsResponse(result.body) {
             assignments = flags
+            payloads = (try? PostHogWire.flagPayloads(result.body)) ?? [:]
         }
         schedule()
     }
@@ -129,6 +137,7 @@ public actor PostHogClient {
         events.removeAll(keepingCapacity: false)
         logs.removeAll(keepingCapacity: false)
         assignments.removeAll(keepingCapacity: false)
+        payloads.removeAll(keepingCapacity: false)
         exposures.removeAll(keepingCapacity: false)
         rateWindow = .now
         recordsInWindow = 0

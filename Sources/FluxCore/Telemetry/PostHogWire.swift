@@ -12,6 +12,10 @@ public enum UsageVariant: String, Sendable, CaseIterable, Hashable {
     case control, compact, guided
 }
 
+public struct UsageFlagPayload: Sendable, Equatable {
+    public let hintDelayMilliseconds: Int
+}
+
 public enum UsageRating: String, Sendable, CaseIterable {
     case one = "1", two = "2", three = "3", four = "4", five = "5"
 }
@@ -85,6 +89,23 @@ public enum PostHogWire {
             guard let entry = flags[flag.rawValue], entry["enabled"] as? Bool == true else { continue }
             guard let raw = entry["variant"] as? String, let variant = UsageVariant(rawValue: raw) else { continue }
             result[flag] = variant
+        }
+        return result
+    }
+
+    public static func flagPayloads(_ data: Data) throws -> [UsageFlag: UsageFlagPayload] {
+        let accepted = try flagsResponse(data)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flags = object["flags"] as? [String: [String: Any]]
+        else { throw PostHogWireError.invalidResponse }
+        var result: [UsageFlag: UsageFlagPayload] = [:]
+        for flag in accepted.keys {
+            guard let metadata = flags[flag.rawValue]?["metadata"] as? [String: Any],
+                  let raw = metadata["payload"] as? String, raw.utf8.count <= 2_048,
+                  let payload = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  let delay = payload["hint_delay_ms"] as? Int, (500...5_000).contains(delay)
+            else { continue }
+            result[flag] = UsageFlagPayload(hintDelayMilliseconds: delay)
         }
         return result
     }

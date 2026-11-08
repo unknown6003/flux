@@ -44,6 +44,14 @@ import Testing
     }
 }
 
+@Test func remotePayloadCannotEnableContentOrPassAnArbitraryStringToTheApp() throws {
+    let data = Data(#"{"flags":{"flux-welcome-layout":{"enabled":true,"variant":"compact","metadata":{"payload":"{\"hint_delay_ms\":1500,\"collect_clipboard\":true,\"url\":\"https://person@example.com\"}"}},"flux-notch-hints":{"enabled":true,"variant":"guided","metadata":{"payload":"{\"hint_delay_ms\":999999999}"}}}}"#.utf8)
+    let payloads = try PostHogWire.flagPayloads(data)
+    #expect(payloads.count == 1)
+    #expect(payloads[.welcomeLayout]?.hintDelayMilliseconds == 1500)
+    #expect(payloads[.notchHints] == nil)
+}
+
 @Test func manualErrorGroupingUsesCodesAndNeverErrorDescriptions() throws {
     let data = try UsageBatchEncoder.encode([UsageRecord(event: .failed(.permissionDenied))], identity: UsageIdentity(), projectToken: "phc_fixture")
     let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
