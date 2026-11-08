@@ -29,7 +29,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
     for name in ["AppKit", "SwiftUI"]:
-        run(["swiftc", "-swift-version", "6", "-O", "-parse-as-library",
+        run(["swiftc", "-swift-version", "6", "-O", "-parse-as-library", "-module-name", f"Flux{name}ShellProbe",
              str(ROOT / "Scripts/rebuild/ShellProbe.swift"),
              str(ROOT / f"Scripts/rebuild/{name}Shell.swift"), "-o", str(OUT / name)], 60)
     samples = []
