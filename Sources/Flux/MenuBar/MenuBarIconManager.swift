@@ -222,7 +222,7 @@ final class MenuBarIconManager: ObservableObject {
         lastMoveReport += "; cancelled=\(reason)"
     }
 
-    func copyMenuBarReport() {
+    func copyMenuBarReport(settingsDrag: String = "none") {
         let report = ControlItem.usesMacOS27Model ? macOS27Hider.diagnostics
             : "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\nAccessibility: \(trustProvider())"
         let boundaries = boundaryProvider()
@@ -234,6 +234,7 @@ final class MenuBarIconManager: ObservableObject {
         Last move verification: \(lastMoveVerification)
         Move busy: \(arrangement.isBusy), input revision: \(nativeInputGeneration)
         Management: \(isManaging), cancellation revision: \(cancellationGeneration)
+        Settings drag: \(settingsDrag)
         """
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report + moveReport, forType: .string)

@@ -55,7 +55,9 @@ struct MenuBarTab: View {
                 }
                 .disabled(iconManager.isUpdatingIcons)
                 Menu {
-                    Button("Copy menu bar report") { iconManager.copyMenuBarReport() }
+                    Button("Copy menu bar report") {
+                        iconManager.copyMenuBarReport(settingsDrag: dragController.diagnostics)
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton)
                 .fixedSize()

@@ -7,6 +7,7 @@ final class MenuBarDragController: ObservableObject {
     static let pasteboardType = NSPasteboard.PasteboardType("com.bdwy.flux.menu-bar-icon")
     @Published private(set) var message: String?
     @Published private(set) var isDragging = false
+    private(set) var diagnostics = "none"
     var trace: ((String) -> Void)?
     var onWindowClose: (() -> Void)?
     private weak var manager: MenuBarIconManager?
@@ -121,6 +122,11 @@ final class MenuBarDragController: ObservableObject {
         lhs.id == rhs.id && lhs.identity == rhs.identity && lhs.isMovable && rhs.isMovable
     }
 
+    private func handleDescription(_ icon: MenuBarIconManager.Icon?) -> String {
+        guard let icon else { return "missing" }
+        return "\(icon.id) identity=\(icon.identity?.uuidString ?? "none")"
+    }
+
     func accepts(_ sender: NSDraggingInfo) -> Bool {
         guard canManage, !updatingIcons, let active,
               sender.draggingSource is MenuBarDragSourceView,
@@ -132,9 +138,10 @@ final class MenuBarDragController: ObservableObject {
     func performDrop(_ sender: NSDraggingInfo, to section: MenuBarSection,
                      insertion: MenuBarIconManager.Insertion? = nil) -> Bool {
         guard accepts(sender), let active, let manager else { return false }
-        manager.refresh()
+        diagnostics += "; drop source=\(handleDescription(active.icon))"
         guard let current = manager.icons.first(where: { sameItem($0, active.icon) }),
               insertion == nil || insertion?.section == section else {
+            diagnostics += "; rejected source, current=\(handleDescription(manager.icons.first { $0.id == active.icon.id }))"
             message = "That icon changed. Try the move again."
             return false
         }
@@ -142,11 +149,13 @@ final class MenuBarDragController: ObservableObject {
             let peers = manager.icons.filter { $0.section == section && $0.id != current.id }
                 .sorted { $0.frame.minX < $1.frame.minX }
             guard insertion.matches(peers) else {
+                diagnostics += "; rejected destination"
                 message = "The destination changed. Try the move again."
                 return false
             }
         }
         pending = Drop(generation: generation, icon: current, section: section, insertion: insertion)
+        diagnostics += "; staged \(section.rawValue)"
         message = nil
         trace?("staged \(section.rawValue) \(current.id)")
         return true
@@ -156,10 +165,10 @@ final class MenuBarDragController: ObservableObject {
                            mouseDown: NSEvent) -> NSDraggingSession? {
         guard canManage, !updatingIcons, active == nil, let manager,
               !mouseDown.modifierFlags.contains(.command) else { return nil }
-        manager.refresh()
-        guard let current = manager.icons.first(where: { sameItem($0, icon) }),
-              CGEventSource.buttonState(.combinedSessionState, button: .left),
-              !CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) else {
+        diagnostics = "begin source=\(handleDescription(icon)); current=\(handleDescription(manager.icons.first { $0.id == icon.id }))"
+        guard mouseDown.type == .leftMouseDown,
+              let current = manager.icons.first(where: { sameItem($0, icon) }) else {
+            diagnostics += "; rejected source"
             message = "That icon changed. Try the move again."
             return nil
         }
@@ -184,6 +193,7 @@ final class MenuBarDragController: ObservableObject {
     }
 
     fileprivate func ended(operation: NSDragOperation) {
+        diagnostics += "; ended=\(operation.rawValue)"
         trace?("ended operation=\(operation.rawValue)")
         let drop = pending
         pending = nil
