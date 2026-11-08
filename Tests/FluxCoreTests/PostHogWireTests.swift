@@ -62,7 +62,7 @@ import Testing
     #expect(exceptions.count == 1)
     #expect(Set(exceptions[0].keys) == ["type", "value", "mechanism"])
     #expect(exceptions[0]["value"] as? String == "permissionDenied")
-    #expect(properties["$exception_fingerprint"] as? [String] == ["flux", "permissionDenied"])
+    #expect(properties["$exception_fingerprint"] as? String == "flux.permissionDenied")
 }
 
 @Test func surveysAcceptFixedRatingsAndOpaqueQuestionIdentifiersOnly() throws {

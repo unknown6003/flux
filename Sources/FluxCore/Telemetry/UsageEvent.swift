@@ -125,7 +125,7 @@ public enum UsageBatchEncoder {
                     "value": code.rawValue,
                     "mechanism": ["type": "generic", "handled": true]
                 ]]
-                properties["$exception_fingerprint"] = ["flux", code.rawValue]
+                properties["$exception_fingerprint"] = "flux." + code.rawValue
             }
             if case .surveyAnswered = record.event { properties["$survey_completed"] = true }
             return [
