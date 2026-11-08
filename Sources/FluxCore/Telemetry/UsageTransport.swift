@@ -42,6 +42,10 @@ public actor NativeUsageTransport: UsageTransport {
 
     public init(region: PostHogRegion) {
         self.region = region
+        session = URLSession(configuration: Self.configuration())
+    }
+
+    static func configuration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.httpCookieStorage = nil
@@ -55,7 +59,7 @@ public actor NativeUsageTransport: UsageTransport {
         config.httpMaximumConnectionsPerHost = 1
         config.allowsConstrainedNetworkAccess = false
         config.httpAdditionalHeaders = ["User-Agent": "Flux", "Cache-Control": "no-store"]
-        session = URLSession(configuration: config)
+        return config
     }
 
     init(region: PostHogRegion, session: URLSession) {
