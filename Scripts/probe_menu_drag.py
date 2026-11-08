@@ -80,7 +80,7 @@ final class MenuBarIconManager: ObservableObject {
     func beginIconManagement() { refresh() }
     func endIconManagement() {}
     func requestAccess() { fatalError("Must not request permission") }
-    func copyMenuBarReport() { fatalError("Must not write the pasteboard") }
+    func copyMenuBarReport(settingsDrag: String = "none") { fatalError("Must not write the pasteboard") }
     func canMove(_ icon: Icon, toward direction: MoveDirection) -> Bool { true }
     func move(_ icon: Icon, toward direction: MoveDirection) {
         onMove?(direction == .towardDrawer ? "left" : "right")
@@ -751,6 +751,8 @@ extension EnvironmentValues {
     controller = args.output / "MenuBarDragController.swift"
     controller_source = (run(["git", "show", f"{args.controller_ref}:Sources/Flux/{sources[0]}"], 10)
                          if args.controller_ref else (root / "Sources/Flux" / sources[0]).read_text())
+    if "var diagnostics" not in controller_source:
+        controller_source += '\nextension MenuBarDragController { var diagnostics: String { "historical controller" } }\n'
     controller.write_text(controller_source + '''
 extension MenuBarDragController {
     func probeChangedDisplay() { displays = [] }

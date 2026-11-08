@@ -128,15 +128,25 @@ jobs:
                                       command += ['--manager-ref', '6fde90817068d06ecfae8eb6ec85c19e68af997b']
                                   elif case == 'native-insertion':
                                       command += ['--insertion']
+                          elif case == 'slow-inventory-control':
+                              command = ['python3', str(source / 'Scripts/probe_menu_drag.py'),
+                                         '--output', str(source / case), '--case', 'slow-inventory',
+                                         '--seconds', '25', '--controller-ref',
+                                         '032648486df7ec6603bd53178c0cd2a5b9740172']
                           else:
                               command = ['python3', str(source / 'Scripts/probe_menu_drag.py'),
                                          '--output', str(source / case), '--case', case,
                                          '--seconds', '55' if case == 'all' else '25'] + (['--empty-title'] if item.get('empty_title') else [])
                           with screen_capture_grant('com.flux.menu-drag-probe') if case == 'glyphs' else nullcontext():
                               log = run(command, budget, capture=True)
+                          if case == 'slow-inventory-control':
+                              raise RuntimeError('The old controller unexpectedly passed the timing control')
                           result = 'pass'
                       except RuntimeError as error:
                           log, result = str(error), 'fail'
+                          if case == 'slow-inventory-control' and 'Settings read inventory during the gesture and missed its release' in log:
+                              log = 'Confirmed expected old-controller failure:\n' + log
+                              result = 'pass'
                       (source / (case + '-runner.log')).write_text(log)
                       results.append(dict(ref=ref, case=case, empty_title=item.get('empty_title', False), result=result))
                       (output / 'results.json').write_text(json.dumps(results, indent=2))
@@ -320,6 +330,16 @@ jobs:
           from probe_hidden_transition import run
           from probe_tcc import accessibility_grant, screen_capture_grant
           with accessibility_grant('com.flux.menu-drag-probe'):
+              try:
+                  run(['python3', 'Scripts/probe_menu_drag.py', '--output',
+                       'build/menu-drag-timing-control', '--case', 'slow-inventory', '--seconds', '25',
+                       '--controller-ref', '032648486df7ec6603bd53178c0cd2a5b9740172'], 130, capture=True)
+              except RuntimeError as error:
+                  if 'Settings read inventory during the gesture and missed its release' not in str(error):
+                      raise
+                  print('PASS: the old controller fails when an inventory read spans the drag release')
+              else:
+                  raise RuntimeError('The old controller unexpectedly passed the timing control')
               run(['python3', 'Scripts/probe_menu_drag.py', '--output',
                    'build/menu-drag-probe', '--seconds', '55'], 170)
               with screen_capture_grant('com.flux.menu-drag-probe'):
