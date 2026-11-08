@@ -1177,16 +1177,18 @@ func probe() {
             exit(1)
         }
         afterMove {
+            let moveError = manager.errorMessage
             manager.refresh()
             let next = manager.icons.filter { $0.id.hasPrefix("com.flux.icon-fixture|") }
                 .sorted { $0.frame.minX < $1.frame.minX }
             let edge = towardClock ? next.last : next.first
             guard !manager.isUpdatingIcons, edge?.id == moving.id,
-                  manager.errorMessage == nil,
+                  moveError == nil,
                   next.allSatisfy({ $0.section == reorderSection }),
                   savedSectionReorder || next.allSatisfy({ MenuBarIconManager.section(
                     for: $0.frame, boundaries: manager.boundaryProvider()) == reorderSection }) else {
                 print("FAIL: the Settings arrow did not change the real icon order")
+                print("Move error: \(moveError ?? "none")")
                 print("Actual frames: \(next.map { ($0.title, $0.frame) }); boundaries=\(manager.boundaryProvider())")
                 manager.copyMenuBarReport()
                 print(NSPasteboard.general.string(forType: .string) ?? "report unavailable")
