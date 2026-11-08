@@ -472,3 +472,64 @@ These pages and the rating form hold no timers, monitors, tasks or observers. Co
 - Clipboard check rate and lock-state check cost text. Both wait for measurement.
 - Slice 6 widgets, File Shelf and Clipboard are not compiled or run. They need a macOS build, a capture of each state in the panel, and keyboard and VoiceOver passes.
 - Slices 4 and 5 are not compiled or run. This host has no Swift. The root's macOS build, capture at 680 and 840 pt, keyboard and VoiceOver passes must prove them. The slice 5 focus fallback needs a keyboard check: move the second widget up, then confirm focus is on its Down button.
+
+## Widget coordinator (FluxApplication)
+
+`Sources/FluxApplication/Widgets/` binds the five notch widget controllers to the real Core and Platform modules. Written on Linux at base 71dbf29. **Not compiled or run.** The root's Mac CI is the first compile.
+
+| File | API |
+|---|---|
+| `WidgetCoordinator.swift` | `WidgetCoordinator` |
+| `WidgetEffects.swift` | `WidgetEffects`, `WidgetPermission`, `WidgetFailure`, `WidgetEvent` |
+| `WidgetSupport.swift` | internal `ServiceLease`, `CameraPreviewView`, `ArtworkThumbnail` |
+
+```swift
+let widgets = WidgetCoordinator(preferences: store, shelf: shelfFiles, clipboard: clipboardRepository,
+                                pasteboard: pasteboardChannel, mediaScript: script, mediaFramework: framework,
+                                effects: appEffects)
+let runtime = FeatureRuntime { service in
+    switch service {
+    case .media: return widgets.startMediaFeed()
+    case .calendar: return widgets.startCalendarFeed()
+    case .clipboard: return widgets.startClipboardFeed()
+    case .camera: return widgets.startCameraFeed()
+    default: return try appOwnedService(service)
+    }
+}
+let panel = NotchPanelController(widgets: order, geometry: geometry) { widgets.makeWidget($0) }
+panel.onWillSwitch = { _, to in runtime.apply(demand(visible: to)) }
+panel.onWillDismiss = { _ in runtime.apply(demand(visible: nil)); widgets.dismiss() }
+```
+
+### Parent duties
+
+- Own `PreferenceStore`, `ShelfFiles`, `ClipboardRepository`, `PasteboardChannel` and the effects object. Keep the coordinator. `effects` is unowned and must outlive it.
+- Own `FeatureRuntime`. Only its factory calls `start…Feed`. Each call makes only that one feed and returns its handle. The coordinator keeps the handle weakly.
+- `onWillSwitch`: apply `FeatureDemand` with the new visible widget before the panel calls `makeWidget`. That starts or stops camera and calendar first.
+- `onWillDismiss`: apply `FeatureDemand` with `visibleWidget: nil`, then call `dismiss()`. The camera stops before the Mirror view goes.
+- Call `refresh()` when the app becomes active, so permission cards show fresh status.
+- Settings: `SettingsEffects.setClipboardPersistence` and `clearClipboardHistory` can call the coordinator methods with the same names, or the repository directly.
+- `WidgetEffects`, all required:
+  - `requestAccess(_:) async`: call `PermissionAccess.request`, build a new `FeatureDemand` with fresh `cameraAllowed` and `calendarAllowed`, apply it, then return. The coordinator then re-renders the card.
+  - `openSettings(_:)`: `PermissionAccess.openSettings`. Never prompt.
+  - `retry(_:)`: the user asked again and the service is absent or gave up. `FeatureRuntime` has no restart call. Apply a demand without the service, then the real demand, so the factory makes a fresh feed. Media needs this after `MediaDriver` stops after three restarts.
+  - `report(_:)`: show or count the fixed code only.
+  - `widgetEvent(_:)`: media and calendar values hold titles. Never send them to telemetry. `shelfCopyFinished` has counts only.
+
+### Behavior
+
+- **Making a controller** reads no hardware, permission prompt or pasteboard. It reads permission status (no prompt), the clipboard repository and the shelf manifest off the main actor.
+- **Now Playing.** `MediaFeedState` maps to `noAccess` (no feed or `.unavailable`), `empty` (`.ready(nil)`, or `.starting` with no last snapshot), or `playing`/`paused`. Commands go to `MediaFeed.send`. A false result reports `.mediaCommand`. Seek sends seconds. Open and source choice activate the running app with that bundle ID, or launch it with `NSWorkspace.openApplication`. Check Again calls `retry(.media)`. The only timer is a 1 s task while Now Playing is visible, playing, has a duration and has a feed. Hide, switch and pause cancel it. Artwork decodes once per `artworkID` on a detached task with ImageIO, at most 256 px a side (256 KiB RGBA). The UI never decodes full art.
+- **Calendar.** Maps the `AgendaSnapshot` of the current day to today (overlapping today, timed events not yet ended) and tomorrow. The widget shows four rows a day and "N more". A snapshot from another day is not shown. Grant Access only calls `requestAccess(.calendar)`. Check Again calls `CalendarFeed.refresh()`, or `retry(.calendar)` with no feed. "N more" opens `calshow:<start of day in seconds since 2001>`, from `Calendar.current` with `TimeZone.current`.
+- **Mirror.** The coordinator makes one `CameraPreviewView` whose backing layer is an `AVCaptureVideoPreviewLayer`, and connects it with `CameraFeed.connectPreview`. No frame is copied. The camera is `FeatureRuntime`'s. The preview view is dropped on hide.
+- **Clipboard.** The capture callback sends each sample to `ClipboardRepository.capture`. At most 4 wait. More are dropped and report `.clipboardCaptureDropped`. A stopped feed sends no callback. The repository is prepared once with the saved `clipboardPersistenceEnabled`. The widget subscribes to `updates()` only while visible, and cancels the stream on hide. It gets at most 50 records, previews of 200 characters, and images made only from the stored 64 px thumbnail, cached by record ID. Copy writes the exact payload with `ClipboardFeed.copyBack` while the feed runs, or `PasteboardChannel.write` when it does not. "Copied" shows only after that write returned an ack. Open Link uses `ClipboardRecord.browserURL` (http or https with a host). Remove and Clear All call the repository.
+- **File Shelf.** `ShelfFiles.load`, then `payload(for:)` per file for the drag, open, Finder, AirDrop and copy URL. All file work runs on the `ShelfFiles` actor. A drop copies originals with `addCopy`, at most 20 files a drop, one job at a time. A second drop reports `.shelfBusy`. The job may outlive the panel and holds no view. It ends with `shelfCopyFinished`. Open uses `NSWorkspace.open`, Show in Finder `activateFileViewerSelecting`, AirDrop `NSSharingService(.sendViaAirDrop)`, and Copy writes `.files([url])` (file URL pasteboard type). Remove and Clear All delete shelf copies only. A load error shows `.failed` with Try Again (`reload()`), and keeps the manifest and files.
+- Rows use generic file icons in this slice. There are no file thumbnails.
+- No analytics, network, window, global monitor or private API in this folder. `ClipboardFeed` owns its own key monitors in FluxPlatform.
+
+### Known gaps
+
+- `CalendarWidgetState` has no loading case. With access allowed and no read yet, the widget shows `.unavailable` with Check Again until the first read arrives. FluxUI needs a `.loading` case to fix this.
+- `NowPlayingWidgetStatus` has no loading case. `.starting` with no snapshot shows "Nothing playing".
+- `calshow:` opening a given day on macOS is unproved. A failed open reports `.calendarOpen`.
+- `MediaSnapshot` names one source, so the source menu lists only that app.
