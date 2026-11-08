@@ -146,6 +146,19 @@ jobs:
             build/native-capture-probe/FluxCaptureProbe.zip
             build/native-capture-probe/artifact.json
           if-no-files-found: error
+      - name: Build matching-signed status-item layout fixture
+        if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        timeout-minutes: 4
+        run: python3 Scripts/rebuild/build_capture_probe.py --layout
+      - name: Upload status-item layout fixture
+        if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-layout-probe
+          path: |
+            build/native-layout-probe/FluxLayoutProbe.zip
+            build/native-layout-probe/artifact.json
+          if-no-files-found: error
       - name: Remove capture-probe keychain
         if: ${{ always() && inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
         run: python3 Scripts/import_signing.py --cleanup

@@ -7,6 +7,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,22 +22,28 @@ def run(arguments, seconds=30):
 
 
 def main():
+    layout = sys.argv[1:] == ["--layout"]
+    if sys.argv[1:] and not layout:
+        raise RuntimeError("Expected no arguments or --layout")
+    product = "FluxMenuBarLayoutProbe" if layout else "FluxMenuCaptureProbe"
     identity = os.environ.get("CODESIGN_IDENTITY", "")
     keychain = os.environ.get("CODESIGN_KEYCHAIN", "")
     if not identity or identity == "-" or not keychain:
         raise RuntimeError("The existing Flux certificate identity is required")
-    run(["swift", "build", "-c", "release", "--product", "FluxMenuCaptureProbe"], 180)
+    run(["swift", "build", "-c", "release", "--product", product], 180)
     binaries = Path(run(["swift", "build", "-c", "release", "--show-bin-path"]))
-    output = ROOT / "build" / "native-capture-probe"
+    output = ROOT / "build" / ("native-layout-probe" if layout else "native-capture-probe")
     output.mkdir(parents=True, exist_ok=False)
     bundle = output / "Flux.app"
     contents = bundle / "Contents"
     (contents / "MacOS").mkdir(parents=True)
-    shutil.copy2(binaries / "FluxMenuCaptureProbe", contents / "MacOS" / "Flux")
+    shutil.copy2(binaries / product, contents / "MacOS" / "Flux")
     with (ROOT / "Resources" / "Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     revision = run(["git", "rev-parse", "HEAD"])
     info["FluxProbeOnly"] = True
+    if layout:
+        info["FluxLayoutProbeOnly"] = True
     info["FluxProbeSourceRevision"] = revision
     info.pop("CFBundleIconFile", None)
     with (contents / "Info.plist").open("wb") as stream:
@@ -52,9 +59,9 @@ def main():
     leaf = Path(str(prefix) + "0").read_bytes()
     if leaf != expected:
         raise RuntimeError("Capture probe signing certificate differs from Flux")
-    archive = output / "FluxCaptureProbe.zip"
+    archive = output / ("FluxLayoutProbe.zip" if layout else "FluxCaptureProbe.zip")
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)])
-    report = {"sourceRevision": revision, "probeOnly": True, "bundleID": info["CFBundleIdentifier"],
+    report = {"sourceRevision": revision, "probeOnly": True, "layoutProbe": layout, "bundleID": info["CFBundleIdentifier"],
               "leafSHA256": hashlib.sha256(leaf).hexdigest(), "sizeBytes": archive.stat().st_size,
               "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
     (output / "artifact.json").write_text(json.dumps(report, indent=2) + "\n")
