@@ -1,3 +1,10 @@
 ts	phase	decision	why	evidence	result
 2026-11-08T16:49:06Z	frame	Stop the failed module release and start a full app rebuild	The user rejected another repair and requested a complete replacement	branch fix/notion-move; docs/rebuild/PLAN.md	open
 2026-11-08T16:49:06Z	inventory	Preserve34 task groups and34 explicit preference keys	The README does not match current defaults or lifecycle work	docs/rebuild/BASELINE.md	verified
+2026-11-08T17:53:52Z	design	Separate visibility choices from guided native physical ordering	No supported foreign-icon order setter was found; old synthetic input was unreliable	docs/rebuild/PLAN.md; /tmp/flux-rebuild-design-final-20261108/DESIGN.md	selected; full runtime proof open
+2026-11-08T17:53:52Z	telemetry	Use typed native PostHog APIs instead of the default SDK	The SDK starts unused queues and adds context outside its event filter	docs/rebuild/TELEMETRY.md; /tmp/flux-posthog-macos-20261108.md	implemented offline; no live project
+2026-11-08T17:53:52Z	review	Fix experiment reassignment and log starvation	Independent risk review identified concrete wrong attribution and queue fairness paths	docs/rebuild/TELEMETRY-REVIEW.md; Mac run42504865424	20 tests passed
+2026-11-08T17:53:52Z	architecture	Choose Swift6 and AppKit for native UI	Equivalent shell trial used about3MiB less shown footprint and had a lower median cycle cost	docs/rebuild/SHELL-TRIAL.md; Mac run42505860944	verified for fixture only
+2026-11-08T17:53:52Z	privacy	Require an explicit saved opt-in before constructing analytics	Project IP and GeoIP settings are unverified; no credential or signed-in session was available	docs/rebuild/TELEMETRY.md	live setup pending; no telemetry sent
+2026-11-08T17:53:52Z	backend	Do not accept preference readback as physical hiding proof	The fixture changed allowed state three times but had no visible baseline	Mac /tmp/flux-native-visibility-proof-20261108/abi-fixture/report.md	inconclusive
+2026-11-08T17:53:52Z	ownership	Give the native UI folder to one isolated Opus writer	Keep app-core and build integration in the parent to avoid overlapping edits	docs/rebuild/PLAN.md	next implementation unit
