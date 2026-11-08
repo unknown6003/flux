@@ -190,19 +190,30 @@ final class MenuBarArrangement {
                 guard ProcessInfo.processInfo.systemUptime < quietBy else { return .failure(.inputBusy) }
                 await pause(0.05)
             }
-            guard canCommit() else { return .failure(.cancelled) }
-            guard let fresh = await snapshot(), let moved = resolve(item.handle, in: fresh) else {
-                return .failure(.unavailable)
+            let verifyBy = ProcessInfo.processInfo.systemUptime + 3
+            var attempt = 0
+            while true {
+                guard canCommit() else { return .failure(.cancelled) }
+                guard let fresh = await snapshot(), let moved = resolve(item.handle, in: fresh) else {
+                    return .failure(.unavailable)
+                }
+                guard canCommit() else { return .failure(.cancelled) }
+                let resulting = assigning(section, to: moved, in: fresh)
+                let placed = slot.map { neighbors(moved, slot: $0, in: resulting) }
+                    ?? (environment.physicalSection(moved) == section)
+                if placed, environment.appScoped || environment.physicalSection(moved) == section {
+                    guard environment.assign(moved, section, canCommit) else { return .failure(.notSaved) }
+                    break
+                }
+                attempt += 1
+                let order = resulting.filter { $0.section == section }.sorted { $0.frame.minX < $1.frame.minX }
+                    .map { "\($0.handle.id)@\($0.frame.minX)" }.joined(separator: ",")
+                onTrace?("verify \(attempt) source=\(moved.frame) before=\(slot?.before?.id ?? "none") after=\(slot?.after?.id ?? "none") order=\(order)")
+                guard ProcessInfo.processInfo.systemUptime < verifyBy else {
+                    return .failure(.notMoved(item.title))
+                }
+                await pause(0.15)
             }
-            guard canCommit() else { return .failure(.cancelled) }
-            let resulting = assigning(section, to: moved, in: fresh)
-            let placed = slot.map { neighbors(moved, slot: $0, in: resulting) }
-                ?? (environment.physicalSection(moved) == section)
-            guard placed, environment.appScoped || environment.physicalSection(moved) == section else {
-                onTrace?("unchanged \(item.handle.id) frame=\(moved.frame)")
-                return .failure(.notMoved(item.title))
-            }
-            guard environment.assign(moved, section, canCommit) else { return .failure(.notSaved) }
         } else {
             onTrace?("assign \(item.handle.id) section=\(section.rawValue)")
             guard canCommit() else { return .failure(.cancelled) }
