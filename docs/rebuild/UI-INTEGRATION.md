@@ -427,6 +427,41 @@ The causes were in FluxUI:
 
 The production host matches the fixture. `NotchPanelController` pins the widget to a container that is 440 - 2 x 16 = 408 pt wide, and the parent sets the height. The root must rebuild on macOS and capture each widget state again. This change has no capture yet.
 
+## Settings binding (FluxApplication)
+
+`Sources/FluxApplication/Settings/` binds the five pages to `PreferenceStore` and `UsageCollection`. Not compiled. This host has no Swift. The root's Mac CI must compile it.
+
+Public API:
+
+- `SettingsCoordinator(preferences:usage:version:effects:)`. `show(_ page: SettingsPage?)`, `close()`, `refresh()`.
+- `SettingsEffects`, a `@MainActor` protocol. Every method is required, with no default.
+- `ShortcutRole` (`.reveal`, `.notch`), `SettingsChange`, `SettingsFailure`.
+
+Ownership. The app owns the store, `UsageCollection`, the repositories and the effects object. The coordinator owns the window controller while it is open. It holds the visible page weakly and builds state for that page only. `effects` is unowned, so the effects object may own the coordinator but must outlive it. Page closures and tasks capture the coordinator weakly.
+
+Call `refresh()` after any effect result arrives later: update status, permission or lock screen probe, menu bar read, crash notice dismissal. It does nothing while Settings is closed.
+
+Rules the coordinator applies:
+
+- Each saved option goes through `PreferenceStore.set`. On a throw it calls `report(.saveFailed)` and does not call `apply`. On success it calls `apply(_:)` with the change.
+- Login: the switch saves `flux.launchAtLogin` first, then calls `setLoginItem`. A throw reports `.loginItemFailed`. The page always shows `loginStatus()`, read fresh. Refresh never saves the choice.
+- Shortcuts: a chord equal to the other Flux shortcut shows `.otherFluxShortcut` and saves nothing. While hotkeys are on, `replaceShortcut` must return true before the save. On false the page shows `.unavailable` and the old chord must still work. If the save throws after a good register, the coordinator registers the old chord again.
+- Appearance: `apply(.appearance)` runs after the save.
+- Analytics: the switch and Reset ID await `UsageCollection.setEnabled` and `resetIdentity` in order. The page shows `.working` until each finishes, then `.on`, `.off` or `.reset`. No ID is shown.
+- Widget order: saved unknown IDs keep their index. A known duplicate keeps its first position. Missing known widgets go at the end. Up and Down swap with the nearest known widget.
+- Widgets map to `nowPlayingEnabled`, `shelfEnabled`, `calendarEnabled`, `mirrorEnabled`, `clipboardEnabled`. Activities map to `batteryEnabled`, `bluetoothEnabled`, `calendarEventEnabled`, `timerEnabled`, `soundHUDEnabled`. A switch that changes a live service sends `.features(FeatureConfiguration)`. Timer and other display values send `.presentation`.
+- Clipboard saving calls `setClipboardPersistence` first, then saves. A failed save sets the repository back. Clear calls `clearClipboardHistory`. Both run in request order and report `.clipboardFailed` on a throw.
+- Access buttons call `requestNotchAccess` or the settings openers. Nothing prompts at launch or on refresh.
+- Lock screen capability and failure code come from the effects. The coordinator never assumes `.available`.
+- About shows `ApplicationVersion`. Diagnostics shows `.copied` only when `copyDiagnosticReport()` returns true, else `.unavailable`. The result clears when the page goes away.
+- Menu bar: inventory, mode and arrange state come from `menuBarState()`. The coordinator puts in the saved Always Hidden, auto-rehide, delay (2 to 30 s) and icon style. Group, arrange, previews, refresh, access, identity review and compact spacing go to the effects. Nothing is shown as saved until the app sends a new state.
+
+Limits:
+
+- A saved shelf expiry that is not 0, 1, 3 or 7 shows as Never.
+- The clipboard switch shows the saved value until the repository call ends.
+- Not compiled or run. No keyboard, VoiceOver or real effects proof yet.
+
 ## Teardown
 
 These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
