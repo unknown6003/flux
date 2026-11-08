@@ -20,7 +20,7 @@ import Vision
         guard ProcessInfo.processInfo.environment["FLUX_ALLOW_MENU_LAYOUT_PROBE"] == "1",
               Bundle.main.bundleIdentifier == "com.flux.menubar",
               Bundle.main.object(forInfoDictionaryKey: "FluxLayoutProbeOnly") as? Bool == true,
-              CommandLine.arguments.count == 2,
+              (CommandLine.arguments.count == 2 || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--calibrate")),
               #available(macOS 26.0, *) else { throw Failure.guardRequired }
         let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true).resolvingSymlinksInPath()
         let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path + "/"
@@ -36,6 +36,10 @@ import Vision
         NSApp.finishLaunching()
         guard NSScreen.screens.count == 1, let screen = NSScreen.screens.first,
               screen.frame.width <= 2048, screen.frame.width >= 800 else { throw Failure.display }
+        if CommandLine.arguments.count == 3 {
+            try await calibrateCapture(screen: screen, directory: directory)
+            return
+        }
         let display = CGMainDisplayID()
         let bounds = CGDisplayBounds(display)
         let region = CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: 34)
@@ -108,10 +112,98 @@ import Vision
         print("Three fixture hide/show cycles passed. This does not accept the rebuilt app.")
     }
 
+    /// An owned, click-through control distinguishes coordinate and capture
+    /// faults. It does not create status items, change Flux or post input.
+    @available(macOS 26.0, *)
+    @MainActor private static func calibrateCapture(screen: NSScreen, directory: URL) async throws {
+        let frame = CGRect(x: screen.frame.maxX - 280, y: screen.frame.maxY - 160, width: 240, height: 80)
+        let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .systemPink
+        window.isOpaque = true
+        window.ignoresMouseEvents = true
+        window.level = .statusBar
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        let label = NSTextField(labelWithString: "FLUX-CAL")
+        label.font = .monospacedSystemFont(ofSize: 30, weight: .bold)
+        label.textColor = .white
+        label.alignment = .center
+        label.frame = CGRect(x: 0, y: 18, width: 240, height: 44)
+        window.contentView?.addSubview(label)
+        window.orderFrontRegardless()
+        window.displayIfNeeded()
+        defer { window.close() }
+        try await Task.sleep(for: .seconds(2))
+        let displayID = CGMainDisplayID()
+        let bounds = CGDisplayBounds(displayID)
+        let scale = screen.backingScaleFactor
+        let topCandidate = CGRect(x: frame.minX, y: bounds.minY + screen.frame.maxY - frame.maxY,
+                                  width: frame.width, height: frame.height)
+        let bottomCandidate = frame
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw Failure.display }
+        let own = content.windows.first { $0.windowID == CGWindowID(window.windowNumber) }
+        var observations: [[String: Any]] = []
+        let inspector = FixtureGlyphs()
+        func values(_ rect: CGRect) -> [Double] { [rect.minX, rect.minY, rect.width, rect.height] }
+        func save(_ image: CGImage, name: String, rect: CGRect?) async throws {
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            guard let bytes = bitmap.representation(using: .png, properties: [:]) else { throw Failure.capture }
+            let url = directory.appendingPathComponent(name + ".png")
+            try bytes.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            observations.append(["name": name, "pixelSize": [image.width, image.height],
+                                 "rect": rect.map { values($0) as Any } ?? NSNull(),
+                                 "controlMarker": await inspector.containsControl(bytes)])
+        }
+        if let own {
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(frame.width * scale)
+            configuration.height = Int(frame.height * scale)
+            configuration.showsCursor = false
+            let filter = SCContentFilter(desktopIndependentWindow: own)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            try await save(image, name: "own-window", rect: own.frame)
+        }
+        for (name, rect) in [("top-candidate", topCandidate), ("bottom-candidate", bottomCandidate)] {
+            let globalImage = try await SCScreenshotManager.captureImage(in: rect)
+            try await save(globalImage, name: "global-" + name, rect: rect)
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            filter.includeMenuBar = true
+            let configuration = SCStreamConfiguration()
+            configuration.sourceRect = CGRect(x: rect.minX - display.frame.minX, y: rect.minY - display.frame.minY,
+                                              width: rect.width, height: rect.height)
+            configuration.width = Int(frame.width * scale)
+            configuration.height = Int(frame.height * scale)
+            configuration.showsCursor = false
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            try await save(image, name: "display-" + name, rect: configuration.sourceRect)
+        }
+        let receipt: [String: Any] = ["probeOnly": true, "calibrationOnly": true,
+            "noStatusItems": true, "noPreferenceWrites": true, "noPostedInput": true,
+            "appKitWindowFrame": values(frame), "displayBounds": values(bounds),
+            "shareableWindowFrame": own.map { values($0.frame) as Any } ?? NSNull(),
+            "ownWindowOnScreen": own != nil, "observations": observations,
+            "sourceRevision": Bundle.main.object(forInfoDictionaryKey: "FluxProbeSourceRevision") as? String ?? "unknown"]
+        let url = directory.appendingPathComponent("calibration.json")
+        try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        print("Capture calibration completed. Inspect the owned marker results before any visibility test.")
+    }
+
     private enum Failure: Error { case guardRequired, preflight, display, capture, baseline, visibility }
 }
 
 private actor FixtureGlyphs {
+    func containsControl(_ image: Data) -> Bool {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        do { try VNImageRequestHandler(data: image).perform([request]) } catch { return false }
+        return request.results?.contains { result in
+            result.topCandidates(1).first?.string.uppercased().filter(\.isLetter) == "FLUXCAL"
+        } ?? false
+    }
     /// Return only the two fixture matches. Never retain or log unrelated OCR.
     func read(_ image: Data) -> (left: Bool, right: Bool) {
         let request = VNRecognizeTextRequest()
