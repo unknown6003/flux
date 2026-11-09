@@ -36,7 +36,7 @@ public actor BoundedCommand {
         }
         let id = UUID()
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { result in
+            try await withCheckedThrowingContinuation { (result: CheckedContinuation<Void, any Error>) in
                 guard !Task.isCancelled else { result.resume(throwing: BoundedCommandError.cancelled); return }
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/bash")
