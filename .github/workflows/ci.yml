@@ -95,7 +95,7 @@ jobs:
         run: python3 Scripts/rebuild/run_native_tests.py FluxUITests
       - name: Check native application actions
         run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests
-      - name: Check native rating sheets
+      - name: Check native confirmation sheets
         run: python3 Scripts/rebuild/run_native_tests.py FluxRatingProbe
       - name: Upload native test output
         if: always()

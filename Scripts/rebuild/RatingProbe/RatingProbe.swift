@@ -117,6 +117,56 @@ private actor RatingFixtureTransport: UsageTransport {
 }
 
 @MainActor private enum RatingScenarios {
+    static func identityReviewNeedsAnExplicitClickAndCancelsWithItsTask() async throws {
+        let window = NSWindow(contentRect: .init(x: 200, y: 200, width: 680, height: 500),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
+        let prompt = MenuBarIdentityPrompt()
+        func waitForSheet(_ present: Bool) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while (window.attachedSheet != nil) != present {
+                guard ContinuousClock.now < deadline else { throw RatingProbeFailure.missingFixture }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        func button(_ title: String) throws -> NSButton {
+            func walk(_ view: NSView) -> NSButton? {
+                if let button = view as? NSButton, button.title == title { return button }
+                return view.subviews.lazy.compactMap(walk).first
+            }
+            return try requireValue(window.attachedSheet?.contentView.flatMap(walk))
+        }
+        let cancelled = Task { @MainActor in await prompt.confirm(name: "Example") }
+        try await waitForSheet(true)
+        let approve = try button("Use This Copy")
+        let cancel = try button("Cancel")
+        try requireTrue(approve.keyEquivalent.isEmpty && cancel.keyEquivalent == "\r")
+        if let content = window.attachedSheet?.contentView,
+           let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            let directory = URL(fileURLWithPath: "build/native-test-logs", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("identity-review.png"))
+        }
+        cancel.performClick(nil)
+        try requireTrue(await cancelled.value == false)
+        try await waitForSheet(false)
+        window.makeKeyAndOrderFront(nil)
+        let accepted = Task { @MainActor in await prompt.confirm(name: "Example") }
+        try await waitForSheet(true)
+        try button("Use This Copy").performClick(nil)
+        try requireTrue(await accepted.value)
+        try await waitForSheet(false)
+        window.makeKeyAndOrderFront(nil)
+        let stopped = Task { @MainActor in await prompt.confirm(name: "Example") }
+        try await waitForSheet(true)
+        stopped.cancel()
+        try requireTrue(await stopped.value == false)
+        try await waitForSheet(false)
+    }
+
     @MainActor fileprivate static func find(_ id: String) -> NSView? {
         @MainActor func walk(_ view: NSView) -> NSView? {
             if view.identifier?.rawValue == id { return view }
@@ -231,8 +281,9 @@ private actor RatingFixtureTransport: UsageTransport {
                 try await RatingScenarios.ratingControlsWaitForAckAndIgnoreRepeatedSubmit()
                 try await RatingScenarios.ratingRetriesReuseOnlyTheSameRatingToken()
                 try await RatingScenarios.aClosedRatingCannotUpdateANewVisitAfterItsLateAck()
+                try await RatingScenarios.identityReviewNeedsAnExplicitClickAndCancelsWithItsTask()
                 passed = true
-                print("{\"nativeRatingScenariosPassed\":4}")
+                print("{\"nativeRatingScenariosPassed\":4,\"nativeIdentityScenariosPassed\":1}")
             } catch {
                 FileHandle.standardError.write(Data("Native rating scenario failed\n".utf8))
             }

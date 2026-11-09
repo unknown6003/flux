@@ -49,9 +49,10 @@ def main():
         raise RuntimeError(f"{args.suite} exited {status}")
     if args.suite == "FluxRatingProbe":
         reports = [json.loads(line) for line in result.splitlines() if line.startswith('{"nativeRatingScenariosPassed"')]
-        if len(reports) != 1 or reports[0].get("nativeRatingScenariosPassed") != 4:
-            raise RuntimeError("Native rating scenarios did not finish")
-        print("Completed four native AppKit rating scenarios")
+        if (len(reports) != 1 or reports[0].get("nativeRatingScenariosPassed") != 4
+                or reports[0].get("nativeIdentityScenariosPassed") != 1):
+            raise RuntimeError("Native confirmation scenarios did not finish")
+        print("Completed four rating scenarios and one identity confirmation scenario")
         return
     count = completed_count(result)
     print(f"Completed {args.suite}: {count} passing tests")

@@ -20,7 +20,7 @@ import AppKit
                 self.alert = alert
                 self.completion = continuation
                 alert.beginSheetModal(for: window) { [weak self] response in
-                    self?.finish(response == .alertFirstButtonReturn)
+                    self?.finish(response == .alertFirstButtonReturn, dismiss: false)
                 }
             }
         } onCancel: {
@@ -28,12 +28,12 @@ import AppKit
         }
     }
 
-    private func finish(_ accepted: Bool) {
+    private func finish(_ accepted: Bool, dismiss: Bool = true) {
         guard let completion else { return }
         self.completion = nil
         let alert = self.alert
         self.alert = nil
-        if let alert, let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .cancel) }
+        if dismiss, let alert, let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .cancel) }
         completion.resume(returning: accepted)
     }
 }
