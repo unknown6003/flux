@@ -70,7 +70,8 @@ def main():
     dmg = args.dmg.resolve()
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="flux-native-upgrade-") as directory:
-        temporary = Path(directory)
+        # ps reports /private/var/folders; match the real path.
+        temporary = Path(directory).resolve()
         (temporary / "UpdateChecker.swift").write_text(updater_source(None))
         (temporary / "main.swift").write_text(SWIFT_PROBE)
         binary = temporary / "FluxUpdateProbe"
@@ -117,6 +118,7 @@ def main():
             helper = logs[-1].read_text() if logs else "missing"
             (args.output / "install.log").write_text(helper)
             print("helper log:\n" + helper, flush=True)
+            print(f"state: version={version} backups={backups} pids={native_pids(executable)}", flush=True)
             if not confirmed or "PASS: installed update and confirmed startup" not in helper:
                 raise RuntimeError("FAIL: the 0.21.35 updater did not confirm the native app")
             run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(dest)], 30)
