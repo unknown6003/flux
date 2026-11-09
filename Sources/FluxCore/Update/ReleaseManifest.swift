@@ -40,10 +40,15 @@ public struct ReleaseManifest: Equatable, Sendable {
               let version = ReleaseVersion(release.tag_name),
               release.tag_name == "v" + version.description,
               release.assets.count <= 256 else { throw ReleaseManifestError.invalidRelease }
-        let assets = release.assets.filter { $0.name == "Flux.dmg" }
+        // From 0.22.2 the image is "Flux-<version>.dmg". Flux 0.22.0 and 0.22.1
+        // accept only "Flux.dmg" and hang when their updater quits, so the new
+        // name keeps them from trying. Flux 0.21.35 takes any .dmg asset.
+        let versioned = "Flux-\(version.description).dmg"
+        let named = release.assets.filter { $0.name == versioned }
+        let assets = named.isEmpty ? release.assets.filter { $0.name == "Flux.dmg" } : named
         guard assets.count == 1, let asset = assets.first, asset.state == "uploaded",
               asset.size > 0, asset.size <= Self.maximumDownloadBytes else { throw ReleaseManifestError.invalidAsset }
-        let expected = "https://github.com/unknown6003/flux/releases/download/\(release.tag_name)/Flux.dmg"
+        let expected = "https://github.com/unknown6003/flux/releases/download/\(release.tag_name)/\(asset.name)"
         guard asset.browser_download_url == expected,
               let download = URL(string: expected),
               let page = URL(string: "https://github.com/unknown6003/flux/releases/tag/\(release.tag_name)") else {

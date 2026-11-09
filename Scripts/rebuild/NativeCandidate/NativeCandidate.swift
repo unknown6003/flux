@@ -23,6 +23,8 @@ import OSLog
 @MainActor private final class NativeCandidateDelegate: NSObject, NSApplicationDelegate {
     private var host: ApplicationHost?
     private var terminating = false
+    private var terminationReplied = false
+    private var terminationDeadline: Timer?
     private var capture: NativeCandidateMenuCapture?
     private let logger = Logger(subsystem: "com.flux.menubar", category: "native-candidate")
 
@@ -46,9 +48,20 @@ import OSLog
             let lock = NativeLockScreenService(preferences: session.preferences)
             let owner = ApplicationHost(session: session, menuBar: menu, lockScreen: lock,
                 failure: { [weak self] failure in self?.record(failure) },
-                quit: { NSApp.terminate(nil) })
+                quit: { NativeCandidateDelegate.requestTermination() })
             host = owner
             try owner.start()
+            // Release probe: quit from inside a main-actor Task, the same
+            // path the updater takes after its hand-off.
+            if let raw = ProcessInfo.processInfo.environment["FLUX_PROBE_QUIT_FROM_TASK_AFTER"], let delay = Double(raw) {
+                // FLUX_PROBE_QUIT_DIRECT=1 is the control: the 0.22.1 direct call,
+                // which only the terminate deadline can finish.
+                let direct = ProcessInfo.processInfo.environment["FLUX_PROBE_QUIT_DIRECT"] == "1"
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(delay))
+                    if direct { NSApp.terminate(nil) } else { NativeCandidateDelegate.requestTermination() }
+                }
+            }
             if let index = CommandLine.arguments.firstIndex(of: "--capture-menu-dir"), index + 1 < CommandLine.arguments.count {
                 capture = try NativeCandidateMenuCapture(output: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true))
             }
@@ -80,15 +93,41 @@ import OSLog
         guard !terminating else { return .terminateCancel }
         terminating = true
         capture?.stop(); capture = nil
+        // If clean-up cannot run (for example a caller terminated from inside
+        // a main-queue job), quit anyway. A run-loop timer still fires in the
+        // terminate-later loop when the main queue is blocked.
+        let deadline = Timer(timeInterval: 8, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.logger.error("native.terminate.deadline")
+                self?.finishTermination(sender)
+            }
+        }
+        RunLoop.main.add(deadline, forMode: .common)
+        terminationDeadline = deadline
         Task { @MainActor in
             await host.stop()
             self.host = nil
 #if FLUX_PERFORMANCE_TRACE
             self.finishPerformanceTrace()
 #endif
-            sender.reply(toApplicationShouldTerminate: true)
+            self.finishTermination(sender)
         }
         return .terminateLater
+    }
+
+    private func finishTermination(_ sender: NSApplication) {
+        guard !terminationReplied else { return }
+        terminationReplied = true
+        terminationDeadline?.invalidate(); terminationDeadline = nil
+        sender.reply(toApplicationShouldTerminate: true)
+    }
+
+    /// Terminate from the run loop, never from inside a main-queue job.
+    /// AppKit's terminate-later loop cannot drain the main queue while a
+    /// main-queue job, such as a main-actor Task, is still on the stack. The
+    /// updater quits from such a Task, and 0.22.0 and 0.22.1 hung there.
+    static func requestTermination() {
+        RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated { NSApp.terminate(nil) } }
     }
 
 #if FLUX_PERFORMANCE_TRACE

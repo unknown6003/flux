@@ -35,4 +35,12 @@ struct ReleaseManifestTests {
             }
         }
     }
+
+    @Test func versionedDiskImageIsPreferredAndMustMatchTheTag() throws {
+        let versioned = Self.release.replacingOccurrences(of: "Flux.dmg", with: "Flux-0.22.0.dmg")
+        #expect(try ReleaseManifest(data: Data(versioned.utf8)).downloadURL.lastPathComponent == "Flux-0.22.0.dmg")
+        #expect(throws: (any Error).self) {
+            try ReleaseManifest(data: Data(Self.release.replacingOccurrences(of: "Flux.dmg", with: "Flux-0.21.0.dmg").utf8))
+        }
+    }
 }

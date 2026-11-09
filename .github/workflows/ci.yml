@@ -342,7 +342,7 @@ jobs:
         run: |
           mkdir -p build
           git rev-parse HEAD > build/checked-source.txt
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION=0.22.1; fi
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION=0.22.2; fi
           echo "FLUX_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "FLUX_RELEASE_BUILD=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
           printf 'Checked source: `%s`, version %s\n' "$(cat build/checked-source.txt)" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
@@ -369,6 +369,9 @@ jobs:
         run: |
           python3 Scripts/rebuild/build_native_candidate.py --release "$FLUX_RELEASE_VERSION" --build-number "$FLUX_RELEASE_BUILD"
           cp build/native-release/Flux.dmg build/Flux.dmg
+      - name: Quit from a main-actor Task the way the updater does
+        timeout-minutes: 3
+        run: python3 Scripts/rebuild/probe_native_quit.py build/native-release/Flux.app
       - name: Hide and reveal real status items with the native app
         timeout-minutes: 6
         run: python3 Scripts/rebuild/probe_native_hiding.py build/native-release/Flux.app --output build/native-evidence/hiding
@@ -673,8 +676,11 @@ jobs:
           test "$(cat build/checked-source.txt)" = "$GITHUB_SHA"
           VERSION="${GITHUB_REF_NAME#v}"
           printf 'Release artifact source: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
-          gh release create "$GITHUB_REF_NAME" build/Flux.dmg --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --title "Flux $VERSION" --generate-notes
+          # 0.22.0 and 0.22.1 install only an asset named Flux.dmg and hang when
+          # their updater quits. A versioned name keeps them from trying.
+          cp build/Flux.dmg "build/Flux-$VERSION.dmg"
+          gh release create "$GITHUB_REF_NAME" "build/Flux-$VERSION.dmg" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --latest --title "Flux $VERSION" --generate-notes
 
   native-telemetry-idle:
     if: ${{ inputs.native_telemetry_idle_probe && !inputs.native_performance_trace }}

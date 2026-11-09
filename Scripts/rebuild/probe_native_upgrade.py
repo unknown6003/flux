@@ -29,12 +29,14 @@ def serve(dmg, version):
             pass
 
         def do_GET(self):
+            # Published releases name the image Flux-<version>.dmg (see ci.yml publish).
+            name = f"Flux-{version}.dmg"
             if self.path == "/latest":
                 body = json.dumps({"tag_name": "v" + version, "name": "Flux " + version,
                                    "html_url": "https://example.invalid/native", "draft": False,
-                                   "prerelease": False, "assets": [{"name": "Flux.dmg",
-                                   "browser_download_url": f"http://127.0.0.1:{self.server.server_port}/Flux.dmg"}]}).encode()
-            elif self.path == "/Flux.dmg":
+                                   "prerelease": False, "assets": [{"name": name,
+                                   "browser_download_url": f"http://127.0.0.1:{self.server.server_port}/{name}"}]}).encode()
+            elif self.path == "/" + name:
                 body = dmg.read_bytes()
             else:
                 self.send_error(404)
