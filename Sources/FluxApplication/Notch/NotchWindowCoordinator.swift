@@ -1,36 +1,31 @@
 import AppKit
 import FluxCore
 import FluxUI
+// Scoped: SwiftUI also declares `Widget`.
+import struct SwiftUI.AnyView
+import protocol SwiftUI.NSViewRepresentable
 
-/// Owns the one notch window: a borderless, nonactivating `NSPanel` that shows
-/// `CompactNotchController` (closed) or `NotchPanelController` (open).
+// Ported from Flux 0.21.35: Sources/Flux/Notch/NotchWindowController.swift.
+// Screen resolution, pass-through, hover and click slop, the collapsed hover
+// trigger, the context menu, swipes and file drags follow the old controller.
+// One change keeps idle cost at zero: there is no cursor poll timer. Hover
+// comes from the tracking areas and the mouse-moved monitors only, plus one
+// probe whenever the panel attaches or changes state.
+
+/// Owns the notch window on the built-in notched display: one fixed,
+/// transparent panel that hosts `NotchRootView`, and a tiny trigger window
+/// over the physical notch while collapsed.
 ///
-/// The parent owns `FeatureDemand`, `FeatureRuntime`, the activity queue,
-/// every service and the global shortcut. This type owns only the window, its
-/// two content controllers, hover tracking and one close-delay task.
-///
-/// Order it keeps:
-/// 1. Before a widget becomes visible: `willShowWidget(from, to)`, then
-///    `makeWidget(to)`. Only the selected widget is made.
-/// 2. Before a widget view goes: `willDismissWidget(widget)`. The parent
-///    applies `FeatureDemand` with no visible widget and stops the camera
-///    there, then calls `WidgetCoordinator.dismiss()`. The view is removed after.
-///
-/// There is no idle timer and no event monitor. Hover uses an `NSTrackingArea`
-/// on the window content. A close delay is one `Task.sleep`, cancelled on
-/// re-entry, collapse, lock, disable and stop.
-///
-/// File drags: the window is an AppKit drag destination for file URLs only.
-/// A file drag over the compact notch opens File Shelf without focus. If it
-/// leaves the window with no drop, only the panel that this drag opened
-/// closes. An open panel that shows another widget is never switched. The
-/// shelf root and the window never take the same drop: AppKit gives each
-/// drop to one destination, and both send it to the same shelf copy job.
+/// Widget order it keeps:
+/// 1. Before a widget is shown: `willShowWidget(from, to)`, then `makeWidget(to)`.
+/// 2. Before a widget goes: `willDismissWidget(widget)`, then its controller
+///    is released. The Duo Calendar pane follows `companionChanged`.
 @MainActor
 public final class NotchWindowCoordinator {
     public enum Presentation: Equatable, Sendable {
-        /// Not started, stopped, or the session is locked. No window is on screen.
+        /// Not started, stopped, locked, or no notched display.
         case hidden
+        /// The closed notch, with or without a live activity.
         case compact
         case expanded(Widget)
     }
@@ -39,598 +34,676 @@ public final class NotchWindowCoordinator {
         public var willShowWidget: @MainActor (_ from: Widget?, _ to: Widget) -> Void
         public var makeWidget: @MainActor (Widget) -> NSViewController
         public var willDismissWidget: @MainActor (Widget?) -> Void
-        /// `.cycle`, `.dismissActivity` and `.restoreActivity`. `.expand` is
-        /// handled here and is not forwarded.
+        /// `.cycle`, `.dismissActivity` and `.restoreActivity`.
         public var compactAction: @MainActor (CompactNotchAction) -> Void
-        /// Duo calendar pane: `.calendar` before `makeWidget(.calendar)` for
-        /// the pane, nil after the pane is removed. `willDismissWidget` still
-        /// runs once for the whole panel, before both views go.
+        /// `.calendar` before `makeWidget(.calendar)` for the Duo pane, nil
+        /// after the pane is released.
         public var companionChanged: @MainActor (Widget?) -> Void
-        /// True when the open File Shelf can take a drop now. Asked on each
-        /// drag move over the open panel outside the shelf root.
-        public var shelfDropReady: @MainActor () -> Bool
-        /// A drop on the open panel outside the shelf root. Return true only
-        /// if the shelf copy job took the files. Called once per drop.
+        /// A drop on the notch. Return true only if the shelf took the files.
         public var shelfDrop: @MainActor ([URL]) -> Bool
+        /// The menu a right-click on the physical notch shows.
+        public var contextMenu: @MainActor () -> NSMenu?
+        /// A tap on a live activity. Return true to claim it.
+        public var activityTap: @MainActor (ActivityKind) -> Bool
 
         public init(willShowWidget: @escaping @MainActor (_ from: Widget?, _ to: Widget) -> Void,
                     makeWidget: @escaping @MainActor (Widget) -> NSViewController,
                     willDismissWidget: @escaping @MainActor (Widget?) -> Void,
                     compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
                     companionChanged: @escaping @MainActor (Widget?) -> Void = { _ in },
-                    shelfDropReady: @escaping @MainActor () -> Bool = { false },
-                    shelfDrop: @escaping @MainActor ([URL]) -> Bool = { _ in false }) {
+                    shelfDrop: @escaping @MainActor ([URL]) -> Bool = { _ in false },
+                    contextMenu: @escaping @MainActor () -> NSMenu? = { nil },
+                    activityTap: @escaping @MainActor (ActivityKind) -> Bool = { _ in false }) {
             self.willShowWidget = willShowWidget
             self.makeWidget = makeWidget
             self.willDismissWidget = willDismissWidget
             self.compactAction = compactAction
             self.companionChanged = companionChanged
-            self.shelfDropReady = shelfDropReady
             self.shelfDrop = shelfDrop
+            self.contextMenu = contextMenu
+            self.activityTap = activityTap
         }
     }
 
-    /// The expanded panel never takes more than this share of the screen height.
-    public static let maximumHeightFraction: CGFloat = 0.8
     /// Hover close delay limits, in seconds.
     public static let closeDelayRange: ClosedRange<TimeInterval> = 0...10
+
+    // Slop values from 0.21.35.
+    static let dragSlop: CGFloat = 20
+    static let hoverSlopX: CGFloat = 24
+    static let clickSlopX: CGFloat = 16
+    static let hoverSlopBelow: CGFloat = 20
+    static let openHoverSlop: CGFloat = 4
+    static let screenRetryDelays: [TimeInterval] = [0.05, 0.20, 0.60, 1.20, 2.50, 5.00]
 
     public private(set) var presentation: Presentation = .hidden {
         didSet { if oldValue != presentation { onPresentationChange?(presentation) } }
     }
     public var onPresentationChange: (@MainActor (Presentation) -> Void)?
-    public private(set) var geometry: NotchGeometry?
+    public let viewModel = NotchViewModel()
     public private(set) var widgets: [Widget] = []
     public private(set) var isLocked = false
-    /// The parent's last `setDuo(_:)` value. Kept across collapse and reopen.
     public private(set) var isDuoRequested = false
-    /// The Duo calendar pane, while one is shown.
-    public var companion: Widget? { panel?.companion }
-    /// The parent's last `setShowInFullscreen(_:)` value. Default true.
     public private(set) var showsInFullscreen = true
-    /// The `draggingSequenceNumber` of the file drag that opened File Shelf
-    /// from the compact notch. Nil when no open drag owns the panel.
-    public private(set) var dragOpenedSession: Int?
+    /// The Duo Calendar pane, while one is shown.
+    public private(set) var companion: Widget?
+    /// The physical notch in screen coordinates, while presenting.
+    public private(set) var physicalNotchRect: CGRect = .null
+    public private(set) var isPresenting = false
 
     private let callbacks: Callbacks
-    private var window: NotchWindow?
-    private var compact: CompactNotchController?
-    private var panel: NotchPanelController?
-    private var panelWidth: NSLayoutConstraint?
-    private var compactState: (activity: ActivityItem?, artwork: NSImage?, count: Int, restorable: Int) = (nil, nil, 0, 0)
-    private var lastWidget: Widget?
+    private let resolveNotch: @MainActor () -> (screen: NSScreen, notch: CGRect)?
     private var started = false
-    private var collapsing = false
-    private var openedWithFocus = false
-
-    private var hoverEnabled = false
-    private var closeDelay: TimeInterval = 0.5
-    private let tracker = NotchHoverTracker()
-    private var trackingArea: NSTrackingArea?
-    private weak var trackedView: NSView?
-    private var closeTask: Task<Void, Never>?
-    private var pendingTask: Task<Void, Never>?
-    private var refitTask: Task<Void, Never>?
-
-    public init(callbacks: Callbacks) {
-        self.callbacks = callbacks
-        tracker.onEnter = { [weak self] in self?.pointerEntered() }
-        tracker.onExit = { [weak self] in self?.pointerExited() }
+    private var window: NotchWindow?
+    private var hostingView: NotchHostingView?
+    private var hoverPanel: NotchHoverPanel?
+    private var appearance: NSAppearance? = NSAppearance(named: .darkAqua)
+    private var primaryWidget: Widget?
+    private var primaryController: NSViewController?
+    private var companionController: NSViewController?
+    private var observers: [NSObjectProtocol] = []
+    private var screenTask: Task<Void, Never>?
+    private var resampleTask: Task<Void, Never>?
+    private var dragSessionEntered = false
+    private var isShowingMenu = false {
+        didSet { viewModel.suppressHover = isShowingMenu }
     }
 
-    // MARK: Geometry
+    private var globalMoveMonitor: Any?
+    private var localMoveMonitor: Any?
+    private var globalRightClickMonitor: Any?
+    private var localRightClickMonitor: Any?
+    private var globalClickMonitor: Any?
+    private var localClickMonitor: Any?
+    private var pointerMonitorsInstalled = false
+    private var collapsedClickMonitorsInstalled = false
 
-    /// Geometry for `screen` from its current notch areas. A display without
-    /// a notch gets `cameraWidth` 0 and the menu bar height as `topInset`.
+    /// `resolveNotch` finds the display and its notch. The default is the
+    /// built-in notched display, as in 0.21.35. Tests pass a fixed rect.
+    public init(callbacks: Callbacks,
+                resolveNotch: (@MainActor () -> (screen: NSScreen, notch: CGRect)?)? = nil) {
+        self.callbacks = callbacks
+        self.resolveNotch = resolveNotch ?? {
+            guard let screen = NSScreen.builtInNotchedScreen, let rect = screen.physicalNotchRect else { return nil }
+            return (screen, rect)
+        }
+        viewModel.onPresent = { [weak self] from, to in self?.present(from: from, to: to) }
+        viewModel.onDismiss = { [weak self] widget in self?.dismiss(widget) }
+        viewModel.onStateChange = { [weak self] state in self?.stateChanged(state) }
+        viewModel.onCycleActivity = { [weak self] in self?.callbacks.compactAction(.cycle) }
+        viewModel.onDismissActivity = { [weak self] in self?.callbacks.compactAction(.dismissActivity) }
+        viewModel.onRestoreActivity = { [weak self] in self?.callbacks.compactAction(.restoreActivity) }
+        viewModel.onActivityTap = { [weak self] kind in self?.callbacks.activityTap(kind) ?? false }
+        viewModel.widgetContent = { [weak self] widget in self?.content(for: widget) }
+    }
+
+    /// Geometry for `screen` from its notch areas, for the lock screen and
+    /// fixtures. A display without a notch gets `cameraWidth` 0.
     public static func geometry(for screen: NSScreen) -> NotchGeometry {
         let menuBar = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
-        let left = screen.auxiliaryTopLeftArea
-        let right = screen.auxiliaryTopRightArea
-        guard let left, let right, !left.isEmpty, !right.isEmpty else {
+        guard let notch = screen.physicalNotchRect else {
             return NotchGeometry(screenFrame: screen.frame, cameraWidth: 0, topInset: menuBar)
         }
-        // The areas may be screen-relative or global. Their gap is the same.
-        let inset = max(left.height, right.height, screen.safeAreaInsets.top)
-        return NotchGeometry(screenFrame: screen.frame, cameraWidth: max(0, right.minX - left.maxX), topInset: inset)
+        return NotchGeometry(screenFrame: screen.frame, cameraWidth: notch.width, topInset: notch.height)
     }
 
     // MARK: Lifecycle
 
-    /// Shows the compact notch on `screen`. Calling it again moves to a new screen.
-    public func start(screen: NSScreen, widgets: [Widget]) {
-        started = true
+    /// Turns the notch on with the enabled widgets in saved order. Calling it
+    /// again updates the widgets and re-resolves the display.
+    public func start(widgets: [Widget]) {
         setWidgets(widgets)
-        update(screen: screen)
-        if !isLocked, presentation == .hidden { showCompact() }
+        guard !started else { resolveScreen(); return }
+        started = true
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.screenParametersChanged() }
+            },
+            center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleScreenRetries() }
+            },
+        ]
+        resolveScreen()
+        scheduleScreenRetries()
     }
 
-    /// Dismisses any widget through `willDismissWidget`, closes the window and
-    /// releases both controllers. Hover and the close task stop.
+    /// Turns the notch off. An open widget is dismissed first, then both
+    /// windows are released.
     public func stop() {
+        guard started else { return }
         started = false
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        screenTask?.cancel(); screenTask = nil
         tearDown()
-        geometry = nil
     }
 
-    /// New display or changed notch areas. An open panel collapses first, so
-    /// the old widget and camera go before the window moves.
-    public func update(screen: NSScreen) {
-        let next = Self.geometry(for: screen)
-        guard next != geometry else { return }
-        if case .expanded = presentation { collapse() }
-        geometry = next
-        if presentation == .compact { renderCompact() }
-    }
-
-    /// The parent's lock and unlock events. Locking hides the window and stops hover work.
+    /// Locking hides the notch and dismisses any widget.
     public func setSessionLocked(_ locked: Bool) {
         guard locked != isLocked else { return }
         isLocked = locked
-        if locked { tearDown() } else if started { showCompact() }
+        if locked { tearDown() } else if started { resolveScreen() }
     }
 
-    /// Enabled widgets in saved order. An open panel updates its tabs. If the
-    /// shown widget goes, the panel shows the first one left, or collapses.
     public func setWidgets(_ newWidgets: [Widget]) {
-        widgets = Self.unique(newWidgets)
-        if let lastWidget, !widgets.contains(lastWidget) { self.lastWidget = nil }
-        if !widgets.contains(.shelf) { dragOpenedSession = nil }
-        panel?.setWidgets(widgets)
+        var seen = Set<Widget>()
+        widgets = newWidgets.filter { seen.insert($0).inserted }
+        viewModel.setWidgets(widgets)
+        syncCompanion()
     }
 
-    /// The current activity from `ActivityQueue`. Parent data only.
     public func updateActivity(_ activity: ActivityItem?, artwork: NSImage?, queueCount: Int, restorableCount: Int) {
-        compactState = (activity, artwork, queueCount, restorableCount)
-        if presentation == .compact { renderCompact() }
+        viewModel.setActivity(activity, artwork: artwork)
     }
 
-    /// Duo view on or off. The parent sends true only when the saved Duo
-    /// switch is on, Calendar access is allowed, the Calendar widget is
-    /// enabled and the agenda has a relevant event. It shows only while
-    /// Now Playing is open. The window refits once on the next turn.
+    /// Duo view: Now Playing beside Calendar. The parent sends true only when
+    /// the saved switch is on, Calendar access is allowed, the widget is
+    /// enabled and the agenda has a relevant event.
     public func setDuo(_ requested: Bool) {
         guard requested != isDuoRequested else { return }
         isDuoRequested = requested
-        panel?.setDuo(requested)
+        viewModel.duoActive = requested
+        syncCompanion()
     }
 
-    /// Late content: call after you send a widget new state that can change
-    /// its height, for example Calendar `.loading` to `.events`, Now Playing
-    /// `.loading` to `.playing`, or a File Shelf item list. It does nothing
-    /// unless `widget` is shown, as the open tab or the Duo pane. Calls in
-    /// one main-actor turn give one refit on the next turn. No timer, no poll.
-    public func contentDidChange(_ widget: Widget) {
-        guard case .expanded(let open) = presentation, panel != nil,
-              open == widget || companion == widget else { return }
-        scheduleRefit()
-    }
+    /// Every widget shares one fixed footprint, so late content needs no refit.
+    public func contentDidChange(_ widget: Widget) {}
 
-    /// Saved `Preferences.showInFullscreen`. True keeps `.fullScreenAuxiliary`,
-    /// so the notch shows over full-screen apps. False removes it, as the
-    /// old app did. AppKit then keeps the window out of full-screen Spaces,
-    /// and opens, hover and drags are refused while the window is not on the
-    /// active Space. An open panel collapses when the option turns off.
     public func setShowInFullscreen(_ show: Bool) {
-        guard show != showsInFullscreen else { return }
         showsInFullscreen = show
         window?.setShowInFullscreen(show)
-        if !show { collapse() }
+        hoverPanel?.setShowInFullscreen(show)
     }
 
-    /// Hover open and close. `closeDelay` is clamped to `closeDelayRange`.
     public func setHover(enabled: Bool, closeDelay: TimeInterval) {
-        self.closeDelay = closeDelay.isFinite
-            ? min(max(closeDelay, Self.closeDelayRange.lowerBound), Self.closeDelayRange.upperBound) : 0.5
-        guard enabled != hoverEnabled else { return }
-        hoverEnabled = enabled
-        if enabled { trackContent() } else { untrack() }
+        viewModel.expansionTrigger = enabled ? .hover : .click
+        viewModel.hoverCloseDelay = closeDelay.isFinite
+            ? min(max(closeDelay, Self.closeDelayRange.lowerBound), Self.closeDelayRange.upperBound) : 0.4
+    }
+
+    public func setAppearance(_ value: Appearance) {
+        switch value {
+        case .dark: appearance = NSAppearance(named: .darkAqua)
+        case .light: appearance = NSAppearance(named: .aqua)
+        case .system: appearance = nil
+        }
+        window?.appearance = appearance
+        hostingView?.appearance = appearance
     }
 
     // MARK: Open and close
 
-    /// Opens a widget. `focus: true` is for a keyboard shortcut or a menu
-    /// command only: the window becomes key without activating the app.
-    /// Background and hover opens never take focus.
-    public func expand(_ widget: Widget? = nil, focus: Bool) {
-        guard started, !isLocked, let geometry, let window, isOnShownSpace else { return }
-        guard let target = widget.flatMap({ widgets.contains($0) ? $0 : nil })
-                ?? lastWidget.flatMap({ widgets.contains($0) ? $0 : nil }) ?? widgets.first else { return }
-        cancelClose()
-        openedWithFocus = openedWithFocus || focus
-        if let panel, case .expanded = presentation {
-            panel.show(target)
-        } else {
-            let controller = NotchPanelController(widgets: widgets, geometry: geometry) { [weak self] widget in
-                guard let self else { return NSViewController() }
-                let content = self.callbacks.makeWidget(widget)
-                (content as? FileShelfWidgetController)?.onDragSession = { [weak self, weak content] event in
-                    guard let self, let content, self.started, !self.isLocked,
-                          let window = self.window, self.panel?.current == .shelf,
-                          content.isViewLoaded, content.view.window === window else { return }
-                    self.shelfDragEvent(event)
-                }
-                return content
-            }
-            controller.onWillSwitch = { [weak self] from, to in self?.panelWillSwitch(from: from, to: to) }
-            controller.onWillDismiss = { [weak self] widget in self?.panelWillDismiss(widget) }
-            controller.onCompanionChange = { [weak self] widget in self?.callbacks.companionChanged(widget) }
-            controller.onLayoutChange = { [weak self] in self?.scheduleRefit() }
-            controller.setDuo(isDuoRequested)
-            panel = controller
-            let width = controller.view.widthAnchor.constraint(equalToConstant: geometry.expandedRect(contentHeight: 0).width)
-            width.isActive = true
-            panelWidth = width
-            presentation = .expanded(target)
-            // Show the target before the view enters the window. Otherwise
-            // `viewDidAppear` would make the first widget, then switch.
-            controller.show(target)
-            window.contentViewController = controller
-            trackContent()
-        }
-        presentation = .expanded(target)
-        resizeExpanded()
-        if focus { window.makeKeyAndOrderFront(nil) } else { window.orderFrontRegardless() }
+    /// Opens a widget, or the last used one. Nothing happens while the notch
+    /// is not presenting.
+    public func expand(_ widget: Widget? = nil, focus: Bool = false) {
+        guard isPresenting else { return }
+        viewModel.expand(widget)
     }
 
-    /// Keyboard shortcut toggle. Opens with focus, or collapses.
+    /// The notch shortcut: the same toggle as a click.
     public func toggle() {
-        if case .expanded = presentation { collapse() } else { expand(focus: true) }
+        guard isPresenting else { return }
+        viewModel.hotkeyToggled()
     }
 
-    /// Back to the compact notch. The widget is dismissed before its view goes.
     public func collapse() {
-        cancelClose()
-        guard case .expanded = presentation else { return }
-        dismissPanel()
-        showCompact()
+        guard isPresenting else { return }
+        viewModel.collapse()
     }
 
-    // MARK: Private
+    // MARK: Widget lifetime
 
-    private func showCompact() {
-        guard started, !isLocked, geometry != nil else { return }
-        let window = self.window ?? makeWindow()
-        presentation = .compact
-        openedWithFocus = false
-        dragOpenedSession = nil
-        renderCompact()
-        if window.contentViewController !== compact { window.contentViewController = compact }
-        trackContent()
-        layoutCompact()
-        window.orderFrontRegardless()
-    }
-
-    private func renderCompact() {
-        guard let geometry else { return }
-        let state = CompactNotchState(geometry: geometry, currentActivity: compactState.activity, artwork: compactState.artwork,
-                                      queueCount: compactState.count, restorableCount: compactState.restorable)
-        if let compact {
-            compact.update(state)
-        } else {
-            compact = CompactNotchController(state: state) { [weak self] in self?.compactAction($0) }
-        }
-        if presentation == .compact, window?.contentViewController === compact { layoutCompact() }
-    }
-
-    private func layoutCompact() {
-        guard let geometry, let compact, let window else { return }
-        let size = compact.preferredSize
-        let frame = NSRect(x: geometry.screenFrame.midX - size.width / 2, y: geometry.screenFrame.maxY - size.height,
-                           width: size.width, height: size.height)
-        if window.frame != frame { window.setFrame(frame, display: true) }
-    }
-
-    private func resizeExpanded() {
-        guard let geometry, let panel, let window else { return }
-        let width = geometry.expandedRect(contentHeight: 0).width
-        let limit = max(geometry.topInset, geometry.screenFrame.height * Self.maximumHeightFraction)
-        panelWidth?.constant = width
-        // The panel scrolls widget content past this cap, so its required
-        // constraints never ask AppKit for a taller window than `limit`.
-        panel.maximumHeight = limit
-        panel.view.layoutSubtreeIfNeeded()
-        let fitting = panel.view.fittingSize.height
-        let content = min(max(fitting.isFinite ? fitting : 0, geometry.topInset), limit) - geometry.topInset
-        let frame = geometry.expandedRect(contentHeight: content)
-        if window.frame != frame { window.setFrame(frame, display: true) }
-    }
-
-    private func compactAction(_ action: CompactNotchAction) {
-        switch action {
-        case .expand:
-            let keyboard = NSApp.currentEvent.map { $0.type == .keyDown } ?? false
-            expand(focus: keyboard)
-        case .cycle, .dismissActivity, .restoreActivity:
-            callbacks.compactAction(action)
-        }
-    }
-
-    private func panelWillSwitch(from: Widget?, to: Widget) {
+    private func present(from: Widget?, to: Widget) {
+        if companion != nil, to != .nowPlaying { releaseCompanion() }
         callbacks.willShowWidget(from, to)
-        if to != .shelf { dragOpenedSession = nil }
-        lastWidget = to
-        presentation = .expanded(to)
-        // A tab click switches after this returns. Fit once, on the next turn.
-        scheduleRefit()
+        primaryController = nil
+        primaryWidget = to
+        primaryController = callbacks.makeWidget(to)
+        syncCompanion()
     }
 
-    private func panelWillDismiss(_ widget: Widget?) {
+    private func dismiss(_ widget: Widget) {
         callbacks.willDismissWidget(widget)
-        guard !collapsing else { return }
-        // Escape or an empty widget list closed the panel from inside.
-        schedule { coordinator in
-            guard case .expanded = coordinator.presentation else { return }
-            coordinator.releasePanel()
-            coordinator.showCompact()
+        primaryController = nil
+        primaryWidget = nil
+        releaseCompanion()
+    }
+
+    private func syncCompanion() {
+        let wanted = primaryWidget == .nowPlaying && isDuoRequested && widgets.contains(.calendar)
+        if wanted, companion == nil {
+            companion = .calendar
+            callbacks.companionChanged(.calendar)
+            companionController = callbacks.makeWidget(.calendar)
+        } else if !wanted, companion != nil {
+            releaseCompanion()
         }
     }
 
-    /// Dismisses the widget through the panel, then drops the panel.
-    private func dismissPanel() {
-        guard let panel else { return }
-        collapsing = true
-        panel.dismiss()
-        collapsing = false
-        releasePanel()
+    private func releaseCompanion() {
+        guard companion != nil else { return }
+        companionController = nil
+        companion = nil
+        callbacks.companionChanged(nil)
     }
 
-    private func releasePanel() {
-        pendingTask?.cancel(); pendingTask = nil
-        refitTask?.cancel(); refitTask = nil
-        panelWidth = nil
-        if let window, window.contentViewController === panel { window.contentViewController = nil }
-        panel = nil
-        if case .expanded = presentation { presentation = .hidden }
+    private func content(for widget: Widget) -> AnyView? {
+        let controller: NSViewController?
+        if widget == primaryWidget { controller = primaryController }
+        else if widget == companion { controller = companionController }
+        else { controller = nil }
+        guard let controller else { return nil }
+        if let provider = controller as? NotchContentProviding { return provider.notchContent() }
+        return AnyView(NotchControllerView(controller: controller))
+    }
+
+    // MARK: Screen
+
+    private func screenParametersChanged() {
+        guard started else { return }
+        resolveScreen()
+        scheduleScreenRetries()
+    }
+
+    /// AppKit can post the screen notification before the notch areas settle,
+    /// so discovery retries a few times over about ten seconds.
+    private func scheduleScreenRetries() {
+        screenTask?.cancel()
+        guard started else { return }
+        screenTask = Task { @MainActor [weak self] in
+            for delay in Self.screenRetryDelays {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self, self.started else { return }
+                self.resolveScreen()
+                if self.isPresenting { return }
+            }
+        }
+    }
+
+    private func resolveScreen() {
+        guard started, !isLocked, let (screen, notchRect) = resolveNotch() else {
+            if started, !isLocked, isPresenting { losePresentation() }
+            return
+        }
+        physicalNotchRect = notchRect
+        let window = window ?? makeWindow()
+        let bounds = NotchMetrics.panelBounds(for: notchRect.width)
+        let frame = NSRect(x: notchRect.midX - bounds.width / 2, y: screen.frame.maxY - bounds.height,
+                           width: bounds.width, height: bounds.height)
+        window.setFrame(frame, display: true)
+        hostingView?.rootView = makeRootView(notchRect: notchRect, panelFrame: window.frame)
+        window.orderFrontRegardless()
+        isPresenting = true
+        updatePresentation()
+        updatePassThrough(for: viewModel.state)
+        if case .collapsed = viewModel.state { refreshHover() }
+    }
+
+    /// The notch's display went away: collapse and order out, keep the windows.
+    private func losePresentation() {
+        isPresenting = false
+        physicalNotchRect = .null
+        removePointerMonitors()
+        removeCollapsedClickMonitors()
+        hoverPanel?.orderOut(nil)
+        window?.orderOut(nil)
+        viewModel.forceCollapse()
+        updatePresentation()
     }
 
     private func tearDown() {
-        cancelClose()
-        untrack()
-        if case .expanded = presentation { dismissPanel() }
-        pendingTask?.cancel(); pendingTask = nil
-        refitTask?.cancel(); refitTask = nil
+        isPresenting = false
+        removePointerMonitors()
+        removeCollapsedClickMonitors()
+        resampleTask?.cancel(); resampleTask = nil
+        viewModel.forceCollapse()
+        hoverPanel?.orderOut(nil)
+        hoverPanel = nil
         window?.orderOut(nil)
-        window?.contentViewController = nil
+        window?.contentView = nil
         window = nil
-        compact = nil
-        presentation = .hidden
-        openedWithFocus = false
-        dragOpenedSession = nil
+        hostingView = nil
+        physicalNotchRect = .null
+        dragSessionEntered = false
+        updatePresentation()
     }
 
     private func makeWindow() -> NotchWindow {
-        let window = NotchWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        window.applyNotchStyle()
+        let window = NotchWindow(viewModel: viewModel)
+        window.appearance = appearance
         window.setShowInFullscreen(showsInFullscreen)
-        window.onDragUpdate = { [weak self, weak window] info in
-            guard let self, let window, self.window === window else { return [] }
-            return self.dragUpdated(info, in: window)
-        }
-        window.onDragExit = { [weak self, weak window] info in
-            guard let self, let window, self.window === window else { return }
-            self.dragExited(session: info?.draggingSequenceNumber, location: info?.draggingLocation)
-        }
-        window.onDragPerform = { [weak self, weak window] info in
-            guard let self, let window, self.window === window else { return false }
-            return self.dragPerformed(info, in: window)
-        }
-        window.onDragEnd = { [weak self, weak window] info in
-            guard let self, let window, self.window === window else { return }
-            self.dragEnded(session: info.draggingSequenceNumber)
-        }
+        let hosting = NotchHostingView(viewModel: viewModel, rootView: makeRootView(notchRect: .zero, panelFrame: .zero))
+        hosting.appearance = appearance
+        window.contentView = hosting
+        hostingView = hosting
+        window.onDraggingMoved = { [weak self] location in self?.draggingUpdated(at: location) ?? [] }
+        window.onDraggingExited = { [weak self] in self?.draggingExited() }
+        window.onPerformDragOperation = { [weak self] pasteboard in self?.performDrag(pasteboard) ?? false }
         self.window = window
         return window
     }
 
-    /// False only when fullscreen showing is off and AppKit reports the
-    /// window off the active Space. With the option on, AppKit may report a
-    /// visible `.fullScreenAuxiliary` window as off the active Space, so the
-    /// flag is read only for the opt-out path, as the old app did.
-    private var isOnShownSpace: Bool {
-        guard let window else { return false }
-        return showsInFullscreen || window.isOnActiveSpace
+    private func makeRootView(notchRect: CGRect, panelFrame: CGRect) -> AnyView {
+        let collapsed = NotchMetrics.collapsedFrame(notchRect: notchRect, panelFrame: panelFrame)
+        return AnyView(NotchRootView(viewModel: viewModel, notchSize: notchRect.size,
+                                     collapsedFrame: collapsed.width > 0 ? collapsed : nil))
     }
 
-    // MARK: File drag
-
-    private static let fileURLsOnly: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-
-    /// A user drag of file URLs from outside this window, while the notch is shown.
-    private func isEligibleDrag(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
-        guard started, !isLocked, isOnShownSpace, widgets.contains(.shelf),
-              info.draggingSourceOperationMask.contains(.copy) else { return false }
-        if let source = info.draggingSource as? NSView, source.window === window { return false }
-        if let source = info.draggingSource as? NSWindow, source === window { return false }
-        // Checks the types only. It reads no file and no image.
-        return info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: Self.fileURLsOnly)
+    private func stateChanged(_ state: NotchState) {
+        updatePresentation()
+        updatePassThrough(for: state)
     }
 
-    private func dragUpdated(_ info: any NSDraggingInfo, in window: NotchWindow) -> NSDragOperation {
-        guard isEligibleDrag(info, in: window) else { return [] }
-        switch presentation {
-        case .compact:
-            dragOpenedSession = info.draggingSequenceNumber
-            expand(.shelf, focus: false)
-            guard presentation == .expanded(.shelf) else { dragOpenedSession = nil; return [] }
-            // The shelf may still be loading. The drop checks it again.
-            return .copy
+    private func updatePresentation() {
+        guard isPresenting else { presentation = .hidden; return }
+        switch viewModel.state {
+        case .collapsed, .activity: presentation = .compact
+        case .expanded(let widget): presentation = .expanded(widget)
+        }
+    }
+
+    // MARK: Pass-through and hover
+
+    private func updatePassThrough(for state: NotchState) {
+        guard let window, isPresenting else {
+            removePointerMonitors()
+            removeCollapsedClickMonitors()
+            hoverPanel?.orderOut(nil)
+            return
+        }
+        installPointerMonitors()
+        let wasIgnoring = window.ignoresMouseEvents
+        window.ignoresMouseEvents = Self.shouldIgnoreMouseEvents(
+            state: state, pointInsideVisibleShape: pointerInsideVisibleShape(for: state, at: NSEvent.mouseLocation))
+        switch state {
+        case .collapsed: installCollapsedClickMonitors()
+        case .activity, .expanded: removeCollapsedClickMonitors()
+        }
+        syncHoverPanel(for: state)
+        if wasIgnoring != window.ignoresMouseEvents { window.resetGestureState() }
+        if case .collapsed = state { return }
+        // Re-sample once on the next turn, so a panel opened under a pointer
+        // that is already outside its new shape still closes.
+        resampleTask?.cancel()
+        resampleTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, self.isPresenting else { return }
+            self.resampleTask = nil
+            self.handleMonitoredMove(at: NSEvent.mouseLocation)
+        }
+    }
+
+    private func syncHoverPanel(for state: NotchState) {
+        guard Self.shouldShowCollapsedHoverPanel(state: state, isPresenting: isPresenting),
+              !physicalNotchRect.isNull else {
+            hoverPanel?.orderOut(nil)
+            return
+        }
+        let panel = hoverPanel ?? makeHoverPanel()
+        let rect = Self.collapsedHoverPanelRect(notchRect: physicalNotchRect)
+        guard !rect.isNull else { panel.orderOut(nil); return }
+        panel.setFrame(rect, display: true)
+        panel.orderFrontRegardless()
+    }
+
+    private func makeHoverPanel() -> NotchHoverPanel {
+        let panel = NotchHoverPanel(
+            onMove: { [weak self] location in self?.handleMonitoredMove(at: location) },
+            onClick: { [weak self] location, flags in
+                self?.handleHoverPanelClick(at: location, optionDown: flags.contains(.option))
+            })
+        panel.setShowInFullscreen(showsInFullscreen)
+        hoverPanel = panel
+        return panel
+    }
+
+    private func installPointerMonitors() {
+        guard !pointerMonitorsInstalled else { return }
+        pointerMonitorsInstalled = true
+        globalMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in self?.handleMonitoredMove(at: location) }
+        }
+        localMoveMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleMonitoredMove(at: NSEvent.mouseLocation) }
+            return event
+        }
+        globalRightClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .rightMouseDown) { [weak self] _ in
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in self?.handleRightClick(at: location) }
+        }
+        localRightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleRightClick(at: NSEvent.mouseLocation) }
+            return event
+        }
+    }
+
+    private func removePointerMonitors() {
+        let monitors = [globalMoveMonitor, localMoveMonitor, globalRightClickMonitor, localRightClickMonitor].compactMap { $0 }
+        if !monitors.isEmpty {
+            nonisolated(unsafe) let pending = monitors
+            DispatchQueue.main.async { pending.forEach { NSEvent.removeMonitor($0) } }
+        }
+        globalMoveMonitor = nil; localMoveMonitor = nil
+        globalRightClickMonitor = nil; localRightClickMonitor = nil
+        pointerMonitorsInstalled = false
+        viewModel.resetHoverState()
+    }
+
+    private func installCollapsedClickMonitors() {
+        guard !collapsedClickMonitorsInstalled else { return }
+        collapsedClickMonitorsInstalled = true
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            let location = NSEvent.mouseLocation
+            let optionDown = event.modifierFlags.contains(.option)
+            Task { @MainActor in self?.handleMonitoredClick(at: location, optionDown: optionDown) }
+        }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            let optionDown = event.modifierFlags.contains(.option)
+            MainActor.assumeIsolated { self?.handleMonitoredClick(at: NSEvent.mouseLocation, optionDown: optionDown) }
+            return event
+        }
+    }
+
+    /// Removal waits one turn: the local monitor can be on the stack here.
+    private func removeCollapsedClickMonitors() {
+        let monitors = [globalClickMonitor, localClickMonitor].compactMap { $0 }
+        globalClickMonitor = nil; localClickMonitor = nil
+        collapsedClickMonitorsInstalled = false
+        guard !monitors.isEmpty else { return }
+        nonisolated(unsafe) let pending = monitors
+        DispatchQueue.main.async { pending.forEach { NSEvent.removeMonitor($0) } }
+    }
+
+    // MARK: Geometry rules (0.21.35, pure)
+
+    static func collapsedHoverRect(notchRect rect: CGRect) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return .null }
+        return CGRect(x: rect.minX - hoverSlopX, y: rect.minY - hoverSlopBelow,
+                      width: rect.width + hoverSlopX * 2, height: rect.height + hoverSlopBelow)
+    }
+
+    static func collapsedClickRect(notchRect rect: CGRect) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return .null }
+        return CGRect(x: rect.minX - clickSlopX, y: rect.minY, width: rect.width + clickSlopX * 2, height: rect.height)
+    }
+
+    static func collapsedHoverPanelRect(notchRect rect: CGRect) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return .null }
+        return rect
+    }
+
+    static func collapsedHoverPanelOwnsClick(notchRect rect: CGRect, point: CGPoint, isVisible: Bool) -> Bool {
+        guard isVisible else { return false }
+        return collapsedHoverPanelRect(notchRect: rect).contains(point)
+    }
+
+    static func shouldShowCollapsedHoverPanel(state: NotchState, isPresenting: Bool) -> Bool {
+        guard isPresenting else { return false }
+        if case .collapsed = state { return true }
+        return false
+    }
+
+    static func shouldAcceptMonitoredInput(isPresenting: Bool, mainWindowVisible: Bool, triggerWindowVisible: Bool,
+                                           showInFullscreen: Bool, mainWindowOnActiveSpace: Bool,
+                                           triggerWindowOnActiveSpace: Bool) -> Bool {
+        guard isPresenting, mainWindowVisible || triggerWindowVisible else { return false }
+        if showInFullscreen { return true }
+        return (mainWindowVisible && mainWindowOnActiveSpace) || (triggerWindowVisible && triggerWindowOnActiveSpace)
+    }
+
+    static func openHoverRect(interactiveRect rect: CGRect) -> CGRect {
+        guard rect.width > 0, rect.height > 0 else { return .null }
+        return rect.insetBy(dx: -openHoverSlop, dy: -openHoverSlop)
+    }
+
+    static func shouldIgnoreMouseEvents(state: NotchState, pointInsideVisibleShape: Bool) -> Bool {
+        switch state {
+        case .collapsed: return true
+        case .activity, .expanded: return !pointInsideVisibleShape
+        }
+    }
+
+    static func shouldAcceptDrag(state: NotchState, pointInNotch: Bool, shelfEnabled: Bool) -> Bool {
+        switch state {
+        case .collapsed: return shelfEnabled && pointInNotch
+        case .expanded(.shelf): return pointInNotch
+        default: return false
+        }
+    }
+
+    /// Screen point to the panel's top-left space, where `interactiveRect` lives.
+    private func notchSpacePoint(_ screenPoint: NSPoint) -> NSPoint? {
+        guard let window else { return nil }
+        return NSPoint(x: screenPoint.x - window.frame.minX, y: window.frame.maxY - screenPoint.y)
+    }
+
+    private func isHovering(screenPoint: NSPoint) -> Bool {
+        switch viewModel.state {
+        case .collapsed:
+            return Self.collapsedHoverRect(notchRect: physicalNotchRect).contains(screenPoint)
+        case .activity, .expanded:
+            guard let local = notchSpacePoint(screenPoint) else { return false }
+            return Self.openHoverRect(interactiveRect: viewModel.interactiveRect).contains(local)
+        }
+    }
+
+    private func pointerInsideVisibleShape(for state: NotchState, at screenPoint: NSPoint) -> Bool {
+        switch state {
+        case .collapsed: return false
+        case .activity, .expanded:
+            guard let local = notchSpacePoint(screenPoint) else { return false }
+            return viewModel.interactiveRect.contains(local)
+        }
+    }
+
+    private func updateMouseCapture(at location: NSPoint) {
+        guard let window, isPresenting else { return }
+        let shouldIgnore = Self.shouldIgnoreMouseEvents(
+            state: viewModel.state, pointInsideVisibleShape: pointerInsideVisibleShape(for: viewModel.state, at: location))
+        guard window.ignoresMouseEvents != shouldIgnore else { return }
+        window.ignoresMouseEvents = shouldIgnore
+        window.resetGestureState()
+    }
+
+    private var isOverlayVisible: Bool {
+        Self.shouldAcceptMonitoredInput(
+            isPresenting: isPresenting,
+            mainWindowVisible: window?.isVisible == true,
+            triggerWindowVisible: hoverPanel?.isVisible == true,
+            showInFullscreen: showsInFullscreen,
+            mainWindowOnActiveSpace: window?.isOnActiveSpace == true,
+            triggerWindowOnActiveSpace: hoverPanel?.isOnActiveSpace == true)
+    }
+
+    private func handleMonitoredMove(at location: NSPoint) {
+        guard isPresenting, isOverlayVisible, !isShowingMenu else { return }
+        updateMouseCapture(at: location)
+        viewModel.hoverChanged(inside: isHovering(screenPoint: location))
+    }
+
+    private func refreshHover() {
+        guard isPresenting, isOverlayVisible else { return }
+        let location = NSEvent.mouseLocation
+        updateMouseCapture(at: location)
+        viewModel.resyncHover(inside: isHovering(screenPoint: location))
+    }
+
+    private func handleMonitoredClick(at location: NSPoint, optionDown: Bool) {
+        guard isPresenting, isOverlayVisible, !isShowingMenu, case .collapsed = viewModel.state,
+              Self.collapsedClickRect(notchRect: physicalNotchRect).contains(location) else { return }
+        guard !Self.collapsedHoverPanelOwnsClick(notchRect: physicalNotchRect, point: location,
+                                                 isVisible: hoverPanel?.isVisible == true) else { return }
+        viewModel.clicked(optionDown: optionDown)
+    }
+
+    private func handleHoverPanelClick(at location: NSPoint, optionDown: Bool) {
+        guard isPresenting, isOverlayVisible, !isShowingMenu, case .collapsed = viewModel.state,
+              Self.collapsedHoverPanelOwnsClick(notchRect: physicalNotchRect, point: location, isVisible: true) else { return }
+        viewModel.clicked(optionDown: optionDown)
+    }
+
+    /// A right-click on the physical notch, in any state, shows the app menu.
+    private func handleRightClick(at location: NSPoint) {
+        guard isPresenting, isOverlayVisible, !isShowingMenu,
+              Self.collapsedHoverPanelRect(notchRect: physicalNotchRect).contains(location),
+              let menu = callbacks.contextMenu() else { return }
+        isShowingMenu = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                menu.popUp(positioning: nil, at: location, in: nil)
+                guard let self else { return }
+                self.isShowingMenu = false
+                self.refreshHover()
+            }
+        }
+    }
+
+    // MARK: File drags
+
+    private func draggingUpdated(at windowLocation: NSPoint) -> NSDragOperation {
+        guard let window, isPresenting else { return [] }
+        let local = NSPoint(x: windowLocation.x, y: window.frame.height - windowLocation.y)
+        let pointInNotch: Bool
+        switch viewModel.state {
+        case .collapsed:
+            pointInNotch = viewModel.interactiveRect.insetBy(dx: -Self.dragSlop, dy: -Self.dragSlop).contains(local)
         case .expanded(.shelf):
-            return callbacks.shelfDropReady() ? .copy : []
-        case .expanded, .hidden:
-            return []
+            pointInNotch = viewModel.interactiveRect.contains(local)
+        default:
+            pointInNotch = false
         }
+        guard Self.shouldAcceptDrag(state: viewModel.state, pointInNotch: pointInNotch,
+                                    shelfEnabled: widgets.contains(.shelf)) else { return [] }
+        if viewModel.state == .collapsed, !dragSessionEntered {
+            dragSessionEntered = true
+            viewModel.dragEntered()
+        }
+        return .copy
     }
 
-    /// A drop on the window outside the shelf root. The shelf stays open.
-    private func dragPerformed(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
-        guard isEligibleDrag(info, in: window), presentation == .expanded(.shelf), callbacks.shelfDropReady(),
-              let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: Self.fileURLsOnly) as? [URL],
+    private func draggingExited() {
+        dragSessionEntered = false
+        viewModel.dragExited()
+    }
+
+    private func performDrag(_ pasteboard: NSPasteboard) -> Bool {
+        defer {
+            dragSessionEntered = false
+            viewModel.dragCompleted()
+        }
+        guard widgets.contains(.shelf),
+              let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                                options: [.urlReadingFileURLsOnly: true]) as? [URL],
               !urls.isEmpty else { return false }
-        let accepted = callbacks.shelfDrop(urls)
-        if accepted { dragCompleted(session: info.draggingSequenceNumber) }
-        return accepted
-    }
-
-    private func shelfDragEvent(_ event: FileShelfDragEvent) {
-        switch event {
-        case .exited(let session, let location): dragExited(session: session, location: location)
-        case .dropped(let session): dragCompleted(session: session)
-        case .ended(let session): dragEnded(session: session)
-        }
-    }
-
-    /// The drag left the window or the shelf root. A point still inside the
-    /// window is a move between those two destinations, not an exit.
-    private func dragExited(session: Int?, location: NSPoint?) {
-        guard let opened = dragOpenedSession, session == nil || session == opened else { return }
-        if let location, let window, NSRect(origin: .zero, size: window.frame.size).contains(location) { return }
-        dragOpenedSession = nil
-        guard presentation == .expanded(.shelf) else { return }
-        collapse()
-    }
-
-    private func dragCompleted(session: Int) {
-        if dragOpenedSession == session { dragOpenedSession = nil }
-    }
-
-    /// AppKit ends a canceled drag even when its last location is inside.
-    /// A successful drop already released this session's auto-open ownership.
-    private func dragEnded(session: Int) {
-        guard dragOpenedSession == session else { return }
-        dragOpenedSession = nil
-        if presentation == .expanded(.shelf) { collapse() }
-    }
-
-    /// One pending main-actor turn. A newer request replaces it.
-    private func schedule(_ work: @escaping @MainActor (NotchWindowCoordinator) -> Void) {
-        pendingTask?.cancel()
-        pendingTask = Task { @MainActor [weak self] in
-            guard !Task.isCancelled, let self else { return }
-            self.pendingTask = nil
-            work(self)
-        }
-    }
-
-    /// One refit on the next main-actor turn. Separate from `schedule`, so a
-    /// refit never cancels a pending return to compact. Extra calls before it
-    /// runs join it.
-    private func scheduleRefit() {
-        guard refitTask == nil else { return }
-        refitTask = Task { @MainActor [weak self] in
-            guard !Task.isCancelled, let self else { return }
-            self.refitTask = nil
-            guard case .expanded = self.presentation else { return }
-            self.resizeExpanded()
-        }
-    }
-
-    // MARK: Hover
-
-    private func trackContent() {
-        guard hoverEnabled, let view = window?.contentView else { return }
-        if trackedView === view, trackingArea != nil { return }
-        untrack()
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                  owner: tracker, userInfo: nil)
-        view.addTrackingArea(area)
-        trackingArea = area
-        trackedView = view
-    }
-
-    private func untrack() {
-        cancelClose()
-        if let trackingArea, let trackedView { trackedView.removeTrackingArea(trackingArea) }
-        trackingArea = nil
-        trackedView = nil
-    }
-
-    private func pointerEntered() {
-        guard hoverEnabled, isOnShownSpace else { return }
-        cancelClose()
-        if presentation == .compact { expand(focus: false) }
-    }
-
-    private func pointerExited() {
-        guard hoverEnabled, case .expanded = presentation, !openedWithFocus else { return }
-        cancelClose()
-        let delay = closeDelay
-        closeTask = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-            guard let self, !Task.isCancelled else { return }
-            self.closeTask = nil
-            self.collapse()
-        }
-    }
-
-    private func cancelClose() {
-        closeTask?.cancel()
-        closeTask = nil
-    }
-
-    private static func unique(_ list: [Widget]) -> [Widget] {
-        list.reduce(into: []) { result, widget in if !result.contains(widget) { result.append(widget) } }
+        return callbacks.shelfDrop(urls)
     }
 }
 
-/// Borderless, nonactivating, clear and on every Space. It shows over
-/// full-screen apps only while `setShowInFullscreen(true)` holds.
-/// It becomes key only when a control needs it or the coordinator asks.
-@MainActor
-final class NotchWindow: NSPanel {
-    var onDragUpdate: (@MainActor (any NSDraggingInfo) -> NSDragOperation)?
-    var onDragExit: (@MainActor ((any NSDraggingInfo)?) -> Void)?
-    var onDragPerform: (@MainActor (any NSDraggingInfo) -> Bool)?
-    var onDragEnd: (@MainActor (any NSDraggingInfo) -> Void)?
+/// Hosts a plain widget controller's view inside the SwiftUI root.
+private struct NotchControllerView: NSViewRepresentable {
+    let controller: NSViewController
 
-    func applyNotchStyle() {
-        isFloatingPanel = true
-        becomesKeyOnlyIfNeeded = true
-        level = .statusBar
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        isMovable = false
-        animationBehavior = .none
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-        registerForDraggedTypes([.fileURL])
-    }
-
-    /// Adds or removes `.fullScreenAuxiliary` only. Spaces flags stay.
-    func setShowInFullscreen(_ show: Bool) {
-        if show { collectionBehavior.insert(.fullScreenAuxiliary) } else { collectionBehavior.remove(.fullScreenAuxiliary) }
-    }
-
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-}
-
-// `NSWindow` has the drag destination methods only as an informal
-// Objective-C category. The conformance exposes the main-actor witnesses to
-// AppKit by selector.
-extension NotchWindow: NSDraggingDestination {
-    func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
-    func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
-    func draggingExited(_ sender: (any NSDraggingInfo)?) { onDragExit?(sender) }
-    func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { onDragPerform?(sender) ?? false }
-    func draggingEnded(_ sender: any NSDraggingInfo) { onDragEnd?(sender) }
-    // Shelf loading can finish while the pointer stays still. AppKit must
-    // refresh the accepted operation during that drag, including [] to copy.
-    func wantsPeriodicDraggingUpdates() -> Bool { true }
-}
-
-/// Receives tracking-area events. Holds no window or view.
-@MainActor
-final class NotchHoverTracker: NSResponder {
-    var onEnter: (() -> Void)?
-    var onExit: (() -> Void)?
-
-    override init() { super.init() }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override func mouseEntered(with event: NSEvent) { onEnter?() }
-    override func mouseExited(with event: NSEvent) { onExit?() }
+    func makeNSView(context: Context) -> NSView { controller.view }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

@@ -27,18 +27,8 @@ public final class ActivityCoordinator {
     private var calendarID: String?
     private var timerID: UUID?
     private var completionUntil: Date?
-    private var mediaKey: String?
-    private var media: MediaSnapshot?
-    private var artworkID: UUID?
-    private var artwork: NSImage?
     private var calendarTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
-    private lazy var images = ArtworkPipeline { [weak self] id, image in
-        guard let self, self.active, self.presenting, self.queue.current?.kind == .nowPlaying,
-              self.artworkID == id else { return }
-        self.artwork = image.map { NSImage(cgImage: $0.image, size: .zero) }
-        self.publishCurrent()
-    }
 
     public init(preferences: PreferenceStore, now: @escaping @MainActor () -> Date = { .now },
                 publish: @escaping @MainActor (ActivityItem?, NSImage?, Int, Int) -> Void,
@@ -61,7 +51,6 @@ public final class ActivityCoordinator {
         presenting = false
         calendarTask?.cancel(); calendarTask = nil
         timerTask?.cancel(); timerTask = nil
-        images.clear(); artworkID = nil; artwork = nil; media = nil; mediaKey = nil
         agenda = []; calendarID = nil; timerID = nil; completionUntil = nil
         power = PowerTransitions(); lowWarning = false; lastVolume = nil; overflowCount = 0
         timers.cancelAll()
@@ -73,7 +62,6 @@ public final class ActivityCoordinator {
         guard self.presenting != presenting else { return }
         self.presenting = presenting
         guard active else { return }
-        if !presenting { images.clear(); artworkID = nil; artwork = nil }
         refreshTimer()
         refreshCalendar()
         queueChanged()
@@ -87,7 +75,6 @@ public final class ActivityCoordinator {
         for kind in ActivityKind.allCases where !enabled(kind) { queue.remove(kind) }
         if !enabled(.menuBarOverflow) { overflowCount = 0 }
         if !enabled(.battery) { power = PowerTransitions(); lowWarning = false }
-        if !enabled(.nowPlaying) { media = nil; mediaKey = nil; images.clear(); artworkID = nil; artwork = nil }
         if !enabled(.calendarEvent) { agenda = []; calendarID = nil }
         if !enabled(.soundHUD) { lastVolume = nil }
         refreshTimer()
@@ -114,24 +101,21 @@ public final class ActivityCoordinator {
     public func receive(_ event: WidgetEvent) {
         guard active else { return }
         switch event {
-        case .media(let state):
-            guard enabled(.nowPlaying), case .ready(let snapshot) = state,
-                  let snapshot, snapshot.playing else {
-                media = nil; mediaKey = nil; queue.remove(.nowPlaying); return
-            }
-            media = snapshot
-            let key = "\(snapshot.source?.rawValue ?? "")\u{0}\(snapshot.title)\u{0}\(snapshot.artist)"
-            let newTrack = mediaKey != key
-            mediaKey = key
-            post(.nowPlaying, .artwork, .symbol("waveform"), priority: 50, duration: nil, updateOnly: !newTrack)
-            queueChanged()
+        case .media:
+            // 0.21.35 never showed a Now Playing wing. Media stays in the widget.
+            break
         case .calendar(let result):
             if enabled(.calendarEvent), case .ready(let snapshot) = result { agenda = snapshot.entries }
             else { agenda = [] }
             refreshCalendar()
+        case .shelfDropAccepted(let count):
+            guard count > 0, enabled(.shelfDrop) else { return }
+            post(.shelfDrop, .symbol("tray.and.arrow.down.fill"), .text("Adding \(count)\u{2026}"),
+                 priority: 120, duration: 2.5)
         case .shelfCopyFinished(let added, _):
             guard added > 0, enabled(.shelfDrop) else { return }
-            post(.shelfDrop, .symbol("tray.and.arrow.down.fill"), .text(String(min(added, 20))), priority: 100, duration: 4)
+            post(.shelfDrop, .symbol("tray.and.arrow.down.fill"), .text("Added \(added)"),
+                 priority: 120, duration: 2.5, updateOnly: true)
         case .camera: break
         }
     }
@@ -162,7 +146,7 @@ public final class ActivityCoordinator {
         guard active, enabled(.soundHUD) else { return }
         defer { lastVolume = snapshot }
         guard let snapshot, force || lastVolume.map({ snapshot != $0 }) == true else { return }
-        let symbol = snapshot.muted ? "speaker.slash.fill" : (snapshot.level > 0.5 ? "speaker.wave.3.fill" : "speaker.wave.1.fill")
+        let symbol = Self.soundSymbol(level: snapshot.level, muted: snapshot.muted)
         post(.soundHUD, .none, .soundGauge(value: Double(snapshot.level), symbol: symbol), priority: 300, duration: 1.5)
     }
 
@@ -170,8 +154,13 @@ public final class ActivityCoordinator {
     /// category symbol cross into the compact view.
     public func receiveDevice(name: String, symbol: String, connected: Bool, percent: Int?) {
         guard active, enabled(.bluetoothDevice) else { return }
-        let text = connected ? percent.map { "\(min(max($0, 0), 100))%" } ?? String(name.prefix(120)) : "Disconnected"
-        post(.bluetoothDevice, .symbol(symbol), .text(text), priority: 100, duration: 4)
+        let trailing: ActivityWing
+        if !connected { trailing = .text("Disconnected") }
+        else if let percent {
+            let value = min(max(percent, 0), 100)
+            trailing = .symbolText(symbol: Self.batterySymbol(percent: value, charging: false), text: "\(value)%")
+        } else { trailing = .text(String(name.prefix(120))) }
+        post(.bluetoothDevice, .symbol(symbol), trailing, priority: 100, duration: 4)
     }
 
     public func receiveDevice(_ event: AccessoryConnection) {
@@ -199,8 +188,7 @@ public final class ActivityCoordinator {
     }
 
     private func postBattery(_ percent: Int, charging: Bool, warning: Bool, updateOnly: Bool = false) {
-        let symbol = charging ? "battery.100.bolt" : "battery.\((percent / 25) * 25)"
-        post(.battery, .symbol(symbol), .text("\(percent)%"), priority: 200,
+        post(.battery, .symbol(Self.batterySymbol(percent: percent, charging: charging)), .text("\(percent)%"), priority: 200,
              duration: warning ? nil : 4, tint: warning ? .warning : .normal, updateOnly: updateOnly)
     }
 
@@ -209,6 +197,7 @@ public final class ActivityCoordinator {
         completionUntil = now().addingTimeInterval(10)
         timerID = nil
         post(.timer, .symbol("timer"), .text("\(String(timer.label.prefix(100))) done"), priority: 250, duration: 10)
+        NSSound(named: "Glass")?.play()
         timerCompleted(timer)
     }
 
@@ -234,10 +223,9 @@ public final class ActivityCoordinator {
         }
         completionUntil = nil
         let timer = timers.timers.filter { !$0.isPaused }.min { $0.remaining(at: date) < $1.remaining(at: date) }
-            ?? timers.timers.first
+            ?? timers.timers.filter(\.isPaused).min { $0.remaining(at: date) < $1.remaining(at: date) }
         guard let timer else { timerID = nil; queue.remove(.timer); return }
-        let seconds = Int(ceil(timer.remaining(at: date)))
-        let text = String(format: "%d:%02d", seconds / 60, seconds % 60)
+        let text = Self.countdown(timer.remaining(at: date))
         let newTimer = timerID != timer.id
         timerID = timer.id
         post(.timer, .symbol(timer.isPaused ? "pause.circle" : "timer"), .text(text), priority: 110, duration: nil, updateOnly: !newTimer)
@@ -256,13 +244,13 @@ public final class ActivityCoordinator {
         calendarTask?.cancel(); calendarTask = nil
         guard active, enabled(.calendarEvent) else { calendarID = nil; queue.remove(.calendarEvent); return }
         let date = now()
-        let events = agenda.filter { !$0.allDay && $0.start > date }
+        let events = agenda.filter { !$0.allDay && $0.start >= date }
         let next = events.min { $0.start < $1.start }
         if let next, next.start.timeIntervalSince(date) <= 600 {
-            let minutes = Int(ceil(next.start.timeIntervalSince(date) / 60))
             let changed = calendarID != next.id
             calendarID = next.id
-            post(.calendarEvent, .symbol("calendar"), .text("\(String(next.title.prefix(90))) · in \(minutes)m"),
+            post(.calendarEvent, .symbol("calendar"),
+                 .text(Self.relativeStartPhrase(title: String(next.title.prefix(90)), start: next.start, now: date)),
                  priority: 120, duration: nil, updateOnly: !changed)
         } else { calendarID = nil; queue.remove(.calendarEvent) }
         var boundaries = events.flatMap { [$0.start.addingTimeInterval(-600), $0.start] }.filter { $0 > date }
@@ -282,16 +270,12 @@ public final class ActivityCoordinator {
         publishing = true
         if queue.current?.kind == .timer || completionUntil.map({ now() >= $0 }) == true { refreshTimer() }
         if queue.current?.kind == .calendarEvent { refreshCalendar() }
-        if presenting, queue.current?.kind == .nowPlaying, let id = media?.artworkID,
-           let bytes = media?.artwork {
-            if artworkID != id { artworkID = id; artwork = nil; images.submit(id: id, bytes: bytes) }
-        } else { images.clear(); artworkID = nil; artwork = nil }
         publishCurrent()
         publishing = false
     }
 
     private func publishCurrent() {
-        publish(queue.current, queue.current?.kind == .nowPlaying ? artwork : nil, queue.count, queue.restorableCount)
+        publish(queue.current, nil, queue.count, queue.restorableCount)
     }
 
     private func post(_ kind: ActivityKind, _ leading: ActivityWing, _ trailing: ActivityWing,
@@ -300,6 +284,42 @@ public final class ActivityCoordinator {
         guard let item = try? ActivityItem(kind: kind, leading: leading, trailing: trailing,
                                           priority: priority, tint: tint, duration: duration) else { return }
         if updateOnly { queue.updateIfPresent(item) } else { queue.post(item) }
+    }
+
+    // MARK: 0.21.35 wing text and symbols
+
+    static func batterySymbol(percent: Int, charging: Bool) -> String {
+        guard !charging else { return "battery.100.bolt" }
+        let clamped = max(0, min(100, percent))
+        return "battery.\((clamped / 25) * 25)"
+    }
+
+    static func soundSymbol(level: Float, muted: Bool) -> String {
+        if muted { return "speaker.slash.fill" }
+        switch level {
+        case ..<0.01: return "speaker.fill"
+        case ..<0.34: return "speaker.wave.1.fill"
+        case ..<0.67: return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
+        }
+    }
+
+    static func countdown(_ seconds: TimeInterval) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(min(seconds, Double(Int32.max)))
+        if total >= 3600 {
+            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+        }
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    static func relativeStartPhrase(title: String, start: Date, now: Date) -> String {
+        guard start > now else { return "\(title) now" }
+        let minutes = Int((start.timeIntervalSince(now) / 60).rounded())
+        if minutes < 1 { return "\(title) now" }
+        if minutes < 60 { return "\(title) in \(minutes)m" }
+        let hours = Int((start.timeIntervalSince(now) / 3600).rounded())
+        return "\(title) in \(hours)h"
     }
 
     private func enabled(_ kind: ActivityKind) -> Bool {

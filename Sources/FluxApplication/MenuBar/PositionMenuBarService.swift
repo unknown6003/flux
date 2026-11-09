@@ -713,6 +713,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     private func changed() { onChange?() }
 
+    public func contextMenu() -> NSMenu? { makeMenu() }
+
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
         func add(_ title: String, _ selector: Selector, represented: Any? = nil) {

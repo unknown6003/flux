@@ -28,6 +28,10 @@ public final class NotchRuntime: WidgetEffects {
         /// Required platform owner for the lock-screen bridge.
         /// A failure remains visible to the application; it is never a no-op.
         public var makeAdditionalService: @MainActor (FeatureService) throws -> any FeatureServiceHandle
+        /// The menu a right-click on the notch shows.
+        public var contextMenu: @MainActor () -> NSMenu?
+        /// A tap on a live activity. Return true to claim it.
+        public var activityTap: @MainActor (ActivityKind) -> Bool
 
         public init(report: @escaping @MainActor (NotchRuntimeFailure) -> Void,
                     event: @escaping @MainActor (WidgetEvent) -> Void,
@@ -40,13 +44,17 @@ public final class NotchRuntime: WidgetEffects {
                     phaseChanged: @escaping @MainActor (SessionPhase) -> Void,
                     presenting: @escaping @MainActor (Bool) -> Void,
                     environmentChanged: @escaping @MainActor () -> Void,
-                    makeAdditionalService: @escaping @MainActor (FeatureService) throws -> any FeatureServiceHandle) {
+                    makeAdditionalService: @escaping @MainActor (FeatureService) throws -> any FeatureServiceHandle,
+                    contextMenu: @escaping @MainActor () -> NSMenu? = { nil },
+                    activityTap: @escaping @MainActor (ActivityKind) -> Bool = { _ in false }) {
             self.report = report; self.event = event; self.battery = battery
             self.volume = volume; self.device = device; self.compactAction = compactAction
             self.cameraRunning = cameraRunning; self.accessChanged = accessChanged
             self.phaseChanged = phaseChanged; self.presenting = presenting
             self.environmentChanged = environmentChanged
             self.makeAdditionalService = makeAdditionalService
+            self.contextMenu = contextMenu
+            self.activityTap = activityTap
         }
     }
 
@@ -111,11 +119,12 @@ public final class NotchRuntime: WidgetEffects {
             self.companionWidget = widget
             if widget == nil { self.widgets.removeCalendarCompanion() }
         },
-        shelfDropReady: { [unowned self] in self.active && self.phase == .unlocked && self.widgets.acceptsShelfDrop },
         shelfDrop: { [unowned self] urls in
-            guard self.active, self.phase == .unlocked else { return false }
-            return self.widgets.acceptShelfDrop(urls)
-        }))
+            guard self.active, self.phase == .unlocked, self.widgets.acceptShelfDrop(urls) else { return false }
+            self.callbacks.event(.shelfDropAccepted(count: urls.filter(\.isFileURL).count))
+            return true
+        }, contextMenu: { [unowned self] in self.callbacks.contextMenu() },
+        activityTap: { [unowned self] in self.callbacks.activityTap($0) }))
         self.widgets.onContentChange = { [weak owner] in owner?.contentDidChange($0) }
         owner.onPresentationChange = { [weak self] in self?.callbacks.presenting($0 == .compact) }
         return owner
@@ -189,12 +198,13 @@ public final class NotchRuntime: WidgetEffects {
 #endif
         applyDemand()
         volumeFeed?.refreshAccess()
-        if preferences.value(for: Preferences.notchEnabled), let screen = NSScreen.main ?? NSScreen.screens.first {
+        if preferences.value(for: Preferences.notchEnabled) {
             let configuration = FeatureConfiguration(preferences: preferences)
             let order = WidgetOrder(saved: preferences.value(for: Preferences.widgetOrder)).widgets
             // Before start, so a new window gets the saved collection behavior.
             window.setShowInFullscreen(preferences.value(for: Preferences.showInFullscreen))
-            window.start(screen: screen, widgets: order.filter { configuration.enabledWidgets.contains($0) })
+            window.setAppearance(preferences.value(for: Preferences.appearance))
+            window.start(widgets: order.filter { configuration.enabledWidgets.contains($0) })
             window.setSessionLocked(phase != .unlocked)
             window.setHover(enabled: preferences.value(for: Preferences.expansionTrigger) == .hover,
                             closeDelay: preferences.value(for: Preferences.hoverCloseDelay))
