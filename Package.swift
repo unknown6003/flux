@@ -119,6 +119,12 @@ let package = Package(
             path: "Scripts/rebuild/TelemetryCurlProbe",
             publicHeadersPath: "include",
             linkerSettings: [.linkedLibrary("curl")]
+        ),
+        .executableTarget(
+            name: "FluxMenuBarArrangeProbe",
+            dependencies: ["FluxApplication", "FluxCore", "FluxPlatform", "FluxUI"],
+            path: "Scripts/rebuild/MenuBarArrangeProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )

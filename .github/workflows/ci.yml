@@ -372,6 +372,10 @@ jobs:
       - name: Hide and reveal real status items with the native app
         timeout-minutes: 6
         run: python3 Scripts/rebuild/probe_native_hiding.py build/native-release/Flux.app --output build/native-evidence/hiding
+      - name: Reorder and regroup real status items through the layout editor
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: python3 Scripts/rebuild/probe_native_arrange.py --output build/native-evidence/arrange
       - name: Install the native DMG through the 0.21.35 updater
         timeout-minutes: 6
         run: python3 Scripts/rebuild/probe_native_upgrade.py build/Flux.dmg "$FLUX_RELEASE_VERSION" --output build/native-evidence/upgrade

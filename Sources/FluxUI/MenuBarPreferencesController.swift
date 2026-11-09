@@ -196,6 +196,17 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         return FluxUIStyle.group(FluxUIStyle.hstack([image, text, button]))
     }
 
+    /// Runs one tile's right-click command by its title, as choosing it in the
+    /// menu would. The CI arrange probe drives the editor through this.
+    @discardableResult
+    public func performTileCommand(_ title: String, for id: MenuBarItemID) -> Bool {
+        _ = view
+        let menu = editor.menu(for: id)
+        guard let index = menu.items.firstIndex(where: { $0.title == title && $0.isEnabled }) else { return false }
+        menu.performActionForItem(at: index)
+        return true
+    }
+
     // MARK: Actions
 
     @objc private func showRealIcons() { actions.showRealIcons() }
