@@ -117,13 +117,15 @@ def baseline_seams(source):
     return source
 
 
-def shell_probe(reference=None):
+def shell_probe(reference=None, native=False):
     source = updater_source(reference)
     installer = ROOT / "Sources/Flux/Update/UpdateInstaller.swift"
     if not reference and installer.exists():
         source = installer.read_text()
     elif reference and 'let script = """' not in source:
         source = run(["git", "show", f"{reference}:Sources/Flux/Update/UpdateInstaller.swift"], 20).stdout
+    if native:
+        source = (ROOT / "Sources/FluxPlatform/Update/InstallHandoffScript.swift").read_text()
     match = re.search(r'let script = """\n(.*?)\n        """', source, re.S)
     if not match:
         raise RuntimeError("FAIL: no emitted install helper found")
@@ -147,6 +149,7 @@ def shell_probe(reference=None):
                          'mkdir -p "$2"; echo partial > "$2/version"; exit 1; fi\n'
                          'cp -R "$1" "$2"',
                 "xattr": "exit 0",
+                "codesign": "exit 0",
                 "hdiutil": "exit 0",
                 "open": 'exit 1',
                 "mv": 'if [ "' + case + '" = swap_failure ] && [ "$1" = '
@@ -555,13 +558,16 @@ def mac_probe(reference=None, cases=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--native-helper", action="store_true")
     parser.add_argument("--shell-only", action="store_true")
     parser.add_argument("--supervisor-only", action="store_true")
     parser.add_argument("--helper-only", action="store_true")
     parser.add_argument("--baseline-ref")
     parser.add_argument("--case", choices=["automatic", "overlap", "manual", "failure", "unwritable"])
     args = parser.parse_args()
-    if args.supervisor_only:
+    if args.native_helper:
+        shell_probe(native=True)
+    elif args.supervisor_only:
         supervisor_probe(args.baseline_ref)
         supervisor_probe(args.baseline_ref, leader_exits=True)
     elif args.helper_only:

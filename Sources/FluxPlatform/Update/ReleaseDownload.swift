@@ -42,7 +42,7 @@ private final class ReleaseTransfer: NSObject, URLSessionDataDelegate, @unchecke
     private var session: URLSession?
     private var file: FileHandle?
     private var result: CheckedContinuation<Void, any Error>?
-    private var hash = SHA256()
+    private var digestState = SHA256()
     private var received: Int64 = 0
     private var redirects = 0
     private var failure: (any Error)?
@@ -102,7 +102,7 @@ private final class ReleaseTransfer: NSObject, URLSessionDataDelegate, @unchecke
         }
         do {
             try file?.write(contentsOf: data)
-            hash.update(data: data)
+            digestState.update(data: data)
             received += Int64(data.count)
         } catch { failure = ReleaseDownloadError.file; dataTask.cancel() }
     }
@@ -126,7 +126,7 @@ private final class ReleaseTransfer: NSObject, URLSessionDataDelegate, @unchecke
             if let failure { throw failure }
             if let error { throw error }
             guard received == manifest.size else { throw ReleaseDownloadError.size }
-            let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+            let digest = digestState.finalize().map { String(format: "%02x", $0) }.joined()
             if let expected = manifest.sha256, digest != expected { throw ReleaseDownloadError.digest }
             result.resume()
         } catch {
