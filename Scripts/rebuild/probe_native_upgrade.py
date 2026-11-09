@@ -116,8 +116,15 @@ def main():
                     confirmed = True
                     break
                 time.sleep(0.25)
-            logs = sorted(Path(tempfile.gettempdir()).glob("flux-update-*/install.log"), key=lambda p: p.stat().st_mtime)
-            helper = logs[-1].read_text() if logs else "missing"
+            # The helper writes its verdict after it removes the backup, so wait for it.
+            helper = "missing"
+            verdict_deadline = time.monotonic() + 15
+            while time.monotonic() < verdict_deadline:
+                logs = sorted(Path(tempfile.gettempdir()).glob("flux-update-*/install.log"), key=lambda p: p.stat().st_mtime)
+                helper = logs[-1].read_text() if logs else "missing"
+                if "helper exit=" in helper:
+                    break
+                time.sleep(0.25)
             (args.output / "install.log").write_text(helper)
             print("helper log:\n" + helper, flush=True)
             print(f"state: version={version} backups={backups} pids={native_pids(executable)}", flush=True)
