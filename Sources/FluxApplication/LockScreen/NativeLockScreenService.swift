@@ -5,9 +5,9 @@ import FluxUI
 
 public enum LockScreenServiceError: Error { case unavailable, busy, presentation }
 
-/// Local state and window lifetime, independent of the private space ABI.
-/// An available bridge is a required dependency, not inferred from an OS
-/// version or from the presence of private symbol names.
+/// Local state and window lifetime for Flux on the lock screen. The default
+/// setup uses the 0.21.35 SkyLight space: the feature is available whenever
+/// that private bridge loads, and "not available" only when it does not.
 @MainActor public final class NativeLockScreenService: LockScreenService {
     public var onChange: (@MainActor () -> Void)?
     public var onTransport: (@MainActor (LockScreenTransportAction) -> Void)?
@@ -15,8 +15,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public private(set) var failureCode: String?
     private let preferences: PreferenceStore
     private let availability: @MainActor () -> LockScreenCapability
-    private let screen: @MainActor () -> NSScreen?
-    private let now: @MainActor () -> Date
+    private let geometry: @MainActor () -> LockScreenGeometry?
     private let unlockSound: @MainActor () -> Void
     private let makeBridge: @MainActor () throws -> any LockScreenWindowBridge
     private var phase: SessionPhase = .sleeping
@@ -25,7 +24,6 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private var activity: ActivityItem?
     private var artwork: NSImage?
     private var artworkID: UUID?
-    private var elapsedTask: Task<Void, Never>?
     private lazy var windows = LockScreenWindows(makeBridge: makeBridge, transport: { [weak self] action in
         guard let self, self.presenting, self.preferences.value(for: Preferences.lockScreenNowPlaying), self.media != nil else { return }
         if case .seek(let value) = action, !value.isFinite || value < 0 || value > (self.media?.duration ?? 0) { return }
@@ -37,17 +35,32 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.render()
     }
 
+    /// The shipping setup: the SkyLight space and the built-in notch.
+    public convenience init(preferences: PreferenceStore) {
+        self.init(preferences: preferences,
+                  availability: { SkyLightLockScreenSpace.isLoadable ? .available : .unavailable },
+                  makeBridge: { try SkyLightWindowBridge() })
+    }
+
     public init(preferences: PreferenceStore,
                 availability: @escaping @MainActor () -> LockScreenCapability,
                 makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
-                screen: @escaping @MainActor () -> NSScreen? = { NSScreen.main ?? NSScreen.screens.first },
-                now: @escaping @MainActor () -> Date = { .now },
-                unlockSound: @escaping @MainActor () -> Void = { _ = NSSound(named: "Purr")?.play() }) {
+                unlockSound: @escaping @MainActor () -> Void = NativeLockScreenService.playUnlockSound) {
         self.preferences = preferences; self.availability = availability; self.makeBridge = makeBridge
-        self.screen = screen; self.now = now; self.unlockSound = unlockSound
+        self.unlockSound = unlockSound
+        let cache = LockScreenGeometryCache()
+        geometry = { cache.current() }
     }
 
-    deinit { elapsedTask?.cancel() }
+    /// For fixtures: a fixed screen whose notch is `notch`, or the screen's own.
+    init(preferences: PreferenceStore,
+         availability: @escaping @MainActor () -> LockScreenCapability,
+         makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
+         geometry: @escaping @MainActor () -> LockScreenGeometry?,
+         unlockSound: @escaping @MainActor () -> Void) {
+        self.preferences = preferences; self.availability = availability; self.makeBridge = makeBridge
+        self.geometry = geometry; self.unlockSound = unlockSound
+    }
 
     public func makeHandle() throws -> any FeatureServiceHandle {
         guard enabled, capability == .available else { throw LockScreenServiceError.unavailable }
@@ -61,13 +74,14 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     public func configure() {
         if !enabled { stop(); return }
+        windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
         render()
     }
 
     /// An explicit retry first resolves an old detach failure. It never
     /// creates a replacement space while cleanup is still pending.
     public func checkAgain() {
-        do { try windows.hide(); failureCode = nil }
+        do { try windows.hide(animated: false); failureCode = nil }
         catch { failureCode = "lock.cleanup" }
         render()
         onChange?()
@@ -76,10 +90,11 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public func setPhase(_ phase: SessionPhase) {
         let previous = self.phase
         self.phase = phase
-        if phase != .locked { clearPresentationWork() }
+        if phase != .locked { clearArtwork() }
         if phase == .sleeping { media = nil; activity = nil }
-        render()
-        if previous == .locked, phase == .unlocked, handleID != nil, enabled,
+        let wasShowing = windows.isShowing
+        render(animated: true)
+        if previous == .locked, phase == .unlocked, wasShowing, handleID != nil, enabled,
            preferences.value(for: Preferences.lockScreenUnlockSound) { unlockSound() }
     }
 
@@ -94,16 +109,15 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     public func updateActivity(_ item: ActivityItem?) {
         guard handleID != nil, enabled else { return }
-        // Battery has its own system lock-screen UI, as in the old Flux flow.
-        activity = item?.kind == .battery ? nil : item
+        activity = item
         render()
     }
 
     public func stop() {
         handleID = nil
-        clearPresentationWork()
+        clearArtwork()
         media = nil; activity = nil
-        hide()
+        hide(animated: false)
     }
 
     private func stop(_ id: UUID) {
@@ -116,50 +130,41 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
     private var presenting: Bool { handleID != nil && enabled && phase == .locked && failureCode == nil }
 
-    private func render() {
-        guard presenting, availability() == .available else { clearPresentationWork(); hide(); return }
-        guard let screen = screen() else { fail("lock.display"); return }
+    private func render(animated: Bool = false) {
+        guard presenting, availability() == .available else { clearArtwork(); hide(animated: animated); return }
+        // 0.21.35 showed nothing, and reported nothing, without notch geometry.
+        guard let geometry = geometry() else { hide(animated: false); return }
         let showMedia = preferences.value(for: Preferences.lockScreenNowPlaying)
         if showMedia, let id = media?.artworkID, let bytes = media?.artwork {
             if id != artworkID { artworkID = id; artwork = nil; images.submit(id: id, bytes: bytes) }
-        } else if artworkID != nil { images.clear(); artworkID = nil; artwork = nil }
+        } else if artworkID != nil { clearArtwork() }
         let playing = showMedia ? media.map { snapshot in
             NowPlayingWidgetState(status: snapshot.playing ? .playing : .paused,
                 title: snapshot.title, artist: snapshot.artist, artwork: artwork,
-                elapsed: snapshot.elapsed(at: now()) ?? 0, duration: snapshot.duration,
+                elapsed: snapshot.elapsed(at: .now) ?? 0, duration: snapshot.duration,
                 canGoPrevious: snapshot.canSkip, canGoNext: snapshot.canSkip)
         } : nil
         let caption = preferences.value(for: Preferences.lockScreenActivities) ? activity.flatMap(Self.caption) : nil
-        do { try windows.show(.init(media: playing, activity: caption), on: screen) }
-        catch { fail(windows.cleanupPending ? "lock.cleanup" : "lock.presentation"); return }
-        let ticking = playing?.status == .playing && playing?.duration != nil
-        if ticking, elapsedTask == nil {
-            elapsedTask = Task { @MainActor [weak self] in
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                    guard let self, self.presenting else { return }
-                    self.render()
-                }
-            }
-        } else if !ticking { elapsedTask?.cancel(); elapsedTask = nil }
+        windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
+        do { try windows.show(.init(media: playing, activity: caption), geometry: geometry) }
+        catch { fail(windows.cleanupPending ? "lock.cleanup" : "lock.presentation") }
     }
 
-    private func clearPresentationWork() {
-        elapsedTask?.cancel(); elapsedTask = nil
+    private func clearArtwork() {
         images.clear(); artworkID = nil; artwork = nil
     }
 
-    private func hide() {
+    private func hide(animated: Bool) {
         guard !windows.cleanupPending else { return }
-        do { try windows.hide() }
+        do { try windows.hide(animated: animated) }
         catch { setFailure("lock.cleanup") }
     }
 
     private func fail(_ code: String) {
-        clearPresentationWork()
+        clearArtwork()
         var finalCode = code
         if !windows.cleanupPending {
-            do { try windows.hide() } catch { finalCode = "lock.cleanup" }
+            do { try windows.hide(animated: false) } catch { finalCode = "lock.cleanup" }
         }
         setFailure(finalCode)
     }
@@ -167,24 +172,99 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private func setFailure(_ code: String) {
         let changed = failureCode != code
         failureCode = code
-        clearPresentationWork()
+        clearArtwork()
         if changed { onChange?() }
     }
 
-    private static func caption(_ item: ActivityItem) -> LockScreenActivityCaption? {
-        var symbol: String?
-        var text: [String] = []
-        for wing in [item.leading, item.trailing] {
+    /// The 0.21.35 pill: battery stays out, the text is the trailing text or
+    /// else the leading text, and the symbol comes from the leading wing.
+    static func caption(_ item: ActivityItem) -> LockScreenActivityCaption? {
+        guard item.kind != .battery else { return nil }
+        func text(_ wing: ActivityWing) -> String? {
             switch wing {
-            case .symbol(let value): if symbol == nil { symbol = value }
-            case .text(let value): text.append(value)
-            case .symbolText(let value, let label): if symbol == nil { symbol = value }; text.append(label)
-            case .gauge(_, let value), .soundGauge(_, let value): if symbol == nil { symbol = value }
-            case .none, .artwork: break
+            case .text(let value), .symbolText(_, let value): return value
+            case .none, .symbol, .gauge, .soundGauge, .artwork: return nil
             }
         }
-        let joined = text.joined(separator: " ")
-        return joined.isEmpty ? nil : .init(symbolName: symbol, text: joined)
+        guard let caption = text(item.trailing) ?? text(item.leading) else { return nil }
+        let symbol: String?
+        switch item.leading {
+        case .symbol(let name), .symbolText(let name, _), .gauge(_, let name), .soundGauge(_, let name): symbol = name
+        case .none, .text, .artwork: symbol = nil
+        }
+        return LockScreenActivityCaption(symbolName: symbol, text: caption)
+    }
+
+    private static func appearance(_ value: Appearance) -> NSAppearance? {
+        switch value {
+        case .dark: NSAppearance(named: .darkAqua)
+        case .light: NSAppearance(named: .aqua)
+        case .system: nil
+        }
+    }
+
+    private static var unlockSoundPlayer: NSSound?
+
+    /// The 0.21.35 unlock sound: Purr, or the first system sound that exists.
+    public static func playUnlockSound() {
+        let sound = NSSound(named: "Purr") ?? NSSound(named: "Pop") ?? NSSound(named: "Glass") ?? NSSound(named: "Tink")
+        unlockSoundPlayer = sound
+        sound?.stop()
+        sound?.play()
+    }
+}
+
+/// The last good notch geometry. At lock time macOS can stop reporting the
+/// notch areas, so 0.21.35 kept the last rect in defaults under this key.
+@MainActor final class LockScreenGeometryCache {
+    static let defaultsKey = "flux.lockScreen.notchGeometry.v2"
+    private var cached: LockScreenGeometry?
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        cached = Self.load(from: defaults)
+    }
+
+    func current() -> LockScreenGeometry? {
+        if let screen = NSScreen.builtInNotchedScreen, let notch = screen.physicalNotchRect {
+            let live = LockScreenGeometry(notch: notch, screenFrame: screen.frame)
+            if live != cached {
+                cached = live
+                save(live)
+            }
+            return live
+        }
+        return cached
+    }
+
+    private func save(_ value: LockScreenGeometry) {
+        var values: [String: Any] = [:]
+        Self.write(value.notch, to: &values, prefix: "notch")
+        Self.write(value.screenFrame, to: &values, prefix: "screen")
+        defaults.set(values, forKey: Self.defaultsKey)
+    }
+
+    private static func load(from defaults: UserDefaults) -> LockScreenGeometry? {
+        guard let values = defaults.dictionary(forKey: defaultsKey),
+              let notch = rect(in: values, prefix: "notch"), let screen = rect(in: values, prefix: "screen") else { return nil }
+        return LockScreenGeometry(notch: notch, screenFrame: screen)
+    }
+
+    private static func rect(in values: [String: Any], prefix: String) -> CGRect? {
+        func number(_ suffix: String) -> CGFloat? {
+            (values["\(prefix).\(suffix)"] as? NSNumber).map { CGFloat($0.doubleValue) }
+        }
+        guard let x = number("x"), let y = number("y"), let width = number("width"), let height = number("height"),
+              width > 0, height > 0, x.isFinite, y.isFinite else { return nil }
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    private static func write(_ rect: CGRect, to values: inout [String: Any], prefix: String) {
+        values["\(prefix).x"] = NSNumber(value: Double(rect.origin.x))
+        values["\(prefix).y"] = NSNumber(value: Double(rect.origin.y))
+        values["\(prefix).width"] = NSNumber(value: Double(rect.size.width))
+        values["\(prefix).height"] = NSNumber(value: Double(rect.size.height))
     }
 }
 
