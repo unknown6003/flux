@@ -136,3 +136,33 @@ func releasingMediaFeedStopsItsHelperWithoutAnExplicitStop() async throws {
     #expect(released == nil)
     #expect(await mediaEventually { fixture.allStopped })
 }
+
+@Test(.timeLimit(.minutes(1)))
+func synchronousMediaRevocationStopsTheChildWithoutAwaitingActorCleanup() async throws {
+    let fixture = try MediaFixture()
+    defer { fixture.cleanUp() }
+    let driver = MediaDriver(script: fixture.script, framework: fixture.root)
+    await driver.start()
+    #expect(await mediaEventually { !fixture.pids.isEmpty })
+    let launches = fixture.pids.count
+    // Feed stop uses this nonisolated operation before it queues actor cleanup.
+    // Deliberately do not call actor stop until the real child is gone.
+    driver.requestStop()
+    #expect(await mediaEventually { fixture.allStopped })
+    #expect(await driver.send(.next) == false)
+    await driver.start()
+    #expect(fixture.pids.count == launches)
+    await driver.stop()
+}
+
+@Test(.timeLimit(.minutes(1)))
+func mediaRevocationBeforeTheStartTaskPreventsAnyHelperLaunch() async throws {
+    let fixture = try MediaFixture()
+    defer { fixture.cleanUp() }
+    let driver = MediaDriver(script: fixture.script, framework: fixture.root)
+    driver.requestStop()
+    await driver.start()
+    #expect(fixture.pids.isEmpty)
+    #expect(await driver.send(.toggle) == false)
+    await driver.stop()
+}

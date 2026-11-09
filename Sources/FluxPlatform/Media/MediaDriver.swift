@@ -40,17 +40,59 @@ private final class MediaMailbox: @unchecked Sendable {
 
 /// Foundation permits cross-thread Process status and termination. The helper
 /// is immutable here so a finite stop task can retain its exact process handle.
+private final class MediaProcessOwnership: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = true
+    private var children: [ObjectIdentifier: Process] = [:]
+    private enum Failure: Error { case stopped }
+
+    var isActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return active
+    }
+
+    func launch(_ process: Process) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard active else { throw Failure.stopped }
+        try process.run()
+        children[ObjectIdentifier(process)] = process
+    }
+
+    func retire(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        children.removeValue(forKey: ObjectIdentifier(process))
+    }
+
+    /// Feed stop must work even if the app exits before the driver's actor
+    /// can run again. Only processes launched by this owner are terminated.
+    func revoke() {
+        lock.lock()
+        active = false
+        let running = Array(children.values)
+        children.removeAll()
+        lock.unlock()
+        for process in running where process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+    }
+}
+
 private final class MediaProcessHandle: @unchecked Sendable {
     let process: Process
-    init(_ process: Process) { self.process = process }
+    let ownership: MediaProcessOwnership
+    init(_ process: Process, ownership: MediaProcessOwnership) {
+        self.process = process; self.ownership = ownership
+    }
     func stop() {
-        guard process.isRunning else { return }
+        guard ownership.isActive else { ownership.retire(process); return }
+        guard process.isRunning else { ownership.retire(process); return }
         process.terminate()
         let process = process
-        let retained = MediaProcessHandle(process)
+        let retained = MediaProcessHandle(process, ownership: ownership)
         Task.detached(priority: .utility) {
             try? await Task.sleep(for: .seconds(1))
             if retained.process.isRunning { kill(retained.process.processIdentifier, SIGKILL) }
+            retained.ownership.retire(retained.process)
         }
     }
 }
@@ -62,6 +104,7 @@ public actor MediaDriver {
     private let output: AsyncStream<MediaFeedState>.Continuation
     private let script: URL
     private let framework: URL
+    private nonisolated let ownership = MediaProcessOwnership()
     private var process: Process?
     private var pipe: Pipe?
     private var parser = MediaStream()
@@ -88,12 +131,13 @@ public actor MediaDriver {
     }
 
     public func start() {
-        guard !active else { return }
+        guard !active, ownership.isActive else { return }
         active = true
         launch()
     }
 
     public func stop() {
+        requestStop()
         active = false
         generation &+= 1
         restart?.cancel(); restart = nil
@@ -102,6 +146,10 @@ public actor MediaDriver {
         for id in Array(commands.keys) { finishCommand(id, success: false) }
         output.finish()
     }
+
+    /// Synchronous revocation crosses the feed/actor boundary before app
+    /// termination. Actor cleanup may finish later, but cannot launch a child.
+    nonisolated func requestStop() { ownership.revoke() }
 
     public func send(_ command: MediaControl, authorization: MediaCommandAuthorization? = nil) async -> Bool {
         guard active, process?.isRunning == true, commands.count < 4 else { return false }
@@ -125,11 +173,11 @@ public actor MediaDriver {
             commands[id] = Command(process: process, result: continuation)
             do {
                 if let authorization {
-                    guard try authorization.perform({ try process.run() }) else {
+                    guard try authorization.perform({ try ownership.launch(process) }) else {
                         finishCommand(id, success: false)
                         return
                     }
-                } else { try process.run() }
+                } else { try ownership.launch(process) }
                 commands[id]?.deadline = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(4)) } catch { return }
                     await self?.finishCommand(id, success: false)
@@ -149,7 +197,7 @@ public actor MediaDriver {
     }
 
     private func launch() {
-        guard active, process == nil else { return }
+        guard active, ownership.isActive, process == nil else { return }
         guard script.isFileURL, framework.isFileURL,
               FileManager.default.fileExists(atPath: script.path), FileManager.default.fileExists(atPath: framework.path) else {
             output.yield(.unavailable)
@@ -172,7 +220,7 @@ public actor MediaDriver {
         self.process = process
         self.pipe = pipe
         do {
-            try process.run()
+            try ownership.launch(process)
             startedAt = .now
             log.info("Media stream started")
             readiness = Task { [weak self] in
@@ -183,7 +231,7 @@ public actor MediaDriver {
     }
 
     private func drain(_ mailbox: MediaMailbox, generation token: UInt64) {
-        guard active, generation == token else { return }
+        guard active, ownership.isActive, generation == token else { return }
         while true {
             switch mailbox.take() {
             case .empty: return
@@ -207,7 +255,7 @@ public actor MediaDriver {
     private func ended(generation token: UInt64) { failed(generation: token) }
 
     private func failed(generation token: UInt64) {
-        guard active, generation == token else { return }
+        guard active, ownership.isActive, generation == token else { return }
         generation &+= 1
         readiness?.cancel(); readiness = nil
         if let startedAt, Date().timeIntervalSince(startedAt) >= 60 { restartCount = 0 }
@@ -229,7 +277,7 @@ public actor MediaDriver {
         pipe = nil
         if let process {
             process.terminationHandler = nil
-            MediaProcessHandle(process).stop()
+            MediaProcessHandle(process, ownership: ownership).stop()
         }
         process = nil
         parser = MediaStream()
@@ -239,7 +287,7 @@ public actor MediaDriver {
         guard let command = commands.removeValue(forKey: id) else { return }
         command.deadline?.cancel()
         command.process.terminationHandler = nil
-        MediaProcessHandle(command.process).stop()
+        MediaProcessHandle(command.process, ownership: ownership).stop()
         command.result.resume(returning: success)
     }
 }
@@ -265,6 +313,7 @@ public actor MediaDriver {
     deinit {
         events?.cancel()
         let driver = driver
+        driver.requestStop()
         Task { await driver.stop() }
     }
 
@@ -279,6 +328,7 @@ public actor MediaDriver {
         onChange = nil
         events?.cancel(); events = nil
         let driver = driver
+        driver.requestStop()
         Task { await driver.stop() }
     }
 }
