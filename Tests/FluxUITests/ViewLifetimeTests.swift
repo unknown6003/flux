@@ -187,6 +187,25 @@ struct ViewLifetimeTests {
         #expect(SettingsPage.allCases.last == .about)
     }
 
+    @Test @MainActor func closedSettingsReleasesItsWindowAndViews() {
+        _ = NSApplication.shared
+        weak var controller: SettingsWindowController?
+        weak var window: NSWindow?
+        weak var page: NSView?
+        autoreleasepool {
+            let settings = SettingsWindowController(initialPage: .about) { _ in
+                AboutPreferencesController(state: .init(version: "1", build: "1"), onAction: { _ in })
+            }
+            controller = settings
+            window = settings.window
+            page = settings.window?.contentView
+            settings.close()
+        }
+        #expect(controller == nil)
+        #expect(window == nil)
+        #expect(page == nil)
+    }
+
     @Test @MainActor func rowControlsLineUpAndNeverCoverTheirText() throws {
         _ = NSApplication.shared
         let toggle = NSSwitch()
