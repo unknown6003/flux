@@ -18,6 +18,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     private let lanesStack = FluxUIStyle.vstack([], spacing: 16)
     private let toolsStack = FluxUIStyle.hstack([])
     private let arrangeCard = ArrangeCardView()
+    private var arrangeButton: NSButton?
     private let optionsStack = FluxUIStyle.vstack([], spacing: 20)
     private let optionControls = FormControls()
     private var shownOptions: (MenuBarOptions, Bool)?
@@ -54,6 +55,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         preview.toolTip = L("menuBar.realIcons.help", "Uses Screen Recording to show each icon as it looks in your menu bar. Only while this page is open.")
         let refresh = FluxUIStyle.button(L("menuBar.refresh", "Refresh"), target: self, action: #selector(refresh))
         [arrange, preview, refresh].forEach(toolsStack.addArrangedSubview)
+        arrangeButton = arrange
 
         arrangeCard.onDone = { [weak self] in self?.actions.endArrange() }
 
@@ -96,6 +98,8 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         lanesStack.isHidden = !usable
         toolsStack.isHidden = !usable
         arrangeCard.isHidden = !(usable && state.isArranging)
+        // Per-app hiding needs no physical order, so there is nothing to arrange.
+        arrangeButton?.isHidden = state.mode == .perApplication && !state.isArranging
 
         let known = Set(state.rows.map(\.id))
         for (id, view) in rowViews where !known.contains(id) {

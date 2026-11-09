@@ -24,6 +24,17 @@ import FluxUI
     func setArranging(_ arranging: Bool) { self.arranging = arranging }
 }
 
+@MainActor private final class HiderFixture: PerApplicationHidingOwner {
+    var isAvailable = true
+    var onResult: (@MainActor (Bool) -> Void)?
+    var applied: [(policy: VisibilityPolicy, reveal: MenuBarReveal, always: Bool)] = []
+    var stops = 0
+    func apply(policy: VisibilityPolicy, reveal: MenuBarReveal, alwaysHiddenEnabled: Bool) {
+        applied.append((policy, reveal, alwaysHiddenEnabled))
+    }
+    func stop() { stops += 1 }
+}
+
 @MainActor private final class PositionDelayFixture {
     var requested: [TimeInterval] = []
     private var pending: [CheckedContinuation<Void, Never>] = []
@@ -45,6 +56,7 @@ import FluxUI
     let preferences: PreferenceStore
     let controls = PositionControlsFixture()
     let delay = PositionDelayFixture()
+    let hider = HiderFixture()
     let app = ApplicationID(rawValue: "org.fluxfixture.example")!
     var reads = 0
     var permissionRequests = 0
@@ -73,7 +85,8 @@ import FluxUI
         inventory = .init(applications: [.init(id: app, name: "Example", icon: nil,
             frames: [CGRect(x: 400, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
         owner = PositionMenuBarService(defaults: defaults, domain: domain, preferences: preferences,
-            hidingSupport: support, controls: controls, readInventory: { [unowned self] in
+            hidingSupport: support, controls: controls,
+            hider: support == .perApplication ? hider : nil, readInventory: { [unowned self] in
                 guard !Task.isCancelled else { return self.inventory }
                 self.reads += 1
                 if self.blocksRead { await withCheckedContinuation { self.blockedRead = $0 } }
@@ -117,6 +130,67 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func perApplicationHidingAppliesSavedGroupsWithoutBackgroundReads() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.defaults.set(["hidden": [fixture.app.rawValue], "alwaysHidden": []], forKey: "flux.macOS27IconLayout")
+        fixture.owner.configure()
+        fixture.owner.start()
+        await fixture.settle()
+        #expect(fixture.reads == 0)
+        #expect(fixture.owner.state.mode == .perApplication)
+        #expect(fixture.controls.capability == .perApplication)
+        let first = try #require(fixture.hider.applied.last)
+        #expect(first.reveal == .collapsed)
+        #expect(first.policy.group(for: fixture.app) == .hidden)
+        fixture.owner.toggle()
+        #expect(fixture.hider.applied.last?.reveal == .hidden)
+        fixture.owner.toggle()
+        #expect(fixture.hider.applied.last?.reveal == .collapsed)
+        fixture.owner.setEditorVisible(true)
+        #expect(fixture.hider.applied.last?.reveal == .all)
+        try await fixture.close()
+        #expect(fixture.hider.stops >= 1)
+        #expect(fixture.hider.onResult == nil)
+    }
+
+    @Test @MainActor func perApplicationAssignmentReachesTheHiderAfterTheEditorCloses() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.assign(fixture.app, to: .alwaysHidden)
+        #expect(fixture.owner.state.rows.first?.result == .asked)
+        fixture.owner.setEditorVisible(false)
+        await fixture.settle()
+        let last = try #require(fixture.hider.applied.last)
+        #expect(last.reveal == .collapsed)
+        #expect(last.policy.group(for: fixture.app) == .alwaysHidden)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func perApplicationRefusalAndMissingBridgeAreReported() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.owner.start()
+        fixture.hider.onResult?(false)
+        #expect(fixture.owner.state.mode == .failed(code: "hidingRefused"))
+        fixture.hider.onResult?(true)
+        #expect(fixture.owner.state.mode == .perApplication)
+        fixture.hider.isAvailable = false
+        fixture.owner.configure()
+        #expect(fixture.owner.state.mode == .failed(code: "hidingUnavailable"))
+        try await fixture.close()
+    }
+
+    @Test func perApplicationAllowListKeepsSystemItemsAndUnknownApps() {
+        let hidden = ApplicationID(rawValue: "org.fluxfixture.hidden")!
+        let list = PerApplicationHider.allowList(running: ["org.fluxfixture.hidden", "org.fluxfixture.other", "com.apple.controlcenter"],
+                                                 concealed: [hidden])
+        #expect(!list.contains("org.fluxfixture.hidden"))
+        #expect(list.contains("org.fluxfixture.other"))
+        #expect(list.contains("com.flux.menubar"))
+        #expect(list.contains("com.apple.notificationcenterui"))
+        #expect(list == list.sorted())
+    }
+
     @Test @MainActor func leavingTheEditorDuringReadCompletesAFreshBackgroundValidation() async throws {
         let fixture = try PositionServiceFixture(support: .byPosition)
         fixture.owner.start(); fixture.owner.setEditorVisible(true)

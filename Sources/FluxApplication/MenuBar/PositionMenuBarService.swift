@@ -3,10 +3,28 @@ import FluxCore
 import FluxPlatform
 import FluxUI
 
-/// Select byPosition only after the spacer backend passes native acceptance.
+/// byPosition uses wide spacers (macOS 14 to 26). perApplication uses the
+/// MenuBarAgent allow list that Flux 0.21.35 shipped on macOS 27.
 public enum PositionMenuBarHidingSupport: Sendable {
-    case unverified, byPosition
+    case unverified, byPosition, perApplication
+
+    /// The backend for the running OS. macOS 27 needs the allow-list bridge.
+    @MainActor public static func current(hider: PerApplicationHider?) -> PositionMenuBarHidingSupport {
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            return hider?.isAvailable == true ? .perApplication : .unverified
+        }
+        return .byPosition
+    }
 }
+
+@MainActor protocol PerApplicationHidingOwner: AnyObject {
+    var isAvailable: Bool { get }
+    var onResult: (@MainActor (Bool) -> Void)? { get set }
+    func apply(policy: VisibilityPolicy, reveal: MenuBarReveal, alwaysHiddenEnabled: Bool)
+    func stop()
+}
+
+extension PerApplicationHider: PerApplicationHidingOwner {}
 
 @MainActor protocol PositionMenuBarControlOwner: AnyObject {
     var onToggle: (@MainActor (Bool) -> Void)? { get set }
@@ -45,6 +63,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let preferences: PreferenceStore
     private let support: PositionMenuBarHidingSupport
     private let controls: any PositionMenuBarControlOwner
+    private let hider: (any PerApplicationHidingOwner)?
+    private var hidingRefused = false
     private let readInventory: @MainActor () async -> PositionMenuBarInventory
     private let permissionStatus: @MainActor () -> SystemAccess
     private let requestPreviewPermission: @MainActor () async -> SystemAccess
@@ -87,13 +107,15 @@ private struct PositionMenuBarArrangementContext: Equatable {
     /// Defaults and domain must be the same pair used to create preferences.
     /// The default keeps physical hiding disabled until native proof exists.
     public convenience init(defaults: UserDefaults, domain: String, preferences: PreferenceStore,
-                            hidingSupport: PositionMenuBarHidingSupport = .unverified) {
+                            hidingSupport: PositionMenuBarHidingSupport = .unverified,
+                            perApplicationHider: PerApplicationHider? = nil) {
         let inventory = StatusInventory()
         let preview = StatusPreview()
         let identityReader = MenuBarIdentityReader()
         let prompt = MenuBarIdentityPrompt()
         self.init(defaults: defaults, domain: domain, preferences: preferences,
                   hidingSupport: hidingSupport, controls: MenuBarControls(),
+                  hider: hidingSupport == .perApplication ? (perApplicationHider ?? PerApplicationHider()) : nil,
                   readInventory: {
                       let snapshot = await inventory.read(RunningApplication.snapshot())
                       return PositionMenuBarInventory(applications: snapshot.applications.map { app in
@@ -150,6 +172,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     init(defaults: UserDefaults, domain: String, preferences: PreferenceStore,
          hidingSupport: PositionMenuBarHidingSupport, controls: any PositionMenuBarControlOwner,
+         hider: (any PerApplicationHidingOwner)? = nil,
          readInventory: @escaping @MainActor () async -> PositionMenuBarInventory,
          permissionStatus: @escaping @MainActor () -> SystemAccess,
          requestPreviewPermission: @escaping @MainActor () async -> SystemAccess,
@@ -161,7 +184,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
          readIdentity: @escaping @MainActor (ApplicationID, Data?) async -> MenuBarIdentityEvidence?,
          confirmIdentity: @escaping @MainActor (String) async -> Bool) {
         self.defaults = defaults; self.domain = domain; self.preferences = preferences
-        support = hidingSupport; self.controls = controls; self.readInventory = readInventory
+        support = hidingSupport; self.controls = controls; self.hider = hider; self.readInventory = readInventory
         self.permissionStatus = permissionStatus; self.requestPreviewPermission = requestPreviewPermission
         self.capturePreviews = capturePreviews; self.stopPreviews = stopPreviews
         self.screens = screens; self.quartzFrame = quartzFrame; self.sleep = sleep
@@ -182,6 +205,11 @@ private struct PositionMenuBarArrangementContext: Equatable {
             if all { self?.showAll() } else { self?.toggle() }
         }
         controls.onFinishArrange = { [weak self] in self?.endArrange() }
+        hider?.onResult = { [weak self] confirmed in
+            guard let self, self.started, self.hidingRefused == confirmed else { return }
+            self.hidingRefused = !confirmed
+            self.updateMode(); self.changed()
+        }
         controls.contextMenu = makeMenu()
         controls.start()
         configure()
@@ -201,6 +229,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         controls.setArranging(false)
         controls.configure(capability: .unavailable, reveal: .all,
                            alwaysHiddenEnabled: false, style: state.options.iconStyle)
+        hider?.stop(); hider?.onResult = nil; hidingRefused = false
         controls.stop()
         controls.onToggle = nil; controls.onFinishArrange = nil
         state.isArranging = false
@@ -291,7 +320,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
             try saved.assign(application, to: group)
             savePolicy(saved)
             policyRevision &+= 1
-            results[application] = .notMovedYet
+            results[application] = support == .perApplication ? .asked : .notMovedYet
             updateRows()
         } catch { failPolicy() }
         applyControls()
@@ -446,6 +475,10 @@ private struct PositionMenuBarArrangementContext: Equatable {
         if policyFailure { state.mode = .failed(code: "invalidStoredLayout") }
         else if identityFailure { state.mode = .failed(code: "invalidStoredIdentity") }
         else if let actionFailure { state.mode = .failed(code: actionFailure) }
+        else if support == .perApplication {
+            state.mode = hider?.isAvailable != true ? .failed(code: "hidingUnavailable")
+                : hidingRefused ? .failed(code: "hidingRefused") : .perApplication
+        }
         else if support == .unverified { state.mode = .paused }
         else if permissionStatus() != .allowed { state.mode = .needsAccessibility }
         else if identities.values.contains(where: { !$0.matchesSaved }) { state.mode = .failed(code: "identityReviewRequired") }
@@ -455,6 +488,16 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     private func applyControls() {
         updateMode()
+        if support == .perApplication {
+            let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal
+            controls.configure(capability: .perApplication, reveal: effectiveReveal,
+                               alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
+            if started, !policyFailure {
+                hider?.apply(policy: policy, reveal: effectiveReveal, alwaysHiddenEnabled: state.alwaysHiddenEnabled)
+            } else { hider?.stop() }
+            state.savedLayoutStillApplies = false
+            return
+        }
         let capability: MenuBarCapability = started && support == .byPosition && !policyFailure
             && !identityFailure && identitiesValidated && permissionStatus() == .allowed ? .byPosition : .unavailable
         let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal

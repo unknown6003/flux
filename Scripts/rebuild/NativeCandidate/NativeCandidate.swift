@@ -36,10 +36,10 @@ import OSLog
 #endif
         do {
             let session = try ApplicationSession()
-            let support: PositionMenuBarHidingSupport = ProcessInfo.processInfo.environment[
-                "FLUX_ALLOW_UNVERIFIED_POSITION_BACKEND"] == "1" ? .byPosition : .unverified
+            let hider = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? PerApplicationHider() : nil
+            let support = PositionMenuBarHidingSupport.current(hider: hider)
             let menu = PositionMenuBarService(defaults: .standard, domain: ApplicationSession.domain,
-                preferences: session.preferences, hidingSupport: support)
+                preferences: session.preferences, hidingSupport: support, perApplicationHider: hider)
             // No verified private bridge is linked into this candidate. The
             // saved choice is preserved and Settings reports unavailable.
             let lock = NativeLockScreenService(preferences: session.preferences,

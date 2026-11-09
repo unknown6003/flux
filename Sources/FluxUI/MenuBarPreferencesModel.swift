@@ -241,6 +241,8 @@ enum MenuBarText {
         case .byPosition: L("menuBar.mode.byPosition", "Hiding works by position. Arrange icons in the menu bar after you change a group.")
         case .needsAccessibility: L("menuBar.mode.access", "To read your menu bar, Flux needs Accessibility.")
         case .paused: L("menuBar.mode.paused", "Hiding is paused. macOS did not confirm the change.")
+        case .failed("hidingUnavailable"): L("menuBar.mode.hidingUnavailable", "This macOS version has no menu bar hiding Flux can use. All icons stay visible.")
+        case .failed("hidingRefused"): L("menuBar.mode.hidingRefused", "macOS did not confirm hiding. All icons stay visible. Flux tries again when you change a group.")
         case .failed(let code): String(format: L("menuBar.mode.failed", "Flux can't read the menu bar (%@)."), code)
         }
     }
