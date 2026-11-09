@@ -48,6 +48,9 @@ public final class WidgetCoordinator {
     // The primary widget and its optional Calendar companion.
     private var visible: Widget?
     private var calendarIsCompanion = false
+    private var widgetVisit: UUID?
+    private var calendarVisit: UUID?
+    private var mediaCommands: MediaCommandAuthorization?
     private var writeAuthorization: ClipboardWriteAuthorization?
     private weak var nowPlayingView: NowPlayingWidgetController?
     private weak var calendarView: CalendarWidgetController?
@@ -100,40 +103,50 @@ public final class WidgetCoordinator {
         self.effects = effects
     }
 
-    deinit { writeAuthorization?.revoke(); shelfMaintenance?.cancel() }
+    deinit { writeAuthorization?.revoke(); mediaCommands?.revoke(); shelfMaintenance?.cancel() }
 
     // MARK: Panel
+
+    private func action<Value>(_ visit: UUID, perform: @escaping (WidgetCoordinator, Value) -> Void) -> (Value) -> Void {
+        { [weak self] value in
+            guard let self, self.widgetVisit == visit || self.calendarVisit == visit else { return }
+            perform(self, value)
+        }
+    }
 
     /// The `NotchPanelController` factory. Hides the previous widget first.
     public func makeWidget(_ widget: Widget) -> NSViewController {
         hideVisible()
         visible = widget
+        let visit = UUID()
+        widgetVisit = visit
         writeAuthorization = ClipboardWriteAuthorization()
         switch widget {
         case .nowPlaying:
+            mediaCommands = MediaCommandAuthorization()
             if case .some(.ready(_)) = media { loadArtwork(lastSnapshot) }
-            let controller = NowPlayingWidgetController(state: nowPlayingState()) { [weak self] in self?.nowPlaying($0) }
+            let controller = NowPlayingWidgetController(state: nowPlayingState(), onAction: action(visit) { $0.nowPlaying($1) })
             nowPlayingView = controller
             updateElapsedTask()
             return controller
         case .calendar:
-            let controller = CalendarWidgetController(state: calendarState()) { [weak self] in self?.calendar($0) }
+            let controller = CalendarWidgetController(state: calendarState(), onAction: action(visit) { $0.calendar($1) })
             calendarView = controller
             return controller
         case .mirror:
             let preview = CameraPreviewView(frame: .zero)
             cameraPreview = preview
             cameraLease?.feed.connectPreview(to: preview.previewLayer)
-            let controller = MirrorWidgetController(status: mirrorStatus(), preview: preview) { [weak self] in self?.mirror($0) }
+            let controller = MirrorWidgetController(status: mirrorStatus(), preview: preview, onAction: action(visit) { $0.mirror($1) })
             mirrorView = controller
             return controller
         case .clipboard:
-            let controller = ClipboardWidgetController(state: clipboardState()) { [weak self] in self?.clipboardAction($0) }
+            let controller = ClipboardWidgetController(state: clipboardState(), onAction: action(visit) { $0.clipboardAction($1) })
             clipboardView = controller
             subscribeClipboard()
             return controller
         case .shelf:
-            let controller = FileShelfWidgetController(state: shelfState()) { [weak self] in self?.shelfAction($0) }
+            let controller = FileShelfWidgetController(state: shelfState(), onAction: action(visit) { $0.shelfAction($1) })
             shelfView = controller
             loadShelf(reload: false)
             return controller
@@ -148,13 +161,16 @@ public final class WidgetCoordinator {
     public func makeCalendarCompanion() -> NSViewController {
         precondition(visible == .nowPlaying)
         calendarIsCompanion = true
-        let controller = CalendarWidgetController(state: calendarState()) { [weak self] in self?.calendar($0) }
+        let visit = UUID()
+        calendarVisit = visit
+        let controller = CalendarWidgetController(state: calendarState(), onAction: action(visit) { $0.calendar($1) })
         calendarView = controller
         return controller
     }
 
     public func removeCalendarCompanion() {
         calendarIsCompanion = false
+        calendarVisit = nil
         if visible != .calendar { calendarView = nil }
     }
 
@@ -175,6 +191,8 @@ public final class WidgetCoordinator {
     }
 
     private func hideVisible() {
+        widgetVisit = nil; calendarVisit = nil
+        mediaCommands?.revoke(); mediaCommands = nil
         writeAuthorization?.revoke()
         writeAuthorization = nil
         elapsedTask?.cancel(); elapsedTask = nil
@@ -346,10 +364,10 @@ public final class WidgetCoordinator {
 
     private func nowPlaying(_ action: NowPlayingWidgetAction) {
         switch action {
-        case .togglePlayPause: sendMedia(.toggle)
-        case .previous: sendMedia(.previous)
-        case .next: sendMedia(.next)
-        case .seek(let seconds): sendMedia(.seek(seconds))
+        case .togglePlayPause: if let mediaCommands { sendMedia(.toggle, authorization: mediaCommands) }
+        case .previous: if let mediaCommands { sendMedia(.previous, authorization: mediaCommands) }
+        case .next: if let mediaCommands { sendMedia(.next, authorization: mediaCommands) }
+        case .seek(let seconds): if let mediaCommands { sendMedia(.seek(seconds), authorization: mediaCommands) }
         case .selectSource(let id): openApplication(id)
         case .openSource:
             if let id = lastSnapshot?.source { openApplication(id) } else { effects.report(.mediaOpenSource) }
