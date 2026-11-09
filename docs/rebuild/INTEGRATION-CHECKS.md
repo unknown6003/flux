@@ -245,3 +245,26 @@ source setter and local observer loop. The native local defaults notification
 does not prove cross-process delivery. The reports remain private at
 /tmp/flux-abi-501/report.md and
 /tmp/flux-defaults-setter-trace-20261109.md on the Mac.
+
+## Drag lifecycle and manual feedback checkpoint
+
+CI 42554890966 at 10a353e passed 73 Core, 45 Platform, 11 UI and 43
+Application cases. New AppKit destination controls cover drag cancellation,
+periodic readiness updates, full-screen collection flags and one owned shelf
+copy job. These controls call actual destination methods with private test
+pasteboards. They do not prove Finder event delivery or behavior on a real
+full-screen Space.
+
+CI 42555424135 at e4851c1 passed 78 Core, 45 Platform, 11 UI and 43
+Application cases, plus the signed candidate build. The manual feedback path
+requires an ingestion acknowledgement and rejects quota suppression. Opt-out,
+caller cancellation and identity reset cannot return a late accepted result.
+The follow-up cb661b2 binds a retry token to one rating and one random identity.
+Its added reset control is awaiting native CI. The native rating form is not
+bound yet. The project survey remains a draft, with no automatic display.
+
+The signed real-app trial reached a local authentication prompt for Screen
+Recording. The tester canceled it and restored 0.21.35. The original and
+candidate have the same designated signing requirement, but the OS grant is
+still off. Physical menu-bar observation and hiding remain blocked on that
+local grant. No update was released.
