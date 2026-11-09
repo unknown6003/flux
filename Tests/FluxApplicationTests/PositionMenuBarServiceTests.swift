@@ -117,6 +117,25 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func leavingTheEditorDuringReadCompletesAFreshBackgroundValidation() async throws {
+        let fixture = try PositionServiceFixture(support: .byPosition)
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.blocksRead = true
+        fixture.owner.refresh()
+        await fixture.settle()
+        let reads = fixture.reads
+        fixture.blocksRead = false
+        fixture.owner.setEditorVisible(false)
+        await fixture.settle()
+        #expect(fixture.reads == reads + 1)
+        #expect(fixture.controls.capability == .byPosition)
+        fixture.blockedRead?.resume(); fixture.blockedRead = nil
+        await fixture.settle()
+        #expect(fixture.controls.capability == .byPosition)
+        try await fixture.close()
+    }
+
     @Test @MainActor func replacementDuringAScanRequiresANewReadBeforeSavingOrHiding() async throws {
         let fixture = try PositionServiceFixture(support: .byPosition)
         fixture.owner.start(); fixture.owner.setEditorVisible(true)

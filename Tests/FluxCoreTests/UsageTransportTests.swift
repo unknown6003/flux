@@ -47,19 +47,42 @@ private final class UsageHTTPFixture: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+private final class UsageSessionLifecycle: NSObject, URLSessionDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    let invalidated: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    override init() {
+        (invalidated, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(8))
+        super.init()
+    }
+    func makeSession() -> URLSession {
+        lock.lock(); count += 1; lock.unlock()
+        let config = NativeUsageTransport.configuration()
+        config.protocolClasses = [UsageHTTPFixture.self]
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }
+    func creations() -> Int { lock.lock(); defer { lock.unlock() }; return count }
+    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
+        continuation.yield(())
+    }
+}
+
 @Test(.timeLimit(.minutes(1))) func realURLSessionUsesOnlyTheSelectedHostAndBoundsResponseData() async throws {
     let config = NativeUsageTransport.configuration()
     #expect(config.urlCache == nil)
     #expect(config.httpCookieStorage == nil)
     #expect(config.urlCredentialStorage == nil)
     #expect(!config.httpShouldSetCookies)
-    config.protocolClasses = [UsageHTTPFixture.self]
-    let session = URLSession(configuration: config)
-    let transport = NativeUsageTransport(region: .eu, session: session)
+    let lifecycle = UsageSessionLifecycle()
+    let transport = NativeUsageTransport(region: .eu, makeSession: { lifecycle.makeSession() })
+    #expect(lifecycle.creations() == 0)
+    var invalidated = lifecycle.invalidated.makeAsyncIterator()
 
     for endpoint in [UsageEndpoint.events, .flags, .logs] {
         UsageHTTPFixture.state.prepare(Data(#"{"ok":true}"#.utf8))
         let result = try await transport.send(UsageRequest(endpoint: endpoint, body: Data("{}".utf8), projectToken: "phc_fixture"))
+        _ = await invalidated.next()
         #expect(result.status == 200)
         let requests = UsageHTTPFixture.state.snapshot()
         #expect(requests.count == 1)
@@ -80,5 +103,6 @@ private final class UsageHTTPFixture: URLProtocol, @unchecked Sendable {
     await #expect(throws: PostHogWireError.self) {
         try await transport.send(UsageRequest(endpoint: .flags, body: Data("{}".utf8), projectToken: "phc_fixture"))
     }
-    session.invalidateAndCancel()
+    _ = await invalidated.next()
+    #expect(lifecycle.creations() == 4)
 }

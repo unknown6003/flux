@@ -32,6 +32,14 @@ The owner account and restricted maintenance key are in the shared credential st
 
 Use the native public HTTP contracts, without the SDK. It has a serial actor, an ephemeral URLSession with no cookies, cache or credential store, one active request, fixed hosts, refused redirects, five-second request and eight-second resource timeouts. Response decoding stops at 64 KiB. There are at most 64 queued events and 32 queued logs. Each send takes at most 20 records. Rate limits apply before the UI controller creates asynchronous work and again at the actor.
 
+The first three empty-profile on/off pairs at 283d50c failed the wakeup
+budget in pair three: +0.11665 interrupt wakeups per second. Other measured
+budgets passed. Network settling was not measured, so the source of those
+wakeups is unresolved. The transport retained its session between requests.
+It now creates an ephemeral session only for a send and invalidates it on
+every exit. This removes idle connection ownership; a native lifecycle check
+and a new paired measurement are required before claiming a cost reduction.
+
 A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.
 
 Missing consent keys default to off on both new and upgraded profiles. Only an explicit saved opt-in starts the client. Disabling cancels the pending task and request, drops records and clears cached assignments. A request already received by the server cannot be recalled. Reset drops pending work, clears flags/exposures, and changes the random ID. Late UI submissions carrying the previous local ID are rejected.

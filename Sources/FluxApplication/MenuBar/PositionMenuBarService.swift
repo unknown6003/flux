@@ -245,6 +245,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
             discardPreviews()
             state.isArranging = false
             updateObservations()
+            if needsInventory, !identitiesValidated { requestScan(arrangeResult: false) }
         }
         applyControls()
         changed()

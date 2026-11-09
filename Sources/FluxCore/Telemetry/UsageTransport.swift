@@ -37,12 +37,12 @@ private final class RefuseUsageRedirects: NSObject, URLSessionTaskDelegate, Send
 
 public actor NativeUsageTransport: UsageTransport {
     private let region: PostHogRegion
-    private let session: URLSession
+    private let makeSession: @Sendable () -> URLSession
     private let redirects = RefuseUsageRedirects()
 
     public init(region: PostHogRegion) {
         self.region = region
-        session = URLSession(configuration: Self.configuration())
+        makeSession = { URLSession(configuration: Self.configuration()) }
     }
 
     static func configuration() -> URLSessionConfiguration {
@@ -62,12 +62,10 @@ public actor NativeUsageTransport: UsageTransport {
         return config
     }
 
-    init(region: PostHogRegion, session: URLSession) {
+    init(region: PostHogRegion, makeSession: @escaping @Sendable () -> URLSession) {
         self.region = region
-        self.session = session
+        self.makeSession = makeSession
     }
-
-    deinit { session.invalidateAndCancel() }
 
     public func send(_ payload: UsageRequest) async throws -> UsageResponse {
         try Task.checkCancellation()
@@ -87,6 +85,8 @@ public actor NativeUsageTransport: UsageTransport {
         if case .logs = payload.endpoint {
             request.setValue("Bearer " + payload.projectToken, forHTTPHeaderField: "Authorization")
         }
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
         let (bytes, response) = try await session.bytes(for: request, delegate: redirects)
         defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse else { throw PostHogWireError.invalidResponse }
