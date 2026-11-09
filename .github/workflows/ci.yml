@@ -95,6 +95,10 @@ jobs:
         run: python3 Scripts/rebuild/run_native_tests.py FluxUITests
       - name: Check native application actions
         run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests
+      - name: Isolate incomplete rating test
+        if: failure()
+        timeout-minutes: 2
+        run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests --filter ratingControlsWaitForAckAndIgnoreRepeatedSubmit
       - name: Upload native test output
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

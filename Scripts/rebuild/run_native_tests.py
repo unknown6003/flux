@@ -19,13 +19,15 @@ def completed_count(output):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("suite", choices=["FluxCoreTests", "FluxPlatformTests", "FluxUITests", "FluxApplicationTests"])
+    parser.add_argument("--filter", default=None)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     directory = root / "build/native-test-logs"
     directory.mkdir(parents=True, exist_ok=True)
     log = directory / (args.suite + ".log")
     with log.open("w") as output:
-        process = subprocess.Popen(["swift", "test", "--filter", args.suite], cwd=root,
+        process = subprocess.Popen(["swift", "test", "--filter", args.filter or args.suite], cwd=root,
+                                   env=os.environ | {"FLUX_NATIVE_TEST_PHASE_PATH": str(directory / "rating-phase.log")},
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:

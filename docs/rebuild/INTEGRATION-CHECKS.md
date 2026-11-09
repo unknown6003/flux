@@ -260,11 +260,22 @@ Application cases, plus the signed candidate build. The manual feedback path
 requires an ingestion acknowledgement and rejects quota suppression. Opt-out,
 caller cancellation and identity reset cannot return a late accepted result.
 The follow-up cb661b2 binds a retry token to one rating and one random identity.
-Its added reset control is awaiting native CI. The native rating form is not
-bound yet. The project survey remains a draft, with no automatic display.
+CI 42555970972 at cb661b2 passed 79 Core, 45 Platform, 11 UI and 43
+Application cases, including the added reset control. The native rating form
+is now bound in b36ab8e but is not accepted. The project survey remains a draft, with no automatic display.
 
 The signed real-app trial reached a local authentication prompt for Screen
 Recording. The tester canceled it and restored 0.21.35. The original and
 candidate have the same designated signing requirement, but the OS grant is
 still off. Physical menu-bar observation and hiding remain blocked on that
 local grant. No update was released.
+
+CI 42556645227 at 4b08ce8 reported success, but its Application log stops
+at ratingControlsWaitForAckAndIgnoreRepeatedSubmit without a final Swift
+Testing completion line. Treat that Application run as incomplete, not a
+pass. Core, Platform and UI each have final completion lines. Three separate
+source reads found no behavior defect in the binding; the parent corrected
+one stale busy-message row in the integration guide. Those reads do not
+resolve the native early exit. Commit 6949ddb requires a positive completed
+Swift Testing summary as well as exit zero, retains raw test logs, and adds
+fixed fixture-only traces at the failing boundary.

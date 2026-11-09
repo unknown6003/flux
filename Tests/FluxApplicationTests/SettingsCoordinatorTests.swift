@@ -154,9 +154,13 @@ private actor RatingFixtureTransport: UsageTransport {
     }
     func close() { settings.close(); defaults.removePersistentDomain(forName: domain) }
     func open() throws -> FeedbackRatingController {
+        ratingTrace("open.show")
         settings.show(.about)
+        ratingTrace("open.find")
         let button = try #require(SettingsCoordinatorTests.find("about.feedback.rate") as? NSButton)
+        ratingTrace("open.click")
         button.performClick(nil)
+        ratingTrace("open.done")
         return try #require(settings.ratingController)
     }
     static func control<T: NSControl>(_ id: String, in controller: FeedbackRatingController, as type: T.Type) throws -> T {
@@ -190,25 +194,25 @@ extension SettingsCoordinatorTests {
     }
 
     @Test(.timeLimit(.minutes(1))) @MainActor func ratingControlsWaitForAckAndIgnoreRepeatedSubmit() async throws {
-        FileHandle.standardError.write(Data("rating-test: begin\n".utf8))
+        ratingTrace("begin")
         let fixture = try RatingFixture()
         defer { fixture.close() }
         await fixture.usage.setEnabled(true)
-        FileHandle.standardError.write(Data("rating-test: enabled\n".utf8))
+        ratingTrace("enabled")
         let sheet = try fixture.open()
-        FileHandle.standardError.write(Data("rating-test: opened\n".utf8))
+        ratingTrace("opened")
         try RatingFixture.choose(3, in: sheet)
-        FileHandle.standardError.write(Data("rating-test: chosen\n".utf8))
+        ratingTrace("chosen")
         let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
         submit.performClick(nil)
-        FileHandle.standardError.write(Data("rating-test: submitted\n".utf8))
+        ratingTrace("submitted")
         #expect(sheet.state.submission == .sending)
         #expect(!submit.isEnabled)
         _ = submit.sendAction(submit.action, to: submit.target)
         var started = await fixture.transport.started.makeAsyncIterator()
-        FileHandle.standardError.write(Data("rating-test: awaiting transport\n".utf8))
+        ratingTrace("awaiting transport")
         _ = await started.next()
-        FileHandle.standardError.write(Data("rating-test: transport started\n".utf8))
+        ratingTrace("transport started")
         #expect(await fixture.transport.snapshot().count == 1)
         let send = try #require(fixture.settings.ratingSend)
         await fixture.transport.release()
@@ -273,5 +277,17 @@ extension SettingsCoordinatorTests {
         #expect(previous.state.submission == .sending)
         #expect(fixture.settings.ratingSend == nil)
         await fixture.usage.setEnabled(false)
+    }
+}
+
+@MainActor private func ratingTrace(_ phase: String) {
+    guard let path = ProcessInfo.processInfo.environment["FLUX_NATIVE_TEST_PHASE_PATH"] else { return }
+    let data = Data((phase + "\n").utf8)
+    if FileManager.default.fileExists(atPath: path), let handle = FileHandle(forWritingAtPath: path) {
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+    } else {
+        FileManager.default.createFile(atPath: path, contents: data)
     }
 }
