@@ -8,6 +8,10 @@ import FluxUI
 private actor PendingUpdateBackend: UpdateBackend {
     private(set) var requests = 0
     private(set) var preparations = 0
+    private(set) var manualDownloads = 0
+    static let disk = URL(fileURLWithPath: "/fixture/Downloads/Flux.dmg")
+    private var holdManual = false
+    private var pendingManual: CheckedContinuation<URL, Never>?
     private var pending: CheckedContinuation<ReleaseManifest, any Error>?
     func latest() async throws -> ReleaseManifest {
         requests += 1
@@ -17,6 +21,13 @@ private actor PendingUpdateBackend: UpdateBackend {
     func prepare(_ release: ReleaseManifest, replacing: URL) async throws -> PreparedUpdate {
         preparations += 1
         throw UpdateStageError.installLocation
+    }
+    func suspendManual() { holdManual = true }
+    func completeManual() { pendingManual?.resume(returning: Self.disk); pendingManual = nil }
+    func prepareManual(_ release: ReleaseManifest) async -> URL {
+        manualDownloads += 1
+        if holdManual { return await withCheckedContinuation { pendingManual = $0 } }
+        return Self.disk
     }
     func handOff(_ update: PreparedUpdate, parentPID: Int32) throws { throw UpdateStageError.notPrepared }
     func discard(_ update: PreparedUpdate) throws { throw UpdateStageError.notPrepared }
@@ -46,6 +57,7 @@ struct UpdateCoordinatorTests {
         while owner.status == .installing, clock.now < automatic { try await Task.sleep(for: .milliseconds(10)) }
         #expect(await backend.preparations == 1)
         #expect(pages == 0)
+        #expect(await backend.manualDownloads == 1)
         owner.install()
         let manual = clock.now.advanced(by: .seconds(2))
         while pages == 0, clock.now < manual { try await Task.sleep(for: .milliseconds(10)) }
@@ -79,8 +91,34 @@ struct UpdateCoordinatorTests {
         let install = clock.now.advanced(by: .seconds(2))
         while manualPages.isEmpty, clock.now < install { try await Task.sleep(for: .milliseconds(10)) }
         #expect(await backend.preparations == 1)
-        #expect(manualPages == [try release().pageURL])
+        #expect(manualPages == [PendingUpdateBackend.disk])
+        #expect(await backend.manualDownloads == 1)
         #expect(owner.status == .available(version: "0.22.0"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor
+    func stoppingDuringAManualDownloadNeverOpensItsLateResult() async throws {
+        let backend = PendingUpdateBackend()
+        await backend.suspendManual()
+        var changes = 0
+        let owner = UpdateCoordinator(version: "0.21.35", installURL: URL(fileURLWithPath: "/fixture/Flux.app"),
+            backend: backend, changed: { changes += 1 }, readyToQuit: { Issue.record("Unexpected quit") },
+            manualInstall: { _ in Issue.record("Unexpected disk open") })
+        owner.start(automatic: false)
+        owner.check()
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while await backend.requests == 0, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        await backend.answer(try release())
+        while owner.status == .checking, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        owner.install()
+        while await backend.manualDownloads == 0, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await backend.manualDownloads == 1)
+        owner.stop()
+        let before = changes
+        await backend.completeManual()
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(changes == before)
     }
 
     @Test(.timeLimit(.minutes(1))) @MainActor

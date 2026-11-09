@@ -24,6 +24,7 @@ public actor UpdateStager {
     private let runner = BoundedCommand()
     private let verifier = SignedApplicationVerifier()
     private var prepared: Stage?
+    private var manualImage: UpdateImageCache?
     private var busy = false
     public init() {}
 
@@ -88,6 +89,62 @@ public actor UpdateStager {
                 try? FileManager.default.removeItem(at: stage.directory)
                 // Keep a possibly mounted workspace for recovery, never walk it.
                 if detached { try? FileManager.default.removeItem(at: stage.workspace) }
+            }.value
+            throw error
+        }
+    }
+
+    /// A non-writable install stays usable. Keep a verified image in a new
+    /// private Downloads folder, and reuse it only while all bytes match.
+    /// The caller opens it only after an explicit install action.
+    public func prepareManual(_ release: ReleaseManifest) async throws -> URL {
+        try Task.checkCancellation()
+        guard !busy, prepared == nil else { throw UpdateStageError.busy }
+        busy = true
+        defer { busy = false }
+        if let manualImage, let cached = try? manualImage.validatedFile(for: release) { return cached }
+        try Task.checkCancellation()
+        let manager = FileManager.default
+        let workspace = manager.temporaryDirectory.appendingPathComponent("flux-update-" + UUID().uuidString)
+        try manager.createDirectory(at: workspace, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let mount = workspace.appendingPathComponent("volume")
+        let disk = workspace.appendingPathComponent("Flux.dmg")
+        var mounted = false
+        var published: URL?
+        do {
+            try manager.createDirectory(at: mount, withIntermediateDirectories: false)
+            try await ReleaseDownload.fetch(release, to: disk)
+            mounted = true
+            try await runner.run(URL(fileURLWithPath: "/usr/bin/hdiutil"), arguments: ["attach", disk.path,
+                "-mountpoint", mount.path, "-readonly", "-nobrowse", "-noautoopen", "-quiet"], seconds: 45)
+            try await verifier.verify(mount.appendingPathComponent("Flux.app"), expectedVersion: release.version)
+            try await runner.run(URL(fileURLWithPath: "/usr/bin/hdiutil"), arguments: ["detach", mount.path, "-quiet"], seconds: 15)
+            mounted = false
+            try Task.checkCancellation()
+            let downloads = try manager.url(for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let directory = downloads.appendingPathComponent("Flux-" + release.version.description + "-" + UUID().uuidString)
+            try manager.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            published = directory
+            let destination = directory.appendingPathComponent("Flux.dmg")
+            try manager.moveItem(at: disk, to: destination)
+            let cached = try UpdateImageCache(verifiedFile: destination, release: release)
+            try Task.checkCancellation()
+            try manager.removeItem(at: workspace)
+            manualImage = cached
+            return destination
+        } catch {
+            let runner = runner, needsDetach = mounted, directory = published
+            await Task.detached(priority: .utility) {
+                var detached = !needsDetach
+                if needsDetach {
+                    do {
+                        try await runner.run(URL(fileURLWithPath: "/usr/bin/hdiutil"),
+                            arguments: ["detach", mount.path, "-force", "-quiet"], seconds: 15)
+                        detached = true
+                    } catch {}
+                }
+                if let directory { try? FileManager.default.removeItem(at: directory) }
+                if detached { try? FileManager.default.removeItem(at: workspace) }
             }.value
             throw error
         }

@@ -6,6 +6,7 @@ import FluxUI
 protocol UpdateBackend: Sendable {
     func latest() async throws -> ReleaseManifest
     func prepare(_ release: ReleaseManifest, replacing: URL) async throws -> PreparedUpdate
+    func prepareManual(_ release: ReleaseManifest) async throws -> URL
     func handOff(_ update: PreparedUpdate, parentPID: Int32) async throws
     func discard(_ update: PreparedUpdate) async throws
 }
@@ -22,6 +23,11 @@ private actor NativeUpdates: UpdateBackend {
         let installer = installer ?? UpdateStager()
         self.installer = installer
         return try await installer.prepare(release, replacing: url)
+    }
+    func prepareManual(_ release: ReleaseManifest) async throws -> URL {
+        let installer = installer ?? UpdateStager()
+        self.installer = installer
+        return try await installer.prepareManual(release)
     }
     func handOff(_ update: PreparedUpdate, parentPID: Int32) async throws {
         guard let installer else { throw UpdateStageError.notPrepared }
@@ -150,11 +156,22 @@ private actor NativeUpdates: UpdateBackend {
             } catch {
                 if let prepared { try? await backend.discard(prepared) }
                 guard let self, self.active, !Task.isCancelled else { return }
-                self.work = nil
                 if let error = error as? UpdateStageError, case .installLocation = error {
-                    self.set(.available(version: release.version.description))
-                    if userInitiated { self.manualInstall(release.pageURL) }
-                } else { self.set(.failed(code: "update.install")) }
+                    do {
+                        let disk = try await backend.prepareManual(release)
+                        guard self.active, !Task.isCancelled else { return }
+                        self.work = nil
+                        self.set(.available(version: release.version.description))
+                        if userInitiated { self.manualInstall(disk) }
+                    } catch {
+                        guard self.active, !Task.isCancelled else { return }
+                        self.work = nil
+                        self.set(.failed(code: "update.download"))
+                    }
+                } else {
+                    self.work = nil
+                    self.set(.failed(code: "update.install"))
+                }
             }
         }
     }
