@@ -27,6 +27,10 @@ def main():
     log = directory / (args.suite + ".log")
     with log.open("w") as output:
         command = ["swift", "run", "FluxRatingProbe"] if args.suite == "FluxRatingProbe" else ["swift", "test", "--filter", args.suite]
+        # AppKit fixtures share NSApplication, appearance, windows and focus.
+        # Actor isolation does not prevent tests from interleaving at awaits.
+        if args.suite in ("FluxUITests", "FluxApplicationTests"):
+            command.append("--no-parallel")
         process = subprocess.Popen(command, cwd=root,
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
