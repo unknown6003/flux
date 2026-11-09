@@ -163,8 +163,7 @@ The scoped update risk review found two recovery faults. Final signature
 rejection now reopens the original app. Discard now tolerates an already
 removed stage directory, rather than retaining a permanently busy token.
 CI42540130699 atc8590cf passed73 Core,29 Platform,9 UI and17 Application tests,
-including idempotent cleanup and the coordinator action controls. The later
-quiet automatic fallback control is awaiting the next run.
+including idempotent cleanup and the coordinator action controls. The quiet automatic fallback control passed in CI42541924774.
 The app coordinator adopts a user check into an in-flight background check,
 and drops late responses after stop. An unwritable destination currently
 opens the release page from a manual install action. It does not implement
@@ -172,13 +171,49 @@ the previous cached DMG in Downloads flow yet.
 
 ## Remaining product gates
 
-The new executable entry and complete SettingsEffects owner are not written.
+ApplicationHost implements the SettingsEffects owner and passes a native
+off-feature composition check. The new executable entry and concrete menu
+bar and lock-screen services remain to be completed.
 Menu-bar physical hiding and its live apply signal are not accepted. No
 assessment-mode fallback is accepted: upstream documents that assessment mode
 can block Notification Center, so that side effect must not be hidden from
 acceptance. Guided native ordering replaces synthetic drags in the design.
-Lock-screen presentation, Duo content and late widget content sizing still
-need integration. Opus's latest UI continuation hit its provider rate limit;
-no substitute UI model ran. The whole signed app, migration, hardware use,
+Lock-screen presentation remains open. Opus completed Duo and late-content
+refit hooks atb78def7. Parent feed binding, lifecycle checks and new fixtures
+are pending native CI and inspection. No substitute UI model ran. The whole signed app, migration, hardware use,
 resource comparison and clean action media remain release gates. No release
 has been made.
+
+## Host and shelf retention
+
+CI42541924774 at9709dba passed73 Core,29 Platform,9 UI and19 Application
+checks. ApplicationHost has required menu and lock-screen protocols, routes
+private content only to local consumers, and completes teardown before the
+clean-session marker. The off-feature host test uses its own defaults suite
+and files. Its external services are fakes, so it does not accept those
+production backends. A source risk review found an initial overflow value
+published before the notch started and a license link with no bundled file.
+Startup order now preserves the value; packaging copies the license into the
+named path. The full packaged application still needs verification.
+
+CI42542583680 ata9aab7a adds a passing saved shelf-expiry control, for20
+Application checks. It proves the old owned copy is removed while the source
+and recent copy survive. A host profile with notch off and positive saved
+expiry creates no shelf files. Expiry has no repeating idle task.
+
+## Native preference trace limit
+
+The native dictionary setter encodes a plist and writes through an
+NSUserDefaults key path. Its immediate method is setTrackedApplications:,
+which calls setObject:forKey: withtrackedApplications. The shared controller
+receivesgroup.com.apple.controlcenter. Foundation posts a defaults-change
+notification on its immediate write path. These static facts identify no
+cross-process observer or live hide operation.
+
+A fresh own-process comparison returned nil for both public suite reads and
+CFData of6620 bytes for both explicit-container reads. The two CF values
+matched in bytes and structure. The public suite therefore did not supply
+the container value in that process. No setter, input, grant or app-state
+change was performed. Private Mac reports are retained at
+/tmp/flux-receiver-construction-2026-11-09.md and
+/tmp/flux-suite-comparison-20261109/report.md. They do not accept live hiding.

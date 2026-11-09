@@ -77,8 +77,9 @@ acceptance. See INTEGRATION-CHECKS.md for the failures, fixes and proof limits.
 All five widgets and five Settings pages have native bindings. Opus designed
 and implemented their UI. Its remaining Duo and content-resize slice is
 blocked by the provider's rate limit. Root has not substituted another UI
-model. The main executable and complete SettingsEffects host remain to be
-written. The old installed app is still0.21.35 build62.
+model. ApplicationHost now binds all SettingsEffects actions to the new services.
+The executable entry and concrete menu-bar and lock-screen services remain
+to be written and accepted. The old installed app is still0.21.35 build62.
 
 The matching-signed Launch Services capture probe now records its exact early
 failure. It returned screenCaptureNotAllowed before taking an image. Further
@@ -93,13 +94,12 @@ The new updater downloads bounded assets, checks their digest, stages a
 publisher-pinned app copy and keeps the existing startup/rollback receipt.
 Eleven local synthetic helper cases pass. The recovery fixes and
 UpdateCoordinator tests passed in CI42540130699 atc8590cf with73 Core,29
-Platform,9 UI and17 Application tests. The later quiet automatic fallback
-control is pending. Signed successful install,
+Platform,9 UI and17 Application tests. The quiet automatic fallback control passed in CI42541924774. Signed successful install,
 tamper rejection at handoff and true Launch Services rollback still need
 acceptance. The previous cached manual DMG fallback also remains open.
 
-Remaining work includes the executable composition, proved menu bar backend,
-Duo and dynamic sizing, drag-to-open shelf, full-screen/display handling,
+Remaining work includes the executable entry, proved menu bar backend,
+accepted Duo and dynamic sizing, drag-to-open shelf, full-screen/display handling,
 lock-screen presentation, complete update fallback, migration and grant tests,
 paired whole-process performance, clean product recordings, final independent
 review and release. No rewrite release has been made.
@@ -108,3 +108,33 @@ Parent owns Core, Platform, app composition, tests, Package.swift, CI and
 probes. Opus owns FluxUI and its integration notes in the existing locked
 worktree. Terra owns bounded real-Mac trials. Keep at most three spaces.
 No line may publish the rewrite before all release gates pass.
+
+## Host and retained data checkpoint
+
+CI42541924774 at9709dba passed73 Core,29 Platform,9 UI and19 Application
+checks. The real host was tested with a private profile and off features.
+It starts the menu owner before marking startup ready, forwards page visits,
+and stops the menu service before ending the session. No fake backend result
+is a proof of native hiding or lock-screen presentation.
+
+CI42542583680 ata9aab7a passed the same suites with20 Application checks.
+The added retention case expires only the old owned shelf copy, preserves the
+original file and the recent copy, and runs without opening a widget. Off
+features with saved positive expiry still create no shelf files. Retention
+runs after configuration, before a shelf load and after a copy, with no idle
+expiry timer.
+
+Opus completed the remaining Duo layout atb78def7, integrated asfdc45b2.
+Duo is the existing Now Playing and Calendar layout. The earlier root brief
+incorrectly called it two compact activities. No such compact feature or
+saved key exists, so that invented requirement is dropped. Parent binding,
+shared feed ownership, evening/event boundaries, coalesced content refitting
+and three new Duo fixtures are awaiting native CI and visual inspection.
+
+Read-only Mac comparison on9 November found that the public defaults suite
+returned nil twice, while explicit-container CF reads returned6620 equal
+bytes twice. The public suite is not a verified replacement for that adapter.
+The native wrapper uses NSUserDefaults forgroup.com.apple.controlcenter and
+its immediate setter posts a defaults-change notification, but the relevant
+observer and live physical hiding remain unknown. No production I/O change
+was made from this trace.
