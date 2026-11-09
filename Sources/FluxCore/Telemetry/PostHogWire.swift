@@ -64,7 +64,7 @@ public struct UsageLogRecord: Sendable {
     }
 }
 
-public enum PostHogWireError: Error {
+public enum PostHogWireError: Error, Equatable {
     case invalidResponse, quotaLimited, oversizedResponse, invalidTimestamp
 }
 

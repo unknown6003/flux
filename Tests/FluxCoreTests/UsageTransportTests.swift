@@ -1,108 +1,188 @@
 import Foundation
+import Darwin
 import Testing
 @testable import FluxCore
 
-private final class UsageHTTPFixtureState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var body = Data()
-    private var requests: [URLRequest] = []
+private struct TLSFixtureFailure: Error {}
 
-    func prepare(_ value: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        body = value
-        requests.removeAll()
+private final class UsageTLSFixture: @unchecked Sendable {
+    let directory: URL
+    let process: Process
+    let port: UInt16
+    let caPath: String
+
+    private init(directory: URL, process: Process, port: UInt16, caPath: String) {
+        self.directory = directory; self.process = process
+        self.port = port; self.caPath = caPath
     }
 
-    func accept(_ request: URLRequest) -> Data {
-        lock.lock()
-        defer { lock.unlock() }
-        requests.append(request)
-        return body
-    }
-
-    func snapshot() -> [URLRequest] {
-        lock.lock()
-        defer { lock.unlock() }
-        return requests
-    }
-}
-
-private final class UsageHTTPFixture: URLProtocol, @unchecked Sendable {
-    static let state = UsageHTTPFixtureState()
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        let body = Self.state.accept(request)
-        guard let url = request.url,
-              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])
-        else { return }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: body)
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
-}
-
-private final class UsageSessionLifecycle: NSObject, URLSessionDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-    let invalidated: AsyncStream<Void>
-    private let continuation: AsyncStream<Void>.Continuation
-    override init() {
-        (invalidated, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(8))
-        super.init()
-    }
-    func makeSession() -> URLSession {
-        lock.lock(); count += 1; lock.unlock()
-        let config = NativeUsageTransport.configuration()
-        config.protocolClasses = [UsageHTTPFixture.self]
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }
-    func creations() -> Int { lock.lock(); defer { lock.unlock() }; return count }
-    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
-        continuation.yield(())
-    }
-}
-
-@Test(.timeLimit(.minutes(1))) func realURLSessionUsesOnlyTheSelectedHostAndBoundsResponseData() async throws {
-    let config = NativeUsageTransport.configuration()
-    #expect(config.urlCache == nil)
-    #expect(config.httpCookieStorage == nil)
-    #expect(config.urlCredentialStorage == nil)
-    #expect(!config.httpShouldSetCookies)
-    let lifecycle = UsageSessionLifecycle()
-    let transport = NativeUsageTransport(region: .eu, makeSession: { lifecycle.makeSession() })
-    #expect(lifecycle.creations() == 0)
-    var invalidated = lifecycle.invalidated.makeAsyncIterator()
-
-    for endpoint in [UsageEndpoint.events, .flags, .logs] {
-        UsageHTTPFixture.state.prepare(Data(#"{"ok":true}"#.utf8))
-        let result = try await transport.send(UsageRequest(endpoint: endpoint, body: Data("{}".utf8), projectToken: "phc_fixture"))
-        _ = await invalidated.next()
-        #expect(result.status == 200)
-        let requests = UsageHTTPFixture.state.snapshot()
-        #expect(requests.count == 1)
-        let request = try #require(requests.first)
-        #expect(request.url?.host == "eu.i.posthog.com")
-        #expect(request.url?.scheme == "https")
-        #expect(request.httpMethod == "POST")
-        #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
-        #expect(request.value(forHTTPHeaderField: "User-Agent") == "Flux")
-        #expect(request.url?.absoluteString.contains("phc_fixture") == false)
-        if endpoint == .logs {
-            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer phc_fixture")
-        } else {
-            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+    static func start(wrongHost: Bool = false) async throws -> UsageTLSFixture {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("flux-usage-tls-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        process.arguments = [root.appendingPathComponent("Scripts/rebuild/usage_tls_fixture.py").path, directory.path]
+            + (wrongHost ? ["--wrong-host"] : [])
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while ContinuousClock.now < deadline, process.isRunning {
+                if let data = try? Data(contentsOf: directory.appendingPathComponent("ready.json")),
+                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let port = object["port"] as? Int, let value = UInt16(exactly: port), value > 0,
+                   let caPath = object["caPath"] as? String {
+                    return UsageTLSFixture(directory: directory, process: process, port: value, caPath: caPath)
+                }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            throw TLSFixtureFailure()
+        } catch {
+            stop(process)
+            try? FileManager.default.removeItem(at: directory)
+            throw error
         }
     }
-    UsageHTTPFixture.state.prepare(Data(repeating: 65, count: PostHogWire.maximumResponseBytes + 1))
-    await #expect(throws: PostHogWireError.self) {
-        try await transport.send(UsageRequest(endpoint: .flags, body: Data("{}".utf8), projectToken: "phc_fixture"))
+
+    private static func stop(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        for _ in 0..<50 where process.isRunning { Thread.sleep(forTimeInterval: 0.01) }
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        for _ in 0..<50 where process.isRunning { Thread.sleep(forTimeInterval: 0.01) }
+        #expect(!process.isRunning)
     }
-    _ = await invalidated.next()
-    #expect(lifecycle.creations() == 4)
+
+    deinit {
+        Self.stop(process)
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func transport(region: PostHogRegion = .eu, trustedCA: String? = nil) -> NativeUsageTransport {
+        NativeUsageTransport(region: region, fixturePort: port, fixtureCAPath: trustedCA ?? caPath)
+    }
+
+    func requests() throws -> [[String: Any]] {
+        guard let data = try? String(contentsOf: directory.appendingPathComponent("requests.jsonl"), encoding: .utf8) else { return [] }
+        return try data.split(separator: "\n").map {
+            try #require(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+        }
+    }
+
+    func waitForRequest() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            if try !requests().isEmpty { return }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        throw TLSFixtureFailure()
+    }
+}
+
+private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = "ok", token: String = "phc_fixture") -> UsageRequest {
+    UsageRequest(endpoint: endpoint, body: Data("{\"mode\":\"\(mode)\"}".utf8), projectToken: token)
+}
+
+@Suite(.timeLimit(.minutes(1))) struct UsageTransportTests {
+    @Test func realTLSMapsBothRegionsAndEveryEndpointWithoutAmbientCredentials() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        for region in [PostHogRegion.eu, .us] {
+            let transport = fixture.transport(region: region)
+            for endpoint in [UsageEndpoint.events, .flags, .logs] {
+                let response = try await transport.send(fixtureRequest(endpoint))
+                #expect(response.status == 200)
+                #expect(response.body == Data(#"{"status":"Ok"}"#.utf8))
+            }
+        }
+        let requests = try fixture.requests()
+        #expect(requests.count == 6)
+        for (index, request) in requests.enumerated() {
+            #expect(request["path"] as? String == ["/batch/", "/flags/?v=2", "/i/v1/logs"][index % 3])
+            let headers = try #require(request["headers"] as? [String: String])
+            #expect(headers["Host"] == (index < 3 ? "eu.i.posthog.com" : "us.i.posthog.com"))
+            #expect(headers["User-Agent"] == "Flux")
+            #expect(headers["Content-Type"] == "application/json")
+            #expect(headers["Cache-Control"] == "no-store")
+            #expect(headers["Cookie"] == nil)
+            #expect(headers["Authorization"] == (index % 3 == 2 ? "Bearer phc_fixture" : nil))
+        }
+    }
+
+    @Test func refusesRedirectsAndReturnsHTTPFailuresWithoutTransportRetries() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        let transport = fixture.transport()
+        #expect(try await transport.send(fixtureRequest(mode: "redirect")).status == 302)
+        #expect(try await transport.send(fixtureRequest(mode: "error")).status == 503)
+        #expect(try fixture.requests().count == 2)
+    }
+
+    @Test func boundsAdvertisedChunkedAndHeaderResponsesBeforeAccumulation() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        let transport = fixture.transport()
+        #expect(try await transport.send(fixtureRequest(mode: "limit")).body.count == 65_536)
+        for mode in ["advertised", "chunked", "headers"] {
+            await #expect(throws: PostHogWireError.oversizedResponse) {
+                try await transport.send(fixtureRequest(mode: mode))
+            }
+        }
+    }
+
+    @Test func validatesRequestBoundsAndRejectsLogHeaderInjectionBeforeSending() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        let transport = fixture.transport()
+        for body in [Data(), Data(repeating: 65, count: 65_537)] {
+            await #expect(throws: UsageTransportFailure.invalidRequest) {
+                try await transport.send(UsageRequest(endpoint: .events, body: body, projectToken: "phc_fixture"))
+            }
+        }
+        await #expect(throws: UsageTransportFailure.invalidRequest) {
+            try await transport.send(fixtureRequest(.logs, token: "phc_fixture\r\nCookie: private"))
+        }
+        #expect(try fixture.requests().isEmpty)
+    }
+
+    @Test func verifiesCertificateTrustAndHostIndependently() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        let wrongHost = try await UsageTLSFixture.start(wrongHost: true)
+        await #expect(throws: UsageTransportFailure.network) {
+            try await wrongHost.transport().send(fixtureRequest())
+        }
+        await #expect(throws: UsageTransportFailure.network) {
+            try await fixture.transport(trustedCA: wrongHost.caPath).send(fixtureRequest())
+        }
+        #expect(try fixture.requests().isEmpty)
+        #expect(try wrongHost.requests().isEmpty)
+    }
+
+    @Test func cancelsAnActiveTransferAndRefusesConcurrentWorkThenRecovers() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        let transport = fixture.transport()
+        let task = Task { try await transport.send(fixtureRequest(mode: "stall")) }
+        defer { task.cancel() }
+        try await fixture.waitForRequest()
+        await #expect(throws: UsageTransportFailure.busy) {
+            try await transport.send(fixtureRequest())
+        }
+        task.cancel()
+        let started = ContinuousClock.now
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(started.duration(to: .now) < .seconds(8))
+        #expect(try await transport.send(fixtureRequest()).status == 200)
+        #expect(try fixture.requests().count == 2)
+    }
+
+    @Test func timesOutAnUnresponsivePeerWithoutWaitingForServerClose() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        let started = ContinuousClock.now
+        await #expect(throws: UsageTransportFailure.network) {
+            try await fixture.transport().send(fixtureRequest(mode: "stall"))
+        }
+        let duration = started.duration(to: .now)
+        #expect(duration >= .seconds(5))
+        #expect(duration < .seconds(11))
+    }
 }

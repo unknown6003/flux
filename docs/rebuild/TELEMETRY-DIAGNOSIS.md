@@ -124,3 +124,55 @@ Primary contracts: [blocking easy transfer](https://curl.se/libcurl/c/curl_easy_
 [bounded write callback](https://curl.se/libcurl/c/CURLOPT_WRITEFUNCTION.html),
 [transfer timeout](https://curl.se/libcurl/c/CURLOPT_TIMEOUT_MS.html), and
 [allowed protocols](https://curl.se/libcurl/c/CURLOPT_PROTOCOLS_STR.html).
+
+
+## Engine comparison, 9 November 2026
+
+Root verified all 44 manifest hashes and the three raw counter differences.
+Archive SHA-256 is
+`91906ad3d47f7022f25d16ea87f89b5ff0e49a17b71ed427b098f067695f654a`.
+One 60-second sample per mode observed idle 1, Foundation 44 and curl 1
+interrupt wakeups. Both requests completed HTTP 200 before sampling and no
+later request started. Root restricted server readback found both marked
+launch events, no person profiles and no stored IP or geolocation fields.
+This supports trying a different HTTP engine. It does not estimate variance,
+identify the Foundation wakeup cause or pass the app's performance budget.
+
+[Raw source, receipts and samples](https://templink.bdwy.xyz/media/1794823644-1794910044-878d4acf3b9c24c30dcaea6f.bin).
+
+## Production transport change contract
+
+Outcome: keep the existing consent, typed payloads, rate limits, retries and
+identity rules, while replacing Foundation HTTP with a bounded libcurl driver.
+Proof: real loopback TLS tests through NativeUsageTransport, existing client
+and identity tests, restricted live ingestion readback, then three unchanged
+signed-app analytics on/off pairs. Product acceptance is separate.
+Constraints: HTTPS fixed EU/US ingestion routes only; verified certificate and
+hostname; no redirects, cookies, netrc or disk queue; 64 KiB request and response
+caps; 16 KiB cumulative accepted response headers; 5-second connect and
+8-second transfer limits; one admitted request per transport; explicit atomic
+cancellation; no UI or cooperative executor blocking. The C driver uses one
+process-lifetime global initialization and per-request easy-handle cleanup.
+
+The system library must be at least curl 7.85 and expose thread-safe global
+initialization, asynchronous DNS and TLS. Runtime feature checks follow the
+one-time initialization, under the supported system-library assumption.
+macOS 14 runtime compatibility still needs verification before release.
+Cancellation is cooperative during the finite request, so an already submitted
+request can reach the server before cancellation takes effect. Reset and disable
+still reject late application results through the existing generation guards.
+
+Proxy environment settings use curl's standard routing. This does not yet prove
+parity with macOS system proxy or PAC settings. No proxy credentials are read
+or logged by Flux. The header cap limits bytes accepted by our callback;
+libcurl can buffer an individual header internally before delivering it.
+
+The old Foundation implementation now lives only in the isolated diagnostic.
+Direct mode preserves that historical comparison; client mode uses the new
+production transport. The raw curl prototype remains diagnostic-only.
+
+Primary contracts: [thread safety](https://curl.se/libcurl/c/threadsafe.html),
+[cancellation](https://curl.se/libcurl/c/CURLOPT_XFERINFOFUNCTION.html),
+[TLS peer checks](https://curl.se/libcurl/c/CURLOPT_SSL_VERIFYPEER.html),
+[proxy routing](https://curl.se/libcurl/c/CURLOPT_PROXY.html), and
+[fixture connection mapping](https://curl.se/libcurl/c/CURLOPT_CONNECT_TO.html).

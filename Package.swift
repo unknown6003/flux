@@ -8,8 +8,11 @@ let package = Package(
         .macOS(.v14)
     ],
     targets: [
+        .target(name: "FluxHTTP", path: "Sources/FluxHTTP",
+                publicHeadersPath: "include", linkerSettings: [.linkedLibrary("curl")]),
         .target(
             name: "FluxCore",
+            dependencies: ["FluxHTTP"],
             path: "Sources/FluxCore",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

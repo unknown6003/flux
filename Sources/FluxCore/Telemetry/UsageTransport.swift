@@ -1,4 +1,5 @@
 import Foundation
+import FluxHTTP
 
 public enum UsageEndpoint: Sendable, Equatable {
     case events, flags, logs
@@ -24,81 +25,109 @@ public protocol UsageTransport: Sendable {
     func send(_ request: UsageRequest) async throws -> UsageResponse
 }
 
-private final class RefuseUsageRedirects: NSObject, URLSessionTaskDelegate, Sendable {
-    func urlSession(
-        _ session: URLSession, task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-        completionHandler: @escaping @Sendable (URLRequest?) -> Void
-    ) {
-        // Project tokens and payloads must never follow an HTTP redirect.
-        completionHandler(nil)
+public enum UsageTransportFailure: Error, Sendable, Equatable {
+    case busy, invalidRequest, network, unavailable
+}
+
+private final class UsageTransfer: @unchecked Sendable {
+    // The C token permits concurrent cancellation. The worker and cancellation
+    // handler retain this owner until neither can access the pointer.
+    let pointer: OpaquePointer
+
+    init() throws {
+        guard let pointer = FluxHTTPCreate() else { throw UsageTransportFailure.unavailable }
+        self.pointer = pointer
     }
+
+    deinit { FluxHTTPDestroy(pointer) }
+    func cancel() { FluxHTTPCancel(pointer) }
 }
 
 public actor NativeUsageTransport: UsageTransport {
     private let region: PostHogRegion
-    private let makeSession: @Sendable () -> URLSession
-    private let redirects = RefuseUsageRedirects()
+    private let queue = DispatchQueue(label: "Flux.usage.http", qos: .utility)
+    private let fixturePort: UInt16
+    private let fixtureCAPath: String
+    private var busy = false
 
     public init(region: PostHogRegion) {
         self.region = region
-        makeSession = { URLSession(configuration: Self.configuration()) }
+        fixturePort = 0
+        fixtureCAPath = ""
     }
 
-    static func configuration() -> URLSessionConfiguration {
-        let config = URLSessionConfiguration.ephemeral
-        config.urlCache = nil
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.urlCredentialStorage = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 8
-        config.waitsForConnectivity = false
-        config.httpMaximumConnectionsPerHost = 1
-        config.allowsConstrainedNetworkAccess = false
-        config.httpAdditionalHeaders = ["User-Agent": "Flux", "Cache-Control": "no-store"]
-        return config
-    }
-
-    init(region: PostHogRegion, makeSession: @escaping @Sendable () -> URLSession) {
+    // A local TLS fixture changes the connection, never the requested host or
+    // TLS verification. No app setting, environment variable or public init
+    // can supply this override.
+    init(region: PostHogRegion, fixturePort: UInt16, fixtureCAPath: String) {
         self.region = region
-        self.makeSession = makeSession
+        self.fixturePort = fixturePort
+        self.fixtureCAPath = fixtureCAPath
     }
 
     public func send(_ payload: UsageRequest) async throws -> UsageResponse {
         try Task.checkCancellation()
-        var components = URLComponents(url: region.host, resolvingAgainstBaseURL: false)!
+        guard !busy else { throw UsageTransportFailure.busy }
+        guard !payload.body.isEmpty, payload.body.count <= 65_536 else {
+            throw UsageTransportFailure.invalidRequest
+        }
+        let transfer = try UsageTransfer()
+        let regionCode: Int32
+        switch region {
+        case .eu: regionCode = 0
+        case .us: regionCode = 1
+        }
+        let endpointCode: Int32
         switch payload.endpoint {
-        case .events: components.path = "/batch/"
-        case .flags:
-            components.path = "/flags/"
-            components.queryItems = [URLQueryItem(name: "v", value: "2")]
-        case .logs: components.path = "/i/v1/logs"
+        case .events: endpointCode = 0
+        case .flags: endpointCode = 1
+        case .logs: endpointCode = 2
         }
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "POST"
-        request.httpBody = payload.body
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if case .logs = payload.endpoint {
-            request.setValue("Bearer " + payload.projectToken, forHTTPHeaderField: "Authorization")
-        }
-        let session = makeSession()
-        defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(for: request, delegate: redirects)
-        defer { bytes.task.cancel() }
-        guard let response = response as? HTTPURLResponse else { throw PostHogWireError.invalidResponse }
-        guard response.expectedContentLength <= Int64(PostHogWire.maximumResponseBytes) else {
-            throw PostHogWireError.oversizedResponse
-        }
-        var data = Data()
-        for try await byte in bytes {
+        let port = fixturePort
+        let caPath = fixtureCAPath
+        busy = true
+        defer { busy = false }
+        let response: UsageResponse = try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            guard data.count < PostHogWire.maximumResponseBytes else { throw PostHogWireError.oversizedResponse }
-            data.append(byte)
-        }
-        return UsageResponse(status: response.statusCode, body: data)
+            return try await withCheckedThrowingContinuation { continuation in
+                // Blocking DNS/TLS/HTTP stays off the main actor and Swift's
+                // cooperative executor. One transfer per transport is admitted.
+                queue.async {
+                    let code = payload.body.withUnsafeBytes { bytes in
+                        payload.projectToken.withCString { token in
+                            caPath.withCString { ca in
+                                FluxHTTPPerform(transfer.pointer, regionCode, endpointCode,
+                                    bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count,
+                                    token, port, port == 0 ? nil : ca)
+                            }
+                        }
+                    }
+                    do {
+                        switch code {
+                        case 0: break
+                        case 1: throw CancellationError()
+                        case 2: throw UsageTransportFailure.invalidRequest
+                        case 3: throw PostHogWireError.oversizedResponse
+                        case 5: throw UsageTransportFailure.unavailable
+                        default: throw UsageTransportFailure.network
+                        }
+                        let count = FluxHTTPBodyLength(transfer.pointer)
+                        guard count <= PostHogWire.maximumResponseBytes else {
+                            throw PostHogWireError.oversizedResponse
+                        }
+                        var body = Data(count: count)
+                        let copied = body.withUnsafeMutableBytes { bytes in
+                            FluxHTTPCopyBody(transfer.pointer,
+                                bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count)
+                        }
+                        guard copied == count else { throw PostHogWireError.invalidResponse }
+                        continuation.resume(returning: UsageResponse(
+                            status: Int(FluxHTTPStatus(transfer.pointer)), body: body))
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+        } onCancel: { transfer.cancel() }
+        try Task.checkCancellation()
+        return response
     }
 }

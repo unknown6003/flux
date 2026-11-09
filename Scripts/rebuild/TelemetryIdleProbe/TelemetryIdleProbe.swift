@@ -45,12 +45,14 @@ private struct CurlProbeFailure: Error { let code: Int }
 
 private actor TracedTransport: UsageTransport {
     private let native: NativeUsageTransport?
+    private let foundation: FoundationUsageTransport?
     private let mode: Mode
     private var count = 0
 
     init(mode: Mode) {
         self.mode = mode
-        native = mode == .curl ? nil : NativeUsageTransport(region: FluxUsageProject.region)
+        native = mode == .client ? NativeUsageTransport(region: FluxUsageProject.region) : nil
+        foundation = mode == .direct ? FoundationUsageTransport(region: FluxUsageProject.region) : nil
     }
 
     func send(_ request: UsageRequest) async throws -> UsageResponse {
@@ -80,8 +82,9 @@ private actor TracedTransport: UsageTransport {
                 response = result.0
                 protocolCode = result.1
             } else {
-                guard let native else { throw CurlProbeFailure(code: -3) }
-                response = try await native.send(request)
+                if let foundation { response = try await foundation.send(request) }
+                else if let native { response = try await native.send(request) }
+                else { throw CurlProbeFailure(code: -3) }
             }
             emit("requestFinished", mode: mode, request: number, status: response.status, protocolCode: protocolCode)
             return response
