@@ -52,15 +52,18 @@ public enum MenuBarItemDrag {
         let move = try event(.mouseMoved, start, command: false)
         let down = try event(.leftMouseDown, start, command: true)
         let up = try event(.leftMouseUp, end, command: true)
+        // Make every event before posting any, so a mouse-down always gets its mouse-up.
+        let drags = try (1...5).map { step in
+            let progress = CGFloat(step) / 5
+            return try event(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * progress,
+                                                        y: start.y + (end.y - start.y) * progress), command: true)
+        }
         move.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.03)
         down.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.06)
-        for step in 1...5 {
-            let progress = CGFloat(step) / 5
-            let point = CGPoint(x: start.x + (end.x - start.x) * progress,
-                                y: start.y + (end.y - start.y) * progress)
-            try event(.leftMouseDragged, point, command: true).post(tap: .cghidEventTap)
+        for drag in drags {
+            drag.post(tap: .cghidEventTap)
             Thread.sleep(forTimeInterval: 0.12)
         }
         up.post(tap: .cghidEventTap)
