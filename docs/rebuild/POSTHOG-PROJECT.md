@@ -32,8 +32,8 @@ was submitted during setup. Public identifiers are in FluxRatingSurvey.
 
 The explicit submission path uses a stable event and submission UUID for
 retries. It accepts only the fixed UsageRating enum and requires saved consent.
-A UI acknowledgement requires HTTP 200 with numeric status 1 and no reported
-quota suppression. It rejects late replies after reset or opt-out and observes
+A UI acknowledgement requires HTTP 200 with the documented batch status
+"Ok" or legacy numeric status 1, and no reported quota suppression. It rejects late replies after reset or opt-out and observes
 caller cancellation. This is ingestion acknowledgement, not proof that a
 server query has processed the event. Native controls and the fake acknowledgement path passed CI42559152812.
 Live rating readback remains required. A canceled or failed request may already have reached the server.
@@ -48,3 +48,10 @@ The public rating API uses an opaque `UsageRatingSubmission`. Create it with
 `UsageCollection.submitRating(_:)`. One token binds one rating and the current
 random identity. Retries reuse it. Core rejects it after an identity reset,
 before network admission. The UI cannot read or replace its identifiers.
+
+Live probe CI42559974776 returned HTTP200 for all four requests, but the new
+rating acknowledgement check rejected the15-byte batch reply. The official
+API overview documents status "Ok". Core now accepts that exact value plus
+legacy numeric1, rejects false/error/string-number forms, and retains quota
+suppression checks. The failed run is not a rating-delivery pass. The next
+live run and server readback must prove the corrected contract.

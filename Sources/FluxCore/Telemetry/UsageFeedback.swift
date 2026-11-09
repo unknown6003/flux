@@ -28,9 +28,16 @@ public enum UsageDeliveryResult: String, Sendable {
 extension PostHogWire {
     static func ratingAcknowledgement(_ response: UsageResponse) -> UsageDeliveryResult {
         guard response.status == 200, response.body.count <= maximumResponseBytes,
-              let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
-              let status = object["status"] as? NSNumber,
-              CFGetTypeID(status) != CFBooleanGetTypeID(), status.doubleValue == 1 else { return .failed }
+              let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] else { return .failed }
+        let accepted: Bool
+        if let status = object["status"] as? String {
+            accepted = status == "Ok"
+        } else if let status = object["status"] as? NSNumber {
+            accepted = CFGetTypeID(status) != CFBooleanGetTypeID() && status.doubleValue == 1
+        } else {
+            accepted = false
+        }
+        guard accepted else { return .failed }
         if let raw = object["quota_limited"] {
             guard let limited = raw as? [String] else { return .failed }
             if !limited.isEmpty { return .limited }

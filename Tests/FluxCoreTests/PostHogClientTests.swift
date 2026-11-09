@@ -211,6 +211,10 @@ private actor BlockingUsageTransport: UsageTransport {
 @Test func ratingDeliveryRequiresTheIngestionAckAndRejectsQuotaSuppression() {
     let cases: [(UsageResponse, UsageDeliveryResult)] = [
         (.init(status: 200, body: Data(#"{"status":1}"#.utf8)), .accepted),
+        (.init(status: 200, body: Data(#"{"status":"Ok"}"#.utf8)), .accepted),
+        (.init(status: 200, body: Data(#"{"status":"Ok","quota_limited":["events"]}"#.utf8)), .limited),
+        (.init(status: 200, body: Data(#"{"status":"error"}"#.utf8)), .failed),
+        (.init(status: 200, body: Data(#"{"status":"1"}"#.utf8)), .failed),
         (.init(status: 200, body: Data(#"{"status":1,"quota_limited":[]}"#.utf8)), .accepted),
         (.init(status: 200, body: Data(#"{"status":1,"quota_limited":["events"]}"#.utf8)), .limited),
         (.init(status: 200, body: Data(#"{"status":1,"quota_limited":true}"#.utf8)), .failed),
