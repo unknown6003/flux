@@ -331,3 +331,28 @@ longer warmup or relaxed budget is allowed. The app and saved preferences
 are restored through the existing bounded transaction; concurrent user
 changes must be preserved. Physical menu-bar proof and other release gates
 remain open.
+
+
+## Trace build and review checkpoint
+
+Source `a33536863ca38f9677c3edc1bcd97536c09a08c8` passed all eight native
+trace controls and built a matching-signed Release diagnostic in
+[CI 42608213419](https://github.com/unknown6003/flux/actions/runs/42608213419).
+Root checked the archive size/hash, embedded source and diagnostic marker,
+executable hash and pinned signer metadata, then downloaded the uploaded
+archive and matched its bytes. This is an unpublished diagnostic build.
+
+Separate Standards and Spec reads retained no findings. Risk review found
+that the new input alone could start legacy build and tagged release work.
+The fix excludes trace dispatches from all other jobs. Root parsed the YAML
+and evaluated all 16 trace/core/tag/drag/telemetry combinations; only the trace
+job was eligible. The first native run failed on a throwing test macro call;
+evaluating the call before unwrapping fixed it. The passing run completed all
+eight controls, rather than merely compiling or reporting a zero-test exit.
+
+A fixed six-run full-app trace transaction is now delegated to the Mac.
+It retains the previous 45-second warmup, 60-second samples and EMPTY profile.
+Both analytics states are instrumented. Clock bridges align fixed trace codes
+with each sample bin. The original app and preferences must be restored.
+No app-budget, physical hiding, runtime ABI or release acceptance follows
+from this build or from the isolated quiet runs.
