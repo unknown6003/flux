@@ -156,6 +156,17 @@ panel.onWillDismiss = { widget in /* stop all widget hardware */ }
 - Exactly one widget controller is a child at a time. `show(_:)`, `setWidgets(_:)`, `dismiss()`. On a switch or dismiss, the callback runs first, then the old child is removed and released.
 - Keys: ← → switch tabs when the panel has focus. Esc dismisses and orders the window out. `viewDidDisappear` also dismisses, so no widget stays loaded while hidden.
 - Reduce Motion: the 0.15 s fade between widgets is skipped.
+
+### Duo and refit (not compiled)
+
+New public API on `NotchPanelController`: `setDuo(_ requested: Bool)`, `isDuoRequested`, `companion: Widget?`, `onCompanionChange: ((Widget?) -> Void)?`, `onLayoutChange: (() -> Void)?`, `duoCompanionFraction` (0.36, the old `NotchMetrics.duoCalendarPaneFraction`) and `duoGap` (12 pt). Nothing existing changed its signature.
+
+- Duo shows only while the parent asked for it, Now Playing is the current widget, and Calendar is in `widgets`. Now Playing sits on the left, Calendar on the right at 36 % of the 408 pt content width. Both controllers come from `makeWidget`. The panel adds no events, titles or placeholder rows.
+- Order on: `onCompanionChange(.calendar)`, then `makeWidget(.calendar)`, then layout, then `onLayoutChange`. Order off: the Calendar view goes, then `onCompanionChange(nil)`, then `onLayoutChange`. A tab switch away from Now Playing, `dismiss()` and `setWidgets` without Calendar remove the pane the same way. `onWillSwitch` and `onWillDismiss` still run first, before any view goes.
+- The Calendar tab still opens Calendar alone.
+- Focus: the focused control in Now Playing keeps focus when the pane comes or goes. If focus was inside the removed Calendar pane, it moves to the tab strip.
+- Reduce Motion skips the fade for Duo on and off.
+- The camera spacer and the 16 pt insets are the same as the single layout.
 - The parent owns the panel window, hover zone, hotkey, closed and wing states, and every camera or media session.
 
 ## Compact notch
@@ -221,7 +232,14 @@ notch.stop()
 - A display change while open collapses first. The old widget and camera go before the window moves. `stop` and lock release the window and both controllers.
 - Hover: one `NSTrackingArea` (`.mouseEnteredAndExited`, `.activeAlways`, `.inVisibleRect`) on the window content, only while hover is on. No event monitor of any kind. Entering the compact notch opens the last-used widget without focus. Leaving the open panel starts one close-delay `Task.sleep`; re-entry cancels it. A panel opened with focus does not close on exit. `setHover(enabled: false)`, lock and `stop` remove the area and cancel the task. The delay is clamped to 0...10 s.
 - Compact `.expand`: focus only when `NSApp.currentEvent` is a key press.
+- Duo: `setDuo(_ requested: Bool)` and `isDuoRequested`, `companion: Widget?`. The value is kept across collapse and reopen, and each new panel gets it before its first widget. `Callbacks` has a new last parameter `companionChanged: @MainActor (Widget?) -> Void`, default `{ _ in }`, so current callers still build.
+- Late content: `contentDidChange(_ widget: Widget)`. The parent calls it after it sends new state to a shown widget whose height can change. It refits only when `widget` is the open tab or the Duo pane. All calls in one main-actor turn give one `resizeExpanded()` on the next turn. Tab switches and Duo changes use the same path. The refit task is separate from the pending return-to-compact task, so a refit never cancels it. `collapse`, lock and `stop` cancel it. It never makes the window key.
 - Not here: file-drag auto-open of the shelf, full-screen hide, lock-screen presenter, and screen choice. The parent picks the screen and calls `update(screen:)` on `NSApplication.didChangeScreenParametersNotification`.
+- Root integration for Duo and refit, in `NotchRuntime` (root owns it):
+  1. Compute Duo as the old rule did: `Preferences.duoEnabled`, the Calendar widget enabled, Calendar access allowed, and the agenda has a relevant event (old `CalendarService.hasDuoEvents`). Call `window.setDuo(_:)` when any of these change. `FeatureDemand` already counts Calendar as visible while Now Playing is visible and `duoEnabled` is on.
+  2. `WidgetCoordinator` must hold the Calendar controller and its subscription beside the Now Playing one. `companionChanged(nil)` is the place to drop only the Calendar part. `willDismissWidget` then `widgets.dismiss()` must still drop both.
+  3. After each push of new state to Now Playing, Calendar or File Shelf, call `window.contentDidChange(widget)`. The first push after `.loading` is the case that needs it.
+- Needs native proof for Duo and refit: compile; a capture of Duo at 440 pt with 0, 1 and 4 events per day; a panel opened on Calendar `.loading` that grows once when events arrive and never past 80 % of the screen; the same for Now Playing and File Shelf; Duo off while focus is in the Calendar pane; a tab switch and a collapse while a refit is pending; Reduce Motion on.
 - Needs native proof: the area coordinate space on each macOS release, `.statusBar` against the menu bar and full-screen apps, tracking-area enter when the content view swaps under a still pointer, and the fitting height of each widget.
 
 ## Proof the root must run
@@ -536,6 +554,8 @@ Limits:
 These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
 
 ## Not written yet
+
+- A compact notch that shows two `ActivityItem` values at once. The old app has no such layout and no saved key for it, so I did not invent one. `CompactNotchState` still takes one `currentActivity`. If root has a source for this, name it and the layout can follow.
 
 - "Show on displays without a notch". FluxCore has no key for it, so the Notch page has no switch.
 - Clipboard check rate and lock-state check cost text. Both wait for measurement.

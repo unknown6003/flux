@@ -121,6 +121,17 @@ public final class NotchPanelController: NSViewController {
     public var onWillSwitch: ((_ from: Widget?, _ to: Widget) -> Void)?
     /// Called before the panel content is removed. The parent then closes the window.
     public var onWillDismiss: ((Widget?) -> Void)?
+    /// Called with `.calendar` before the Duo companion is made, and with nil
+    /// after it is removed. The primary widget's own callbacks still run.
+    public var onCompanionChange: ((Widget?) -> Void)?
+    /// Called after a change that alters the fitting height, such as Duo on
+    /// or off. The window owner refits once. Nothing here repeats.
+    public var onLayoutChange: (() -> Void)?
+
+    /// Share of the content width that the Duo calendar pane takes.
+    public static let duoCompanionFraction: CGFloat = 0.36
+    /// Space between the two Duo panes.
+    public static let duoGap: CGFloat = 12
 
     public private(set) var widgets: [Widget]
     public private(set) var current: Widget?
@@ -131,7 +142,14 @@ public final class NotchPanelController: NSViewController {
     private let container = NSView()
     private let cameraSpacer = NSView()
     private weak var child: NSViewController?
+    private weak var companionChild: NSViewController?
+    private var paneConstraints: [NSLayoutConstraint] = []
     private var dismissed = false
+
+    /// The parent's Duo request. See `setDuo(_:)`.
+    public private(set) var isDuoRequested = false
+    /// The widget shown beside the current one, or nil.
+    public var companion: Widget? { companionChild == nil ? nil : .calendar }
 
     /// - Parameters:
     ///   - widgets: enabled widgets in the saved order.
@@ -194,21 +212,24 @@ public final class NotchPanelController: NSViewController {
         let content = controller.view
         content.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(content)
-        NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            content.topAnchor.constraint(equalTo: container.topAnchor),
-            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
         child = controller
         current = widget
         if let index = widgets.firstIndex(of: widget) { tabs.selectedSegment = index }
-        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            let fade = CATransition()
-            fade.type = .fade
-            fade.duration = 0.15
-            container.layer?.add(fade, forKey: nil)
-        }
+        if duoApplies { addCompanion() } else { layoutPanes() }
+        fadeContainer()
+    }
+
+    /// Duo view: Now Playing with Calendar beside it. The parent decides
+    /// when Duo applies, from the saved `flux.notch.duo` value, Calendar
+    /// access and a relevant event. The panel shows Duo only while Now
+    /// Playing is the current widget and Calendar is in `widgets`. Both
+    /// panes come from `makeWidget`, so they hold only parent data.
+    /// Turning Duo off removes only the calendar pane.
+    public func setDuo(_ requested: Bool) {
+        guard requested != isDuoRequested else { return }
+        isDuoRequested = requested
+        guard !dismissed, child != nil else { return }
+        reconcileCompanion()
     }
 
     /// Replaces the widget list, for example after a Settings change.
@@ -217,6 +238,7 @@ public final class NotchPanelController: NSViewController {
             if !result.contains(widget) { result.append(widget) }
         })
         if isViewLoaded { reloadTabs() }
+        if child != nil, !dismissed { reconcileCompanion() }
         if let current, !widgets.contains(current) {
             if let first = widgets.first {
                 show(first)
@@ -282,10 +304,83 @@ public final class NotchPanelController: NSViewController {
     }
 
     private func removeChild() {
+        removeCompanion()
         guard let controller = child else { return }
+        NSLayoutConstraint.deactivate(paneConstraints)
+        paneConstraints = []
         controller.view.removeFromSuperview()
         controller.removeFromParent()
         child = nil
+    }
+
+    private var duoApplies: Bool {
+        isDuoRequested && !dismissed && current == .nowPlaying && widgets.contains(.calendar)
+    }
+
+    private func reconcileCompanion() {
+        let wanted = duoApplies
+        guard wanted != (companionChild != nil) else { return }
+        if wanted { addCompanion() } else { removeCompanion(); layoutPanes() }
+        fadeContainer()
+        onLayoutChange?()
+    }
+
+    private func addCompanion() {
+        guard companionChild == nil else { layoutPanes(); return }
+        onCompanionChange?(.calendar)
+        // The callback may have dismissed the panel or changed Duo.
+        guard duoApplies, child != nil else { onCompanionChange?(nil); layoutPanes(); return }
+        let controller = makeWidget(.calendar)
+        addChild(controller)
+        controller.view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(controller.view)
+        companionChild = controller
+        layoutPanes()
+    }
+
+    private func removeCompanion() {
+        guard let controller = companionChild else { return }
+        let view = controller.view
+        let hadFocus = (view.window?.firstResponder as? NSView).map { $0.isDescendant(of: view) } ?? false
+        view.removeFromSuperview()
+        controller.removeFromParent()
+        companionChild = nil
+        if hadFocus, let window = self.view.window { window.makeFirstResponder(tabs) }
+        onCompanionChange?(nil)
+    }
+
+    /// Pins the primary widget alone, or beside the companion.
+    private func layoutPanes() {
+        NSLayoutConstraint.deactivate(paneConstraints)
+        paneConstraints = []
+        guard let primary = child?.view else { return }
+        var list = [
+            primary.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            primary.topAnchor.constraint(equalTo: container.topAnchor),
+            primary.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ]
+        if let side = companionChild?.view {
+            list += [
+                side.leadingAnchor.constraint(equalTo: primary.trailingAnchor, constant: Self.duoGap),
+                side.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                side.topAnchor.constraint(equalTo: container.topAnchor),
+                side.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+                side.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: Self.duoCompanionFraction,
+                                            constant: -Self.duoGap * Self.duoCompanionFraction),
+            ]
+        } else {
+            list.append(primary.trailingAnchor.constraint(equalTo: container.trailingAnchor))
+        }
+        NSLayoutConstraint.activate(list)
+        paneConstraints = list
+    }
+
+    private func fadeContainer() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = 0.15
+        container.layer?.add(fade, forKey: nil)
     }
 
     @objc private func tabChanged() {

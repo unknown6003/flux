@@ -35,15 +35,21 @@ public final class NotchWindowCoordinator {
         /// `.cycle`, `.dismissActivity` and `.restoreActivity`. `.expand` is
         /// handled here and is not forwarded.
         public var compactAction: @MainActor (CompactNotchAction) -> Void
+        /// Duo calendar pane: `.calendar` before `makeWidget(.calendar)` for
+        /// the pane, nil after the pane is removed. `willDismissWidget` still
+        /// runs once for the whole panel, before both views go.
+        public var companionChanged: @MainActor (Widget?) -> Void
 
         public init(willShowWidget: @escaping @MainActor (_ from: Widget?, _ to: Widget) -> Void,
                     makeWidget: @escaping @MainActor (Widget) -> NSViewController,
                     willDismissWidget: @escaping @MainActor (Widget?) -> Void,
-                    compactAction: @escaping @MainActor (CompactNotchAction) -> Void) {
+                    compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
+                    companionChanged: @escaping @MainActor (Widget?) -> Void = { _ in }) {
             self.willShowWidget = willShowWidget
             self.makeWidget = makeWidget
             self.willDismissWidget = willDismissWidget
             self.compactAction = compactAction
+            self.companionChanged = companionChanged
         }
     }
 
@@ -59,6 +65,10 @@ public final class NotchWindowCoordinator {
     public private(set) var geometry: NotchGeometry?
     public private(set) var widgets: [Widget] = []
     public private(set) var isLocked = false
+    /// The parent's last `setDuo(_:)` value. Kept across collapse and reopen.
+    public private(set) var isDuoRequested = false
+    /// The Duo calendar pane, while one is shown.
+    public var companion: Widget? { panel?.companion }
 
     private let callbacks: Callbacks
     private var window: NotchWindow?
@@ -78,6 +88,7 @@ public final class NotchWindowCoordinator {
     private weak var trackedView: NSView?
     private var closeTask: Task<Void, Never>?
     private var pendingTask: Task<Void, Never>?
+    private var refitTask: Task<Void, Never>?
 
     public init(callbacks: Callbacks) {
         self.callbacks = callbacks
@@ -150,6 +161,27 @@ public final class NotchWindowCoordinator {
         if presentation == .compact { renderCompact() }
     }
 
+    /// Duo view on or off. The parent sends true only when the saved Duo
+    /// switch is on, Calendar access is allowed, the Calendar widget is
+    /// enabled and the agenda has a relevant event. It shows only while
+    /// Now Playing is open. The window refits once on the next turn.
+    public func setDuo(_ requested: Bool) {
+        guard requested != isDuoRequested else { return }
+        isDuoRequested = requested
+        panel?.setDuo(requested)
+    }
+
+    /// Late content: call after you send a widget new state that can change
+    /// its height, for example Calendar `.loading` to `.events`, Now Playing
+    /// `.loading` to `.playing`, or a File Shelf item list. It does nothing
+    /// unless `widget` is shown, as the open tab or the Duo pane. Calls in
+    /// one main-actor turn give one refit on the next turn. No timer, no poll.
+    public func contentDidChange(_ widget: Widget) {
+        guard case .expanded(let open) = presentation, panel != nil,
+              open == widget || companion == widget else { return }
+        scheduleRefit()
+    }
+
     /// Hover open and close. `closeDelay` is clamped to `closeDelayRange`.
     public func setHover(enabled: Bool, closeDelay: TimeInterval) {
         self.closeDelay = closeDelay.isFinite
@@ -178,6 +210,9 @@ public final class NotchWindowCoordinator {
             }
             controller.onWillSwitch = { [weak self] from, to in self?.panelWillSwitch(from: from, to: to) }
             controller.onWillDismiss = { [weak self] widget in self?.panelWillDismiss(widget) }
+            controller.onCompanionChange = { [weak self] widget in self?.callbacks.companionChanged(widget) }
+            controller.onLayoutChange = { [weak self] in self?.scheduleRefit() }
+            controller.setDuo(isDuoRequested)
             panel = controller
             let width = controller.view.widthAnchor.constraint(equalToConstant: geometry.expandedRect(contentHeight: 0).width)
             width.isActive = true
@@ -268,7 +303,7 @@ public final class NotchWindowCoordinator {
         lastWidget = to
         presentation = .expanded(to)
         // A tab click switches after this returns. Fit once, on the next turn.
-        schedule { $0.resizeExpanded() }
+        scheduleRefit()
     }
 
     private func panelWillDismiss(_ widget: Widget?) {
@@ -293,6 +328,7 @@ public final class NotchWindowCoordinator {
 
     private func releasePanel() {
         pendingTask?.cancel(); pendingTask = nil
+        refitTask?.cancel(); refitTask = nil
         panelWidth = nil
         if let window, window.contentViewController === panel { window.contentViewController = nil }
         panel = nil
@@ -304,6 +340,7 @@ public final class NotchWindowCoordinator {
         untrack()
         if case .expanded = presentation { dismissPanel() }
         pendingTask?.cancel(); pendingTask = nil
+        refitTask?.cancel(); refitTask = nil
         window?.orderOut(nil)
         window?.contentViewController = nil
         window = nil
@@ -326,6 +363,19 @@ public final class NotchWindowCoordinator {
             guard !Task.isCancelled, let self else { return }
             self.pendingTask = nil
             work(self)
+        }
+    }
+
+    /// One refit on the next main-actor turn. Separate from `schedule`, so a
+    /// refit never cancels a pending return to compact. Extra calls before it
+    /// runs join it.
+    private func scheduleRefit() {
+        guard refitTask == nil else { return }
+        refitTask = Task { @MainActor [weak self] in
+            guard !Task.isCancelled, let self else { return }
+            self.refitTask = nil
+            guard case .expanded = self.presentation else { return }
+            self.resizeExpanded()
         }
     }
 
