@@ -8,7 +8,7 @@ import FluxUI
     var draggingDestinationWindow: NSWindow?
     var draggingLocation = NSPoint(x: 5, y: 5)
     var draggedImageLocation: NSPoint { draggingLocation }
-    var draggedImage: NSImage? { nil }
+    nonisolated var draggedImage: NSImage? { nil }
     let draggingPasteboard = NSPasteboard.withUniqueName()
     var draggingSequenceNumber = 1
     var draggingSource: Any?
