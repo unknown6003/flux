@@ -65,6 +65,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let controls: any PositionMenuBarControlOwner
     private let hider: (any PerApplicationHidingOwner)?
     private var hidingRefused = false
+    private var outsideClickMonitor: Any?
     private let readInventory: @MainActor () async -> PositionMenuBarInventory
     private let permissionStatus: @MainActor () -> SystemAccess
     private let requestPreviewPermission: @MainActor () async -> SystemAccess
@@ -230,6 +231,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         controls.configure(capability: .unavailable, reveal: .all,
                            alwaysHiddenEnabled: false, style: state.options.iconStyle)
         hider?.stop(); hider?.onResult = nil; hidingRefused = false
+        updateOutsideClickMonitor(reveal: .collapsed)
         controls.stop()
         controls.onToggle = nil; controls.onFinishArrange = nil
         state.isArranging = false
@@ -486,8 +488,37 @@ private struct PositionMenuBarArrangementContext: Equatable {
         else { state.mode = .byPosition }
     }
 
+    /// 0.21.35 collapsed the drawer on a click outside the menu bar. Clicks in
+    /// the menu bar keep it open so a revealed icon can be used.
+    private func updateOutsideClickMonitor(reveal effective: MenuBarReveal) {
+        let wanted = observesSystem && started && effective != .collapsed
+        if wanted, outsideClickMonitor == nil {
+            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+                MainActor.assumeIsolated { self?.collapseAfterOutsideClick() }
+            }
+        } else if !wanted, let monitor = outsideClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            outsideClickMonitor = nil
+        }
+    }
+
+    private func collapseAfterOutsideClick() {
+        guard started, !editorVisible, !arranging, reveal != .collapsed else { return }
+        let point = NSEvent.mouseLocation
+        let inMenuBar = NSScreen.screens.contains(where: { screen in
+            screen.frame.contains(point)
+                && point.y >= screen.frame.maxY - max(screen.frame.maxY - screen.visibleFrame.maxY, NSStatusBar.system.thickness)
+        })
+        guard !inMenuBar else { return }
+        reveal = .collapsed
+        cancelRehide()
+        applyControls()
+        changed()
+    }
+
     private func applyControls() {
         updateMode()
+        updateOutsideClickMonitor(reveal: editorVisible || arranging ? .collapsed : reveal)
         if support == .perApplication {
             let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal
             controls.configure(capability: .perApplication, reveal: effectiveReveal,
@@ -693,7 +724,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         add("Organize Menu Bar…", #selector(menuOrganize))
         menu.addItem(.separator())
         add("Open Notch", #selector(menuNotch))
-        for minutes in [5, 15, 25] {
+        for minutes in [1, 5, 10, 25] {
             add("Start \(minutes) Minute Timer", #selector(menuTimer(_:)), represented: minutes)
         }
         add("Cancel Timers", #selector(menuCancelTimers))

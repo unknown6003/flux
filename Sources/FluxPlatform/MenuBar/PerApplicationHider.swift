@@ -17,7 +17,7 @@ import FluxCore
 /// launch, quit and wake. The assertion ends when Flux stops or exits.
 @MainActor public final class PerApplicationHider {
     /// System items that must stay reachable while a restriction is active.
-    public static let systemAllowed: Set<String> = [
+    public nonisolated static let systemAllowed: Set<String> = [
         "com.apple.controlcenter", "com.apple.MenuBarAgent",
         "com.apple.systemuiserver", "com.apple.TextInputMenuAgent",
         "com.apple.Siri", "com.apple.Spotlight", "com.apple.wifi.WiFiAgent",
@@ -85,7 +85,7 @@ import FluxCore
     }
 
     /// The pure allow list for a running set. System items always stay allowed.
-    public static func allowList(running: Set<String>, concealed: Set<ApplicationID>) -> [String] {
+    public nonisolated static func allowList(running: Set<String>, concealed: Set<ApplicationID>) -> [String] {
         running.subtracting(concealed.map(\.rawValue)).union(systemAllowed).sorted()
     }
 
