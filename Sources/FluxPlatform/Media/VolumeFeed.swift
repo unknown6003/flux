@@ -7,11 +7,20 @@ public struct VolumeSnapshot: Equatable, Sendable {
     public let level: Float
     public let muted: Bool
     public let adjustable: Bool
+    public let muteAdjustable: Bool
 
-    public init(level: Float, muted: Bool, adjustable: Bool) {
+    public init(level: Float, muted: Bool, adjustable: Bool, muteAdjustable: Bool = false) {
         self.level = level.isFinite ? min(max(level, 0), 1) : 0
         self.muted = muted
         self.adjustable = adjustable
+        self.muteAdjustable = muteAdjustable
+    }
+
+    public func supports(_ key: VolumeKey) -> Bool {
+        switch key {
+        case .up, .down: adjustable
+        case .mute: muteAdjustable
+        }
     }
 }
 
@@ -124,7 +133,8 @@ public actor VolumeDriver {
         let state: VolumeSnapshot?
         if !values.isEmpty {
             state = .init(level: values.reduce(0, +) / Float(values.count), muted: readMute() ?? false,
-                          adjustable: volumeAddresses().contains(where: isSettable))
+                          adjustable: volumeAddresses().contains(where: isSettable),
+                          muteAdjustable: readMute() != nil && isSettable(Self.mute))
         } else { state = nil }
         if !hasReading || previous != state {
             hasReading = true

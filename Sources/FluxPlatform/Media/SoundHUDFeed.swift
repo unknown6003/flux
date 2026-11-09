@@ -4,20 +4,18 @@ import FluxCore
 /// One audio listener plus an optional permitted key filter. Key repeats queue
 /// at most 32 small commands; a full queue leaves new input with macOS.
 @MainActor public final class SoundHUDFeed: FeatureServiceHandle {
-    private enum Command { case adjust(Float), mute }
     private var feed: VolumeFeed?
     private var tap: VolumeKeyTap?
     private var snapshot: VolumeSnapshot?
-    private var pending: [Command] = []
+    private var queue = SoundKeyQueue()
     private var command: Task<Void, Never>?
     private var receive: ((VolumeSnapshot?, Bool) -> Void)?
     private var failed: (() -> Void)?
     private var active = true
-    private var blocked = false
 
     public init(receive: @escaping (VolumeSnapshot?, Bool) -> Void, failed: @escaping () -> Void) {
         self.receive = receive; self.failed = failed
-        tap = VolumeKeyTap(canControl: { [weak self] in self?.snapshot?.adjustable == true },
+        tap = VolumeKeyTap(canControl: { [weak self] in self?.snapshot.map { $0.adjustable || $0.muteAdjustable } == true },
                            keyDown: { [weak self] in self?.enqueue($0, repeated: $1, fine: $2) ?? false })
         feed = VolumeFeed { [weak self] in self?.changed($0) }
     }
@@ -26,7 +24,7 @@ import FluxCore
 
     public func refreshAccess() {
         guard active else { return }
-        blocked = false
+        queue.refresh()
         updateTap()
     }
     public func adjust(by delta: Float) async -> Bool {
@@ -45,7 +43,7 @@ import FluxCore
         guard active else { return }
         active = false
         tap?.stop(); tap = nil
-        pending.removeAll(); command?.cancel(); command = nil
+        queue.fail(); command?.cancel(); command = nil
         feed?.stop(); feed = nil
         receive = nil; failed = nil; snapshot = nil
     }
@@ -58,22 +56,21 @@ import FluxCore
         if initial || tap?.isActive == true { receive?(state, false) }
     }
     private func updateTap() {
-        if !blocked, snapshot?.adjustable == true { _ = tap?.start() } else { tap?.stop() }
+        if !queue.blocked, snapshot.map({ $0.adjustable || $0.muteAdjustable }) == true { _ = tap?.start() } else { tap?.stop() }
     }
     private func enqueue(_ key: VolumeKey, repeated: Bool, fine: Bool) -> Bool {
-        guard active, snapshot?.adjustable == true, pending.count < 32 else { return false }
-        if key == .mute, repeated { return true }
-        switch key {
-        case .up: pending.append(.adjust(fine ? 1 / 64 : 1 / 16))
-        case .down: pending.append(.adjust(fine ? -1 / 64 : -1 / 16))
-        case .mute: pending.append(.mute)
+        guard active else { return false }
+        guard queue.offer(key, repeated: repeated, fine: fine, output: snapshot) else {
+            // Native handling takes over for this burst. Do not draw our HUD
+            // over the system bezel while earlier accepted commands drain.
+            if queue.blocked { tap?.stop() }
+            return false
         }
         drain()
         return true
     }
     private func drain() {
-        guard active, command == nil, !pending.isEmpty, let feed else { return }
-        let next = pending.removeFirst()
+        guard active, command == nil, let feed, let next = queue.next() else { return }
         command = Task { @MainActor [weak self] in
             let success: Bool
             switch next {
@@ -84,11 +81,13 @@ import FluxCore
             guard let self, self.active, !Task.isCancelled else { return }
             self.command = nil
             if success {
-                if let state { self.snapshot = state; self.receive?(state, true) }
+                if let state {
+                    self.snapshot = state
+                    if self.tap?.isActive == true { self.receive?(state, true) }
+                }
                 self.drain()
             } else {
-                self.pending.removeAll()
-                self.blocked = true
+                self.queue.fail()
                 self.tap?.stop()
                 self.failed?()
             }

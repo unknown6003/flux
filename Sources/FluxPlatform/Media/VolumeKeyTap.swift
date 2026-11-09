@@ -10,6 +10,10 @@ import FluxCore
     }
 }
 
+// Only the synchronous C callback returns this value. It is never queued or
+// moved to another thread; the run-loop source is bound to the main thread.
+private struct VolumeTapReturn: @unchecked Sendable { let event: Unmanaged<CGEvent>? }
+
 private final class VolumeTapRegistration: @unchecked Sendable {
     let tap: CFMachPort
     private let source: CFRunLoopSource
@@ -55,8 +59,8 @@ private final class VolumeTapRegistration: @unchecked Sendable {
             callback: { _, type, event, context in
                 // The source is installed only on the main run loop.
                 MainActor.assumeIsolated {
-                    VolumeTapCallbacks.dispatch(token: UInt(bitPattern: context), type: type, event: event)
-                }
+                    VolumeTapReturn(event: VolumeTapCallbacks.dispatch(token: UInt(bitPattern: context), type: type, event: event))
+                }.event
             }, userInfo: UnsafeMutableRawPointer(bitPattern: token)) else {
             VolumeTapCallbacks.actions[token] = nil
             return false
