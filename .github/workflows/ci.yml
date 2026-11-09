@@ -95,14 +95,8 @@ jobs:
         run: python3 Scripts/rebuild/run_native_tests.py FluxUITests
       - name: Check native application actions
         run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests
-      - name: Isolate incomplete rating test
-        if: failure()
-        timeout-minutes: 2
-        run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests --filter SettingsCoordinatorTests
-      - name: Trace native test exit
-        if: failure()
-        timeout-minutes: 2
-        run: python3 Scripts/rebuild/trace_native_test_exit.py
+      - name: Check native rating sheets
+        run: python3 Scripts/rebuild/run_native_tests.py FluxRatingProbe
       - name: Upload native test output
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -118,7 +112,9 @@ jobs:
           import shutil
           destination = Path('build/native-test-crashes')
           destination.mkdir(parents=True, exist_ok=True)
-          for source in (Path.home() / 'Library/Logs/DiagnosticReports').glob('swift*.ips'):
+          for source in (Path.home() / 'Library/Logs/DiagnosticReports').glob('*.ips'):
+              if not source.name.startswith(('swift', 'Flux', 'xctest')):
+                  continue
               if source.stat().st_size <= 2_000_000:
                   shutil.copy2(source, destination / source.name)
           PY

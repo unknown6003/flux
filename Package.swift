@@ -95,6 +95,12 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
+            name: "FluxRatingProbe",
+            dependencies: ["FluxApplication", "FluxCore", "FluxUI"],
+            path: "Scripts/rebuild/RatingProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
             name: "FluxMenuBarLayoutProbe",
             path: "Scripts/rebuild/MenuBarLayoutProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]

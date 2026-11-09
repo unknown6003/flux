@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Require Swift Testing completion as well as a zero process exit."""
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -18,21 +19,19 @@ def completed_count(output):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("suite", choices=["FluxCoreTests", "FluxPlatformTests", "FluxUITests", "FluxApplicationTests"])
-    parser.add_argument("--filter", default=None)
+    parser.add_argument("suite", choices=["FluxCoreTests", "FluxPlatformTests", "FluxUITests", "FluxApplicationTests", "FluxRatingProbe"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     directory = root / "build/native-test-logs"
     directory.mkdir(parents=True, exist_ok=True)
-    suffix = ".isolated" if args.filter else ""
-    log = directory / (args.suite + suffix + ".log")
+    log = directory / (args.suite + ".log")
     with log.open("w") as output:
-        process = subprocess.Popen(["swift", "test", "--filter", args.filter or args.suite], cwd=root,
-                                   env=os.environ | {"FLUX_NATIVE_TEST_PHASE_PATH": str(directory / ("rating-phase" + suffix + ".log"))},
+        command = ["swift", "run", "FluxRatingProbe"] if args.suite == "FluxRatingProbe" else ["swift", "test", "--filter", args.suite]
+        process = subprocess.Popen(command, cwd=root,
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
-            status = process.wait(timeout=90 if args.filter else 240)
+            status = process.wait(timeout=240)
         except BaseException:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -48,6 +47,12 @@ def main():
     print(result, end="")
     if status != 0:
         raise RuntimeError(f"{args.suite} exited {status}")
+    if args.suite == "FluxRatingProbe":
+        reports = [json.loads(line) for line in result.splitlines() if line.startswith('{"nativeRatingScenariosPassed"')]
+        if len(reports) != 1 or reports[0].get("nativeRatingScenariosPassed") != 4:
+            raise RuntimeError("Native rating scenarios did not finish")
+        print("Completed four native AppKit rating scenarios")
+        return
     count = completed_count(result)
     print(f"Completed {args.suite}: {count} passing tests")
 
