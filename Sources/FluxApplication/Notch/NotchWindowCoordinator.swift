@@ -279,10 +279,13 @@ public final class NotchWindowCoordinator {
     private func resizeExpanded() {
         guard let geometry, let panel, let window else { return }
         let width = geometry.expandedRect(contentHeight: 0).width
+        let limit = max(geometry.topInset, geometry.screenFrame.height * Self.maximumHeightFraction)
         panelWidth?.constant = width
+        // The panel scrolls widget content past this cap, so its required
+        // constraints never ask AppKit for a taller window than `limit`.
+        panel.maximumHeight = limit
         panel.view.layoutSubtreeIfNeeded()
         let fitting = panel.view.fittingSize.height
-        let limit = max(geometry.topInset, geometry.screenFrame.height * Self.maximumHeightFraction)
         let content = min(max(fitting.isFinite ? fitting : 0, geometry.topInset), limit) - geometry.topInset
         let frame = geometry.expandedRect(contentHeight: content)
         if window.frame != frame { window.setFrame(frame, display: true) }

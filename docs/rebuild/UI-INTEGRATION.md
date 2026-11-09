@@ -227,6 +227,7 @@ notch.stop()
 - Window: `NSPanel`, `[.borderless, .nonactivatingPanel]`, `level = .statusBar`, `isFloatingPanel`, `becomesKeyOnlyIfNeeded`, clear, no shadow, not movable, `hidesOnDeactivate = false`, `[.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]`. `canBecomeKey` is true and `canBecomeMain` false.
 - Compact frame: `CompactNotchController.preferredSize`, centered on `screenFrame.midX` at the top edge. The camera gap stays empty. A display with no notch gets the same centered top frame with the 8 pt gap.
 - Expanded frame: `expandedRect(contentHeight:)` with the panel's fitting height at the 440 pt width. Height is at most 80 % of the screen height. It refits after each tab switch, on the next main-actor turn.
+- Height cap: before each fit the coordinator sets `NotchPanelController.maximumHeight` to the same 80 % limit. The panel turns it into a required `height <= maximumHeight` on its root. Widget panes sit in a vertical `NSScrollView` (`flux.notch.content`) under the tab strip. The scroll view wants the document height at priority 490, below the 500 at which AppKit lets constraints resize a window. So a widget with a required 600 pt minimum height no longer makes the window grow to 687 pt; the window stops at the cap and the widget scrolls. The camera gap and tab strip stay outside the scroll area. Left and Right still switch tabs while focus is in a widget. Readback: `contentViewportHeight` and `contentDocumentHeight`. Coalesced refit, focus rules, stop-before-remove and Reduce Motion did not change. Not compiled on this host.
 - Focus: only `expand(_:focus: true)`, `toggle()` and a Return or Space press on the compact button make the window key. Hover, a click, an activity update and `start` use `orderFrontRegardless()` and never take focus. The app is never activated.
 - Order: a widget is made only through `willShowWidget` then `makeWidget`. `collapse`, `update(screen:)` while open, `setSessionLocked(true)` and `stop` call `NotchPanelController.dismiss()`, so `willDismissWidget` runs before the widget view goes. Then the panel controller is released. Escape inside the panel, or `setWidgets([])`, dismisses the same way and returns to compact on the next turn.
 - A display change while open collapses first. The old widget and camera go before the window moves. `stop` and lock release the window and both controllers.
@@ -241,6 +242,21 @@ notch.stop()
   3. After each push of new state to Now Playing, Calendar or File Shelf, call `window.contentDidChange(widget)`. The first push after `.loading` is the case that needs it.
 - Needs native proof for Duo and refit: compile; a capture of Duo at 440 pt with 0, 1 and 4 events per day; a panel opened on Calendar `.loading` that grows once when events arrive and never past 80 % of the screen; the same for Now Playing and File Shelf; Duo off while focus is in the Calendar pane; a tab switch and a collapse while a refit is pending; Reduce Motion on.
 - Needs native proof: the area coordinate space on each macOS release, `.statusBar` against the menu bar and full-screen apps, tracking-area enter when the content view swaps under a still pointer, and the fitting height of each widget.
+
+### Lock-screen content (not compiled)
+
+File: `Sources/FluxUI/LockScreenContentController.swift`. Pure AppKit. The parent owns both windows, the SkyLight bridge, lock and unlock events, media reads, the playback clock, commands and the saved switches. No window, timer, monitor, camera, media read, network or permission code is in these views. Nothing here claims that a private lock-screen presentation works.
+
+- `LockScreenSilhouetteView(notchSize:)`: black notch shape at the physical size. `notchSize` updates in place. `preferredSize` and `intrinsicContentSize` are at least 1 x 8 pt. `hitTest` returns nil and VoiceOver skips it. ID `flux.lockScreen.silhouette`. Put it in its own mouse-transparent window.
+- `LockScreenContentState(media: NowPlayingWidgetState?, activity: LockScreenActivityCaption?)`. Media shows only for `.playing` and `.paused`. A caption with blank text does not show. `showsMedia`, `showsActivity`, `isEmpty`, `preferredSize`. The parent leaves out what `flux.notch.lockScreen.nowPlaying` or `.activities` turns off, and sends no caption for battery notices, as the old flow did.
+- `LockScreenActivityCaption(symbolName: String?, text: String)`.
+- `LockScreenContentController(state:onAction:)`, `update(_:)` in place, `state`, `preferredSize`, `isEmpty`, readback `showsMedia` and `showsActivity`. It sets `preferredContentSize` too. Size the card window to `preferredSize` after each update. When `isEmpty`, the size is `.zero`, the root returns nil from `hitTest` and has no VoiceOver children; order the card window out.
+- `LockScreenTransportAction`: `.previous`, `.togglePlayPause`, `.next`, `.seek(TimeInterval)` only. Seek is sent once, on slider release. No source picker and no open-app button.
+- `LockScreenMetrics`: media width 348, media card 164, activity-only width 240, caption 38, gap 8, artwork 64 (radius 14), card radius 24. Media plus caption is 348 x 210.
+- IDs: `flux.lockScreen.card`, `.media`, `.previous`, `.playPause`, `.next`, `.seek`, `.activity`. VoiceOver: the card reads "Lock Screen Now Playing: title, artist" or the caption text. Clear space between the card and caption passes clicks through.
+- Reduce Motion: a show or hide of the media card or caption fades for 0.2 s, or changes at once with Reduce Motion on. Text and time updates never animate. Focus stays on the same button across updates.
+- Surface: `NSVisualEffectView` `.hudWindow`, behind-window blending, 0.5 pt hairline. No Liquid Glass call.
+- Needs native proof: compile; captures of media only, media plus caption, caption only and empty, light and dark; click-through on the silhouette and on an empty card; VoiceOver labels; the parent's lock flow on each macOS release.
 
 ## Proof the root must run
 

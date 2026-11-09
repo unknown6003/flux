@@ -139,12 +139,21 @@ public final class NotchPanelController: NSViewController {
 
     private let makeWidget: WidgetFactory
     private let tabs = NSSegmentedControl()
-    private let container = NSView()
+    private let scroll = NotchPanelScrollView()
+    private let container = NotchPanelDocumentView()
+    private var heightLimit: NSLayoutConstraint?
     private let cameraSpacer = NSView()
     private weak var child: NSViewController?
     private weak var companionChild: NSViewController?
     private var paneConstraints: [NSLayoutConstraint] = []
     private var dismissed = false
+
+    /// The window owner's height cap for the whole panel, camera gap and tab
+    /// strip included. Widget content taller than what is left scrolls inside
+    /// the panel. The tab strip stays outside the scroll area.
+    public var maximumHeight: CGFloat = 10_000 {
+        didSet { heightLimit?.constant = maximumHeight.isFinite ? max(0, maximumHeight) : 10_000 }
+    }
 
     /// The parent's Duo request. See `setDuo(_:)`.
     public private(set) var isDuoRequested = false
@@ -178,11 +187,32 @@ public final class NotchPanelController: NSViewController {
         tabs.setAccessibilityLabel(L("notch.tabs", "Notch widgets"))
         tabs.selectedSegmentBezelColor = FluxUIStyle.accent
 
-        for view in [cameraSpacer, tabs, container] {
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.horizontalScrollElasticity = .none
+        scroll.verticalScrollElasticity = .allowed
+        scroll.contentView.drawsBackground = false
+        scroll.setAccessibilityIdentifier("flux.notch.content")
+        scroll.setAccessibilityLabel(L("notch.content", "Widget content"))
+        container.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = container
+
+        for view in [cameraSpacer, tabs, scroll] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
         cameraSpacer.setAccessibilityElement(false)
+        // The scroll view wants the document height, below the priority at
+        // which AppKit resizes a window. A tall widget therefore cannot push
+        // the window past `maximumHeight`; the excess scrolls instead.
+        let preferred = scroll.heightAnchor.constraint(equalTo: container.heightAnchor)
+        preferred.priority = NSLayoutConstraint.Priority(490)
+        let limit = root.heightAnchor.constraint(lessThanOrEqualToConstant: maximumHeight)
+        heightLimit = limit
         NSLayoutConstraint.activate([
             cameraSpacer.topAnchor.constraint(equalTo: root.topAnchor),
             cameraSpacer.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -191,10 +221,15 @@ public final class NotchPanelController: NSViewController {
             tabs.topAnchor.constraint(equalTo: cameraSpacer.bottomAnchor, constant: 6),
             tabs.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             tabs.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 16),
-            container.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 10),
-            container.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            container.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            container.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 10),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            container.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            container.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            preferred,
+            limit,
             root.widthAnchor.constraint(lessThanOrEqualToConstant: NotchGeometry.maximumExpandedWidth),
         ])
         view = root
@@ -383,9 +418,31 @@ public final class NotchPanelController: NSViewController {
         container.layer?.add(fade, forKey: nil)
     }
 
+    /// Readback for tests and the window owner: the visible widget area and
+    /// the full widget content height.
+    public var contentViewportHeight: CGFloat { scroll.contentView.bounds.height }
+    public var contentDocumentHeight: CGFloat { container.frame.height }
+
     @objc private func tabChanged() {
         let index = tabs.selectedSegment
         guard widgets.indices.contains(index) else { return }
         show(widgets[index])
+    }
+}
+
+/// Top-down document so short content sits under the tab strip.
+@MainActor
+final class NotchPanelDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// Left and Right switch tabs even while focus is inside a widget.
+@MainActor
+final class NotchPanelScrollView: NSScrollView {
+    override func keyDown(with event: NSEvent) {
+        switch event.specialKey {
+        case .leftArrow?, .rightArrow?: nextResponder?.keyDown(with: event)
+        default: super.keyDown(with: event)
+        }
     }
 }
