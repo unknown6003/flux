@@ -358,20 +358,22 @@ public final class WidgetCoordinator {
         }
     }
 
-    private func sendMedia(_ control: MediaControl) {
+    private func sendMedia(_ control: MediaControl, authorization: MediaCommandAuthorization? = nil) {
         guard let feed = mediaLease?.feed else {
             effects.report(.mediaCommand)
             return
         }
         Task { @MainActor [weak self] in
-            let accepted = await feed.send(control)
+            let accepted = await feed.send(control, authorization: authorization)
             if !accepted { self?.effects.report(.mediaCommand) }
         }
     }
 
     /// The runtime checks the live locked phase and saved lock-media choice
     /// before forwarding. The existing demand-owned media lease is reused.
-    func sendLockScreenControl(_ control: MediaControl) { sendMedia(control) }
+    func sendLockScreenControl(_ control: MediaControl, authorization: MediaCommandAuthorization) {
+        sendMedia(control, authorization: authorization)
+    }
 
     /// Activates the running app, or launches it by bundle ID.
     private func openApplication(_ id: ApplicationID) {

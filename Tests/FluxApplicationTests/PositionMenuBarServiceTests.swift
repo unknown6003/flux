@@ -51,6 +51,11 @@ import FluxUI
     var inventory: PositionMenuBarInventory
     var blockedRead: CheckedContinuation<Void, Never>?
     var blocksRead = false
+    var previewCaptures = 0
+    var previewCloses = 0
+    var blocksPreview = false
+    var blockedPreview: CheckedContinuation<Void, Never>?
+    var previewImage: NSImage?
     var owner: PositionMenuBarService!
 
     init(support: PositionMenuBarHidingSupport = .unverified) throws {
@@ -66,7 +71,13 @@ import FluxUI
                 return self.inventory
             }, permissionStatus: { .allowed }, requestPreviewPermission: { [unowned self] in
                 self.permissionRequests += 1; return .allowed
-            }, screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
+            }, capturePreviews: { [unowned self] in
+                self.previewCaptures += 1
+                if self.blocksPreview { await withCheckedContinuation { self.blockedPreview = $0 } }
+                guard let image = self.previewImage else { throw StatusPreviewError.unavailable }
+                return [self.app: image]
+            }, stopPreviews: { [unowned self] in self.previewCloses += 1 },
+            screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
             quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false)
     }
 
@@ -74,12 +85,67 @@ import FluxUI
     func close() async throws {
         delay.release()
         blockedRead?.resume(); blockedRead = nil
+        blockedPreview?.resume(); blockedPreview = nil
         try await owner.stop()
         defaults.removePersistentDomain(forName: domain)
     }
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func aChoiceMadeDuringDoneWinsEvenWhenItRepeatsTheOriginalGroup() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.owner.start()
+        fixture.owner.beginArrange()
+        await fixture.settle()
+        fixture.blocksRead = true
+        fixture.owner.endArrange()
+        await fixture.settle()
+        // The geometry says Hidden, but the later explicit action says Shown.
+        fixture.owner.assign(fixture.app, to: .shown)
+        fixture.blockedRead?.resume(); fixture.blockedRead = nil
+        await fixture.settle()
+        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
+        #expect(saved.group(for: fixture.app) == .shown)
+        #expect(fixture.owner.state.rows.first?.result == .notMovedYet)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func closingDoesNotWaitForAnUncancellableScreenshotOrPublishItsLateImage() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.blocksPreview = true
+        fixture.previewImage = NSImage(size: .init(width: 24, height: 24))
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.showRealIcons()
+        await fixture.settle()
+        #expect(fixture.previewCaptures == 1)
+        fixture.owner.setEditorVisible(false)
+        try await fixture.owner.stop()
+        #expect(fixture.previewCloses > 0)
+        fixture.blockedPreview?.resume(); fixture.blockedPreview = nil
+        await fixture.settle()
+        #expect(!fixture.owner.state.showsRealIcons)
+        #expect(fixture.owner.state.rows.allSatisfy { $0.preview == nil })
+        try await fixture.close()
+    }
+
+    @Test @MainActor func refreshRevokesAnOldPreviewBeforeReadingNewGeometry() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.previewImage = NSImage(size: .init(width: 24, height: 24))
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.showRealIcons()
+        await fixture.settle()
+        #expect(fixture.owner.state.showsRealIcons)
+        #expect(fixture.owner.state.rows.first?.preview === fixture.previewImage)
+        fixture.owner.refresh()
+        #expect(!fixture.owner.state.showsRealIcons)
+        #expect(fixture.owner.state.rows.allSatisfy { $0.preview == nil })
+        try await fixture.close()
+    }
+
     @Test @MainActor func unverifiedHasRealControlsAndNoIdleInventoryOrSpacer() async throws {
         let fixture = try PositionServiceFixture()
         fixture.owner.start()
@@ -194,7 +260,7 @@ import FluxUI
         fixture.owner.showRealIcons()
         await fixture.settle()
         #expect(fixture.permissionRequests == 1)
-        #expect(fixture.owner.state.mode == .failed(code: "previewEligibilityUnavailable"))
+        #expect(fixture.owner.state.mode == .failed(code: "previewUnavailable"))
         #expect(!fixture.owner.state.showsRealIcons)
         #expect(fixture.owner.state.rows.allSatisfy { $0.preview == nil })
         fixture.owner.reviewIdentity(fixture.app)

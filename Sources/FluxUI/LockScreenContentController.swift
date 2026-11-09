@@ -374,7 +374,6 @@ public final class LockScreenContentController: NSViewController {
         stateIcon.image = FluxUIStyle.symbol(playing ? "waveform" : "music.note", label: "")
         NotchWidgetStyle.setSymbol(playButton, playing ? "pause.fill" : "play.fill",
                                    label: playing ? L("lock.pause", "Pause") : L("lock.play", "Play"))
-        playButton.contentTintColor = NSColor.windowBackgroundColor
         refreshLayerColors()
         previousButton.isEnabled = media.canGoPrevious
         nextButton.isEnabled = media.canGoNext
@@ -431,6 +430,10 @@ public final class LockScreenContentController: NSViewController {
         view.effectiveAppearance.performAsCurrentDrawingAppearance {
             artwork.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
             playButton.layer?.backgroundColor = NSColor.labelColor.cgColor
+            // Resolve the glyph with the card, not with a button's vibrant
+            // subappearance. Otherwise both glyph and circle can be white.
+            let dark = view.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            playButton.contentTintColor = dark ? .black : .white
         }
     }
 

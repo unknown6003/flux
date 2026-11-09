@@ -3,6 +3,27 @@ import Testing
 @testable import FluxPlatform
 
 @MainActor struct StatusPreviewTests {
+    @Test func changedOwnershipDuringScreenshotDiscardsTheWholeBatch() async throws {
+        var captures = 0
+        var validations = 0
+        let preview = StatusPreview(permission: { true }, source: {
+            .init(displays: [display], capture: { plan in
+                captures += 1
+                return try image(plan)
+            })
+        })
+        preview.open()
+        await #expect(throws: StatusPreviewError.invalidRegion) {
+            try await preview.capture([region(), region()], validating: { _ in
+                validations += 1
+                // The owner changes while the first screenshot is in flight.
+                return validations == 1
+            })
+        }
+        #expect(captures == 1)
+        #expect(validations == 2)
+    }
+
     private let display = StatusPreviewDisplay(id: 7,
         frame: CGRect(x: -1920, y: -100, width: 1920, height: 1080), pixelScale: 2)
 
@@ -90,9 +111,9 @@ import Testing
             sourceReads += 1
             throw StatusPreviewError.unavailable
         })
-        await #expect(throws: StatusPreviewError.closed) { try await preview.capture([region()]) }
+        await #expect(throws: StatusPreviewError.closed) { try await preview.capture([region()], validating: { _ in true }) }
         preview.open()
-        await #expect(throws: StatusPreviewError.permissionRequired) { try await preview.capture([region()]) }
+        await #expect(throws: StatusPreviewError.permissionRequired) { try await preview.capture([region()], validating: { _ in true }) }
         #expect(sourceReads == 0)
 
         let allowed = StatusPreview(permission: { true }, source: {
@@ -101,9 +122,9 @@ import Testing
         })
         allowed.open()
         await #expect(throws: StatusPreviewError.budgetExceeded) {
-            try await allowed.capture((0..<129).map { _ in region() })
+            try await allowed.capture((0..<129).map { _ in region() }, validating: { _ in true })
         }
-        #expect(try await allowed.capture([]).isEmpty)
+        #expect(try await allowed.capture([], validating: { _ in true }).isEmpty)
         #expect(sourceReads == 0)
     }
 
@@ -116,13 +137,13 @@ import Testing
             .init(displays: [display], capture: { plan in
                 calls += 1
                 let preview = try #require(owner)
-                await #expect(throws: StatusPreviewError.busy) { try await preview.capture([region()]) }
+                await #expect(throws: StatusPreviewError.busy) { try await preview.capture([region()], validating: { _ in true }) }
                 return try image(plan)
             })
         })
         let preview = try #require(owner)
         preview.open()
-        let images = try await preview.capture(requests)
+        let images = try await preview.capture(requests, validating: { _ in true })
         #expect(images.map(\.id) == requests.map(\.id))
         #expect(images.map { $0.image.size } == requests.map { $0.frame.size })
         #expect(calls == 2)
@@ -143,7 +164,7 @@ import Testing
         let preview = try #require(owner)
         preview.open()
         await #expect(throws: StatusPreviewError.cancelled) {
-            try await preview.capture([region(), region()])
+            try await preview.capture([region(), region()], validating: { _ in true })
         }
         #expect(calls == 1)
     }
@@ -160,7 +181,7 @@ import Testing
         })
         preview.open()
         await #expect(throws: StatusPreviewError.permissionRequired) {
-            try await preview.capture([region(), region()])
+            try await preview.capture([region(), region()], validating: { _ in true })
         }
         #expect(calls == 1)
     }
@@ -175,7 +196,7 @@ import Testing
         })
         preview.open()
         await #expect(throws: StatusPreviewError.invalidRegion) {
-            try await preview.capture([region(), region(displayID: 8)])
+            try await preview.capture([region(), region(displayID: 8)], validating: { _ in true })
         }
         #expect(calls == 0)
     }
@@ -192,7 +213,7 @@ import Testing
         preview.open()
         let task = Task { @MainActor in
             await #expect(throws: StatusPreviewError.cancelled) {
-                try await preview.capture([region(), region()])
+                try await preview.capture([region(), region()], validating: { _ in true })
             }
         }
         await task.value
@@ -206,11 +227,11 @@ import Testing
             throw NSError(domain: "private source details", code: 1)
         })
         preview.open()
-        await #expect(throws: StatusPreviewError.unavailable) { try await preview.capture([region()]) }
+        await #expect(throws: StatusPreviewError.unavailable) { try await preview.capture([region()], validating: { _ in true }) }
         #expect(sourceReads == 1)
         let task = Task { @MainActor in
             withUnsafeCurrentTask { $0?.cancel() }
-            await #expect(throws: StatusPreviewError.cancelled) { try await preview.capture([region()]) }
+            await #expect(throws: StatusPreviewError.cancelled) { try await preview.capture([region()], validating: { _ in true }) }
         }
         await task.value
         #expect(sourceReads == 1)

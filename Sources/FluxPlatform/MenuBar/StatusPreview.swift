@@ -52,7 +52,8 @@ public enum StatusPreviewError: Error, Equatable, Sendable {
     /// may finish, but its result is discarded and no next screenshot can start.
     public func close() { generation = nil }
 
-    public func capture(_ regions: [StatusPreviewRegion]) async throws -> [StatusPreviewImage] {
+    public func capture(_ regions: [StatusPreviewRegion],
+                        validating validate: @escaping @MainActor (StatusPreviewRegion) async -> Bool) async throws -> [StatusPreviewImage] {
         guard let generation else { throw StatusPreviewError.closed }
         try check(generation)
         guard !capturing else { throw StatusPreviewError.busy }
@@ -68,7 +69,11 @@ public enum StatusPreviewError: Error, Equatable, Sendable {
             var images: [StatusPreviewImage] = []
             for plan in plans {
                 try check(generation)
+                guard await validate(plan.region) else { throw StatusPreviewError.invalidRegion }
+                try check(generation)
                 let image = try await source.capture(plan)
+                try check(generation)
+                guard await validate(plan.region) else { throw StatusPreviewError.invalidRegion }
                 try check(generation)
                 guard image.width == plan.pixelWidth, image.height == plan.pixelHeight else {
                     throw StatusPreviewError.unavailable

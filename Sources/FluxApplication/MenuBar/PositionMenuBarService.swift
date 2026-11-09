@@ -47,6 +47,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let readInventory: @MainActor () async -> PositionMenuBarInventory
     private let permissionStatus: @MainActor () -> SystemAccess
     private let requestPreviewPermission: @MainActor () async -> SystemAccess
+    private let capturePreviews: @MainActor () async throws -> [ApplicationID: NSImage]
+    private let stopPreviews: @MainActor () -> Void
     private let screens: @MainActor () -> [PositionMenuBarScreen]
     private let quartzFrame: @MainActor (CGRect) -> CGRect
     private let sleep: @Sendable (TimeInterval) async throws -> Void
@@ -59,6 +61,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private var rehideID: UUID?
     private var previewID: UUID?
     private var policy = VisibilityPolicy()
+    private var policyRevision: UInt64 = 0
     private var results: [ApplicationID: MenuBarApplyResult] = [:]
     private var started = false
     private var editorVisible = false
@@ -72,6 +75,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public convenience init(defaults: UserDefaults, domain: String, preferences: PreferenceStore,
                             hidingSupport: PositionMenuBarHidingSupport = .unverified) {
         let inventory = StatusInventory()
+        let preview = StatusPreview()
         self.init(defaults: defaults, domain: domain, preferences: preferences,
                   hidingSupport: hidingSupport, controls: MenuBarControls(),
                   readInventory: {
@@ -83,6 +87,27 @@ private struct PositionMenuBarArrangementContext: Equatable {
                       }, accessibilityAllowed: snapshot.accessibilityAllowed, complete: snapshot.complete)
                   }, permissionStatus: { PermissionAccess.status(.accessibility) },
                   requestPreviewPermission: { await PermissionAccess.request(.screenRecording) },
+                  capturePreviews: {
+                      preview.open()
+                      let displays = NSScreen.screens.compactMap { screen -> StatusPreviewDisplayBounds? in
+                          guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return nil }
+                          return .init(id: id, frame: CGDisplayBounds(id))
+                      }
+                      let candidates = await inventory.previewCandidates(RunningApplication.snapshot(), displays: displays)
+                      try Task.checkCancellation()
+                      let byID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.region.id, $0) })
+                      let images = try await preview.capture(candidates.map(\.region), validating: { region in
+                          guard let candidate = byID[region.id],
+                                NSRunningApplication(processIdentifier: candidate.processID)?.bundleIdentifier == candidate.application.rawValue else { return false }
+                          return await inventory.validatePreview(candidate)
+                      })
+                      let apps = Dictionary(uniqueKeysWithValues: candidates.map { ($0.region.id, $0.application) })
+                      var result: [ApplicationID: NSImage] = [:]
+                      for image in images {
+                          if let app = apps[image.id] { result[app] = image.image }
+                      }
+                      return result
+                  }, stopPreviews: { preview.close() },
                   screens: {
                       let top = NSScreen.screens.first?.frame.maxY ?? 0
                       return NSScreen.screens.map { screen in
@@ -102,12 +127,15 @@ private struct PositionMenuBarArrangementContext: Equatable {
          readInventory: @escaping @MainActor () async -> PositionMenuBarInventory,
          permissionStatus: @escaping @MainActor () -> SystemAccess,
          requestPreviewPermission: @escaping @MainActor () async -> SystemAccess,
+         capturePreviews: @escaping @MainActor () async throws -> [ApplicationID: NSImage],
+         stopPreviews: @escaping @MainActor () -> Void,
          screens: @escaping @MainActor () -> [PositionMenuBarScreen],
          quartzFrame: @escaping @MainActor (CGRect) -> CGRect,
          sleep: @escaping @Sendable (TimeInterval) async throws -> Void, observesSystem: Bool) {
         self.defaults = defaults; self.domain = domain; self.preferences = preferences
         support = hidingSupport; self.controls = controls; self.readInventory = readInventory
         self.permissionStatus = permissionStatus; self.requestPreviewPermission = requestPreviewPermission
+        self.capturePreviews = capturePreviews; self.stopPreviews = stopPreviews
         self.screens = screens; self.quartzFrame = quartzFrame; self.sleep = sleep
         self.observesSystem = observesSystem
         state = MenuBarPageState(mode: .paused)
@@ -133,7 +161,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func stop() async throws {
         started = false; editorVisible = false; arranging = false
         observations.removeAll()
-        let scan = scanTask; let rehide = rehideTask; let preview = previewTask
+        let scan = scanTask; let rehide = rehideTask
         cancelScan(); cancelRehide(); discardPreviews()
         controls.setArranging(false)
         controls.configure(capability: .unavailable, reveal: .all,
@@ -147,7 +175,6 @@ private struct PositionMenuBarArrangementContext: Equatable {
         changed()
         await scan?.value
         await rehide?.value
-        await preview?.value
     }
 
     public func configure() {
@@ -210,6 +237,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
             var saved = try currentPolicy()
             try saved.assign(application, to: group)
             savePolicy(saved)
+            policyRevision &+= 1
             results[application] = .notMovedYet
             updateRows()
         } catch { failPolicy() }
@@ -239,6 +267,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     public func showRealIcons() {
         guard started, editorVisible, previewTask == nil else { return }
+        actionFailure = nil
         let id = UUID()
         previewID = id
         previewTask = Task { @MainActor [weak self] in
@@ -246,9 +275,19 @@ private struct PositionMenuBarArrangementContext: Equatable {
                   self.editorVisible, self.started else { return }
             let access = await self.requestPreviewPermission()
             guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
+            var images: [ApplicationID: NSImage] = [:]
+            if access == .allowed {
+                do { images = try await self.capturePreviews() }
+                catch {
+                    guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
+                    self.actionFailure = "previewUnavailable"
+                }
+            } else { self.actionFailure = "previewPermissionRequired" }
+            guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
             self.previewTask = nil; self.previewID = nil
-            // AX frames alone cannot authorize capture of another app's pixels.
-            self.actionFailure = access == .allowed ? "previewEligibilityUnavailable" : "previewPermissionRequired"
+            for index in self.state.rows.indices { self.state.rows[index].preview = images[self.state.rows[index].id] }
+            self.state.showsRealIcons = self.state.rows.contains { $0.preview != nil }
+            if access == .allowed, self.actionFailure == nil, !self.state.showsRealIcons { self.actionFailure = "previewNoEligibleItems" }
             self.applyControls()
             self.changed()
         }
@@ -353,12 +392,14 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     private func discardPreviews() {
         previewID = nil; previewTask?.cancel(); previewTask = nil
+        stopPreviews()
         state.showsRealIcons = false
         for index in state.rows.indices { state.rows[index].preview = nil }
     }
 
     private func requestScan(arrangeResult: Bool) {
         guard started, editorVisible || arranging, scanTask == nil else { return }
+        discardPreviews()
         let id = UUID()
         scanID = id
         state.isRefreshing = true
@@ -367,6 +408,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
             guard !Task.isCancelled, let self, self.scanID == id,
                   self.started, self.editorVisible || self.arranging else { return }
             let context = arrangeResult ? self.arrangementContext() : nil
+            let revision = self.policyRevision
+            let initialPolicy = try? self.currentPolicy()
             let snapshot = await self.readInventory()
             guard !Task.isCancelled, self.scanID == id, self.started,
                   self.editorVisible || self.arranging else { return }
@@ -374,8 +417,11 @@ private struct PositionMenuBarArrangementContext: Equatable {
             self.state.isRefreshing = false
             if snapshot.accessibilityAllowed {
                 self.publish(snapshot)
-                if let context, context == self.arrangementContext() {
+                if let context, let initialPolicy, revision == self.policyRevision,
+                   (try? self.currentPolicy()) == initialPolicy, context == self.arrangementContext() {
                     self.saveArrangedPositions(snapshot, context: context)
+                } else if arrangeResult {
+                    self.loadPolicy()
                 }
             } else { self.actionFailure = "accessibilityRequired" }
             if arrangeResult {

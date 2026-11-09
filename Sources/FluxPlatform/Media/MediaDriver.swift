@@ -103,7 +103,7 @@ public actor MediaDriver {
         output.finish()
     }
 
-    public func send(_ command: MediaControl) async -> Bool {
+    public func send(_ command: MediaControl, authorization: MediaCommandAuthorization? = nil) async -> Bool {
         guard active, process?.isRunning == true, commands.count < 4 else { return false }
         let arguments: [String]
         switch command {
@@ -124,7 +124,12 @@ public actor MediaDriver {
             }
             commands[id] = Command(process: process, result: continuation)
             do {
-                try process.run()
+                if let authorization {
+                    guard try authorization.perform({ try process.run() }) else {
+                        finishCommand(id, success: false)
+                        return
+                    }
+                } else { try process.run() }
                 commands[id]?.deadline = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(4)) } catch { return }
                     await self?.finishCommand(id, success: false)
@@ -263,9 +268,9 @@ public actor MediaDriver {
         Task { await driver.stop() }
     }
 
-    public func send(_ command: MediaControl) async -> Bool {
+    public func send(_ command: MediaControl, authorization: MediaCommandAuthorization? = nil) async -> Bool {
         guard active else { return false }
-        return await driver.send(command)
+        return await driver.send(command, authorization: authorization)
     }
 
     public func stop() {

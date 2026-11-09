@@ -67,19 +67,20 @@ public final class NotchRuntime: WidgetEffects {
     private var phase: SessionPhase = .locked
     private var monitor: SessionMonitor?
     private weak var volumeFeed: SoundHUDFeed?
+    private var lockCommands: MediaCommandAuthorization?
 
     public func sendLockScreenTransport(_ action: LockScreenTransportAction) {
         guard active, phase == .locked,
               preferences.value(for: Preferences.notchEnabled),
               preferences.value(for: Preferences.lockScreenEnabled),
-              preferences.value(for: Preferences.lockScreenNowPlaying) else { return }
+              preferences.value(for: Preferences.lockScreenNowPlaying), let lockCommands else { return }
         let control: MediaControl = switch action {
         case .previous: .previous
         case .togglePlayPause: .toggle
         case .next: .next
         case .seek(let seconds): .seek(seconds)
         }
-        widgets.sendLockScreenControl(control)
+        widgets.sendLockScreenControl(control, authorization: lockCommands)
     }
 
     private lazy var widgets = WidgetCoordinator(
@@ -162,6 +163,7 @@ public final class NotchRuntime: WidgetEffects {
     public func stop() {
         guard active else { return }
         active = false
+        lockCommands?.revoke(); lockCommands = nil
         calendarBoundary?.cancel(); calendarBoundary = nil
         monitor?.stop(); monitor = nil
         services.stop()
@@ -229,7 +231,12 @@ public final class NotchRuntime: WidgetEffects {
 
     private func applyDemand() {
         guard active else { return }
-        for failure in services.apply(demand) { callbacks.report(.service(failure)) }
+        let next = demand
+        let config = next.configuration
+        if next.phase == .locked, config.notchEnabled, config.lockScreenEnabled, config.lockScreenMediaEnabled {
+            if lockCommands == nil { lockCommands = MediaCommandAuthorization() }
+        } else { lockCommands?.revoke(); lockCommands = nil }
+        for failure in services.apply(next) { callbacks.report(.service(failure)) }
     }
 
     private func makeService(_ service: FeatureService) throws -> any FeatureServiceHandle {
