@@ -95,6 +95,13 @@ public actor NativeUsageTransport: UsageTransport {
                     // Blocking DNS/TLS/HTTP stays off the main actor and Swift's
                     // cooperative executor. One transfer per transport is admitted.
                     queue.async {
+#if FLUX_PERFORMANCE_TRACE
+                        switch payload.endpoint {
+                        case .events: PerformanceTrace.record(.httpEventsStarted)
+                        case .flags: PerformanceTrace.record(.httpFlagsStarted)
+                        case .logs: PerformanceTrace.record(.httpLogsStarted)
+                        }
+#endif
                         let code = payload.body.withUnsafeBytes { bytes in
                             payload.projectToken.withCString { token in
                                 caPath.withCString { ca in
@@ -104,6 +111,16 @@ public actor NativeUsageTransport: UsageTransport {
                                 }
                             }
                         }
+#if FLUX_PERFORMANCE_TRACE
+                        if code == Int32(FluxHTTPCancelled.rawValue) {
+                            PerformanceTrace.record(.httpCancelled)
+                        } else if code == Int32(FluxHTTPSuccess.rawValue) {
+                            let status = FluxHTTPStatus(transfer.pointer)
+                            if (200..<300).contains(status) { PerformanceTrace.record(.httpSucceeded) }
+                            else if status == 429 || status >= 500 { PerformanceTrace.record(.httpRetryable) }
+                            else { PerformanceTrace.record(.httpRejected) }
+                        } else { PerformanceTrace.record(.httpFailed) }
+#endif
                         do {
                             switch code {
                             case Int32(FluxHTTPSuccess.rawValue): break

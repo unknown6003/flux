@@ -42,32 +42,76 @@ private final class DistributedObservation: @unchecked Sendable {
         self.onPhase = onPhase
         self.onEnvironmentChange = onEnvironmentChange
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
-            observe(workspace, name) { $0.setPhase(.sleeping) }
+            observe(workspace, name) { owner in
+#if FLUX_PERFORMANCE_TRACE
+                PerformanceTrace.record(.sessionSleep)
+#endif
+                owner.setPhase(.sleeping)
+            }
         }
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
                      NSWorkspace.sessionDidBecomeActiveNotification] {
             observe(workspace, name) { owner in
+#if FLUX_PERFORMANCE_TRACE
+                PerformanceTrace.record(.sessionWake)
+#endif
                 owner.setPhase(owner.readPhase())
                 owner.onEnvironmentChange?()
             }
         }
-        observe(workspace, NSWorkspace.sessionDidResignActiveNotification) { $0.setPhase(.locked) }
-        observe(workspace, NSWorkspace.activeSpaceDidChangeNotification) { $0.onEnvironmentChange?() }
-        observe(application, NSApplication.didChangeScreenParametersNotification) { $0.onEnvironmentChange?() }
-        observe(application, .NSSystemTimeZoneDidChange) { $0.onEnvironmentChange?() }
-        observe(application, .NSSystemClockDidChange) { $0.onEnvironmentChange?() }
+        observe(workspace, NSWorkspace.sessionDidResignActiveNotification) { owner in
+#if FLUX_PERFORMANCE_TRACE
+            PerformanceTrace.record(.sessionLock)
+#endif
+            owner.setPhase(.locked)
+        }
+        observe(workspace, NSWorkspace.activeSpaceDidChangeNotification) { owner in
+#if FLUX_PERFORMANCE_TRACE
+            PerformanceTrace.record(.spaceChanged)
+#endif
+            owner.onEnvironmentChange?()
+        }
+        observe(application, NSApplication.didChangeScreenParametersNotification) { owner in
+#if FLUX_PERFORMANCE_TRACE
+            PerformanceTrace.record(.displayChanged)
+#endif
+            owner.onEnvironmentChange?()
+        }
+        observe(application, .NSSystemTimeZoneDidChange) { owner in
+#if FLUX_PERFORMANCE_TRACE
+            PerformanceTrace.record(.timeZoneChanged)
+#endif
+            owner.onEnvironmentChange?()
+        }
+        observe(application, .NSSystemClockDidChange) { owner in
+#if FLUX_PERFORMANCE_TRACE
+            PerformanceTrace.record(.clockChanged)
+#endif
+            owner.onEnvironmentChange?()
+        }
         observe(application, NSApplication.didBecomeActiveNotification) { owner in
+#if FLUX_PERFORMANCE_TRACE
+            PerformanceTrace.record(.applicationActivated)
+#endif
             owner.setPhase(owner.readPhase())
             owner.onEnvironmentChange?()
         }
         if let center {
             distributed = [
                 DistributedObservation(center: center, name: .init("com.apple.screenIsLocked")) { [weak self] _ in
-                    Task { @MainActor in self?.setPhase(.locked) }
+                    Task { @MainActor in
+#if FLUX_PERFORMANCE_TRACE
+                        PerformanceTrace.record(.sessionLock)
+#endif
+                        self?.setPhase(.locked)
+                    }
                 },
                 DistributedObservation(center: center, name: .init("com.apple.screenIsUnlocked")) { [weak self] _ in
                     Task { @MainActor in
                         guard let self else { return }
+#if FLUX_PERFORMANCE_TRACE
+                        PerformanceTrace.record(.sessionUnlock)
+#endif
                         self.setPhase(self.readPhase())
                         self.onEnvironmentChange?()
                     }
@@ -78,6 +122,9 @@ private final class DistributedObservation: @unchecked Sendable {
 
     public func refresh() {
         guard active else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.sessionRefresh)
+#endif
         setPhase(readPhase())
     }
 
@@ -91,6 +138,9 @@ private final class DistributedObservation: @unchecked Sendable {
 
     private func setPhase(_ phase: SessionPhase) {
         guard active, self.phase != phase else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.phaseChanged)
+#endif
         self.phase = phase
         onPhase?(phase)
     }

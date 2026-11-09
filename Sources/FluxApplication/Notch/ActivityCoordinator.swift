@@ -80,6 +80,9 @@ public final class ActivityCoordinator {
     }
 
     public func refreshPreferences() {
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.activitiesReconcile)
+#endif
         guard active else { return }
         for kind in ActivityKind.allCases where !enabled(kind) { queue.remove(kind) }
         if !enabled(.menuBarOverflow) { overflowCount = 0 }

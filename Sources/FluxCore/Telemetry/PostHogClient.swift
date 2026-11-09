@@ -46,6 +46,9 @@ public actor PostHogClient {
     public func record(_ event: UsageEvent, expectedIdentity: UsageIdentity? = nil) {
         if let expectedIdentity, expectedIdentity != identity { return }
         guard admitRecord() else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.usageRecordAdmitted)
+#endif
         if events.count == Self.eventLimit { events.removeFirst() }
         events.append(UsageRecord(event: event, assignments: usedAssignments, isVerification: isVerification))
         schedule()
@@ -54,6 +57,9 @@ public actor PostHogClient {
     public func log(_ code: UsageLogCode, level: UsageLogLevel = .info, expectedIdentity: UsageIdentity? = nil) {
         if let expectedIdentity, expectedIdentity != identity { return }
         guard admitRecord() else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.usageRecordAdmitted)
+#endif
         if logs.count == Self.logLimit { logs.removeFirst() }
         logs.append(UsageLogRecord(code: code, level: level))
         schedule()
@@ -135,6 +141,9 @@ public actor PostHogClient {
 
     public func flush() async {
         guard enabled, !busy, !events.isEmpty || !logs.isEmpty else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.usageFlushStarted)
+#endif
         scheduled?.cancel()
         scheduled = nil
         let revision = generation

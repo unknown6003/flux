@@ -61,6 +61,10 @@ on:
         description: Run performance probes that grant temporary Accessibility access
         type: boolean
         default: false
+      native_performance_trace:
+        description: Build a guarded matching-signed in-memory performance trace candidate without release
+        type: boolean
+        default: false
       native_telemetry_idle_probe:
         description: Build the isolated telemetry lifetime diagnostic without installing or releasing Flux
         type: boolean
@@ -76,7 +80,7 @@ concurrency:
 
 jobs:
   native-core:
-    if: ${{ inputs.native_core_only && !inputs.native_telemetry_idle_probe }}
+    if: ${{ inputs.native_core_only && !inputs.native_telemetry_idle_probe && !inputs.native_performance_trace }}
     runs-on: xcode-27
     timeout-minutes: ${{ inputs.native_candidate && 12 || 8 }}
     steps:
@@ -639,3 +643,42 @@ jobs:
             build/native-telemetry-idle/artifact.json
             build/native-telemetry-idle/control.jsonl
           if-no-files-found: error
+
+
+  native-performance-trace:
+    if: ${{ inputs.native_performance_trace && github.event_name == 'workflow_dispatch' }}
+    runs-on: xcode-27
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test bounded diagnostic trace and privacy
+        timeout-minutes: 5
+        run: python3 Scripts/rebuild/run_native_tests.py PerformanceTraceTests
+      - name: Upload diagnostic trace tests
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-performance-trace-tests
+          path: build/native-test-logs/PerformanceTraceTests.log
+          if-no-files-found: warn
+      - name: Import matching diagnostic identity
+        env:
+          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
+          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
+        run: python3 Scripts/import_signing.py
+      - name: Build guarded performance trace candidate
+        timeout-minutes: 7
+        run: python3 Scripts/rebuild/build_native_candidate.py --performance-trace
+      - name: Upload unpublished performance trace candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-performance-trace
+          path: |
+            build/native-performance-trace/FluxPerformanceTraceCandidate.zip
+            build/native-performance-trace/artifact.json
+          if-no-files-found: error
+      - name: Remove diagnostic keychain
+        if: always()
+        run: python3 Scripts/import_signing.py --cleanup

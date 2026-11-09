@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build an unpublished native integration app with Flux's pinned signer."""
+import argparse
 import hashlib
 import json
 import os
@@ -38,13 +39,17 @@ def run(arguments, seconds=30):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--performance-trace", action="store_true")
+    args = parser.parse_args()
     identity = os.environ.get("CODESIGN_IDENTITY", "")
     keychain = os.environ.get("CODESIGN_KEYCHAIN", "")
     if not identity or identity == "-" or not keychain:
         raise RuntimeError("The existing Flux signing identity is required")
-    output = ROOT / "build/native-candidate"
+    output = ROOT / ("build/native-performance-trace" if args.performance_trace else "build/native-candidate")
     output.mkdir(parents=True, exist_ok=False)
-    run(["swift", "build", "-c", "release", "--product", "FluxNativeCandidate"], 240)
+    flags = ["-Xswiftc", "-DFLUX_PERFORMANCE_TRACE"] if args.performance_trace else []
+    run(["swift", "build", "-c", "release", "--product", "FluxNativeCandidate"] + flags, 240)
     binaries = Path(run(["swift", "build", "-c", "release", "--show-bin-path"]))
     vendor = ROOT / "Vendor/mediaremote-adapter"
     cmake = output / "mediaremote-build"
@@ -68,6 +73,7 @@ def main():
         info = plistlib.load(stream)
     revision = run(["git", "rev-parse", "HEAD"])
     info.update(FluxNativeCandidate=True, FluxNativeSourceRevision=revision,
+                FluxPerformanceTraceCandidate=args.performance_trace,
                 CFBundleShortVersionString="0.22.0", CFBundleVersion="64")
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream)
@@ -83,9 +89,11 @@ def main():
     leaf = Path(str(prefix) + "0").read_bytes()
     if leaf != expected:
         raise RuntimeError("The native candidate signer differs from installed Flux")
-    archive = output / "FluxNativeCandidate.zip"
+    archive = output / ("FluxPerformanceTraceCandidate.zip" if args.performance_trace else "FluxNativeCandidate.zip")
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)], 45)
-    report = dict(sourceRevision=revision, candidateOnly=True, bundleID=info["CFBundleIdentifier"],
+    report = dict(sourceRevision=revision, candidateOnly=True, performanceTraceEnabled=args.performance_trace,
+                  executableSHA256=hashlib.sha256((contents / "MacOS/Flux").read_bytes()).hexdigest(),
+                  bundleID=info["CFBundleIdentifier"],
                   version=info["CFBundleShortVersionString"], build=info["CFBundleVersion"],
                   privateLockBridgeEnabled=False, positionHidingRequiresExplicitTrialFlag=True,
                   sameProcessMenuCaptureRequiresExplicitTemporaryDirectory=True,

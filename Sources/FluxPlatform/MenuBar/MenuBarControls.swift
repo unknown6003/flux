@@ -80,6 +80,9 @@ import FluxCore
 
     private func render() {
         guard isStarted else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.menuControlsRender)
+#endif
         let symbol: String
         if isArranging { symbol = "checkmark" }
         else {

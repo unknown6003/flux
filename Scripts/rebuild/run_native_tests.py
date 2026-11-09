@@ -19,7 +19,7 @@ def completed_count(output):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("suite", choices=["FluxCoreTests", "FluxPlatformTests", "FluxUITests", "FluxApplicationTests", "FluxRatingProbe"])
+    parser.add_argument("suite", choices=["FluxCoreTests", "FluxPlatformTests", "FluxUITests", "FluxApplicationTests", "FluxRatingProbe", "PerformanceTraceTests"])
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     directory = root / "build/native-test-logs"
@@ -29,7 +29,9 @@ def main():
         command = ["swift", "run", "FluxRatingProbe"] if args.suite == "FluxRatingProbe" else ["swift", "test", "--filter", args.suite]
         # AppKit fixtures share NSApplication, appearance, windows and focus.
         # Actor isolation does not prevent tests from interleaving at awaits.
-        if args.suite in ("FluxUITests", "FluxApplicationTests"):
+        if args.suite == "PerformanceTraceTests":
+            command.extend(["-Xswiftc", "-DFLUX_PERFORMANCE_TRACE"])
+        if args.suite in ("FluxUITests", "FluxApplicationTests", "PerformanceTraceTests"):
             command.append("--no-parallel")
         process = subprocess.Popen(command, cwd=root,
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,

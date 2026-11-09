@@ -62,6 +62,9 @@ public final class ApplicationSession {
         guard !ready, !finished else { return }
         try receipt?.write(phase: .ready, processIdentifier: getpid(), bundleURL: bundle.bundleURL)
         ready = true
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.appReady)
+#endif
         usage.start()
         usage.record(.launched)
     }

@@ -270,3 +270,64 @@ The existing performance feedback loop needs a full 60-second interval to
 observe this late, intermittent burst. A seconds-long pass cannot substitute
 for it. This diagnostic narrows that loop while preserving the relevant
 post-completion timing. No production feature behavior changes in this slice.
+
+
+## Production CLI repeat result
+
+All eight isolated runs completed. Root verified 106 evidence hashes and
+recomputed each raw wakeup delta and request phase sequence. Idle and all
+three native-driver and three client runs recorded zero interrupt and idle
+wakeups during their sampled intervals. The historical Foundation control
+recorded 19 interrupt and one idle wakeup. All seven live runs completed one
+HTTP 200 before quiet, with no later request phases. Restricted fresh backend
+readback confirmed seven fixed validation launch events, no person profiles
+and no stored IP/geolocation fields.
+
+This narrows the search without deciding the cause. Quiet repeats do not
+exclude intermittency or pass the failed app budget. The first sampler
+enumeration control failed and needed TERM cleanup; its corrected control
+passed. Both control samplers were synchronously reaped, but separate exact
+PID absence checks were not saved. All eight probes and eight measurement
+samplers exited zero and passed exact absence checks. No app, preference or
+clipboard access occurred.
+
+[Report, all samples and control evidence](https://templink.bdwy.xyz/media/1794827794-1794914194-78b4defb60301096f524aaec.bin).
+Archive SHA-256 is
+`cd6219e646fa1416e7eaf6f59205e128e04a90807355a218864a8cdeb15dbd3f`.
+
+## Full-app trace contract
+
+Outcome: correlate full-app wakeup bursts with fixed session/display callbacks
+and actual request phases. Proof: matching-signed diagnostic candidate, same
+EMPTY-profile off/on sequence and sample timing, plus a bounded trace aligned
+to the external sampler's clock. This is an instrumented diagnostic, not a
+replacement app-budget result. No pass from this trace accepts the release.
+
+The next build records only fixed enum codes, monotonic nanoseconds and its
+PID. There are no app names, titles, identities, payloads, errors or user
+content. The buffer holds at most 1,024 entries and a dropped count. Recording
+does no I/O and creates no task, poll or timer. It writes once after sampling
+and feature shutdown, to a fresh private direct child of the app's temporary
+directory. Exclusive creation refuses existing files. Directory replacement
+fails before writing. Hooks and recorder compile only under
+`FLUX_PERFORMANCE_TRACE`; runtime use also requires a candidate marker,
+`FLUX_ALLOW_PERFORMANCE_TRACE=1` and `--performance-trace-dir`. Normal app
+builds contain no trace hooks or recorder.
+
+Predictions before the full-app trace:
+
+1. Session/display or activation work overlaps the burst. The trace should
+   show its fixed callback code followed by refresh/reconcile/render codes
+   in the affected interval, with no additional HTTP start. Correlation
+   would select the next controlled event replay, not prove causality.
+2. A later telemetry operation overlaps it. The trace should show record,
+   flush or request phases in that interval. Queue/request counts distinguish
+   it from background app work.
+3. Neither path overlaps it. A separate target-only stack/thread probe is
+   needed; do not infer a source from quiet source hooks.
+
+All runs and traces must be retained. No selective rerun, quiet-tail selection,
+longer warmup or relaxed budget is allowed. The app and saved preferences
+are restored through the existing bounded transaction; concurrent user
+changes must be preserved. Physical menu-bar proof and other release gates
+remain open.

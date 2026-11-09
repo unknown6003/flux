@@ -184,6 +184,9 @@ public final class NotchRuntime: WidgetEffects {
     /// an environment notification. This is not a polling entry point.
     public func refresh() {
         guard active else { return }
+#if FLUX_PERFORMANCE_TRACE
+        PerformanceTrace.record(.notchRefresh)
+#endif
         applyDemand()
         volumeFeed?.refreshAccess()
         if preferences.value(for: Preferences.notchEnabled), let screen = NSScreen.main ?? NSScreen.screens.first {
