@@ -243,7 +243,12 @@ public final class NotchWindowCoordinator {
             let controller = NotchPanelController(widgets: widgets, geometry: geometry) { [weak self] widget in
                 guard let self else { return NSViewController() }
                 let content = self.callbacks.makeWidget(widget)
-                (content as? FileShelfWidgetController)?.onDragSession = { [weak self] in self?.shelfDragEvent($0) }
+                (content as? FileShelfWidgetController)?.onDragSession = { [weak self, weak content] event in
+                    guard let self, let content, self.started, !self.isLocked,
+                          let window = self.window, self.panel?.current == .shelf,
+                          content.isViewLoaded, content.view.window === window else { return }
+                    self.shelfDragEvent(event)
+                }
                 return content
             }
             controller.onWillSwitch = { [weak self] from, to in self?.panelWillSwitch(from: from, to: to) }
@@ -409,6 +414,10 @@ public final class NotchWindowCoordinator {
             guard let self, let window, self.window === window else { return false }
             return self.dragPerformed(info, in: window)
         }
+        window.onDragEnd = { [weak self, weak window] info in
+            guard let self, let window, self.window === window else { return }
+            self.dragEnded(session: info.draggingSequenceNumber)
+        }
         self.window = window
         return window
     }
@@ -428,7 +437,8 @@ public final class NotchWindowCoordinator {
 
     /// A user drag of file URLs from outside this window, while the notch is shown.
     private func isEligibleDrag(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
-        guard started, !isLocked, isOnShownSpace, widgets.contains(.shelf) else { return false }
+        guard started, !isLocked, isOnShownSpace, widgets.contains(.shelf),
+              info.draggingSourceOperationMask.contains(.copy) else { return false }
         if let source = info.draggingSource as? NSView, source.window === window { return false }
         if let source = info.draggingSource as? NSWindow, source === window { return false }
         // Checks the types only. It reads no file and no image.
@@ -453,17 +463,19 @@ public final class NotchWindowCoordinator {
 
     /// A drop on the window outside the shelf root. The shelf stays open.
     private func dragPerformed(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
-        defer { dragCompleted(session: info.draggingSequenceNumber) }
         guard isEligibleDrag(info, in: window), presentation == .expanded(.shelf), callbacks.shelfDropReady(),
               let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: Self.fileURLsOnly) as? [URL],
               !urls.isEmpty else { return false }
-        return callbacks.shelfDrop(urls)
+        let accepted = callbacks.shelfDrop(urls)
+        if accepted { dragCompleted(session: info.draggingSequenceNumber) }
+        return accepted
     }
 
     private func shelfDragEvent(_ event: FileShelfDragEvent) {
         switch event {
         case .exited(let session, let location): dragExited(session: session, location: location)
         case .dropped(let session): dragCompleted(session: session)
+        case .ended(let session): dragEnded(session: session)
         }
     }
 
@@ -479,6 +491,14 @@ public final class NotchWindowCoordinator {
 
     private func dragCompleted(session: Int) {
         if dragOpenedSession == session { dragOpenedSession = nil }
+    }
+
+    /// AppKit ends a canceled drag even when its last location is inside.
+    /// A successful drop already released this session's auto-open ownership.
+    private func dragEnded(session: Int) {
+        guard dragOpenedSession == session else { return }
+        dragOpenedSession = nil
+        if presentation == .expanded(.shelf) { collapse() }
     }
 
     /// One pending main-actor turn. A newer request replaces it.
@@ -560,6 +580,7 @@ final class NotchWindow: NSPanel {
     var onDragUpdate: (@MainActor (any NSDraggingInfo) -> NSDragOperation)?
     var onDragExit: (@MainActor ((any NSDraggingInfo)?) -> Void)?
     var onDragPerform: (@MainActor (any NSDraggingInfo) -> Bool)?
+    var onDragEnd: (@MainActor (any NSDraggingInfo) -> Void)?
 
     func applyNotchStyle() {
         isFloatingPanel = true
@@ -595,6 +616,8 @@ extension NotchWindow: @preconcurrency NSDraggingDestination {
     func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
     func draggingExited(_ sender: (any NSDraggingInfo)?) { onDragExit?(sender) }
     func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { onDragPerform?(sender) ?? false }
+    func draggingEnded(_ sender: any NSDraggingInfo) { onDragEnd?(sender) }
+    func wantsPeriodicDraggingUpdates() -> Bool { false }
 }
 
 /// Receives tracking-area events. Holds no window or view.

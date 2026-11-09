@@ -70,6 +70,7 @@ public enum FileShelfDragEvent: Equatable {
     case exited(session: Int?, location: NSPoint?)
     /// The root took a drop and sent `.drop`.
     case dropped(session: Int)
+    case ended(session: Int)
 }
 
 /// The File Shelf notch widget. It shows parent rows, takes file drops and
@@ -264,6 +265,12 @@ private final class FileShelfDropView: NSView {
     override func draggingExited(_ sender: (any NSDraggingInfo)?) {
         onDragEvent?(.exited(session: sender?.draggingSequenceNumber, location: sender?.draggingLocation))
     }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        onDragEvent?(.ended(session: sender.draggingSequenceNumber))
+    }
+
+    override func wantsPeriodicDraggingUpdates() -> Bool { false }
 
     private func operation(_ sender: any NSDraggingInfo) -> NSDragOperation {
         guard canDrop(), !isOwnDrag(sender.draggingSource),

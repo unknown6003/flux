@@ -33,7 +33,54 @@ private actor CopyGate {
     func widgetEvent(_ event: WidgetEvent) { Issue.record("Unexpected widget event") }
 }
 
+@MainActor private final class ShelfDropEffects: WidgetEffects {
+    var completions = 0
+    func requestAccess(_ permission: WidgetPermission) async { Issue.record("Unexpected permission prompt") }
+    func openSettings(_ permission: WidgetPermission) { Issue.record("Unexpected Settings") }
+    func retry(_ service: FeatureService) { Issue.record("Unexpected service retry") }
+    func report(_ failure: WidgetFailure) { Issue.record("Unexpected shelf failure") }
+    func widgetEvent(_ event: WidgetEvent) {
+        if case .shelfCopyFinished(let added, let failed) = event {
+            #expect(added == 1 && failed == 0)
+            completions += 1
+        } else { Issue.record("Unexpected widget event") }
+    }
+}
+
 struct WidgetWorkTests {
+    @Test @MainActor func windowShelfDropsUseOneOwnedCopyJobAndRejectAClosedVisit() async throws {
+        let domain = "org.fluxfixture.shelf-drop.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("flux-shelf-drop-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original.txt")
+        let bytes = Data("preserve the original".utf8)
+        try bytes.write(to: original)
+        let shelf = ShelfFiles(root: root.appendingPathComponent("Shelf"))
+        let effects = ShelfDropEffects()
+        let widgets = WidgetCoordinator(preferences: preferences, shelf: shelf,
+            clipboard: ClipboardRepository(historyURL: root.appendingPathComponent("unused.json")),
+            pasteboard: PasteboardChannel(), mediaScript: root, mediaFramework: root, effects: effects)
+        #expect(!widgets.acceptShelfDrop([original]))
+        let controller = widgets.makeWidget(.shelf)
+        try await waitFor { widgets.acceptsShelfDrop }
+        #expect(widgets.acceptShelfDrop([original]))
+        #expect(!widgets.acceptShelfDrop([original]))
+        try await waitFor { effects.completions == 1 && widgets.acceptsShelfDrop }
+        #expect(try await shelf.load().count == 1)
+        #expect(try Data(contentsOf: original) == bytes)
+        try preferences.set(false, for: Preferences.shelfEnabled)
+        #expect(!widgets.acceptShelfDrop([original]))
+        try preferences.set(true, for: Preferences.shelfEnabled)
+        widgets.dismiss()
+        #expect(!widgets.acceptShelfDrop([original]))
+        #expect(try await shelf.load().count == 1)
+        withExtendedLifetime(controller) {}
+    }
+
     @Test @MainActor func aSavedShelfExpirySweepsOwnedCopiesWithoutOpeningAWidget() async throws {
         let domain = "org.fluxfixture.expiry.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))
