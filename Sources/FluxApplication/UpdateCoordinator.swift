@@ -122,7 +122,7 @@ private actor NativeUpdates: UpdateBackend {
             case .success(let release) where release.version > current:
                 self.release = release
                 self.set(.available(version: release.version.description))
-                if !manual, self.automatic { self.install() }
+                if !manual, self.automatic { self.install(userInitiated: false) }
             case .success:
                 self.release = nil
                 if manual || self.status != .idle { self.set(.upToDate) }
@@ -132,7 +132,7 @@ private actor NativeUpdates: UpdateBackend {
         }
     }
 
-    public func install() {
+    public func install(userInitiated: Bool = true) {
         guard active, work == nil, let release else { return }
         set(.installing)
         let backend = backend, installURL = installURL
@@ -153,7 +153,7 @@ private actor NativeUpdates: UpdateBackend {
                 self.work = nil
                 if let error = error as? UpdateStageError, case .installLocation = error {
                     self.set(.available(version: release.version.description))
-                    self.manualInstall(release.pageURL)
+                    if userInitiated { self.manualInstall(release.pageURL) }
                 } else { self.set(.failed(code: "update.install")) }
             }
         }

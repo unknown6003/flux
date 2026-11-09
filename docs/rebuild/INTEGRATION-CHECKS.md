@@ -53,15 +53,16 @@ mapping for that control. It does not establish third-party capture access.
 A later Launch Services trial returned the installed Flux process rather than
 the explicit diagnostic. The diagnostic inherited the product's
 LSMultipleInstancesProhibited=true flag. The diagnostic builder now sets this
-flag to false before signing. The product flag stays true. A fresh launch with
-an exact returned-path and PID check is still required.
+flag to false before signing. The product flag stays true. The later journaled launch returned the exact diagnostic path and a separate
+PID, then failed its Screen Recording preflight. See the receipt below.
 
 ## Startup
 
 The new ApplicationSession keeps the existing updater's started/ready receipt
 format, inspects old data before creating new files, and takes a nonblocking
-single-writer lease. The lock descriptor closes on process death and is not
-inherited by helpers. It rejects symlink and hard-linked lease files.
+single-writer lease. The lock descriptor closes on process death and uses close-on-exec.
+A copied descriptor can still exist between fork and exec. Explicit unlock
+now ends the owner lease before the descriptor closes. It rejects symlink and hard-linked lease files.
 Analytics starts after ready and only for an existing opt-in. No feature is
 started by constructing this session. This is not yet the executable entry.
 
@@ -119,6 +120,63 @@ This is source evidence, not a runtime disconnect result on the user's kernel.
 The other review finding was an initial failed audio read treated as empty.
 AccessoryInventory now keeps source validity separate. It cannot publish a
 complete baseline until both sources are known. A failed later read preserves
-the last source value. The added nil-to-known baseline regression is pending.
+the last source value. The nil-to-known baseline regression passed in CI42537382772.
 Names remain a local deduplication aid: equal names can merge distinct devices,
 and different names from the two OS sources can still duplicate one device.
+
+
+## Current compiled integration
+
+CI42539763718 at03a4fc5 passed73 Core,28 Platform,9 UI and15 Application tests.
+It also rendered66 interface fixtures. The run compiles the new download and
+staging actors. The bounded command process checks, per-key mute capability,
+key-queue overflow, event-consumption dispatch, writer-lease copied-descriptor
+regression and late clock/grant notifications are included. No test posted a
+real key, changed the user's volume, mounted a release image or installed an
+app. The copied-descriptor regression failed first in CI42538060228; the
+original intermittent lease failure's precise cause remains unknown.
+
+NotchSubsystem now joins the activity router, feature demand and real window
+owner. AppShortcuts retains old registrations after a refused replacement.
+Its scoped independent source review found no defect. Carbon hardware input,
+real accessory changes and full-screen/display transitions remain unproved.
+
+## Update preparation and recovery
+
+ReleaseDownload uses a serial utility delegate, bounded response and byte
+counts, incremental SHA256 and a private output file. Its native URLProtocol
+controls test an exact download, excess and short bodies, a bad digest,
+existing-file protection and cancellation cleanup. No network is used by
+these controls. Release redirects are restricted to HTTPS GitHub release
+hosts. The signed bundle verifier still pins Flux's existing publisher.
+
+UpdateStager prepares a private copy beside the destination before the old
+app quits, verifies it after copying, and verifies it again before handoff.
+The helper keeps the installed four-line started/ready receipt and conservative
+rollback policy. Eleven local synthetic helper cases pass, including parent
+still running, swap failure, relaunch failure and hang, early crashes, live
+unconfirmed startup, failed process inspection, a child outliving its command,
+and final signature rejection. These exercise filesystem and process control,
+not a genuine signed upgrade through Launch Services.
+
+The scoped update risk review found two recovery faults. Final signature
+rejection now reopens the original app. Discard now tolerates an already
+removed stage directory, rather than retaining a permanently busy token.
+The cleanup and UpdateCoordinator changes are still awaiting their Mac CI run.
+The app coordinator adopts a user check into an in-flight background check,
+and drops late responses after stop. An unwritable destination currently
+opens the release page from a manual install action. It does not implement
+the previous cached DMG in Downloads flow yet.
+
+## Remaining product gates
+
+The new executable entry and complete SettingsEffects owner are not written.
+Menu-bar physical hiding and its live apply signal are not accepted. No
+assessment-mode fallback is accepted: upstream documents that assessment mode
+can block Notification Center, so that side effect must not be hidden from
+acceptance. Guided native ordering replaces synthetic drags in the design.
+Lock-screen presentation, Duo content and late widget content sizing still
+need integration. Opus's latest UI continuation hit its provider rate limit;
+no substitute UI model ran. The whole signed app, migration, hardware use,
+resource comparison and clean action media remain release gates. No release
+has been made.

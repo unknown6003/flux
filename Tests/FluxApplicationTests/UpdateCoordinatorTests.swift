@@ -28,6 +28,32 @@ struct UpdateCoordinatorTests {
     }
 
     @Test(.timeLimit(.minutes(1))) @MainActor
+    func anAutomaticLocationFailureWaitsForAnExplicitManualInstallAction() async throws {
+        let backend = PendingUpdateBackend()
+        var pages = 0
+        let owner = UpdateCoordinator(version: "0.21.35", installURL: URL(fileURLWithPath: "/fixture/Flux.app"),
+            backend: backend, changed: {}, readyToQuit: { Issue.record("Unexpected quit") },
+            manualInstall: { _ in pages += 1 })
+        defer { owner.stop() }
+        owner.start(automatic: true)
+        owner.check(userInitiated: false)
+        let clock = ContinuousClock()
+        let request = clock.now.advanced(by: .seconds(2))
+        while await backend.requests == 0, clock.now < request { try await Task.sleep(for: .milliseconds(10)) }
+        await backend.answer(try release())
+        let automatic = clock.now.advanced(by: .seconds(2))
+        while await backend.preparations == 0, clock.now < automatic { try await Task.sleep(for: .milliseconds(10)) }
+        while owner.status == .installing, clock.now < automatic { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(await backend.preparations == 1)
+        #expect(pages == 0)
+        owner.install()
+        let manual = clock.now.advanced(by: .seconds(2))
+        while pages == 0, clock.now < manual { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(pages == 1)
+        #expect(await backend.preparations == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor
     func aManualCheckAdoptsAnAutomaticRequestWithoutInstallingOrDownloadingTwice() async throws {
         let backend = PendingUpdateBackend()
         var manualPages: [URL] = []

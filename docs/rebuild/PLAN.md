@@ -66,16 +66,43 @@ Zero cost is not a testable promise. Measure analytics on and off on the same si
 
 ## Current integration checkpoint
 
-Mac CI42528576315 at1025a07 passed63 Core tests,13 platform tests, six UI tests and two application action tests. These include clipboard and shelf storage, media parser and helper deadlines, feed release, session routing, and real Settings controls changing service demand. The fixed Settings binding and all five widget bindings compile together at2ac6958 in CI42529386066. They still need the actual application owner and signed product acceptance.
+CI42539763718 at03a4fc5 passed73 Core,28 Platform,9 UI and15 Application tests
+and rendered66 AppKit fixtures. Core, Platform, FluxUI and FluxApplication
+compile together in Swift6. These checks now cover the real widget/window
+owners, activity queue and deadlines, accessory notifications, shortcut
+registration rollback, volume-key admission, process lease release and
+bounded release downloads. They are component checks, not signed product
+acceptance. See INTEGRATION-CHECKS.md for the failures, fixes and proof limits.
 
-The54 static fixtures include Settings at680/840 points in light/dark, scrolled page bottoms, and22 widget states. The first widget captures had stretched rows and narrow or missing text. Opus fixed the top anchoring, table column sizing and row text constraints. The parent inspected the corrected Now Playing, Calendar, File Shelf and Clipboard populated states from CI42527112251. These fixtures are readable. They are not screenshots of the rebuilt product running on the user’s Mac.
+All five widgets and five Settings pages have native bindings. Opus designed
+and implemented their UI. Its remaining Duo and content-resize slice is
+blocked by the provider's rate limit. Root has not substituted another UI
+model. The main executable and complete SettingsEffects host remain to be
+written. The old installed app is still0.21.35 build62.
 
-The matching-signed capture-only diagnostic returned readable menu-bar glyphs in some trials and black pixels in later trials. The native TG Pro preference was set false and read back once, but its immediate capture still showed the glyph. No settled physical hide result is proved. The private adapter has strict row/alias checks, a pre-write journal and fresh read-back; the finite diagnostic supervisor has eight fault tests. The live apply signal, whole-value write race and production recovery remain gates. Static tracing resolved the typed setter to property-list encoding and a writable key path, not a known notification.
+The matching-signed Launch Services capture probe now records its exact early
+failure. It returned screenCaptureNotAllowed before taking an image. Further
+capture-only retries are stopped until the real signed executable is ready.
+The direct command's earlier readable and black captures do not establish
+that launch's permission state. No physical native preference hide/show
+cycle or public-spacer backend has passed. The live apply path remains a
+backend gate. Assessment-mode hiding also has an upstream Notification Center
+side effect, so it is not an accepted replacement.
 
-A separate public status-item spacer fixture is built and matching-signed atb09a7e4, CI42528928164. It tests a measured claim in CleanMenuBar, not an accepted Flux backend. The first Mac attempt did not launch it because input continued under that task’s idle gate. No hide/show result exists. See POSITION-VISIBILITY-TRIAL.md. Do not repeat unchanged black captures or infer a physical result from saved policy.
+The new updater downloads bounded assets, checks their digest, stages a
+publisher-pinned app copy and keeps the existing startup/rollback receipt.
+Eleven local synthetic helper cases pass. The latest recovery fixes and
+UpdateCoordinator tests are awaiting Mac CI. Signed successful install,
+tamper rejection at handoff and true Launch Services rollback still need
+acceptance. The previous cached manual DMG fallback also remains open.
 
-Calendar uses an actor, coalesced changes and a midnight deadline. Camera, clipboard, media, battery and audio have separate owners. No hardware is constructed for an off feature. Session events replace lock-state polling. On the real unlocked Mac, the on-console key is true and the lock key is absent. The parser now accepts that observed shape and rejects malformed values; lock/unlock behavior still needs a signed test. The media clock fix came from a scoped independent risk review and passed its regression test. See MEDIA.md.
+Remaining work includes the executable composition, proved menu bar backend,
+Duo and dynamic sizing, drag-to-open shelf, full-screen/display handling,
+lock-screen presentation, complete update fallback, migration and grant tests,
+paired whole-process performance, clean product recordings, final independent
+review and release. No rewrite release has been made.
 
-The new application module has Settings and widget bindings. Remaining work includes the application entry and composition, menu bar backend, notch windows and input, compact activities, remaining device and media-key adapters, lock screen, updater, complete migration and performance tests, signed Mac flows, clean action recordings, final independent review and release. The old installed app remains0.21.35 build62. No rewrite release has been made.
-
-Parent owns Core, Platform, app composition, tests, Package.swift, CI and probes. Opus owns FluxUI and its integration notes in the existing locked worktree. Terra owns bounded real-Mac trials. Keep at most three spaces. No line may publish the rewrite before all release gates pass.
+Parent owns Core, Platform, app composition, tests, Package.swift, CI and
+probes. Opus owns FluxUI and its integration notes in the existing locked
+worktree. Terra owns bounded real-Mac trials. Keep at most three spaces.
+No line may publish the rewrite before all release gates pass.
