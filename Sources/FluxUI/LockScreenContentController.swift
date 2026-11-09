@@ -186,6 +186,7 @@ public final class LockScreenContentController: NSViewController {
 
     override public func loadView() {
         let root = LockScreenRootView()
+        root.onAppearanceChange = { [weak self] in self?.refreshLayerColors() }
         root.setAccessibilityIdentifier(Self.identifier)
         root.setAccessibilityRole(.group)
 
@@ -237,7 +238,6 @@ public final class LockScreenContentController: NSViewController {
         artwork.layer?.cornerRadius = LockScreenMetrics.artworkCornerRadius
         artwork.layer?.cornerCurve = .continuous
         artwork.layer?.masksToBounds = true
-        artwork.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
         artwork.contentTintColor = .secondaryLabelColor
         artwork.setAccessibilityElement(false)
         stateIcon.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
@@ -375,7 +375,7 @@ public final class LockScreenContentController: NSViewController {
         NotchWidgetStyle.setSymbol(playButton, playing ? "pause.fill" : "play.fill",
                                    label: playing ? L("lock.pause", "Pause") : L("lock.play", "Play"))
         playButton.contentTintColor = NSColor.windowBackgroundColor
-        playButton.layer?.backgroundColor = NSColor.labelColor.cgColor
+        refreshLayerColors()
         previousButton.isEnabled = media.canGoPrevious
         nextButton.isEnabled = media.canGoNext
 
@@ -423,6 +423,17 @@ public final class LockScreenContentController: NSViewController {
         send(.seek(slider.doubleValue))
     }
 
+    /// Layer colors are `CGColor`s, fixed when set. Resolve them in this
+    /// view's appearance, and again when it changes. Otherwise a dark card
+    /// gets the light black tile and button, which vanish on it.
+    private func refreshLayerColors() {
+        guard isViewLoaded else { return }
+        view.effectiveAppearance.performAsCurrentDrawingAppearance {
+            artwork.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.12).cgColor
+            playButton.layer?.backgroundColor = NSColor.labelColor.cgColor
+        }
+    }
+
     private func send(_ action: LockScreenTransportAction) {
         guard state.showsMedia else { return }
         onAction(action)
@@ -434,6 +445,12 @@ public final class LockScreenContentController: NSViewController {
 @MainActor
 final class LockScreenRootView: NSView {
     var isInteractive = false
+    var onAppearanceChange: (@MainActor () -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
 
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -464,7 +481,7 @@ final class LockScreenGlassView: NSVisualEffectView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
         layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.14).cgColor
+        refreshBorder()
         let limit = widthAnchor.constraint(lessThanOrEqualToConstant: maximumWidth)
         limit.isActive = true
         maxWidth = limit
@@ -474,4 +491,15 @@ final class LockScreenGlassView: NSVisualEffectView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override var isFlipped: Bool { true }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshBorder()
+    }
+
+    private func refreshBorder() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.14).cgColor
+        }
+    }
 }

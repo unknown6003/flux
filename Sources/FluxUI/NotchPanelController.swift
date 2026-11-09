@@ -132,6 +132,10 @@ public final class NotchPanelController: NSViewController {
     public static let duoCompanionFraction: CGFloat = 0.36
     /// Space between the two Duo panes.
     public static let duoGap: CGFloat = 12
+    /// Panel chrome around the widget area, in points.
+    static let tabsTop: CGFloat = 6
+    static let tabsGap: CGFloat = 10
+    static let edgeInset: CGFloat = 16
 
     public private(set) var widgets: [Widget]
     public private(set) var current: Widget?
@@ -142,6 +146,11 @@ public final class NotchPanelController: NSViewController {
     private let scroll = NotchPanelScrollView()
     private let container = NotchPanelDocumentView()
     private var heightLimit: NSLayoutConstraint?
+    /// Visible widget area: the document height, cut at `maximumHeight`.
+    private var viewportHeight: NSLayoutConstraint?
+    /// The measured natural document height. It also removes the free
+    /// vertical size of widget roots that pin their content to the top only.
+    private var documentHeight: NSLayoutConstraint?
     private let cameraSpacer = NSView()
     private weak var child: NSViewController?
     private weak var companionChild: NSViewController?
@@ -152,8 +161,13 @@ public final class NotchPanelController: NSViewController {
     /// strip included. Widget content taller than what is left scrolls inside
     /// the panel. The tab strip stays outside the scroll area.
     public var maximumHeight: CGFloat = 10_000 {
-        didSet { heightLimit?.constant = maximumHeight.isFinite ? max(0, maximumHeight) : 10_000 }
+        didSet {
+            heightLimit?.constant = cap
+            refreshContentHeight()
+        }
     }
+
+    private var cap: CGFloat { maximumHeight.isFinite ? max(0, maximumHeight) : 10_000 }
 
     /// The parent's Duo request. See `setDuo(_:)`.
     public private(set) var isDuoRequested = false
@@ -200,35 +214,43 @@ public final class NotchPanelController: NSViewController {
         scroll.setAccessibilityLabel(L("notch.content", "Widget content"))
         container.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = container
+        scroll.onLayout = { [weak self] in self?.clipDidLayout() }
 
         for view in [cameraSpacer, tabs, scroll] {
             view.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(view)
         }
         cameraSpacer.setAccessibilityElement(false)
-        // The scroll view wants the document height, below the priority at
-        // which AppKit resizes a window. A tall widget therefore cannot push
-        // the window past `maximumHeight`; the excess scrolls instead.
-        let preferred = scroll.heightAnchor.constraint(equalTo: container.heightAnchor)
-        preferred.priority = NSLayoutConstraint.Priority(490)
-        let limit = root.heightAnchor.constraint(lessThanOrEqualToConstant: maximumHeight)
+        // AppKit cannot see the document height through the clip view, and a
+        // window keeps its size at priority 500. So the panel measures the
+        // document itself and sets both heights as constants at 999. They win
+        // over the window and over `fittingSize` compression, and yield only
+        // to the required `maximumHeight` cap. Content past the cap scrolls.
+        let viewport = scroll.heightAnchor.constraint(equalToConstant: 0)
+        viewport.priority = Self.measuredPriority
+        viewportHeight = viewport
+        let document = container.heightAnchor.constraint(equalToConstant: 0)
+        document.priority = Self.measuredPriority
+        documentHeight = document
+        let limit = root.heightAnchor.constraint(lessThanOrEqualToConstant: cap)
         heightLimit = limit
         NSLayoutConstraint.activate([
             cameraSpacer.topAnchor.constraint(equalTo: root.topAnchor),
             cameraSpacer.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             cameraSpacer.heightAnchor.constraint(equalToConstant: geometry.topInset),
             cameraSpacer.widthAnchor.constraint(equalToConstant: geometry.cameraWidth),
-            tabs.topAnchor.constraint(equalTo: cameraSpacer.bottomAnchor, constant: 6),
+            tabs.topAnchor.constraint(equalTo: cameraSpacer.bottomAnchor, constant: Self.tabsTop),
             tabs.centerXAnchor.constraint(equalTo: root.centerXAnchor),
-            tabs.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 16),
-            scroll.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 10),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+            tabs.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: Self.edgeInset),
+            scroll.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: Self.tabsGap),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: Self.edgeInset),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -Self.edgeInset),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -Self.edgeInset),
             container.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
             container.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-            preferred,
+            viewport,
+            document,
             limit,
             root.widthAnchor.constraint(lessThanOrEqualToConstant: NotchGeometry.maximumExpandedWidth),
         ])
@@ -408,6 +430,55 @@ public final class NotchPanelController: NSViewController {
         }
         NSLayoutConstraint.activate(list)
         paneConstraints = list
+        refreshContentHeight()
+    }
+
+    private static let measuredPriority = NSLayoutConstraint.Priority(999)
+    private var isMeasuring = false
+    /// Clip view width at the last measurement.
+    private var measuredClipWidth: CGFloat = -1
+
+    /// The clip view gets its width only when the scroll view lays out. If
+    /// that width changed since the last measurement, measure once more, so
+    /// the next `fittingSize` read uses the real width. Equal widths stop it.
+    private func clipDidLayout() {
+        guard abs(scroll.contentView.bounds.width - measuredClipWidth) > 0.5 else { return }
+        refreshContentHeight()
+    }
+
+    /// Measures the widget panes at the panel's content width and sets the
+    /// document and viewport heights. It runs after a pane change and each
+    /// time the owner sets `maximumHeight`, which the owner does before every
+    /// fit, so a late `.loading` to content change grows the panel on the
+    /// owner's next refit. It runs no timer and changes no window.
+    private func refreshContentHeight() {
+        guard isViewLoaded, !isMeasuring, let documentHeight, let viewportHeight else { return }
+        isMeasuring = true
+        defer { isMeasuring = false }
+        let clipWidth = scroll.contentView.bounds.width
+        measuredClipWidth = clipWidth
+        let document: CGFloat
+        if child == nil {
+            document = 0
+        } else {
+            let estimate = geometry.expandedRect(contentHeight: 0).width - Self.edgeInset * 2
+            let width = max(0, clipWidth > 1 ? clipWidth : estimate)
+            // Free the document height, then fix only its width, so the
+            // fitting height is the panes' natural height at this width.
+            documentHeight.isActive = false
+            let probe = container.widthAnchor.constraint(equalToConstant: width)
+            probe.priority = Self.measuredPriority
+            probe.isActive = true
+            let natural = container.fittingSize.height
+            probe.isActive = false
+            document = natural.isFinite ? max(0, natural.rounded(.up)) : 0
+        }
+        documentHeight.constant = document
+        documentHeight.isActive = true
+        let tabsHeight = tabs.intrinsicContentSize.height
+        let chrome = geometry.topInset + Self.tabsTop + (tabsHeight.isFinite ? max(0, tabsHeight) : 0)
+            + Self.tabsGap + Self.edgeInset
+        viewportHeight.constant = max(0, min(document, cap - chrome))
     }
 
     private func fadeContainer() {
@@ -419,7 +490,8 @@ public final class NotchPanelController: NSViewController {
     }
 
     /// Readback for tests and the window owner: the visible widget area and
-    /// the full widget content height.
+    /// the full widget content height, after layout. The viewport equals the
+    /// document height until the panel reaches `maximumHeight`.
     public var contentViewportHeight: CGFloat { scroll.contentView.bounds.height }
     public var contentDocumentHeight: CGFloat { container.frame.height }
 
@@ -439,6 +511,14 @@ final class NotchPanelDocumentView: NSView {
 /// Left and Right switch tabs even while focus is inside a widget.
 @MainActor
 final class NotchPanelScrollView: NSScrollView {
+    /// Called after each layout, once the clip view has its frame.
+    var onLayout: (@MainActor () -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+
     override func keyDown(with event: NSEvent) {
         switch event.specialKey {
         case .leftArrow?, .rightArrow?: nextResponder?.keyDown(with: event)
