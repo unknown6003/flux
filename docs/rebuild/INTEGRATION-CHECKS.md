@@ -162,7 +162,9 @@ not a genuine signed upgrade through Launch Services.
 The scoped update risk review found two recovery faults. Final signature
 rejection now reopens the original app. Discard now tolerates an already
 removed stage directory, rather than retaining a permanently busy token.
-The cleanup and UpdateCoordinator changes are still awaiting their Mac CI run.
+CI42540130699 atc8590cf passed73 Core,29 Platform,9 UI and17 Application tests,
+including idempotent cleanup and the coordinator action controls. The later
+quiet automatic fallback control is awaiting the next run.
 The app coordinator adopts a user check into an in-flight background check,
 and drops late responses after stop. An unwritable destination currently
 opens the release page from a manual install action. It does not implement

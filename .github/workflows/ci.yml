@@ -110,6 +110,9 @@ jobs:
           name: native-test-crashes
           path: build/native-test-crashes/
           if-no-files-found: warn
+      - name: Check native updater rollback
+        timeout-minutes: 3
+        run: python3 Scripts/probe_update.py --native-helper
       - name: Render native interface fixtures
         run: swift run FluxUIProbe build/native-ui
       - name: Upload native interface fixtures

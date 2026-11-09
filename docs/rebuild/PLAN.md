@@ -91,8 +91,10 @@ side effect, so it is not an accepted replacement.
 
 The new updater downloads bounded assets, checks their digest, stages a
 publisher-pinned app copy and keeps the existing startup/rollback receipt.
-Eleven local synthetic helper cases pass. The latest recovery fixes and
-UpdateCoordinator tests are awaiting Mac CI. Signed successful install,
+Eleven local synthetic helper cases pass. The recovery fixes and
+UpdateCoordinator tests passed in CI42540130699 atc8590cf with73 Core,29
+Platform,9 UI and17 Application tests. The later quiet automatic fallback
+control is pending. Signed successful install,
 tamper rejection at handoff and true Launch Services rollback still need
 acceptance. The previous cached manual DMG fallback also remains open.
 
