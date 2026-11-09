@@ -82,6 +82,12 @@ let package = Package(
             path: "Sources/FluxApplication",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .executableTarget(
+            name: "FluxNativeCandidate",
+            dependencies: ["FluxApplication", "FluxCore", "FluxPlatform", "FluxUI"],
+            path: "Scripts/rebuild/NativeCandidate",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .testTarget(
             name: "FluxApplicationTests",
             dependencies: ["FluxApplication", "FluxCore", "FluxUI"],

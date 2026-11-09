@@ -29,6 +29,10 @@ on:
         description: Build a capture-only probe with the existing Flux signing identity, without installing or releasing it
         type: boolean
         default: false
+      native_candidate:
+        description: Build the signed unpublished native app for integration tests, without release
+        type: boolean
+        default: false
       menu_bar_probe:
         description: Run the live macOS 27 visibility probe before building
         type: boolean
@@ -70,7 +74,7 @@ jobs:
   native-core:
     if: ${{ inputs.native_core_only }}
     runs-on: xcode-27
-    timeout-minutes: 8
+    timeout-minutes: ${{ inputs.native_candidate && 12 || 8 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -131,7 +135,7 @@ jobs:
           path: build/native-visibility-probe/
           if-no-files-found: error
       - name: Import identity for capture-only probe
-        if: ${{ inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        if: ${{ (inputs.native_capture_probe || inputs.native_candidate) && github.event_name == 'workflow_dispatch' }}
         env:
           FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
           FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
@@ -162,8 +166,21 @@ jobs:
             build/native-layout-probe/FluxLayoutProbe.zip
             build/native-layout-probe/artifact.json
           if-no-files-found: error
+      - name: Build matching-signed native app candidate
+        if: ${{ inputs.native_candidate && github.event_name == 'workflow_dispatch' }}
+        timeout-minutes: 7
+        run: python3 Scripts/rebuild/build_native_candidate.py
+      - name: Upload unpublished native app candidate
+        if: ${{ inputs.native_candidate && github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-app-candidate
+          path: |
+            build/native-candidate/FluxNativeCandidate.zip
+            build/native-candidate/artifact.json
+          if-no-files-found: error
       - name: Remove capture-probe keychain
-        if: ${{ always() && inputs.native_capture_probe && github.event_name == 'workflow_dispatch' }}
+        if: ${{ always() && (inputs.native_capture_probe || inputs.native_candidate) && github.event_name == 'workflow_dispatch' }}
         run: python3 Scripts/import_signing.py --cleanup
       - name: Verify native PostHog transport
         if: ${{ inputs.native_posthog_probe }}
