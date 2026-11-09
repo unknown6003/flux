@@ -41,57 +41,13 @@ public struct StatusPreviewDisplayBounds: Sendable {
     public init(id: CGDirectDisplayID, frame: CGRect) { self.id = id; self.frame = frame }
 }
 
-public struct StatusPreviewCandidate: Sendable {
-    public let application: ApplicationID
-    public let region: StatusPreviewRegion
-    public let processID: pid_t
-}
-
 /// AX calls run on this actor, never on the main actor. Each object gets an
 /// IPC timeout. Each scan also has a wall-clock and element budget. It reads
 /// no titles, values, menus, windows, actions or user content.
 public actor StatusInventory {
     public init() {}
 
-    /// A fresh owner scan followed by a nine-point system-wide AX hit check.
-    /// Each point must resolve to the same menu-extra object, owned by the
-    /// requested process, with the same current frame. No titles are read.
-    /// This rejects known stale/occluded frames; it is not pixel visibility
-    /// proof, nor can it prevent a later layout change during capture.
-    public func previewCandidates(_ running: [RunningApplication],
-                                  displays: [StatusPreviewDisplayBounds]) -> [StatusPreviewCandidate] {
-        guard displays.count <= 32 else { return [] }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        let snapshot = read(running)
-        guard snapshot.accessibilityAllowed else { return [] }
-        let system = AXUIElementCreateSystemWide()
-        guard AXUIElementSetMessagingTimeout(system, 0.08) == .success else { return [] }
-        var result: [StatusPreviewCandidate] = []
-        for app in snapshot.applications.prefix(128) {
-            guard !Task.isCancelled, ContinuousClock.now < deadline else { break }
-            for item in app.items {
-                guard let frame = item.frame,
-                      let region = Self.previewRegion(frame: frame, displays: displays),
-                      eligible(frame, owner: app.application.processID, system: system, deadline: deadline) else { continue }
-                result.append(.init(application: app.application.id, region: region, processID: app.application.processID))
-                // App rows show one preview. Sibling icons remain counted in
-                // the inventory without capturing an unbounded image strip.
-                break
-            }
-        }
-        return result
-    }
-
-    /// Used immediately before and after each screenshot, not only when a
-    /// batch is discovered. The caller also checks the running bundle ID.
-    public func validatePreview(_ candidate: StatusPreviewCandidate) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
-        let system = AXUIElementCreateSystemWide()
-        guard AXUIElementSetMessagingTimeout(system, 0.08) == .success else { return false }
-        return eligible(candidate.region.frame, owner: candidate.processID, system: system,
-                        deadline: ContinuousClock.now.advanced(by: .seconds(1)))
-    }
-
+    /// One item's capture region, on exactly one display's menu bar band.
     public static func previewRegion(frame: CGRect, displays: [StatusPreviewDisplayBounds]) -> StatusPreviewRegion? {
         guard frame.size.width > 0, frame.size.width <= 256, frame.size.height > 0, frame.size.height <= 64,
               [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height].allSatisfy(\.isFinite) else { return nil }
@@ -101,33 +57,6 @@ public actor StatusInventory {
         }
         guard matches.count == 1, let display = matches.first else { return nil }
         return .init(id: UUID(), displayID: display.id, frame: frame)
-    }
-
-    private func eligible(_ frame: CGRect, owner: pid_t, system: AXUIElement,
-                          deadline: ContinuousClock.Instant) -> Bool {
-        let dx = min(1, frame.size.width / 4), dy = min(1, frame.size.height / 4)
-        var first: AXUIElement?
-        var complete = true
-        for x in [frame.minX + dx, frame.midX, frame.maxX - dx] {
-            for y in [frame.minY + dy, frame.midY, frame.maxY - dy] {
-                guard !Task.isCancelled, ContinuousClock.now < deadline else { return false }
-                var hit: AXUIElement?
-                guard AXUIElementCopyElementAtPosition(system, Float(x), Float(y), &hit) == .success,
-                      let hit else { return false }
-                if let first {
-                    guard CFEqual(first, hit) else { return false }
-                } else {
-                    var pid: pid_t = 0
-                    guard AXUIElementGetPid(hit, &pid) == .success, pid == owner,
-                          value(hit, kAXRoleAttribute, deadline: deadline, complete: &complete) as? String == kAXMenuBarItemRole,
-                          value(hit, kAXSubroleAttribute, deadline: deadline, complete: &complete) as? String == "AXMenuExtra",
-                          let current = self.frame(hit, deadline: deadline, complete: &complete), current == frame,
-                          complete else { return false }
-                    first = hit
-                }
-            }
-        }
-        return first != nil
     }
 
     public func read(_ running: [RunningApplication]) -> StatusInventorySnapshot {
