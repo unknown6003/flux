@@ -27,6 +27,10 @@ import AppKit
                 alert.beginSheetModal(for: window) { [weak self] response in
                     self?.finish(response == .alertFirstButtonReturn, dismiss: false)
                 }
+                // NSAlert configures its default button while presenting.
+                alert.buttons[0].keyEquivalent = ""
+                alert.buttons[1].keyEquivalent = "\r"
+                alert.window.defaultButtonCell = alert.buttons[1].cell as? NSButtonCell
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.finish(false) }

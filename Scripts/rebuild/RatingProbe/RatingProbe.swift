@@ -152,6 +152,7 @@ private actor RatingFixtureTransport: UsageTransport {
         let approve = try button("Use This Copy")
         let cancel = try button("Cancel")
         try requireTrue(approve.keyEquivalent.isEmpty && cancel.keyEquivalent == "\r")
+        try requireTrue(window.attachedSheet?.defaultButtonCell === cancel.cell)
         if let content = window.attachedSheet?.contentView,
            let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
             content.cacheDisplay(in: content.bounds, to: bitmap)
