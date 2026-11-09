@@ -38,8 +38,8 @@ private final class MediaMailbox: @unchecked Sendable {
     }
 }
 
-/// Foundation permits cross-thread Process status and termination. The helper
-/// is immutable here so a finite stop task can retain its exact process handle.
+/// Launch and final revocation share one lock, so a pending actor task cannot
+/// create a helper after its feed has stopped.
 private final class MediaProcessOwnership: @unchecked Sendable {
     private let lock = NSLock()
     private var active = true
@@ -66,17 +66,18 @@ private final class MediaProcessOwnership: @unchecked Sendable {
     /// Feed stop must work even if the app exits before the driver's actor
     /// can run again. Only processes launched by this owner are terminated.
     func revoke() {
-        lock.lock()
+        lock.lock(); defer { lock.unlock() }
         active = false
         let running = Array(children.values)
         children.removeAll()
-        lock.unlock()
         for process in running where process.isRunning {
             kill(process.processIdentifier, SIGKILL)
         }
     }
 }
 
+/// A normal stream restart gives its old process a bounded grace period.
+/// Final feed revocation also owns that process until this handle retires it.
 private final class MediaProcessHandle: @unchecked Sendable {
     let process: Process
     let ownership: MediaProcessOwnership
