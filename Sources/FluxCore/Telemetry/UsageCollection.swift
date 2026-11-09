@@ -61,10 +61,16 @@ public final class UsageCollection {
         Task(priority: .utility) { await client.log(code, level: level, expectedIdentity: identity) }
     }
 
-    public func submitRating(_ rating: UsageRating, submission: UUID) async -> UsageDeliveryResult {
+    public func makeRatingSubmission(_ rating: UsageRating) -> UsageRatingSubmission? {
+        guard enabled, let activeIdentity else { return nil }
+        return UsageRatingSubmission(rating: rating, identity: activeIdentity)
+    }
+
+    public func submitRating(_ submission: UsageRatingSubmission) async -> UsageDeliveryResult {
         guard enabled, let client else { return .disabled }
+        guard submission.identity == activeIdentity else { return .cancelled }
         guard let identity = admitRecord() else { return .limited }
-        let result = await client.submitRating(rating, submission: submission, expectedIdentity: identity)
+        let result = await client.submitRating(submission)
         guard enabled, activeIdentity == identity else { return .cancelled }
         return result
     }

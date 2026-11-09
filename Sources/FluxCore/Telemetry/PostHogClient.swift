@@ -59,17 +59,21 @@ public actor PostHogClient {
         schedule()
     }
 
+    public func makeRatingSubmission(_ rating: UsageRating) -> UsageRatingSubmission? {
+        guard enabled else { return nil }
+        return UsageRatingSubmission(rating: rating, identity: identity)
+    }
+
     /// An explicit rating waits for the ingestion acknowledgement, outside
     /// the UI actor. It never enters the best-effort queue or disk storage.
-    public func submitRating(_ rating: UsageRating, submission: UUID,
-                             expectedIdentity: UsageIdentity) async -> UsageDeliveryResult {
+    public func submitRating(_ submission: UsageRatingSubmission) async -> UsageDeliveryResult {
         guard enabled else { return .disabled }
-        guard expectedIdentity == identity, !Task.isCancelled else { return .cancelled }
+        guard submission.identity == identity, !Task.isCancelled else { return .cancelled }
         guard !busy else { return .busy }
         guard admitRecord() else { return .limited }
-        let record = UsageRecord(id: submission,
+        let record = UsageRecord(id: submission.id,
             event: .surveyAnswered(survey: FluxRatingSurvey.surveyID, question: FluxRatingSurvey.questionID,
-                                   rating: rating, submission: submission),
+                                   rating: submission.rating, submission: submission.id),
             assignments: usedAssignments, isVerification: isVerification)
         guard let body = try? UsageBatchEncoder.encode([record], identity: identity, projectToken: projectToken)
         else { return .failed }
@@ -78,7 +82,7 @@ public actor PostHogClient {
         busy = true
         let response = await perform(UsageRequest(endpoint: .events, body: body, projectToken: projectToken),
                                      observingCancellation: true)
-        guard revision == generation, enabled, expectedIdentity == identity else { return .cancelled }
+        guard revision == generation, enabled, submission.identity == identity else { return .cancelled }
         request = nil
         busy = false
         schedule()

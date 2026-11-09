@@ -42,3 +42,9 @@ References: https://posthog.com/docs/api/surveys,
 https://posthog.com/docs/surveys/implementing-custom-surveys and
 https://posthog.com/docs/api. The custom-survey contract requires string
 ratings, which the existing encoder already uses.
+
+The public rating API uses an opaque `UsageRatingSubmission`. Create it with
+`UsageCollection.makeRatingSubmission(_ rating:)`, then await
+`UsageCollection.submitRating(_:)`. One token binds one rating and the current
+random identity. Retries reuse it. Core rejects it after an identity reset,
+before network admission. The UI cannot read or replace its identifiers.

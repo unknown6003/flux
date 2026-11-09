@@ -182,22 +182,29 @@ private actor BlockingUsageTransport: UsageTransport {
 
 @Test func manualRatingUsesAnAcknowledgedSingleEventAndStableSubmissionID() async throws {
     let transport = RecordingUsageTransport(response: .init(status: 200, body: Data(#"{"status":1}"#.utf8)))
-    let identity = UsageIdentity(), submission = UUID()
+    let identity = UsageIdentity()
     let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
-    #expect(await client.submitRating(.four, submission: submission, expectedIdentity: identity) == .accepted)
+    let submission = try #require(await client.makeRatingSubmission(.four))
+    #expect(await client.submitRating(submission) == .accepted)
     let requests = await transport.snapshot()
     #expect(requests.count == 1)
     let request = try #require(requests.first)
     let body = try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
     let batch = try #require(body["batch"] as? [[String: Any]])
     #expect(batch.count == 1)
-    #expect(batch[0]["uuid"] as? String == submission.uuidString.lowercased())
+    #expect(batch[0]["uuid"] as? String == submission.id.uuidString.lowercased())
     #expect(batch[0]["event"] as? String == "survey sent")
     let properties = try #require(batch[0]["properties"] as? [String: Any])
     #expect(properties["$survey_id"] as? String == FluxRatingSurvey.surveyID.uuidString.lowercased())
     #expect(properties["$survey_response_" + FluxRatingSurvey.questionID.uuidString.lowercased()] as? String == "4")
     #expect(properties["$process_person_profile"] as? Bool == false)
     #expect(properties["$geoip_disable"] as? Bool == true)
+    #expect(await client.submitRating(submission) == .accepted)
+    let retryRequests = await transport.snapshot()
+    #expect(retryRequests.count == 2)
+    let retry = try #require(JSONSerialization.jsonObject(with: retryRequests[1].body) as? [String: Any])
+    let retryBatch = try #require(retry["batch"] as? [[String: Any]])
+    #expect(retryBatch.first?["uuid"] as? String == submission.id.uuidString.lowercased())
     await client.disable()
 }
 
@@ -220,7 +227,7 @@ private actor BlockingUsageTransport: UsageTransport {
     let transport = BlockingUsageTransport()
     let identity = UsageIdentity()
     let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
-    let submission = Task { await client.submitRating(.three, submission: UUID(), expectedIdentity: identity) }
+    let submission = Task { await client.submitRating(UsageRatingSubmission(rating: .three, identity: identity)) }
     var iterator = await transport.started.makeAsyncIterator()
     _ = await iterator.next()
     await client.disable()
@@ -233,7 +240,7 @@ private actor BlockingUsageTransport: UsageTransport {
     let transport = BlockingUsageTransport()
     let identity = UsageIdentity()
     let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
-    let submission = Task { await client.submitRating(.two, submission: UUID(), expectedIdentity: identity) }
+    let submission = Task { await client.submitRating(UsageRatingSubmission(rating: .two, identity: identity)) }
     var iterator = await transport.started.makeAsyncIterator()
     _ = await iterator.next()
     submission.cancel()
@@ -262,13 +269,13 @@ private actor RatingAcknowledgementGate: UsageTransport {
     let transport = RatingAcknowledgementGate()
     let identity = UsageIdentity()
     let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
-    let submission = Task { await client.submitRating(.three, submission: UUID(), expectedIdentity: identity) }
+    let submission = Task { await client.submitRating(UsageRatingSubmission(rating: .three, identity: identity)) }
     var iterator = await transport.started.makeAsyncIterator()
     _ = await iterator.next()
-    #expect(await client.submitRating(.five, submission: UUID(), expectedIdentity: identity) == .busy)
+    #expect(await client.submitRating(UsageRatingSubmission(rating: .five, identity: identity)) == .busy)
     await client.resetIdentity(UsageIdentity())
     await transport.release()
     #expect(await submission.value == .cancelled)
-    #expect(await client.submitRating(.five, submission: UUID(), expectedIdentity: identity) == .cancelled)
+    #expect(await client.submitRating(UsageRatingSubmission(rating: .five, identity: identity)) == .cancelled)
     await client.disable()
 }

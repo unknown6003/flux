@@ -7,6 +7,20 @@ public enum FluxRatingSurvey {
     public static let questionID = UUID(uuidString: "3318e47e-87af-444d-9a1d-4e7cd3a8c58b")!
 }
 
+/// A retry token bound to one rating and the identity that created it.
+/// Its IDs stay inside Core and cannot cross an analytics identity reset.
+public struct UsageRatingSubmission: Sendable {
+    let id: UUID
+    let identity: UsageIdentity
+    let rating: UsageRating
+
+    init(rating: UsageRating, identity: UsageIdentity) {
+        self.id = UUID()
+        self.identity = identity
+        self.rating = rating
+    }
+}
+
 public enum UsageDeliveryResult: String, Sendable {
     case accepted, disabled, busy, limited, cancelled, failed
 }

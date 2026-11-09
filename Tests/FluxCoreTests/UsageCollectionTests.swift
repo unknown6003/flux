@@ -22,7 +22,7 @@ private actor NoNetworkUsageTransport: UsageTransport {
     collection.record(.launched)
     collection.log(.serviceStarted)
     collection.flush()
-    #expect(await collection.submitRating(.four, submission: UUID()) == .disabled)
+    #expect(collection.makeRatingSubmission(.four) == nil)
     #expect(!collection.enabled)
     #expect(constructions == 0)
     #expect(defaults.object(forKey: UsageCollection.identityKey) == nil)
@@ -38,4 +38,20 @@ private actor NoNetworkUsageTransport: UsageTransport {
     collection.flush()
     #expect(!collection.enabled)
     #expect(constructions == 1)
+}
+
+@Test @MainActor func ratingRetryTokensCannotLinkAcrossAnIdentityReset() async throws {
+    let suite = "flux-tests-" + UUID().uuidString
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let collection = UsageCollection(defaults: defaults) { identity in
+        try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: NoNetworkUsageTransport())
+    }
+    await collection.setEnabled(true)
+    let old = try #require(collection.makeRatingSubmission(.four))
+    await collection.resetIdentity()
+    #expect(await collection.submitRating(old) == .cancelled)
+    await collection.setEnabled(false)
+    #expect(await collection.submitRating(old) == .disabled)
+    #expect(collection.makeRatingSubmission(.four) == nil)
 }
