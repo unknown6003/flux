@@ -119,6 +119,12 @@ let package = Package(
             path: "Scripts/rebuild/TelemetryCurlProbe",
             publicHeadersPath: "include",
             linkerSettings: [.linkedLibrary("curl")]
+        ),
+        .executableTarget(
+            name: "FluxNotchProbe",
+            dependencies: ["FluxCore", "FluxUI"],
+            path: "Scripts/rebuild/NotchProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )

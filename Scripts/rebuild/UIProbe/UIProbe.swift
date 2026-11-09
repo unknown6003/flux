@@ -137,39 +137,7 @@ import FluxUI
             window.close()
             if let failure { throw failure }
         }
-        for count in [0, 1, 4] {
-            let now = Date(timeIntervalSince1970: 1_800_000_000)
-            let events = (0..<count).map { index in
-                CalendarWidgetEvent(id: "duo-\(index)", title: "A long example meeting title", location: "Example room",
-                    start: now.addingTimeInterval(Double(index) * 3600),
-                    end: now.addingTimeInterval(Double(index + 1) * 3600), isAllDay: false)
-            }
-            let geometry = NotchGeometry(screenFrame: .init(x: 0, y: 0, width: 1728, height: 1117),
-                cameraWidth: 180, topInset: 33)
-            let controller = NotchPanelController(widgets: [.nowPlaying, .calendar], geometry: geometry) { widget in
-                if widget == .calendar {
-                    return CalendarWidgetController(state: .events(today: events, tomorrow: []), onAction: { _ in })
-                }
-                return NowPlayingWidgetController(state: .init(status: .playing, title: "An example song title",
-                    artist: "Example artist", elapsed: 65, duration: 240, canGoPrevious: true, canGoNext: true), onAction: { _ in })
-            }
-            controller.setDuo(count > 0)
-            let window = NSWindow(contentRect: .init(x: -10_000, y: -10_000, width: 440, height: 600),
-                styleMask: [.borderless], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
-            window.appearance = NSAppearance(named: .darkAqua)
-            window.backgroundColor = .black
-            window.contentViewController = controller
-            controller.view.widthAnchor.constraint(equalToConstant: 440).isActive = true
-            controller.show(.nowPlaying)
-            window.orderFrontRegardless()
-            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-            controller.view.layoutSubtreeIfNeeded()
-            window.displayIfNeeded()
-            try render(controller.view, to: output.appendingPathComponent("duo-\(count)-events.png"))
-            controller.dismiss()
-            window.close()
-        }
+        // The notch shell and Duo view render in FluxNotchProbe, beside 0.21.35.
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
             let media = NowPlayingWidgetState(status: .playing, title: "An example song title", artist: "Example artist",
@@ -196,36 +164,6 @@ import FluxUI
                 host.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
                 try render(host, to: output.appendingPathComponent("lock-\(name)-\(theme).png"))
-                window.close()
-            }
-        }
-        for notched in [false, true] {
-            let geometry = NotchGeometry(screenFrame: NSRect(x: 0, y: 0, width: 1728, height: 1117),
-                                         cameraWidth: notched ? 180 : 0, topInset: 33)
-            let samples: [(String, ActivityItem?)] = [
-                ("idle", nil),
-                ("battery", try ActivityItem(kind: .battery, leading: .symbol("battery.25percent"),
-                    trailing: .text("18%"), priority: 10, tint: .warning, duration: 5)),
-                ("timer", try ActivityItem(kind: .timer, leading: .gauge(value: 0.6, symbol: "timer"),
-                    trailing: .text("1:05"), priority: 10, duration: nil)),
-                ("media", try ActivityItem(kind: .nowPlaying, leading: .artwork,
-                    trailing: .symbol("waveform"), priority: 1, duration: nil)),
-                ("volume", try ActivityItem(kind: .soundHUD, leading: .symbol("speaker.wave.2"),
-                    trailing: .soundGauge(value: 0.6, symbol: "speaker.wave.2"), priority: 10, duration: 2))
-            ]
-            for (name, item) in samples {
-                let controller = CompactNotchController(state: .init(geometry: geometry, currentActivity: item,
-                    queueCount: item == nil ? 0 : 2, restorableCount: 1), onAction: { _ in })
-                let window = NSWindow(contentRect: NSRect(origin: .init(x: -10_000, y: -10_000), size: controller.preferredSize),
-                                      styleMask: [.borderless], backing: .buffered, defer: false)
-                window.isReleasedWhenClosed = false
-                window.backgroundColor = .clear
-                window.contentViewController = controller
-                window.setContentSize(controller.preferredSize)
-                window.orderFrontRegardless()
-                controller.view.layoutSubtreeIfNeeded()
-                window.displayIfNeeded()
-                try render(controller.view, to: output.appendingPathComponent("compact-\(notched ? "notch" : "flat")-\(name).png"))
                 window.close()
             }
         }
