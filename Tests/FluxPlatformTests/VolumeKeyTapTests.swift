@@ -6,18 +6,27 @@ struct VolumeKeyTapTests {
     @Test func fullKeyBurstFallsBackOnceAndDoesNotConsumeUnsupportedMute() {
         var queue = SoundKeyQueue()
         let volumeOnly = VolumeSnapshot(level: 0.5, muted: false, adjustable: true)
-        #expect(!queue.offer(.mute, repeated: false, fine: false, output: volumeOnly))
+        let unsupportedMute = queue.offer(.mute, repeated: false, fine: false, output: volumeOnly)
+        #expect(!unsupportedMute)
         #expect(!queue.blocked)
         let output = VolumeSnapshot(level: 0.5, muted: false, adjustable: true, muteAdjustable: true)
-        for _ in 0..<32 { #expect(queue.offer(.up, repeated: true, fine: false, output: output)) }
-        #expect(queue.offer(.mute, repeated: true, fine: false, output: output))
+        for _ in 0..<32 {
+            let accepted = queue.offer(.up, repeated: true, fine: false, output: output)
+            #expect(accepted)
+        }
+        let ignoredRepeat = queue.offer(.mute, repeated: true, fine: false, output: output)
+        #expect(ignoredRepeat)
         #expect(queue.commands.count == 32)
-        #expect(!queue.offer(.up, repeated: true, fine: false, output: output))
+        let overflow = queue.offer(.up, repeated: true, fine: false, output: output)
+        #expect(!overflow)
         #expect(queue.blocked)
-        #expect(queue.next() == .adjust(1 / 16))
-        #expect(!queue.offer(.down, repeated: false, fine: false, output: output))
+        let first = queue.next()
+        #expect(first == .adjust(1 / 16))
+        let blocked = queue.offer(.down, repeated: false, fine: false, output: output)
+        #expect(!blocked)
         queue.refresh()
-        #expect(queue.offer(.down, repeated: false, fine: true, output: output))
+        let recovered = queue.offer(.down, repeated: false, fine: true, output: output)
+        #expect(recovered)
         #expect(queue.commands.last == .adjust(-1 / 64))
     }
 
