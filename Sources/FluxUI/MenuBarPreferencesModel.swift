@@ -276,7 +276,7 @@ enum MenuBarText {
     static func mode(_ mode: MenuBarPageMode) -> String {
         switch mode {
         case .perApplication: L("menuBar.mode.perApp", "Hiding works per app. All icons from one app share a group.")
-        case .byPosition: L("menuBar.mode.byPosition", "Hiding works by position. Arrange icons in the menu bar after you change a group.")
+        case .byPosition: L("menuBar.mode.byPosition", "Hiding works by position. Moving an icon here also moves it in the menu bar.")
         case .needsAccessibility: L("menuBar.mode.access", "To read your menu bar, Flux needs Accessibility.")
         case .paused: L("menuBar.mode.paused", "Hiding is paused. macOS did not confirm the change.")
         case .failed("hidingUnavailable"): L("menuBar.mode.hidingUnavailable", "This macOS version has no menu bar hiding Flux can use. All icons stay visible.")
