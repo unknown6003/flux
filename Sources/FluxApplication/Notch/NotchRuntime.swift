@@ -110,6 +110,11 @@ public final class NotchRuntime: WidgetEffects {
         companionChanged: { [unowned self] widget in
             self.companionWidget = widget
             if widget == nil { self.widgets.removeCalendarCompanion() }
+        },
+        shelfDropReady: { [unowned self] in self.active && self.phase == .unlocked && self.widgets.acceptsShelfDrop },
+        shelfDrop: { [unowned self] urls in
+            guard self.active, self.phase == .unlocked else { return false }
+            return self.widgets.acceptShelfDrop(urls)
         }))
         self.widgets.onContentChange = { [weak owner] in owner?.contentDidChange($0) }
         owner.onPresentationChange = { [weak self] in self?.callbacks.presenting($0 == .compact) }
@@ -184,6 +189,8 @@ public final class NotchRuntime: WidgetEffects {
         if preferences.value(for: Preferences.notchEnabled), let screen = NSScreen.main ?? NSScreen.screens.first {
             let configuration = FeatureConfiguration(preferences: preferences)
             let order = WidgetOrder(saved: preferences.value(for: Preferences.widgetOrder)).widgets
+            // Before start, so a new window gets the saved collection behavior.
+            window.setShowInFullscreen(preferences.value(for: Preferences.showInFullscreen))
             window.start(screen: screen, widgets: order.filter { configuration.enabledWidgets.contains($0) })
             window.setSessionLocked(phase != .unlocked)
             window.setHover(enabled: preferences.value(for: Preferences.expansionTrigger) == .hover,

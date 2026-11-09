@@ -772,6 +772,25 @@ public final class WidgetCoordinator {
         }
     }
 
+    /// True when the File Shelf view of the current visit can take a drop:
+    /// the notch and shelf are on, the list is loaded and no copy job runs.
+    /// It reads no file. The window asks this during a drag.
+    public var acceptsShelfDrop: Bool {
+        visible == .shelf && widgetVisit != nil && shelfView != nil
+            && copyJob == nil && shelfLoaded && !shelfFailed
+            && preferences.value(for: Preferences.notchEnabled)
+            && preferences.value(for: Preferences.shelfEnabled)
+    }
+
+    /// A drop that landed on the notch window outside the shelf root. Same
+    /// checks and the same copy job as the root's `.drop`. Returns false and
+    /// starts nothing when `acceptsShelfDrop` is false or no URL is a file.
+    public func acceptShelfDrop(_ urls: [URL]) -> Bool {
+        guard acceptsShelfDrop, urls.contains(where: \.isFileURL) else { return false }
+        drop(urls)
+        return copyJob != nil
+    }
+
     /// One copy job at a time. It may outlive the panel. It holds no view.
     private func drop(_ urls: [URL]) {
         guard copyJob == nil else { effects.report(.shelfBusy); return }

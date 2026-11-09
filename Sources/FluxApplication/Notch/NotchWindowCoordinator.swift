@@ -19,6 +19,13 @@ import FluxUI
 /// There is no idle timer and no event monitor. Hover uses an `NSTrackingArea`
 /// on the window content. A close delay is one `Task.sleep`, cancelled on
 /// re-entry, collapse, lock, disable and stop.
+///
+/// File drags: the window is an AppKit drag destination for file URLs only.
+/// A file drag over the compact notch opens File Shelf without focus. If it
+/// leaves the window with no drop, only the panel that this drag opened
+/// closes. An open panel that shows another widget is never switched. The
+/// shelf root and the window never take the same drop: AppKit gives each
+/// drop to one destination, and both send it to the same shelf copy job.
 @MainActor
 public final class NotchWindowCoordinator {
     public enum Presentation: Equatable, Sendable {
@@ -39,17 +46,27 @@ public final class NotchWindowCoordinator {
         /// the pane, nil after the pane is removed. `willDismissWidget` still
         /// runs once for the whole panel, before both views go.
         public var companionChanged: @MainActor (Widget?) -> Void
+        /// True when the open File Shelf can take a drop now. Asked on each
+        /// drag move over the open panel outside the shelf root.
+        public var shelfDropReady: @MainActor () -> Bool
+        /// A drop on the open panel outside the shelf root. Return true only
+        /// if the shelf copy job took the files. Called once per drop.
+        public var shelfDrop: @MainActor ([URL]) -> Bool
 
         public init(willShowWidget: @escaping @MainActor (_ from: Widget?, _ to: Widget) -> Void,
                     makeWidget: @escaping @MainActor (Widget) -> NSViewController,
                     willDismissWidget: @escaping @MainActor (Widget?) -> Void,
                     compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
-                    companionChanged: @escaping @MainActor (Widget?) -> Void = { _ in }) {
+                    companionChanged: @escaping @MainActor (Widget?) -> Void = { _ in },
+                    shelfDropReady: @escaping @MainActor () -> Bool = { false },
+                    shelfDrop: @escaping @MainActor ([URL]) -> Bool = { _ in false }) {
             self.willShowWidget = willShowWidget
             self.makeWidget = makeWidget
             self.willDismissWidget = willDismissWidget
             self.compactAction = compactAction
             self.companionChanged = companionChanged
+            self.shelfDropReady = shelfDropReady
+            self.shelfDrop = shelfDrop
         }
     }
 
@@ -69,6 +86,11 @@ public final class NotchWindowCoordinator {
     public private(set) var isDuoRequested = false
     /// The Duo calendar pane, while one is shown.
     public var companion: Widget? { panel?.companion }
+    /// The parent's last `setShowInFullscreen(_:)` value. Default true.
+    public private(set) var showsInFullscreen = true
+    /// The `draggingSequenceNumber` of the file drag that opened File Shelf
+    /// from the compact notch. Nil when no open drag owns the panel.
+    public private(set) var dragOpenedSession: Int?
 
     private let callbacks: Callbacks
     private var window: NotchWindow?
@@ -152,6 +174,7 @@ public final class NotchWindowCoordinator {
     public func setWidgets(_ newWidgets: [Widget]) {
         widgets = Self.unique(newWidgets)
         if let lastWidget, !widgets.contains(lastWidget) { self.lastWidget = nil }
+        if !widgets.contains(.shelf) { dragOpenedSession = nil }
         panel?.setWidgets(widgets)
     }
 
@@ -182,6 +205,18 @@ public final class NotchWindowCoordinator {
         scheduleRefit()
     }
 
+    /// Saved `Preferences.showInFullscreen`. True keeps `.fullScreenAuxiliary`,
+    /// so the notch shows over full-screen apps. False removes it, as the
+    /// old app did. AppKit then keeps the window out of full-screen Spaces,
+    /// and opens, hover and drags are refused while the window is not on the
+    /// active Space. An open panel collapses when the option turns off.
+    public func setShowInFullscreen(_ show: Bool) {
+        guard show != showsInFullscreen else { return }
+        showsInFullscreen = show
+        window?.setShowInFullscreen(show)
+        if !show { collapse() }
+    }
+
     /// Hover open and close. `closeDelay` is clamped to `closeDelayRange`.
     public func setHover(enabled: Bool, closeDelay: TimeInterval) {
         self.closeDelay = closeDelay.isFinite
@@ -197,7 +232,7 @@ public final class NotchWindowCoordinator {
     /// command only: the window becomes key without activating the app.
     /// Background and hover opens never take focus.
     public func expand(_ widget: Widget? = nil, focus: Bool) {
-        guard started, !isLocked, let geometry, let window else { return }
+        guard started, !isLocked, let geometry, let window, isOnShownSpace else { return }
         guard let target = widget.flatMap({ widgets.contains($0) ? $0 : nil })
                 ?? lastWidget.flatMap({ widgets.contains($0) ? $0 : nil }) ?? widgets.first else { return }
         cancelClose()
@@ -206,7 +241,10 @@ public final class NotchWindowCoordinator {
             panel.show(target)
         } else {
             let controller = NotchPanelController(widgets: widgets, geometry: geometry) { [weak self] widget in
-                self?.callbacks.makeWidget(widget) ?? NSViewController()
+                guard let self else { return NSViewController() }
+                let content = self.callbacks.makeWidget(widget)
+                (content as? FileShelfWidgetController)?.onDragSession = { [weak self] in self?.shelfDragEvent($0) }
+                return content
             }
             controller.onWillSwitch = { [weak self] from, to in self?.panelWillSwitch(from: from, to: to) }
             controller.onWillDismiss = { [weak self] widget in self?.panelWillDismiss(widget) }
@@ -249,6 +287,7 @@ public final class NotchWindowCoordinator {
         let window = self.window ?? makeWindow()
         presentation = .compact
         openedWithFocus = false
+        dragOpenedSession = nil
         renderCompact()
         if window.contentViewController !== compact { window.contentViewController = compact }
         trackContent()
@@ -303,6 +342,7 @@ public final class NotchWindowCoordinator {
 
     private func panelWillSwitch(from: Widget?, to: Widget) {
         callbacks.willShowWidget(from, to)
+        if to != .shelf { dragOpenedSession = nil }
         lastWidget = to
         presentation = .expanded(to)
         // A tab click switches after this returns. Fit once, on the next turn.
@@ -350,13 +390,95 @@ public final class NotchWindowCoordinator {
         compact = nil
         presentation = .hidden
         openedWithFocus = false
+        dragOpenedSession = nil
     }
 
     private func makeWindow() -> NotchWindow {
         let window = NotchWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         window.applyNotchStyle()
+        window.setShowInFullscreen(showsInFullscreen)
+        window.onDragUpdate = { [weak self, weak window] info in
+            guard let self, let window, self.window === window else { return [] }
+            return self.dragUpdated(info, in: window)
+        }
+        window.onDragExit = { [weak self, weak window] info in
+            guard let self, let window, self.window === window else { return }
+            self.dragExited(session: info?.draggingSequenceNumber, location: info?.draggingLocation)
+        }
+        window.onDragPerform = { [weak self, weak window] info in
+            guard let self, let window, self.window === window else { return false }
+            return self.dragPerformed(info, in: window)
+        }
         self.window = window
         return window
+    }
+
+    /// False only when fullscreen showing is off and AppKit reports the
+    /// window off the active Space. With the option on, AppKit may report a
+    /// visible `.fullScreenAuxiliary` window as off the active Space, so the
+    /// flag is read only for the opt-out path, as the old app did.
+    private var isOnShownSpace: Bool {
+        guard let window else { return false }
+        return showsInFullscreen || window.isOnActiveSpace
+    }
+
+    // MARK: File drag
+
+    private static let fileURLsOnly: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+
+    /// A user drag of file URLs from outside this window, while the notch is shown.
+    private func isEligibleDrag(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
+        guard started, !isLocked, isOnShownSpace, widgets.contains(.shelf) else { return false }
+        if let source = info.draggingSource as? NSView, source.window === window { return false }
+        if let source = info.draggingSource as? NSWindow, source === window { return false }
+        // Checks the types only. It reads no file and no image.
+        return info.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: Self.fileURLsOnly)
+    }
+
+    private func dragUpdated(_ info: any NSDraggingInfo, in window: NotchWindow) -> NSDragOperation {
+        guard isEligibleDrag(info, in: window) else { return [] }
+        switch presentation {
+        case .compact:
+            dragOpenedSession = info.draggingSequenceNumber
+            expand(.shelf, focus: false)
+            guard presentation == .expanded(.shelf) else { dragOpenedSession = nil; return [] }
+            // The shelf may still be loading. The drop checks it again.
+            return .copy
+        case .expanded(.shelf):
+            return callbacks.shelfDropReady() ? .copy : []
+        case .expanded, .hidden:
+            return []
+        }
+    }
+
+    /// A drop on the window outside the shelf root. The shelf stays open.
+    private func dragPerformed(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
+        defer { dragCompleted(session: info.draggingSequenceNumber) }
+        guard isEligibleDrag(info, in: window), presentation == .expanded(.shelf), callbacks.shelfDropReady(),
+              let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: Self.fileURLsOnly) as? [URL],
+              !urls.isEmpty else { return false }
+        return callbacks.shelfDrop(urls)
+    }
+
+    private func shelfDragEvent(_ event: FileShelfDragEvent) {
+        switch event {
+        case .exited(let session, let location): dragExited(session: session, location: location)
+        case .dropped(let session): dragCompleted(session: session)
+        }
+    }
+
+    /// The drag left the window or the shelf root. A point still inside the
+    /// window is a move between those two destinations, not an exit.
+    private func dragExited(session: Int?, location: NSPoint?) {
+        guard let opened = dragOpenedSession, session == nil || session == opened else { return }
+        if let location, let window, NSRect(origin: .zero, size: window.frame.size).contains(location) { return }
+        dragOpenedSession = nil
+        guard presentation == .expanded(.shelf) else { return }
+        collapse()
+    }
+
+    private func dragCompleted(session: Int) {
+        if dragOpenedSession == session { dragOpenedSession = nil }
     }
 
     /// One pending main-actor turn. A newer request replaces it.
@@ -403,7 +525,7 @@ public final class NotchWindowCoordinator {
     }
 
     private func pointerEntered() {
-        guard hoverEnabled else { return }
+        guard hoverEnabled, isOnShownSpace else { return }
         cancelClose()
         if presentation == .compact { expand(focus: false) }
     }
@@ -430,10 +552,15 @@ public final class NotchWindowCoordinator {
     }
 }
 
-/// Borderless, nonactivating, clear, on every Space and over full-screen apps.
+/// Borderless, nonactivating, clear and on every Space. It shows over
+/// full-screen apps only while `setShowInFullscreen(true)` holds.
 /// It becomes key only when a control needs it or the coordinator asks.
 @MainActor
 final class NotchWindow: NSPanel {
+    var onDragUpdate: (@MainActor (any NSDraggingInfo) -> NSDragOperation)?
+    var onDragExit: (@MainActor ((any NSDraggingInfo)?) -> Void)?
+    var onDragPerform: (@MainActor (any NSDraggingInfo) -> Bool)?
+
     func applyNotchStyle() {
         isFloatingPanel = true
         becomesKeyOnlyIfNeeded = true
@@ -446,10 +573,28 @@ final class NotchWindow: NSPanel {
         isMovable = false
         animationBehavior = .none
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        registerForDraggedTypes([.fileURL])
+    }
+
+    /// Adds or removes `.fullScreenAuxiliary` only. Spaces flags stay.
+    func setShowInFullscreen(_ show: Bool) {
+        if show { collectionBehavior.insert(.fullScreenAuxiliary) } else { collectionBehavior.remove(.fullScreenAuxiliary) }
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+// `NSWindow` has the drag destination methods only as an informal
+// Objective-C category. The conformance makes these witnesses `@objc`, so
+// AppKit finds them by selector. `@preconcurrency` keeps them main-actor
+// methods whether or not the SDK marks the protocol main-actor; AppKit
+// calls them on the main thread.
+extension NotchWindow: @preconcurrency NSDraggingDestination {
+    func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
+    func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
+    func draggingExited(_ sender: (any NSDraggingInfo)?) { onDragExit?(sender) }
+    func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { onDragPerform?(sender) ?? false }
 }
 
 /// Receives tracking-area events. Holds no window or view.

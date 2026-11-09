@@ -63,6 +63,15 @@ public enum FileShelfWidgetAction: Equatable, Sendable {
     case retry
 }
 
+/// A file drag event on the widget root, for the window owner. Points are in
+/// window coordinates. `session` is the AppKit `draggingSequenceNumber`.
+public enum FileShelfDragEvent: Equatable {
+    /// The drag left the root with no drop. Nil values mean AppKit gave no drag info.
+    case exited(session: Int?, location: NSPoint?)
+    /// The root took a drop and sent `.drop`.
+    case dropped(session: Int)
+}
+
 /// The File Shelf notch widget. It shows parent rows, takes file drops and
 /// gives file drags. It does no file work: every change goes to the parent.
 @MainActor
@@ -72,6 +81,8 @@ public final class FileShelfWidgetController: NSViewController, NSTableViewDataS
 
     public private(set) var state: FileShelfWidgetState
     private let onAction: @MainActor (FileShelfWidgetAction) -> Void
+    /// Drag exit and drop on the root. It never carries file URLs; `.drop` does.
+    public var onDragSession: (@MainActor (FileShelfDragEvent) -> Void)?
     private let header = NotchClearHeader(title: L("shelf.title", "File Shelf"),
                                           question: L("shelf.clearQuestion", "Remove all files from the shelf?"))
     private let (scroll, table) = NotchListTable.make(rowHeight: FileShelfWidgetController.rowHeight)
@@ -98,6 +109,7 @@ public final class FileShelfWidgetController: NSViewController, NSTableViewDataS
         root.canDrop = { [weak self] in self?.state.status == .ready }
         root.isOwnDrag = { [weak self] source in (source as AnyObject?) === self?.table }
         root.onDrop = { [weak self] urls in self?.onAction(.drop(urls)) }
+        root.onDragEvent = { [weak self] event in self?.onDragSession?(event) }
 
         header.onConfirm = { [weak self] in self?.onAction(.clearAll) }
         table.dataSource = self
@@ -226,6 +238,7 @@ private final class FileShelfDropView: NSView {
     var canDrop: () -> Bool = { false }
     var isOwnDrag: (Any?) -> Bool = { _ in false }
     var onDrop: (([URL]) -> Void)?
+    var onDragEvent: ((FileShelfDragEvent) -> Void)?
     private let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
 
     override init(frame: NSRect) {
@@ -244,7 +257,12 @@ private final class FileShelfDropView: NSView {
               let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
               !urls.isEmpty else { return false }
         onDrop?(urls)
+        onDragEvent?(.dropped(session: sender.draggingSequenceNumber))
         return true
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        onDragEvent?(.exited(session: sender?.draggingSequenceNumber, location: sender?.draggingLocation))
     }
 
     private func operation(_ sender: any NSDraggingInfo) -> NSDragOperation {
