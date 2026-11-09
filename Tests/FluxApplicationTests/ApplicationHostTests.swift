@@ -62,6 +62,7 @@ private enum FixtureError: Error { case unexpected }
 
 @MainActor private final class HostFixtureLockScreen: LockScreenService {
     var onChange: (@MainActor () -> Void)?
+    var onTransport: (@MainActor (LockScreenTransportAction) -> Void)?
     var capability: LockScreenCapability { .unavailable }
     var failureCode: String? { nil }
     func makeHandle() throws -> any FeatureServiceHandle {

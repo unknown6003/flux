@@ -1,6 +1,7 @@
 import AppKit
 import FluxCore
 import FluxPlatform
+import FluxUI
 
 /// The application's single owner for notch features. Feed changes, queue
 /// input, deadlines and the visible window meet here. The executable supplies
@@ -98,4 +99,8 @@ import FluxPlatform
     public func setClipboardPersistence(_ enabled: Bool) async throws { try await runtime.setClipboardPersistence(enabled) }
     public func adjustVolume(by delta: Float) async -> Bool { await runtime.adjustVolume(by: delta) }
     public func toggleMute() async -> Bool { await runtime.toggleMute() }
+    public func sendLockScreenTransport(_ action: LockScreenTransportAction) {
+        guard active else { return }
+        runtime.sendLockScreenTransport(action)
+    }
 }

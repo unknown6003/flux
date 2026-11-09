@@ -36,6 +36,7 @@ public enum MenuBarAction: Sendable {
 /// The demand-owned handle opens and closes the optional lock-screen bridge.
 @MainActor public protocol LockScreenService: AnyObject {
     var onChange: (@MainActor () -> Void)? { get set }
+    var onTransport: (@MainActor (LockScreenTransportAction) -> Void)? { get set }
     var capability: LockScreenCapability { get }
     var failureCode: String? { get }
     func makeHandle() throws -> any FeatureServiceHandle

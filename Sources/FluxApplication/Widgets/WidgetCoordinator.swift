@@ -369,6 +369,10 @@ public final class WidgetCoordinator {
         }
     }
 
+    /// The runtime checks the live locked phase and saved lock-media choice
+    /// before forwarding. The existing demand-owned media lease is reused.
+    func sendLockScreenControl(_ control: MediaControl) { sendMedia(control) }
+
     /// Activates the running app, or launches it by bundle ID.
     private func openApplication(_ id: ApplicationID) {
         if let running = NSRunningApplication.runningApplications(withBundleIdentifier: id.rawValue).first {

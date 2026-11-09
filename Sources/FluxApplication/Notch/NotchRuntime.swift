@@ -68,6 +68,20 @@ public final class NotchRuntime: WidgetEffects {
     private var monitor: SessionMonitor?
     private weak var volumeFeed: SoundHUDFeed?
 
+    public func sendLockScreenTransport(_ action: LockScreenTransportAction) {
+        guard active, phase == .locked,
+              preferences.value(for: Preferences.notchEnabled),
+              preferences.value(for: Preferences.lockScreenEnabled),
+              preferences.value(for: Preferences.lockScreenNowPlaying) else { return }
+        let control: MediaControl = switch action {
+        case .previous: .previous
+        case .togglePlayPause: .toggle
+        case .next: .next
+        case .seek(let seconds): .seek(seconds)
+        }
+        widgets.sendLockScreenControl(control)
+    }
+
     private lazy var widgets = WidgetCoordinator(
         preferences: preferences, shelf: shelf, clipboard: clipboard, pasteboard: pasteboard,
         mediaScript: mediaScript, mediaFramework: mediaFramework, effects: self)

@@ -63,6 +63,7 @@ import FluxUI
         menuBar.onChange = { [weak self] in self?.settings.refresh() }
         menuBar.onOverflow = { [weak self] in self?.notch.setOverflowCount($0) }
         lockScreen.onChange = { [weak self] in self?.settings.refresh() }
+        lockScreen.onTransport = { [weak self] in self?.notch.sendLockScreenTransport($0) }
         shortcuts.start()
         notch.start()
         // A synchronous first menu-bar scan can now publish its overflow.
@@ -82,6 +83,7 @@ import FluxUI
         notch.stop(); lockScreen.stop()
         menuBar.onAction = nil; menuBar.onChange = nil; menuBar.onOverflow = nil
         lockScreen.onChange = nil
+        lockScreen.onTransport = nil
         do { try await menuBar.stop() } catch { failure(.menuBarRecovery) }
         session.finish()
     }
