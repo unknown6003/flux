@@ -607,11 +607,9 @@ final class NotchWindow: NSPanel {
 }
 
 // `NSWindow` has the drag destination methods only as an informal
-// Objective-C category. The conformance makes these witnesses `@objc`, so
-// AppKit finds them by selector. `@preconcurrency` keeps them main-actor
-// methods whether or not the SDK marks the protocol main-actor; AppKit
-// calls them on the main thread.
-extension NotchWindow: @preconcurrency NSDraggingDestination {
+// Objective-C category. The conformance exposes the main-actor witnesses to
+// AppKit by selector.
+extension NotchWindow: NSDraggingDestination {
     func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
     func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { onDragUpdate?(sender) ?? [] }
     func draggingExited(_ sender: (any NSDraggingInfo)?) { onDragExit?(sender) }

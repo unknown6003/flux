@@ -4,7 +4,7 @@ import FluxCore
 import FluxUI
 @testable import FluxApplication
 
-@MainActor private final class FixtureDrag: NSObject, @preconcurrency NSDraggingInfo {
+@MainActor private final class FixtureDrag: NSObject, NSDraggingInfo {
     var draggingDestinationWindow: NSWindow?
     var draggingLocation = NSPoint(x: 5, y: 5)
     var draggedImageLocation: NSPoint { draggingLocation }
@@ -29,7 +29,7 @@ import FluxUI
     }
 
     func slideDraggedImage(to point: NSPoint) {}
-    func namesOfPromisedFilesDropped(atDestination destination: URL) -> [String]? { nil }
+    nonisolated override func namesOfPromisedFilesDropped(atDestination destination: URL) -> [String]? { nil }
     func resetSpringLoading() {}
     func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?,
         classes: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any],
