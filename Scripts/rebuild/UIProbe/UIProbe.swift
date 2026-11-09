@@ -73,6 +73,39 @@ import FluxUI
             }
             }
         }
+        let feedbackStates: [(String, FeedbackRatingState)] = [
+            ("off", .init(collectionEnabled: false, submission: .ready)),
+            ("ready", .init(collectionEnabled: true, submission: .ready)),
+            ("sending", .init(collectionEnabled: true, submission: .sending)),
+            ("sent", .init(collectionEnabled: true, submission: .sent)),
+            ("busy", .init(collectionEnabled: true, submission: .failed(.busy))),
+            ("limited", .init(collectionEnabled: true, submission: .failed(.limited))),
+            ("unconfirmed", .init(collectionEnabled: true, submission: .failed(.unconfirmed))),
+        ]
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for (name, state) in feedbackStates {
+                let controller = FeedbackRatingController(state: state, onAction: { _ in })
+                let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 360, height: 220),
+                                      styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: appearance)
+                window.contentViewController = controller
+                let root = controller.view
+                root.layoutSubtreeIfNeeded()
+                window.setContentSize(NSSize(width: 360, height: max(180, root.fittingSize.height)))
+                window.orderFrontRegardless()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                root.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                var failure: (any Error)?
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    do { try render(root, to: output.appendingPathComponent("feedback-\(name)-\(theme).png")) }
+                    catch { failure = error }
+                }
+                window.close()
+                if let failure { throw failure }
+            }
+        }
         for (name, controller) in widgetFixtures() {
             let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 408, height: 440),
                                   styleMask: [.borderless], backing: .buffered, defer: false)

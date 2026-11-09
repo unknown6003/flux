@@ -429,7 +429,7 @@ Fixed text:
 | `.ready` | Usage data is on, so Flux sends this number. It sends no text. |
 | `.sending` | Sending… |
 | `.sent` | Rating received. Thank you. |
-| `.failed(.busy)` | Flux is still sending a rating. Try again in a moment. |
+| `.failed(.busy)` | Flux is busy. Try again in a moment. |
 | `.failed(.limited)` | Flux can't send more ratings now. Try again later. |
 | `.failed(.unconfirmed)` | Could not confirm that the rating arrived. You can try again. |
 

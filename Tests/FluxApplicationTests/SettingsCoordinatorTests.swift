@@ -160,7 +160,7 @@ private actor RatingFixtureTransport: UsageTransport {
         return try #require(settings.ratingController)
     }
     static func control<T: NSControl>(_ id: String, in controller: FeedbackRatingController, as type: T.Type) throws -> T {
-        func walk(_ view: NSView) -> NSView? {
+        @MainActor func walk(_ view: NSView) -> NSView? {
             if view.identifier?.rawValue == id { return view }
             return view.subviews.lazy.compactMap(walk).first
         }
