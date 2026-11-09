@@ -41,7 +41,11 @@ every exit. Native Core checks at b480a59 passed the real URLSession lifecycle
 fixture, including lazy creation and invalidation after three successful sends
 and an oversized response. Source review found no retained issue. These checks
 prove cleanup in those cases, not a resource saving. A new paired measurement
-is required before claiming a cost reduction. See ANALYTICS-PAIR.md.
+was run at e10b2c0 and failed all three interrupt-wakeup comparisons, with
+extra rates of +0.316641, +0.316662 and +0.349920 per second. No cost reduction
+is claimed. The source of the wakes remains unresolved. A separate Core-only
+probe now distinguishes network completion, retries and work from the app.
+See ANALYTICS-PAIR.md and TELEMETRY-DIAGNOSIS.md.
 
 A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.
 

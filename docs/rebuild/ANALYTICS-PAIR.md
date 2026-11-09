@@ -49,3 +49,26 @@ latency, full-system performance or release readiness.
 [Sanitized source and raw samples](https://templink.bdwy.xyz/media/1794818768-1794905168-b49d59a2cbeea67fcf746beb.bin).
 The link expires on 16 November 2026. Keep its contents as historical evidence;
 it is not the new candidate's result.
+
+## Second trial after session cleanup
+
+The e10b2c0 candidate completed three new pairs, again with 45-second warmups
+and 13 observations over 60 seconds. All three interrupt-wakeup comparisons
+failed: +0.316641, +0.316662 and +0.349920/s. CPU, physical footprint and idle
+wakeups passed. This later campaign does not isolate the cause of the difference
+from the first one. Parent verification matched 33 archive hashes and recomputed
+all six raw sample metrics.
+
+The burst is concentrated in the first 20–25 seconds of sampling and then ends.
+The transport change did not pass its intended budget. Do not increase the
+warmup, select a quiet tail or relax the limit to turn it into a pass. The next
+step is a smaller direct-transport/client/idle experiment, not another guessed
+production change. See TELEMETRY-DIAGNOSIS.md.
+
+The original app and full preferences were restored. Clipboard bytes changed
+and changeCount rose from 1230 to 1231. Current content was preserved. Saved
+clipboard-history JSON data and Shelf hashes matched; serialization and session
+state changed. Thus this trial did not pass full clipboard restoration equality.
+
+[Second trial, source and restore receipts](https://templink.bdwy.xyz/media/1794821627-1794908027-10d56c5a166188301b51c0d0.bin).
+The link expires on 16 November 2026.

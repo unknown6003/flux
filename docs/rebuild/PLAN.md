@@ -142,5 +142,7 @@ acknowledged manual rating are wired.
 Their synthetic native transport and backend readbacks passed. Replay and
 AppKit autocapture are excluded, and remote experiments are inactive. The
 first three analytics idle pairs failed the interrupt-wakeup budget in one
-pair. The transport cleanup change needs a fresh signed measurement. See
-ANALYTICS-PAIR.md and TELEMETRY.md. No rewrite release has been made.
+pair. The transport cleanup change failed the fresh signed measurement in all
+three interrupt-wakeup pairs. A Core-only diagnostic now separates completed
+network requests from client and app work. See ANALYTICS-PAIR.md,
+TELEMETRY-DIAGNOSIS.md and TELEMETRY.md. No rewrite release has been made.
