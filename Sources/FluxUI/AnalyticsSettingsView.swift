@@ -41,7 +41,7 @@ public final class AnalyticsSettingsView: NSView {
         let idTitle = FluxUIStyle.label(L("analytics.id", "Analytics ID"))
         let idHelper = FluxUIStyle.label(L(
             "analytics.id.helper",
-            "A random ID made on this Mac. It is not your name, email or device ID."
+            "A random ID made on this Mac. It links usage until you reset it. It is not your name, email or device ID."
         ), style: .callout, secondary: true)
         resetButton.bezelStyle = .push
         resetButton.target = self
