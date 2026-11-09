@@ -135,6 +135,10 @@ import FluxCore
             || sender !== toggle?.button {
             contextMenu?.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY - 4), in: sender)
         } else if isArranging { onFinishArrange?() }
-        else { onToggle?(event?.modifierFlags.contains(.option) == true) }
+        else {
+            // macOS 27 forwards status-item clicks from MenuBarAgent and can drop
+            // the event's modifiers, so also read the live keyboard state.
+            onToggle?(event?.modifierFlags.contains(.option) == true || NSEvent.modifierFlags.contains(.option))
+        }
     }
 }

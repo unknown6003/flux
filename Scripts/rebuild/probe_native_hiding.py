@@ -71,6 +71,14 @@ case "click":
     guard let target else { fail("Flux's chevron was not found") }
     let center = CGPoint(x: target.midX, y: target.midY)
     let flags: CGEventFlags = arguments.count > 3 && arguments[3] == "option" ? .maskAlternate : []
+    func option(_ down: Bool) {
+        let key = CGEvent(keyboardEventSource: nil, virtualKey: 58, keyDown: down)!
+        key.flags = down ? .maskAlternate : []
+        key.post(tap: .cghidEventTap)
+        usleep(80_000)
+    }
+    if !flags.isEmpty { option(true) }
+    defer { if !flags.isEmpty { option(false) } }
     for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
         let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: center, mouseButton: .left)!
         event.flags = flags
