@@ -56,7 +56,7 @@ full-system performance result.
 Build only the probe with testing access for the existing UsageRequest seam:
 
 ```sh
-swift build -c release --product FluxTelemetryIdleProbe -Xswiftc -enable-testing
+swift build -c release --product FluxTelemetryIdleProbe -Xswiftc -enable-testing -Xswiftc -DFLUX_TELEMETRY_IDLE_DIAGNOSTIC
 ```
 
 Run `FluxTelemetryIdleProbe idle 70`, `direct 70`, and `client 70` under an
@@ -68,6 +68,8 @@ The one hold task is the same in each mode; there is no in-process polling.
 
 The builder's one-second idle control checks receipts only. It is not a
 performance result. This probe is not a passing app budget or Mac acceptance.
+Normal builds compile a disabled stub, so the diagnostic's test access cannot
+break a plain Release build or enable a diagnostic by an environment flag alone.
 
 [Raw failed trial](https://templink.bdwy.xyz/media/1794821627-1794908027-10d56c5a166188301b51c0d0.bin).
 The link expires on 16 November 2026.

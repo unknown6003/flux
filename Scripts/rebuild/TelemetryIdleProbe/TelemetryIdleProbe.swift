@@ -1,6 +1,7 @@
 // Diagnostic only. This executable is not bundled in Flux.
 import Darwin
 import Foundation
+#if FLUX_TELEMETRY_IDLE_DIAGNOSTIC
 @testable import FluxCore
 
 private enum Mode: String {
@@ -98,3 +99,11 @@ private actor TracedTransport: UsageTransport {
         emit("finished", mode: mode)
     }
 }
+#else
+@main private struct DisabledTelemetryIdleProbe {
+    static func main() {
+        FileHandle.standardError.write(Data("The telemetry lifetime diagnostic is not enabled in this build\n".utf8))
+        exit(2)
+    }
+}
+#endif
