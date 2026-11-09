@@ -279,3 +279,19 @@ one stale busy-message row in the integration guide. Those reads do not
 resolve the native early exit. Commit 6949ddb requires a positive completed
 Swift Testing summary as well as exit zero, retains raw test logs, and adds
 fixed fixture-only traces at the failing boundary.
+
+CI 42559152812 at e2828c5 completed 79 Core, 45 Platform, 11 UI and
+43 Application tests. Four rating-sheet scenarios passed in FluxRatingProbe,
+which starts NSApplication.run and uses fake transport acknowledgements.
+The saved exit trace from f93c72c shows exit through Swift's
+swift_task_asyncMainDrainQueue, with no captured app exception. Explicit
+finishLaunching did not fix the earlier incomplete run. The standalone
+AppKit loop completed all four scenarios without a production UI change.
+The completion guard stays in CI for every test suite and the probe.
+
+Fourteen new light and dark rating fixtures were inspected at their actual
+360-point width, plus the narrow About page. Text and controls are readable.
+This is rendered UI and scripted control proof, not VoiceOver, production
+network, physical hiding or whole-app acceptance. The signed unpublished
+candidate also built with the pinned certificate. The checkpoint page is
+https://templink.bdwy.xyz/flux-rebuild-rating-20261109.

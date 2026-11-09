@@ -18,7 +18,7 @@ Raw evidence is ignored under `build/native-posthog-22fcc49/`: transport.json, s
 
 ## Open gates
 
-The native candidate binds the Settings consent control to UsageCollection. No rollout flag, experiment or production dashboard has been activated. A fixed manual rating survey is prepared as a draft; its native entry and acknowledgement flow are under implementation. The client can encode these fixed-schema uses; that is not a finished user flow. Replay and AppKit interaction autocapture are excluded by the privacy and performance contract. Manual fixed-code exceptions do not prove automatic crash reporting.
+The native candidate binds the Settings consent control to UsageCollection. No rollout flag, experiment or production dashboard has been activated. A fixed manual rating survey is prepared as a draft; its native entry and fake-transport acknowledgement flow passed four AppKit scenarios. Live rating readback remains open. The client can encode these fixed-schema uses; that is not a finished user flow. Replay and AppKit interaction autocapture are excluded by the privacy and performance contract. Manual fixed-code exceptions do not prove automatic crash reporting.
 
 Whole-app performance with analytics on and off, signed upgrade acceptance and outgoing content-canary tests remain release gates. The new client is not in the installed0.21.35 app.
 
@@ -35,8 +35,8 @@ retries. It accepts only the fixed UsageRating enum and requires saved consent.
 A UI acknowledgement requires HTTP 200 with numeric status 1 and no reported
 quota suppression. It rejects late replies after reset or opt-out and observes
 caller cancellation. This is ingestion acknowledgement, not proof that a
-server query has processed the event. Native tests and live readback remain
-required. A canceled or failed request may already have reached the server.
+server query has processed the event. Native controls and the fake acknowledgement path passed CI42559152812.
+Live rating readback remains required. A canceled or failed request may already have reached the server.
 
 References: https://posthog.com/docs/api/surveys,
 https://posthog.com/docs/surveys/implementing-custom-surveys and

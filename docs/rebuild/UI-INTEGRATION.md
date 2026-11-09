@@ -689,3 +689,12 @@ panel.onWillDismiss = { _ in runtime.apply(demand(visible: nil)); widgets.dismis
 - FluxUI now has `CalendarWidgetState.loading` and `NowPlayingWidgetStatus.loading`. The root still maps them: allowed calendar access with no read yet goes to `.loading`, and media `.starting` with no snapshot goes to `.loading`.
 - `calshow:` opening a given day on macOS is unproved. A failed open reports `.calendarOpen`.
 - `MediaSnapshot` names one source, so the source menu lists only that app. This is a known limit. FluxUI shows no invented choices.
+
+Native rating proof: CI 42559152812 at e2828c5 runs four scenarios in
+FluxRatingProbe under NSApplication.run. Its fake transport checks disabled
+collection, repeated Submit, accepted-ACK state, stable retry IDs and a late
+reply after close and reopen. Running the sheet scenarios directly in the
+Swift Testing async entry loop stopped that loop early; its exit-zero result
+was not a pass. The regular 43 Application tests and all four standalone
+scenarios now report explicit completion. Fourteen rendering fixtures cover
+both appearances. VoiceOver and real ingestion readback remain separate.
