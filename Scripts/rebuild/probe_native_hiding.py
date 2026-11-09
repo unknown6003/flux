@@ -201,6 +201,16 @@ def main():
                 (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
                 return passed
 
+            # Fixture apps can take several seconds to draw on a fresh runner.
+            baseline = output / "baseline-wait.png"
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                run(["/usr/sbin/screencapture", "-x", str(baseline)], 20)
+                counts = json.loads(run([str(helper), "count", str(baseline), str(ROWS)], 30).strip().splitlines()[-1])
+                if counts["magenta"] > 20 and counts["cyan"] > 20:
+                    break
+                time.sleep(1)
+            baseline.unlink(missing_ok=True)
             capture("before-flux", {"magenta": True, "cyan": True})
             try:
                 video = subprocess.Popen(["/usr/sbin/screencapture", "-x", "-v", "-V", str(20 + 12 * args.cycles),
