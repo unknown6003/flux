@@ -22,6 +22,7 @@ import OSLog
 @MainActor private final class NativeCandidateDelegate: NSObject, NSApplicationDelegate {
     private var host: ApplicationHost?
     private var terminating = false
+    private var capture: NativeCandidateMenuCapture?
     private let logger = Logger(subsystem: "com.flux.menubar", category: "native-candidate")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -40,6 +41,9 @@ import OSLog
                 quit: { NSApp.terminate(nil) })
             host = owner
             try owner.start()
+            if let index = CommandLine.arguments.firstIndex(of: "--capture-menu-dir"), index + 1 < CommandLine.arguments.count {
+                capture = try NativeCandidateMenuCapture(output: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true))
+            }
             if CommandLine.arguments.contains("--settings") { owner.showSettings() }
         } catch ApplicationSessionError.anotherInstance {
             NSApp.terminate(nil)
@@ -62,6 +66,7 @@ import OSLog
         guard let host else { return .terminateNow }
         guard !terminating else { return .terminateCancel }
         terminating = true
+        capture?.stop(); capture = nil
         Task { @MainActor in
             await host.stop()
             self.host = nil

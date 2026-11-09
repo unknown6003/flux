@@ -88,6 +88,7 @@ def main():
     report = dict(sourceRevision=revision, candidateOnly=True, bundleID=info["CFBundleIdentifier"],
                   version=info["CFBundleShortVersionString"], build=info["CFBundleVersion"],
                   privateLockBridgeEnabled=False, positionHidingRequiresExplicitTrialFlag=True,
+                  sameProcessMenuCaptureRequiresExplicitTemporaryDirectory=True,
                   leafSHA256=hashlib.sha256(leaf).hexdigest(), sizeBytes=archive.stat().st_size,
                   sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
     (output / "artifact.json").write_text(json.dumps(report, indent=2) + "\n")
