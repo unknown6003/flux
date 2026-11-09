@@ -141,9 +141,9 @@ struct StatusPreviewPlan {
     }
 
     private static func bounded(_ frame: CGRect) -> Bool {
-        [frame.origin.x, frame.origin.y, frame.width, frame.height,
+        [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
          frame.maxX, frame.maxY].allSatisfy { $0.isFinite && abs($0) <= 131_072 }
-            && frame.width > 0 && frame.height > 0
+            && frame.size.width > 0 && frame.size.height > 0
     }
 }
 
