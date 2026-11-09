@@ -8,6 +8,7 @@ import FluxTelemetryCurlProbe
 private enum Mode: String {
     case idle
     case direct
+    case native
     case client
     case curl
 }
@@ -51,7 +52,7 @@ private actor TracedTransport: UsageTransport {
 
     init(mode: Mode) {
         self.mode = mode
-        native = mode == .client ? NativeUsageTransport(region: FluxUsageProject.region) : nil
+        native = mode == .client || mode == .native ? NativeUsageTransport(region: FluxUsageProject.region) : nil
         foundation = mode == .direct ? FoundationUsageTransport(region: FluxUsageProject.region) : nil
     }
 
@@ -101,7 +102,7 @@ private actor TracedTransport: UsageTransport {
         guard ProcessInfo.processInfo.environment["FLUX_ALLOW_TELEMETRY_IDLE_PROBE"] == "1",
               arguments.count == 3, let mode = Mode(rawValue: arguments[1]),
               let seconds = Int(arguments[2]), (1...120).contains(seconds) else {
-            FileHandle.standardError.write(Data("Expected an enabled diagnostic and idle|direct|client|curl with hold seconds 1...120\n".utf8))
+            FileHandle.standardError.write(Data("Expected an enabled diagnostic and idle|direct|native|client|curl with hold seconds 1...120\n".utf8))
             exit(2)
         }
         if mode == .idle {

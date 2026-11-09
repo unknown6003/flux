@@ -72,3 +72,23 @@ state changed. Thus this trial did not pass full clipboard restoration equality.
 
 [Second trial, source and restore receipts](https://templink.bdwy.xyz/media/1794821627-1794908027-10d56c5a166188301b51c0d0.bin).
 The link expires on 16 November 2026.
+
+
+## Third trial, production curl
+
+Source 2f9c959 passed the native correctness checks but failed the third
+signed-app interrupt-wakeup pair. Extra rates were -0.000018, +0.016663
+and +0.166647/s. CPU, mean and peak footprint and idle wakeups passed.
+No limit was changed and no failed pair was discarded. Root verified 37
+file hashes and all raw run metrics. The burst occurred at 45 to 55 seconds
+of the final on-sample. Three expected launch events passed restricted
+privacy readback; request completion and network settling remain unmeasured.
+
+Original app, full preferences including absence, and clipboard data/count
+were restored. Shelf hashes and decoded history matched; history serialization
+and session fields changed. Normal hiding and full-app acceptance remain open.
+
+[Source, all six samples and restoration receipts](https://templink.bdwy.xyz/media/1794826267-1794912667-e2625c508f529a46c73e9783.bin).
+The next diagnostic compares the actual production curl driver with the
+client and idle controls, with fixed post-request timing. See
+TELEMETRY-DIAGNOSIS.md for predictions and limits.

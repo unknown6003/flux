@@ -211,3 +211,58 @@ the original per-pair budgets. It must restore the installed app and saved
 state without overwriting concurrent user changes. It is running, not passed.
 Physical hiding, normal workloads, action latency and release acceptance remain
 open. No update was published.
+
+
+## Curl app trial failed one pair
+
+The six-run trial of source 2f9c959 completed with unchanged 45-second warmups
+and 60-second samples. Extra interrupt rates were -0.000018, +0.016663 and
++0.166647/s. Pair three failed the +0.1/s limit. CPU, mean and peak footprint
+and idle wakeups passed every pair. Root matched all 37 evidence hashes and
+recomputed all six raw runs. Restricted readback found three expected launch
+events, no person profiles and no stored IP/geolocation fields.
+
+Pair-three on-run interrupt bins were `0,0,0,1,1,0,0,0,0,10,2,0`. The
+large burst was at 45 to 55 seconds of sampling, unlike the earlier long
+Foundation burst at the start. A server receipt before sampling does not
+prove request completion or absence of retries. The cause remains unknown.
+
+Restoration passed the original bundle manifest, executable, strict signature,
+version, exact URL and one process; all preferences including absences; and
+clipboard decoded data, serialization and changeCount. Shelf hashes and saved
+history JSON matched. History serialization and session fields changed, so
+state-file byte equality was not claimed.
+
+[Trial source, samples and restore receipts](https://templink.bdwy.xyz/media/1794826267-1794912667-e2625c508f529a46c73e9783.bin).
+Archive SHA-256 is
+`9b68cc811b47ca0f0b77fc1947bb67818d557e35569f6c77ff5252fb8edea66a`.
+
+### Next diagnostic contract
+
+Outcome: distinguish delayed work in the production curl driver from work in
+the telemetry client and the rest of the app. Do not change production HTTP
+again without a measured cause. Proof: idle, native-transport and client modes
+in one isolated CLI, explicit request phases, a fixed 15-second delay after
+completion, then 13 observations over 60 seconds. A historical Foundation
+direct mode is a positive control for the already observed burst. Hold each
+process for 90 seconds after quietStarted. No app swap or saved data access.
+The sample delay matches the approximate time from the launch batch to the
+app sample; it is a new diagnostic, not a rerun or replacement budget result.
+
+Ranked predictions before testing:
+
+1. Retained curl runtime work causes the late burst. A single request through
+   the production NativeUsageTransport should reproduce it without the app
+   or PostHogClient. The old raw prototype used per-request global cleanup,
+   so its quiet result did not test this production lifetime.
+2. Client scheduling causes the late burst. Client mode should add work or a
+   request after its first completion while native mode stays quiet.
+3. An app or system event causes the late burst. Both isolated production
+   modes should stay quiet. That would direct the next trace to full-app
+   lifecycle notifications, not prove a particular event or invalidate the
+   failed pair.
+
+The existing performance feedback loop needs a full 60-second interval to
+observe this late, intermittent burst. A seconds-long pass cannot substitute
+for it. This diagnostic narrows that loop while preserving the relevant
+post-completion timing. No production feature behavior changes in this slice.
