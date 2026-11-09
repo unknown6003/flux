@@ -5,7 +5,7 @@ import AppKit
 /// the same identifier, so a state change keeps keyboard focus.
 @MainActor
 public class FormPageController: NSViewController, SettingsPageFocus {
-    private let stack = FluxUIStyle.vstack([], spacing: 20)
+    private let stack = FluxUIStyle.vstack([], spacing: FluxUIStyle.Form.sectionSpacing)
     private let controls = FormControls()
 
     public var preferredFirstResponder: NSView? { controls.firstControl }
@@ -42,6 +42,23 @@ public class FormPageController: NSViewController, SettingsPageFocus {
     func button(_ id: String, _ title: String, enabled: Bool = true, _ handler: @escaping () -> Void) -> NSButton {
         controls.button(id, title, enabled: enabled, handler)
     }
+
+    // One line per setting. A new setting is one more row in a section.
+
+    func switchRow(_ id: String, _ title: String, help: String? = nil, isOn: Bool, enabled: Bool = true,
+                   _ handler: @escaping (Bool) -> Void) -> NSView {
+        FluxUIStyle.row(title, helper: help, control: toggle(id, isOn, enabled: enabled, handler))
+    }
+
+    func popupRow<T: Equatable>(_ id: String, _ title: String, help: String? = nil, _ options: [(String, T)], selected: T,
+                                enabled: Bool = true, _ handler: @escaping (T) -> Void) -> NSView {
+        FluxUIStyle.row(title, helper: help, control: popup(id, options, selected: selected, enabled: enabled, handler))
+    }
+
+    func buttonRow(_ id: String, _ title: String, help: String? = nil, action: String, enabled: Bool = true,
+                   _ handler: @escaping () -> Void) -> NSView {
+        FluxUIStyle.row(title, helper: help, control: button(id, action, enabled: enabled, handler))
+    }
 }
 
 /// Makes native form controls and owns their targets. A page calls `reset()`
@@ -67,6 +84,7 @@ final class FormControls {
 
     func toggle(_ id: String, _ isOn: Bool, enabled: Bool = true, _ handler: @escaping (Bool) -> Void) -> NSSwitch {
         let control = NSSwitch()
+        control.controlSize = .mini
         control.state = isOn ? .on : .off
         control.isEnabled = enabled
         bind(control, id) { handler(($0 as? NSSwitch)?.state == .on) }
@@ -139,7 +157,7 @@ final class ControlTarget: NSObject {
     @objc func fire(_ sender: NSControl) { handler(sender) }
 }
 
-/// Update progress, shared by General and About. Text is static.
+/// Update progress, shown on About. Text is static.
 public enum UpdateStatus: Equatable, Sendable {
     case idle
     case checking
@@ -155,7 +173,7 @@ public enum UpdateStatus: Equatable, Sendable {
         case .upToDate: L("update.current", "Flux is up to date.")
         case .available(let version): String(format: L("update.available", "Version %@ is available."), version)
         case .installing: L("update.installing", "Installing the update…")
-        case .failed(let code): String(format: L("update.failed", "The update check failed (%@)."), code)
+        case .failed(let code): String(format: L("update.failed", "Update check failed (%@)."), code)
         }
     }
 

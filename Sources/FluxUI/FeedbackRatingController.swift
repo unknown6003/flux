@@ -21,7 +21,7 @@ public enum FeedbackSubmission: Equatable, Sendable {
     case failed(FeedbackFailure)
 }
 
-/// What the rating form shows. `collectionEnabled` is the saved analytics opt-in.
+/// What the rating form shows. `collectionEnabled` is false only when usage collection could not start.
 public struct FeedbackRatingState: Equatable, Sendable {
     public let collectionEnabled: Bool
     public let submission: FeedbackSubmission
@@ -137,10 +137,10 @@ public final class FeedbackRatingController: NSViewController {
 
     private var statusText: String {
         guard state.collectionEnabled else {
-            return L("feedback.off", "Usage data is off, so Flux can't send a rating. Turn it on in General to send one.")
+            return L("feedback.off", "Flux can't send a rating right now.")
         }
         switch state.submission {
-        case .ready: return L("feedback.ready", "Usage data is on, so Flux sends this number. It sends no text.")
+        case .ready: return L("feedback.ready", "1 is poor, 5 is great.")
         case .sending: return L("feedback.sending", "Sending…")
         case .sent: return L("feedback.sent", "Rating received. Thank you.")
         case .failed(.busy): return L("feedback.busy", "Flux is busy. Try again in a moment.")

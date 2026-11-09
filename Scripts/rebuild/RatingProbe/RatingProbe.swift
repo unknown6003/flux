@@ -204,7 +204,7 @@ private actor RatingFixtureTransport: UsageTransport {
     static func ratingControlsWaitForAckAndIgnoreRepeatedSubmit() async throws {
         let fixture = try RatingFixture()
         defer { fixture.close() }
-        await fixture.usage.setEnabled(true)
+        fixture.usage.start()
         let sheet = try fixture.open()
         try RatingFixture.choose(3, in: sheet)
         let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
@@ -225,13 +225,12 @@ private actor RatingFixtureTransport: UsageTransport {
         try requireTrue(submit.isHidden && submit.keyEquivalent.isEmpty)
         sheet.cancelOperation(nil)
         try requireTrue(fixture.settings.ratingController == nil)
-        await fixture.usage.setEnabled(false)
     }
 
     static func ratingRetriesReuseOnlyTheSameRatingToken() async throws {
         let fixture = try RatingFixture()
         defer { fixture.close() }
-        await fixture.usage.setEnabled(true)
+        fixture.usage.start()
         let sheet = try fixture.open()
         let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
         var started = await fixture.transport.started.makeAsyncIterator()
@@ -253,13 +252,12 @@ private actor RatingFixtureTransport: UsageTransport {
         }
         try requireTrue(try uuid(requests[0]) == uuid(requests[1]))
         try requireTrue(try uuid(requests[1]) != uuid(requests[2]))
-        await fixture.usage.setEnabled(false)
     }
 
     static func aClosedRatingCannotUpdateANewVisitAfterItsLateAck() async throws {
         let fixture = try RatingFixture()
         defer { fixture.close() }
-        await fixture.usage.setEnabled(true)
+        fixture.usage.start()
         let previous = try fixture.open()
         try RatingFixture.choose(1, in: previous)
         try RatingFixture.control("feedback.submit", in: previous, as: NSButton.self).performClick(nil)
@@ -277,7 +275,6 @@ private actor RatingFixtureTransport: UsageTransport {
         try requireTrue(fresh.state.submission == .ready)
         try requireTrue(previous.state.submission == .sending)
         try requireTrue(fixture.settings.ratingSend == nil)
-        await fixture.usage.setEnabled(false)
     }
 }
 

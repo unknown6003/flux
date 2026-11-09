@@ -92,7 +92,7 @@ private actor HostUsageTransport: UsageTransport {
 
 @Suite(.serialized)
 struct ApplicationHostTests {
-    @Test(.timeLimit(.minutes(1))) @MainActor func hostFailureReachesTheOptedInCollectorAsAFixedCode() async throws {
+    @Test(.timeLimit(.minutes(1))) @MainActor func hostFailureReachesTheCollectorAsAFixedCode() async throws {
         let domain = "org.fluxfixture.host.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
@@ -101,7 +101,7 @@ struct ApplicationHostTests {
             try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport,
                               flushDelay: .milliseconds(1))
         }
-        await usage.setEnabled(true)
+        usage.start()
         let trace = HostTrace()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("flux-host-\(UUID())")
         let session = try HostFixtureSession(root: root, defaults: defaults, domain: domain, trace: trace, usage: usage)
@@ -115,7 +115,6 @@ struct ApplicationHostTests {
         #expect(reported)
         var iterator = await transport.received.makeAsyncIterator()
         let request = try #require(await iterator.next())
-        await usage.setEnabled(false)
         #expect(request.endpoint == .events)
         let payload = try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
         let batch = try #require(payload["batch"] as? [[String: Any]])
