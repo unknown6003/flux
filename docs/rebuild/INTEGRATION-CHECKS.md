@@ -3,6 +3,22 @@
 The installed app remains 0.21.35 build 62. This file records component checks,
 not release acceptance.
 
+## Latest telemetry checks
+
+At 283d50c, CI 42561810305 completed 79 Core, 45 Platform, 11 UI and
+44 Application tests, plus four AppKit sheet scenarios. The host failure
+regression enters the real Settings report boundary and captures its fixed
+exception payload with a fake transport. The disabled-host case keeps its
+local callback and constructs no analytics client. Independent Standards,
+Spec and Risk source passes covered 64c1fcf..3770b77. One enum-formatting
+finding was fixed at 283d50c; no behavior finding remained. These were
+separate contexts using the same model, not independent-family proof.
+
+The changed random-ID explanation is readable in both 680-point General
+fixtures. The earlier live probe at 64c1fcf and authenticated rating readback
+passed; see POSTHOG-PROJECT.md. See IDLE-PAIR.md for the first restored
+empty-profile Mac sample. Whole-app acceptance is still open.
+
 ## Widget bindings
 
 A scoped source review at dd8a9cd found three defects. The parent checked each

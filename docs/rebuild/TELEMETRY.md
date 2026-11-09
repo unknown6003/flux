@@ -44,7 +44,12 @@ ApplicationFailure cases. Settings save, login, clipboard, recovery, timer and
 link failures have fixed codes; runtime and widget failures share the coarse
 serviceUnavailable code. It reads no error object, title, URL, item or payload.
 The off path still invokes the local reporter without constructing a client.
-This wiring needs the next native host check before it is counted as passed.
+Native CI 42561810305 at 283d50c completed both host checks. The enabled
+check entered ApplicationHost.report, used the real collector and encoder,
+and captured the exact fixed exception properties through a fake transport.
+The disabled host still reported locally and retained the rejecting client
+factory. These checks use no real network. The 680-point light and dark
+General fixtures show the ID explanation without clipped controls.
 
 ## Proposed release budgets
 

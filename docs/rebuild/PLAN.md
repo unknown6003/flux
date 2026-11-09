@@ -66,6 +66,14 @@ Zero cost is not a testable promise. Measure analytics on and off on the same si
 
 ## Current integration checkpoint
 
+Newer evidence: CI 42560579111 at 64c1fcf completed 178 regular native tests,
+four AppKit rating scenarios, 11 updater controls and 91 rendered fixtures.
+The live PostHog probe and a separate synthetic rating readback passed.
+See POSTHOG-PROJECT.md. A single restored old/new empty-profile Mac sample
+completed; see IDLE-PAIR.md. It does not establish normal hiding performance,
+analytics overhead or repeatability. The signed Screen Recording grant still
+needs owner authentication, so physical hiding acceptance remains blocked.
+
 CI 42550755852 at 958222a passed 73 Core, 43 Platform, 11 UI and
 40 Application tests, plus eleven synthetic updater recovery cases. It
 rendered 77 AppKit fixtures and built a matching-signed native candidate,
