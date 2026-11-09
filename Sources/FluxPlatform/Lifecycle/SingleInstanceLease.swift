@@ -4,7 +4,8 @@ import Foundation
 public enum SingleInstanceError: Error, Equatable { case unsafeDirectory, unsafeFile, alreadyRunning, unavailable }
 
 /// One descriptor holds the writer lease until shutdown or process death.
-/// LOCK_NB never waits for another Flux process. Helpers cannot inherit it.
+/// LOCK_NB never waits for another Flux process. Close-on-exec prevents a
+/// running helper from keeping the descriptor after its program starts.
 public final class SingleInstanceLease: @unchecked Sendable {
     let descriptor: Int32
 
@@ -38,5 +39,10 @@ public final class SingleInstanceLease: @unchecked Sendable {
         acquired = true
     }
 
-    deinit { close(descriptor) }
+    deinit {
+        // A fork or dup may still own the same file description. End our
+        // lease now instead of waiting for that other descriptor to close.
+        _ = flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
 }
