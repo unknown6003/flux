@@ -69,6 +69,10 @@ on:
         description: Build the isolated telemetry lifetime diagnostic without installing or releasing Flux
         type: boolean
         default: false
+      native_release_check:
+        description: Build the signed native release DMG and run its hiding and upgrade probes, without publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -323,9 +327,82 @@ jobs:
           path: build/native-drag-debug/
           if-no-files-found: warn
 
+  native-release:
+    name: Native release build and real-path checks
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.native_release_check }}
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      # Pinned to an immutable commit SHA. Tag builds publish the DMG that the
+      # in-app updater installs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Record checked source and version
+        run: |
+          mkdir -p build
+          git rev-parse HEAD > build/checked-source.txt
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION=0.22.0; fi
+          echo "FLUX_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "FLUX_RELEASE_BUILD=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          printf 'Checked source: `%s`, version %s\n' "$(cat build/checked-source.txt)" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - name: Test native core
+        run: python3 Scripts/rebuild/run_native_tests.py FluxCoreTests
+      - name: Test native platform
+        run: python3 Scripts/rebuild/run_native_tests.py FluxPlatformTests
+      - name: Test native interface
+        run: python3 Scripts/rebuild/run_native_tests.py FluxUITests
+      - name: Test native application
+        run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests
+      - name: Test native confirmation sheets
+        run: python3 Scripts/rebuild/run_native_tests.py FluxRatingProbe
+      - name: Check native updater rollback
+        timeout-minutes: 3
+        run: python3 Scripts/probe_update.py --native-helper
+      - name: Import release signing identity
+        env:
+          FLUX_SIGNING_P12: ${{ secrets.FLUX_SIGNING_P12 }}
+          FLUX_SIGNING_PASSWORD: ${{ secrets.FLUX_SIGNING_PASSWORD }}
+        run: python3 Scripts/import_signing.py
+      - name: Build signed native app and DMG
+        timeout-minutes: 8
+        run: |
+          python3 Scripts/rebuild/build_native_candidate.py --release "$FLUX_RELEASE_VERSION" --build-number "$FLUX_RELEASE_BUILD"
+          cp build/native-release/Flux.dmg build/Flux.dmg
+      - name: Hide and reveal real status items with the native app
+        timeout-minutes: 6
+        run: python3 Scripts/rebuild/probe_native_hiding.py build/native-release/Flux.app --output build/native-evidence/hiding
+      - name: Install the native DMG through the 0.21.35 updater
+        timeout-minutes: 6
+        run: python3 Scripts/rebuild/probe_native_upgrade.py build/Flux.dmg "$FLUX_RELEASE_VERSION" --output build/native-evidence/upgrade
+      - name: Render native interface fixtures
+        timeout-minutes: 4
+        run: swift run FluxUIProbe build/native-evidence/ui
+      - name: Upload native release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-release-evidence
+          path: |
+            build/native-evidence/
+            build/native-release/artifact.json
+            build/native-test-logs/
+          if-no-files-found: warn
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Flux.dmg
+          path: |
+            build/Flux.dmg
+            build/checked-source.txt
+          if-no-files-found: error
+      - name: Remove release keychain
+        if: always()
+        run: python3 Scripts/import_signing.py --cleanup
+
   build:
     name: macOS checks and app build
-    if: ${{ !inputs.drag_probe_plan && !inputs.native_core_only && !inputs.native_performance_trace }}
+    if: ${{ !inputs.drag_probe_plan && !inputs.native_core_only && !inputs.native_performance_trace && !inputs.native_release_check && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
     timeout-minutes: 55
     steps:
@@ -576,8 +653,8 @@ jobs:
 
   publish:
     name: Publish checked release
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.native_performance_trace }}
-    needs: build
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: native-release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

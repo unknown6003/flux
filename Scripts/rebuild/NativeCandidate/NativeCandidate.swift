@@ -10,7 +10,8 @@ import OSLog
 /// unverified private OS interface into an available capability.
 @main struct NativeCandidate {
     @MainActor static func main() {
-        guard Bundle.main.object(forInfoDictionaryKey: "FluxNativeCandidate") as? Bool == true else { exit(78) }
+        let info = Bundle.main.infoDictionary ?? [:]
+        guard info["FluxNativeApp"] as? Bool == true || info["FluxNativeCandidate"] as? Bool == true else { exit(78) }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let delegate = NativeCandidateDelegate()

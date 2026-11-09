@@ -177,7 +177,7 @@ import FluxCore
     private func updateClockHover() {
         let point = NSEvent.mouseLocation
         let inMenuBar = NSScreen.screens.contains(where: {
-            $0.frame.contains(point) && point.y >= $0.frame.maxY - $0.menuBarThickness
+            $0.frame.contains(point) && point.y >= $0.frame.maxY - max($0.frame.maxY - $0.visibleFrame.maxY, NSStatusBar.system.thickness)
         })
         let nearClock = NSScreen.screens.contains(where: {
             $0.frame.contains(point) && point.x >= $0.frame.maxX - 180

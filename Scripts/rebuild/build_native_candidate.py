@@ -41,12 +41,17 @@ def run(arguments, seconds=30):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--performance-trace", action="store_true")
+    parser.add_argument("--release", metavar="VERSION", help="Build the shipping app and Flux.dmg")
+    parser.add_argument("--build-number", default="64")
     args = parser.parse_args()
+    if args.release and args.performance_trace:
+        raise RuntimeError("A release cannot include the performance trace")
     identity = os.environ.get("CODESIGN_IDENTITY", "")
     keychain = os.environ.get("CODESIGN_KEYCHAIN", "")
     if not identity or identity == "-" or not keychain:
         raise RuntimeError("The existing Flux signing identity is required")
-    output = ROOT / ("build/native-performance-trace" if args.performance_trace else "build/native-candidate")
+    output = ROOT / ("build/native-release" if args.release else
+                     "build/native-performance-trace" if args.performance_trace else "build/native-candidate")
     output.mkdir(parents=True, exist_ok=False)
     flags = ["-Xswiftc", "-DFLUX_PERFORMANCE_TRACE"] if args.performance_trace else []
     run(["swift", "build", "-c", "release", "--product", "FluxNativeCandidate"] + flags, 240)
@@ -72,9 +77,13 @@ def main():
     with (ROOT / "Resources/Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
     revision = run(["git", "rev-parse", "HEAD"])
-    info.update(FluxNativeCandidate=True, FluxNativeSourceRevision=revision,
-                FluxPerformanceTraceCandidate=args.performance_trace,
-                CFBundleShortVersionString="0.22.0", CFBundleVersion="64")
+    if args.release:
+        info.update(FluxNativeApp=True, FluxNativeSourceRevision=revision,
+                    CFBundleShortVersionString=args.release, CFBundleVersion=args.build_number)
+    else:
+        info.update(FluxNativeCandidate=True, FluxNativeSourceRevision=revision,
+                    FluxPerformanceTraceCandidate=args.performance_trace,
+                    CFBundleShortVersionString="0.22.0", CFBundleVersion=args.build_number)
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream)
     (contents / "PkgInfo").write_text("APPL????")
@@ -89,13 +98,23 @@ def main():
     leaf = Path(str(prefix) + "0").read_bytes()
     if leaf != expected:
         raise RuntimeError("The native candidate signer differs from installed Flux")
-    archive = output / ("FluxPerformanceTraceCandidate.zip" if args.performance_trace else "FluxNativeCandidate.zip")
-    run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)], 45)
-    report = dict(sourceRevision=revision, candidateOnly=True, performanceTraceEnabled=args.performance_trace,
+    if args.release:
+        stage = output / "dmg-stage"
+        stage.mkdir()
+        run(["ditto", str(bundle), str(stage / "Flux.app")], 60)
+        (stage / "Applications").symlink_to("/Applications")
+        archive = output / "Flux.dmg"
+        run(["hdiutil", "create", "-volname", "Flux " + args.release, "-srcfolder", str(stage),
+             "-ov", "-format", "UDZO", str(archive)], 120)
+        shutil.rmtree(stage)
+    else:
+        archive = output / ("FluxPerformanceTraceCandidate.zip" if args.performance_trace else "FluxNativeCandidate.zip")
+        run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(bundle), str(archive)], 45)
+    report = dict(sourceRevision=revision, candidateOnly=not args.release, performanceTraceEnabled=args.performance_trace,
                   executableSHA256=hashlib.sha256((contents / "MacOS/Flux").read_bytes()).hexdigest(),
                   bundleID=info["CFBundleIdentifier"],
                   version=info["CFBundleShortVersionString"], build=info["CFBundleVersion"],
-                  privateLockBridgeEnabled=False, positionHidingRequiresExplicitTrialFlag=True,
+                  privateLockBridgeEnabled=False, macOS27Hiding="MenuBarAgent allow list",
                   sameProcessMenuCaptureRequiresExplicitTemporaryDirectory=True,
                   leafSHA256=hashlib.sha256(leaf).hexdigest(), sizeBytes=archive.stat().st_size,
                   sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
