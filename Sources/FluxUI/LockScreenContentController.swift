@@ -152,8 +152,8 @@ public final class LockScreenContentController: NSViewController {
     public var preferredSize: CGSize { state.preferredSize }
     public var isEmpty: Bool { state.isEmpty }
     /// Readback for tests and captures.
-    public var showsMedia: Bool { !mediaCard.isHidden }
-    public var showsActivity: Bool { !caption.isHidden }
+    public var showsMedia: Bool { isViewLoaded && !mediaCard.isHidden }
+    public var showsActivity: Bool { isViewLoaded && !caption.isHidden }
 
     private let onAction: @MainActor (LockScreenTransportAction) -> Void
 

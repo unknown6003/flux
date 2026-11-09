@@ -137,6 +137,35 @@ import FluxUI
             controller.dismiss()
             window.close()
         }
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            NSApp.appearance = NSAppearance(named: appearance)
+            let media = NowPlayingWidgetState(status: .playing, title: "An example song title", artist: "Example artist",
+                elapsed: 65, duration: 240)
+            let caption = LockScreenActivityCaption(symbolName: "timer", text: "Timer, 1:05 remaining")
+            let states: [(String, LockScreenContentState)] = [
+                ("media", .init(media: media)), ("media-caption", .init(media: media, activity: caption)),
+                ("caption", .init(activity: caption)), ("empty", .empty)
+            ]
+            for (name, state) in states {
+                let controller = LockScreenContentController(state: state, onAction: { _ in })
+                let size = state.isEmpty ? NSSize(width: 348, height: 164) : controller.preferredSize
+                let window = NSWindow(contentRect: .init(origin: .init(x: -10_000, y: -10_000), size: size),
+                    styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: appearance)
+                let host = NSView(frame: .init(origin: .zero, size: size))
+                window.contentView = host
+                let card = controller.view
+                host.addSubview(card)
+                card.frame = .init(origin: .zero, size: controller.preferredSize)
+                window.orderFrontRegardless()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                host.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                try render(host, to: output.appendingPathComponent("lock-\(name)-\(theme).png"))
+                window.close()
+            }
+        }
         for notched in [false, true] {
             let geometry = NotchGeometry(screenFrame: NSRect(x: 0, y: 0, width: 1728, height: 1117),
                                          cameraWidth: notched ? 180 : 0, topInset: 33)
