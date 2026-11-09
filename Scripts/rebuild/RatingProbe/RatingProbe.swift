@@ -7,12 +7,18 @@ import FluxUI
 @testable import FluxApplication
 
 private enum RatingProbeFailure: Error { case missingFixture, assertion }
-private func requireValue<T>(_ value: T?) throws -> T {
-    guard let value else { throw RatingProbeFailure.missingFixture }
+private func requireValue<T>(_ value: T?, file: StaticString = #fileID, line: UInt = #line) throws -> T {
+    guard let value else {
+        FileHandle.standardError.write(Data("Missing native fixture at \(file):\(line)\n".utf8))
+        throw RatingProbeFailure.missingFixture
+    }
     return value
 }
-private func requireTrue(_ value: Bool) throws {
-    guard value else { throw RatingProbeFailure.assertion }
+private func requireTrue(_ value: Bool, file: StaticString = #fileID, line: UInt = #line) throws {
+    guard value else {
+        FileHandle.standardError.write(Data("Native assertion at \(file):\(line)\n".utf8))
+        throw RatingProbeFailure.assertion
+    }
 }
 
 @MainActor private final class SettingsFixtureEffects: SettingsEffects {
@@ -122,12 +128,24 @@ private actor RatingFixtureTransport: UsageTransport {
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
+        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
+        let keyDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while NSApp.keyWindow !== window {
+            guard ContinuousClock.now < keyDeadline else {
+                FileHandle.standardError.write(Data("Identity fixture did not become key\n".utf8))
+                throw RatingProbeFailure.missingFixture
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         let prompt = MenuBarIdentityPrompt()
         func waitForSheet(_ present: Bool) async throws {
             let deadline = ContinuousClock.now.advanced(by: .seconds(3))
             while (window.attachedSheet != nil) != present {
-                guard ContinuousClock.now < deadline else { throw RatingProbeFailure.missingFixture }
+                guard ContinuousClock.now < deadline else {
+                    FileHandle.standardError.write(Data("Identity sheet presence expected \(present)\n".utf8))
+                    throw RatingProbeFailure.missingFixture
+                }
                 try await Task.sleep(for: .milliseconds(10))
             }
         }
