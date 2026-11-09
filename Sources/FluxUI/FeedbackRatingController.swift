@@ -143,7 +143,7 @@ public final class FeedbackRatingController: NSViewController {
         case .ready: return L("feedback.ready", "Usage data is on, so Flux sends this number. It sends no text.")
         case .sending: return L("feedback.sending", "Sending…")
         case .sent: return L("feedback.sent", "Rating received. Thank you.")
-        case .failed(.busy): return L("feedback.busy", "Flux is still sending a rating. Try again in a moment.")
+        case .failed(.busy): return L("feedback.busy", "Flux is busy. Try again in a moment.")
         case .failed(.limited): return L("feedback.limited", "Flux can't send more ratings now. Try again later.")
         case .failed(.unconfirmed): return L("feedback.unconfirmed", "Could not confirm that the rating arrived. You can try again.")
         }

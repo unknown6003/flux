@@ -52,7 +52,7 @@ import FluxUI
 
 @Suite(.serialized)
 struct SettingsCoordinatorTests {
-    @MainActor private static func find(_ id: String) -> NSView? {
+    @MainActor fileprivate static func find(_ id: String) -> NSView? {
         @MainActor func walk(_ view: NSView) -> NSView? {
             if view.identifier?.rawValue == id { return view }
             return view.subviews.lazy.compactMap(walk).first
@@ -114,5 +114,157 @@ struct SettingsCoordinatorTests {
         #expect(order.widgets == [.shelf, .mirror, .calendar, .nowPlaying, .clipboard])
         let movedPastFirst = order.move(.shelf, up: true)
         #expect(!movedPastFirst)
+    }
+}
+
+private actor RatingFixtureTransport: UsageTransport {
+    let started: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private var pending: CheckedContinuation<UsageResponse, Never>?
+    private var requests: [UsageRequest] = []
+    init() { (started, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1)) }
+    func send(_ request: UsageRequest) async throws -> UsageResponse {
+        requests.append(request)
+        return await withCheckedContinuation { pending = $0; continuation.yield(()) }
+    }
+    func release(accepted: Bool = true) {
+        pending?.resume(returning: UsageResponse(status: 200,
+            body: Data((accepted ? #"{"status":1}"# : #"{"status":0}"#).utf8)))
+        pending = nil
+    }
+    func snapshot() -> [UsageRequest] { requests }
+}
+
+@MainActor private final class RatingFixture {
+    let domain = "org.fluxfixture.rating.\(UUID().uuidString)"
+    let defaults: UserDefaults
+    let transport = RatingFixtureTransport()
+    let effects = SettingsFixtureEffects()
+    let usage: UsageCollection
+    let settings: SettingsCoordinator
+    init() throws {
+        _ = NSApplication.shared
+        defaults = try #require(UserDefaults(suiteName: domain))
+        let transport = transport
+        usage = UsageCollection(defaults: defaults) { identity in
+            try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
+        }
+        settings = SettingsCoordinator(preferences: PreferenceStore(defaults: defaults, domain: domain, evidence: .init()),
+                                       usage: usage, version: .init(), effects: effects)
+    }
+    func close() { settings.close(); defaults.removePersistentDomain(forName: domain) }
+    func open() throws -> FeedbackRatingController {
+        settings.show(.about)
+        let button = try #require(SettingsCoordinatorTests.find("about.feedback.rate") as? NSButton)
+        button.performClick(nil)
+        return try #require(settings.ratingController)
+    }
+    static func control<T: NSControl>(_ id: String, in controller: FeedbackRatingController, as type: T.Type) throws -> T {
+        func walk(_ view: NSView) -> NSView? {
+            if view.identifier?.rawValue == id { return view }
+            return view.subviews.lazy.compactMap(walk).first
+        }
+        return try #require(walk(controller.view) as? T)
+    }
+    static func choose(_ index: Int, in controller: FeedbackRatingController) throws {
+        let ratings = try control("feedback.rating", in: controller, as: NSSegmentedControl.self)
+        ratings.selectedSegment = index
+        _ = ratings.sendAction(ratings.action, to: ratings.target)
+    }
+}
+
+extension SettingsCoordinatorTests {
+    @Test @MainActor func ratingFormDoesNotEnableCollectionAndClosesWithItsPage() throws {
+        let fixture = try RatingFixture()
+        defer { fixture.close() }
+        let sheet = try fixture.open()
+        #expect(!sheet.state.collectionEnabled)
+        let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
+        #expect(!submit.isEnabled)
+        submit.performClick(nil)
+        #expect(fixture.settings.ratingSend == nil)
+        #expect(fixture.defaults.object(forKey: UsageCollection.identityKey) == nil)
+        fixture.settings.show(.general)
+        #expect(fixture.settings.ratingController == nil)
+        #expect(!fixture.usage.enabled)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func ratingControlsWaitForAckAndIgnoreRepeatedSubmit() async throws {
+        let fixture = try RatingFixture()
+        defer { fixture.close() }
+        await fixture.usage.setEnabled(true)
+        let sheet = try fixture.open()
+        try RatingFixture.choose(3, in: sheet)
+        let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
+        submit.performClick(nil)
+        #expect(sheet.state.submission == .sending)
+        #expect(!submit.isEnabled)
+        _ = submit.sendAction(submit.action, to: submit.target)
+        var started = await fixture.transport.started.makeAsyncIterator()
+        _ = await started.next()
+        #expect(await fixture.transport.snapshot().count == 1)
+        let send = try #require(fixture.settings.ratingSend)
+        await fixture.transport.release()
+        await send.value
+        #expect(sheet.state.submission == .sent)
+        let done = try RatingFixture.control("feedback.done", in: sheet, as: NSButton.self)
+        #expect(!done.isHidden)
+        #expect(done.keyEquivalent == "\r")
+        #expect(submit.isHidden && submit.keyEquivalent.isEmpty)
+        sheet.cancelOperation(nil)
+        #expect(fixture.settings.ratingController == nil)
+        await fixture.usage.setEnabled(false)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func ratingRetriesReuseOnlyTheSameRatingToken() async throws {
+        let fixture = try RatingFixture()
+        defer { fixture.close() }
+        await fixture.usage.setEnabled(true)
+        let sheet = try fixture.open()
+        let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
+        var started = await fixture.transport.started.makeAsyncIterator()
+        for index in [2, 2, 4] {
+            try RatingFixture.choose(index, in: sheet)
+            submit.performClick(nil)
+            let send = try #require(fixture.settings.ratingSend)
+            _ = await started.next()
+            await fixture.transport.release(accepted: false)
+            await send.value
+            #expect(sheet.state.submission == .failed(.unconfirmed))
+        }
+        let requests = await fixture.transport.snapshot()
+        #expect(requests.count == 3)
+        func uuid(_ request: UsageRequest) throws -> String {
+            let body = try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
+            let batch = try #require(body["batch"] as? [[String: Any]])
+            return try #require(batch.first?["uuid"] as? String)
+        }
+        #expect(try uuid(requests[0]) == uuid(requests[1]))
+        #expect(try uuid(requests[1]) != uuid(requests[2]))
+        await fixture.usage.setEnabled(false)
+    }
+
+    @Test(.timeLimit(.minutes(1))) @MainActor func aClosedRatingCannotUpdateANewVisitAfterItsLateAck() async throws {
+        let fixture = try RatingFixture()
+        defer { fixture.close() }
+        await fixture.usage.setEnabled(true)
+        let previous = try fixture.open()
+        try RatingFixture.choose(1, in: previous)
+        try RatingFixture.control("feedback.submit", in: previous, as: NSButton.self).performClick(nil)
+        var started = await fixture.transport.started.makeAsyncIterator()
+        _ = await started.next()
+        let send = try #require(fixture.settings.ratingSend)
+        fixture.settings.close()
+        #expect(send.isCancelled)
+        #expect(fixture.settings.ratingController == nil)
+        let fresh = try fixture.open()
+        #expect(fresh !== previous)
+        await fixture.transport.release()
+        await send.value
+        #expect(fixture.settings.ratingController === fresh)
+        #expect(fresh.state.submission == .ready)
+        #expect(previous.state.submission == .sending)
+        #expect(fixture.settings.ratingSend == nil)
+        await fixture.usage.setEnabled(false)
     }
 }
