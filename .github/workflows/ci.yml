@@ -99,6 +99,10 @@ jobs:
         if: failure()
         timeout-minutes: 2
         run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests --filter SettingsCoordinatorTests
+      - name: Trace native test exit
+        if: failure()
+        timeout-minutes: 2
+        run: python3 Scripts/rebuild/trace_native_test_exit.py
       - name: Upload native test output
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

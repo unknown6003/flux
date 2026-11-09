@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 import Testing
 import FluxCore
 import FluxUI
@@ -295,6 +296,17 @@ extension SettingsCoordinatorTests {
 @MainActor private enum SettingsTestApplication {
     static let initialize: Void = {
         _ = NSApplication.shared
-        NSApp.finishLaunching()
+        atexit {
+            ratingExitEvidence("exit", stack: Thread.callStackSymbols)
+        }
+        NSSetUncaughtExceptionHandler { exception in
+            ratingExitEvidence(exception.name.rawValue + ": " + (exception.reason ?? ""), stack: exception.callStackSymbols)
+        }
     }()
+}
+
+private func ratingExitEvidence(_ reason: String, stack: [String]) {
+    guard let path = ProcessInfo.processInfo.environment["FLUX_NATIVE_TEST_PHASE_PATH"] else { return }
+    let text = ([reason] + stack).joined(separator: "\n")
+    try? text.write(toFile: path + ".exit", atomically: true, encoding: .utf8)
 }
