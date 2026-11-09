@@ -61,7 +61,7 @@ struct SettingsCoordinatorTests {
     }
 
     @Test @MainActor func realSettingsControlsSaveBeforeApplyingAndRefreshWithoutEffects() throws {
-        _ = NSApplication.shared
+        _ = SettingsTestApplication.initialize
         let domain = "org.fluxfixture.settings.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: domain))
         defer { defaults.removePersistentDomain(forName: domain) }
@@ -143,7 +143,7 @@ private actor RatingFixtureTransport: UsageTransport {
     let usage: UsageCollection
     let settings: SettingsCoordinator
     init() throws {
-        _ = NSApplication.shared
+        _ = SettingsTestApplication.initialize
         defaults = try #require(UserDefaults(suiteName: domain))
         let transport = transport
         usage = UsageCollection(defaults: defaults) { identity in
@@ -290,4 +290,11 @@ extension SettingsCoordinatorTests {
     } else {
         FileManager.default.createFile(atPath: path, contents: data)
     }
+}
+
+@MainActor private enum SettingsTestApplication {
+    static let initialize: Void = {
+        _ = NSApplication.shared
+        NSApp.finishLaunching()
+    }()
 }

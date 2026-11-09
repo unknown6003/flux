@@ -24,14 +24,15 @@ def main():
     root = Path(__file__).resolve().parents[2]
     directory = root / "build/native-test-logs"
     directory.mkdir(parents=True, exist_ok=True)
-    log = directory / (args.suite + ".log")
+    suffix = ".isolated" if args.filter else ""
+    log = directory / (args.suite + suffix + ".log")
     with log.open("w") as output:
         process = subprocess.Popen(["swift", "test", "--filter", args.filter or args.suite], cwd=root,
-                                   env=os.environ | {"FLUX_NATIVE_TEST_PHASE_PATH": str(directory / "rating-phase.log")},
+                                   env=os.environ | {"FLUX_NATIVE_TEST_PHASE_PATH": str(directory / ("rating-phase" + suffix + ".log"))},
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
-            status = process.wait(timeout=240)
+            status = process.wait(timeout=90 if args.filter else 240)
         except BaseException:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
