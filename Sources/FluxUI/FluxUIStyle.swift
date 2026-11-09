@@ -95,11 +95,21 @@ public enum FluxUIStyle {
         ])
     }
 
+    /// Settings form metrics, close to System Settings.
+    enum Form {
+        static let pageInset = NSEdgeInsets(top: 12, left: 20, bottom: 20, right: 20)
+        static let sectionSpacing: CGFloat = 18
+        static let rowInset = NSEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
+        static let rowMinHeight: CGFloat = 22
+        static var helperFont: NSFont { NSFont.preferredFont(forTextStyle: .subheadline) }
+        static var headerFont: NSFont { NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold) }
+    }
+
     /// A vertical scroll view whose document is as wide as the visible area
     /// and as tall as `content`. Use it as a Settings page root view.
     static func page(_ content: NSView) -> NSScrollView {
         let document = FlippedView()
-        pin(content, in: document, inset: NSEdgeInsets(top: 20, left: 24, bottom: 24, right: 24))
+        pin(content, in: document, inset: Form.pageInset)
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -114,21 +124,24 @@ public enum FluxUIStyle {
         return scroll
     }
 
-    /// A titled section: headline, then a group of rows with separators.
-    static func section(_ title: String?, _ rows: [NSView]) -> NSStackView {
+    /// A section: an optional header, a rounded group of rows with
+    /// separators, and an optional one-line footer.
+    static func section(_ title: String?, _ rows: [NSView], footer: String? = nil) -> NSStackView {
         var items: [NSView] = []
         for (index, row) in rows.enumerated() {
             if index > 0 { items.append(separator()) }
-            items.append(row)
+            items.append(row is FormRowView ? row : FormRowView.padded(row))
         }
-        let box = group(vstack(items, spacing: 8))
+        let box = group(vstack(items, spacing: 0))
         var parts: [NSView] = []
         if let title {
-            let header = label(title, style: .headline)
+            let header = label(title, wraps: false)
+            header.font = Form.headerFont
             header.setAccessibilityRole(.staticText)
             parts.append(header)
         }
         parts.append(box)
+        if let footer { parts.append(label(footer, style: .subheadline, secondary: true)) }
         let stack = vstack(parts, spacing: 6)
         if let title {
             stack.setAccessibilityElement(true)
@@ -138,23 +151,86 @@ public enum FluxUIStyle {
         return stack
     }
 
-    /// A form row: title and optional helper text on the left, control on the right.
-    static func row(_ title: String, helper: String? = nil, control: NSView?) -> NSStackView {
-        var texts: [NSView] = [label(title)]
-        if let helper { texts.append(label(helper, style: .callout, secondary: true)) }
-        let text = vstack(texts, spacing: 2)
-        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        var views: [NSView] = [text]
+    /// A form row: title and optional one-line help on the left, the control
+    /// on the right. The control keeps its size; the text wraps.
+    static func row(_ title: String, helper: String? = nil, control: NSView?) -> NSView {
+        if let control, control.accessibilityLabel()?.isEmpty ?? true { control.setAccessibilityLabel(title) }
+        return FormRowView(title: title, helper: helper, control: control)
+    }
+
+    /// Secondary text for the control side of a row, for example "Allowed".
+    static func value(_ text: String) -> NSTextField {
+        let field = label(text, secondary: true, wraps: false)
+        field.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return field
+    }
+}
+
+/// One Settings row. Text sits on the leading side and the control on the
+/// trailing side, vertically centered, so every control in a group lines up.
+@MainActor
+final class FormRowView: NSView {
+    init(title: String, helper: String?, control: NSView?) {
+        super.init(frame: .zero)
+        let titleLabel = FluxUIStyle.label(title)
+        var texts: [NSTextField] = [titleLabel]
+        if let helper, !helper.isEmpty {
+            let help = FluxUIStyle.label(helper, secondary: true)
+            help.font = FluxUIStyle.Form.helperFont
+            texts.append(help)
+        }
+        // A row whose controls are all off dims its text, as in System Settings.
+        if let control, Self.isDisabled(control) {
+            texts.forEach { $0.textColor = .tertiaryLabelColor }
+        }
+        let text = FluxUIStyle.vstack(texts, spacing: 2)
+        text.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(text)
+        let inset = FluxUIStyle.Form.rowInset
+        var constraints = [
+            text.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset.left),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+            text.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: inset.top),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: FluxUIStyle.Form.rowMinHeight + inset.top + inset.bottom),
+        ]
         if let control {
+            control.translatesAutoresizingMaskIntoConstraints = false
             control.setContentCompressionResistancePriority(.required, for: .horizontal)
             control.setContentHuggingPriority(.required, for: .horizontal)
-            views.append(control)
-            if control.accessibilityLabel()?.isEmpty ?? true { control.setAccessibilityLabel(title) }
+            addSubview(control)
+            constraints += [
+                control.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset.right),
+                control.centerYAnchor.constraint(equalTo: centerYAnchor),
+                control.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: inset.top),
+                text.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -16),
+            ]
+        } else {
+            constraints.append(text.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -inset.right))
         }
-        let stack = hstack(views, spacing: 12)
-        stack.distribution = .fill
-        return stack
+        // Weak preferences: text takes the free width, the row stays as short as it can.
+        let fill = text.trailingAnchor.constraint(equalTo: trailingAnchor)
+        fill.priority = .init(1)
+        let compact = heightAnchor.constraint(equalToConstant: 0)
+        compact.priority = .init(1)
+        constraints += [fill, compact]
+        NSLayoutConstraint.activate(constraints)
     }
+
+    private static func isDisabled(_ view: NSView) -> Bool {
+        if let control = view as? NSControl { return !control.isEnabled }
+        let controls = view.subviews.compactMap { $0 as? NSControl }
+        return !controls.isEmpty && controls.allSatisfy { !$0.isEnabled }
+    }
+
+    /// Gives any other view the same row padding, so it lines up in a group.
+    static func padded(_ view: NSView) -> NSView {
+        let wrapper = NSView()
+        FluxUIStyle.pin(view, in: wrapper, inset: FluxUIStyle.Form.rowInset)
+        return wrapper
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
 
 /// AppKit alignment chooses an edge; it does not stretch arranged views.
@@ -183,15 +259,18 @@ final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// A rounded fill behind grouped content. It sizes itself to the content
-/// with constraints, unlike `NSBox.contentView`, which the box sizes.
+/// A rounded fill behind grouped content, like a System Settings group.
+/// It sizes itself to the content with constraints, unlike `NSBox.contentView`.
 @MainActor
 final class GroupView: NSView {
+    static let inset = NSEdgeInsets(top: 3, left: 12, bottom: 3, right: 12)
+
     init(content: NSView) {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 8
-        FluxUIStyle.pin(content, in: self, inset: NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12))
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+        FluxUIStyle.pin(content, in: self, inset: Self.inset)
     }
 
     @available(*, unavailable)
@@ -201,8 +280,9 @@ final class GroupView: NSView {
 
     override func updateLayer() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.quaternarySystemFill.cgColor
-            layer?.borderColor = NSColor.separatorColor.cgColor
+            let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            layer?.backgroundColor = (dark ? NSColor.white.withAlphaComponent(0.05) : NSColor.black.withAlphaComponent(0.03)).cgColor
+            layer?.borderColor = (dark ? NSColor.white.withAlphaComponent(0.10) : NSColor.black.withAlphaComponent(0.08)).cgColor
         }
         layer?.borderWidth = 0.5
     }

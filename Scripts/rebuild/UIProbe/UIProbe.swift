@@ -14,7 +14,8 @@ import FluxUI
         NSApp.setActivationPolicy(.prohibited)
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
-            for width in [680, 840] {
+            let sizes = [("default", SettingsWindowController.defaultSize), ("min", SettingsWindowController.minimumSize)]
+            for (sizeName, size) in sizes {
             for page in SettingsPage.allCases {
                 let settings = SettingsWindowController(initialPage: page) { page in
                     if page == .menuBar { return menuBarFixture() }
@@ -32,42 +33,47 @@ import FluxUI
                             capability: .available, failureCode: nil), onAction: { _ in })
                     }
                     if page == .about {
-                        return AboutPreferencesController(state: .init(version: "UI fixture", build: "fixture",
+                        return AboutPreferencesController(state: .init(version: "UI fixture", build: "fixture", update: .upToDate,
                             crashNotice: .previousSessionUnclean(cameraWasRunning: false)), onAction: { _ in })
                     }
                     return GeneralPreferencesController(state: .init(
                         launchAtLoginRequested: false, loginStatus: .disabled, hotkeysEnabled: true,
                         revealShortcut: .init(keyCode: 3, carbonModifiers: 6400),
                         notchShortcut: .init(keyCode: 45, carbonModifiers: 6400),
-                        appearance: .system, automaticUpdateChecks: true,
+                        appearance: .system,
                         permissions: PermissionKind.allCases.map { .init(kind: $0, status: $0 == .accessibility ? .allowed : .notAsked) }), onAction: { _ in })
                 }
-                guard let window = settings.window, let root = window.contentView else { throw ProbeError.noView }
+                guard let window = settings.window, let content = window.contentView else { throw ProbeError.noView }
+                // The frame view includes the title bar, so the page title shows in the render.
+                let root = content.superview ?? content
                 window.appearance = NSAppearance(named: appearance)
-                window.setContentSize(NSSize(width: width, height: 900))
+                window.setContentSize(size)
                 window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
                 window.orderFrontRegardless()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
                 root.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
-                var renderingError: (any Error)?
-                window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                    do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme)-\(width).png")) }
-                    catch { renderingError = error }
-                }
-                if let renderingError { throw renderingError }
-                for scroll in descendants(root).compactMap({ $0 as? NSScrollView }) {
-                    guard let document = scroll.documentView,
-                          document.frame.height > scroll.contentView.bounds.height + 1 else { continue }
-                    scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height - scroll.contentView.bounds.height)))
-                    scroll.reflectScrolledClipView(scroll.contentView)
-                    root.layoutSubtreeIfNeeded()
-                    window.displayIfNeeded()
+                // Render each screenful from top to bottom, so every row is checked at this size.
+                let scroll = descendants(content).compactMap { $0 as? NSScrollView }.first { !($0.documentView is NSTableView) }
+                var offset: CGFloat = 0
+                var part = 1
+                while true {
+                    var renderingError: (any Error)?
                     window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                        do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme)-\(width)-bottom.png")) }
+                        do { try render(root, to: output.appendingPathComponent("\(page.rawValue)-\(theme)-\(sizeName)-\(part).png")) }
                         catch { renderingError = error }
                     }
                     if let renderingError { throw renderingError }
+                    guard let scroll, let document = scroll.documentView, part < 8 else { break }
+                    let visible = scroll.contentView.bounds.height
+                    let bottom = max(0, document.frame.height - visible)
+                    guard offset < bottom - 1 else { break }
+                    offset = min(bottom, offset + visible - 40)
+                    scroll.contentView.scroll(to: NSPoint(x: 0, y: offset))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    root.layoutSubtreeIfNeeded()
+                    window.displayIfNeeded()
+                    part += 1
                 }
                 settings.close()
             }

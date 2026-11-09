@@ -106,6 +106,32 @@ struct SettingsCoordinatorTests {
         #expect(effects.visits.last == "hide.notch")
     }
 
+    @Test @MainActor func aboutUpdateSwitchSavesAndSettingsHasNoAnalyticsControl() throws {
+        _ = NSApplication.shared
+        let domain = "org.fluxfixture.settings.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        let usage = UsageCollection(defaults: defaults) { _ in
+            Issue.record("Opening Settings built an analytics client")
+            throw CancellationError()
+        }
+        let effects = SettingsFixtureEffects()
+        let settings = SettingsCoordinator(preferences: preferences, usage: usage, version: .init(), effects: effects)
+        defer { settings.close() }
+        settings.show(.general)
+        #expect(Self.find("analytics.enabled") == nil)
+        #expect(Self.find("analytics.reset") == nil)
+        settings.show(.about)
+        let auto = try #require(Self.find("about.updates.auto") as? NSSwitch)
+        #expect(auto.state == (preferences.value(for: Preferences.automaticUpdateChecks) ? .on : .off))
+        auto.state = .off
+        _ = auto.sendAction(auto.action, to: auto.target)
+        #expect(!preferences.value(for: Preferences.automaticUpdateChecks))
+        if case .some(.automaticUpdateChecks(false)) = effects.changes.last {} else { Issue.record("Wrong runtime effect") }
+        #expect(effects.failures.isEmpty)
+    }
+
     @Test func widgetOrderMovesKnownNeighborsWithoutDiscardingFutureIDs() {
         var order = WidgetOrder(saved: ["future.first", "mirror", "future.middle", "shelf", "mirror", "calendar"])
         let moved = order.move(.shelf, up: true)

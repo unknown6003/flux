@@ -2,12 +2,12 @@ import Foundation
 import Testing
 @testable import FluxCore
 
-@Test @MainActor func configuredEUProjectStaysOffWithoutSavedConsent() {
+@Test @MainActor func configuredEUProjectBuildsNothingBeforeStart() {
     let suite = "flux-production-project-" + UUID().uuidString
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
+    // No start(): a test must never reach the real project.
     let collection = UsageCollection(defaults: defaults)
-    collection.start()
     collection.record(.opened(.settings))
     collection.flush()
     #expect(!collection.enabled)

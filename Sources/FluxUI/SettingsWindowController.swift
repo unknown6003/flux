@@ -1,6 +1,6 @@
 import AppKit
 
-/// The five Settings pages. The names match Flux 0.21.
+/// The five Settings pages, in sidebar order. The names match Flux 0.21.
 public enum SettingsPage: String, CaseIterable, Sendable {
     case general, menuBar, notch, lockScreen, about
 
@@ -16,11 +16,21 @@ public enum SettingsPage: String, CaseIterable, Sendable {
 
     var symbolName: String {
         switch self {
-        case .general: "gearshape"
+        case .general: "gearshape.fill"
         case .menuBar: "menubar.rectangle"
         case .notch: "rectangle.topthird.inset.filled"
-        case .lockScreen: "lock"
-        case .about: "info.circle"
+        case .lockScreen: "lock.fill"
+        case .about: "info"
+        }
+    }
+
+    /// The sidebar tile color, as in System Settings.
+    var tileColor: NSColor {
+        switch self {
+        case .general, .about: .systemGray
+        case .menuBar: .systemBlue
+        case .notch: .systemIndigo
+        case .lockScreen: .systemOrange
         }
     }
 }
@@ -34,12 +44,17 @@ public protocol SettingsPageFocus: AnyObject {
 /// Settings window with a sidebar. It holds one page at a time.
 ///
 /// The parent owns this controller. Keep a strong reference while the window
-/// is open and release it in `onClose`. Bind the app menu "Settings…" item
-/// (key equivalent ⌘,) to `show(_:)`. Esc closes the window unless the
-/// focused page handles `cancelOperation(_:)` first.
+/// is open and release it in `onClose`; the window and its views go with it.
+/// Bind the app menu "Settings…" item (key equivalent ⌘,) to `show(_:)`.
+/// Esc closes the window unless the focused page handles `cancelOperation(_:)` first.
 @MainActor
 public final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     public typealias PageFactory = @MainActor (SettingsPage) -> NSViewController
+
+    /// The window opens at this content size.
+    public static let defaultSize = NSSize(width: 720, height: 560)
+    /// The window can't be made smaller than this.
+    public static let minimumSize = NSSize(width: 640, height: 420)
 
     /// Called after the window closed and the page was released.
     public var onClose: (@MainActor () -> Void)?
@@ -65,21 +80,21 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         sidebarItem.maximumThickness = 220
         split.addSplitViewItem(sidebarItem)
         let contentItem = NSSplitViewItem(viewController: host)
-        contentItem.minimumThickness = 480
+        contentItem.minimumThickness = 440
         split.addSplitViewItem(contentItem)
 
         let window = SettingsWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: true
         )
         window.isReleasedWhenClosed = false
-        window.titlebarAppearsTransparent = false
+        window.toolbar = NSToolbar(identifier: "FluxSettings")
         window.toolbarStyle = .unified
         window.contentViewController = split
-        window.setContentSize(NSSize(width: 760, height: 560))
-        window.minSize = NSSize(width: 680, height: 420)
+        window.setContentSize(Self.defaultSize)
+        window.contentMinSize = Self.minimumSize
         super.init(window: window)
         window.delegate = self
         sidebar.onSelect = { [weak self] page in self?.select(page, focusPage: false) }
@@ -148,82 +163,56 @@ private final class SettingsWindow: NSWindow {
 
 @MainActor
 private final class SettingsSidebarController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    enum Item {
-        case header(String)
-        case page(SettingsPage)
-    }
-
-    let items: [Item] = [
-        .header(L("settings.group.flux", "Flux")),
-        .page(.menuBar), .page(.notch), .page(.lockScreen),
-        .header(L("settings.group.system", "System")),
-        .page(.general), .page(.about),
-    ]
+    let pages = SettingsPage.allCases
     let tableView = NSTableView()
     var onSelect: (@MainActor (SettingsPage) -> Void)?
     private var applyingSelection = false
 
     override func loadView() {
-        let column = NSTableColumn(identifier: .init("page"))
-        tableView.addTableColumn(column)
+        tableView.addTableColumn(NSTableColumn(identifier: .init("page")))
         tableView.headerView = nil
         tableView.style = .sourceList
-        tableView.rowSizeStyle = .default
+        tableView.rowSizeStyle = .custom
+        tableView.rowHeight = 28
         tableView.dataSource = self
         tableView.delegate = self
         tableView.setAccessibilityLabel(L("settings.sidebar", "Settings sections"))
         let scroll = NSScrollView()
         scroll.documentView = tableView
         scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         view = scroll
     }
 
     func setSelection(_ page: SettingsPage) {
         _ = view
-        guard let row = items.firstIndex(where: { if case .page(page) = $0 { true } else { false } }),
-              tableView.selectedRow != row else { return }
+        guard let row = pages.firstIndex(of: page), tableView.selectedRow != row else { return }
         applyingSelection = true
         tableView.selectRowIndexes([row], byExtendingSelection: false)
         applyingSelection = false
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
-
-    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
-        if case .header = items[row] { true } else { false }
-    }
-
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        if case .page = items[row] { true } else { false }
-    }
+    func numberOfRows(in tableView: NSTableView) -> Int { pages.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let page = pages[row]
         let cell = NSTableCellView()
-        let text = NSTextField(labelWithString: "")
-        text.translatesAutoresizingMaskIntoConstraints = false
+        let text = NSTextField(labelWithString: page.title)
+        text.lineBreakMode = .byTruncatingTail
+        let image = NSImageView(image: Self.tile(page))
+        image.setAccessibilityElement(false)
         cell.textField = text
-        cell.addSubview(text)
-        var leading = cell.leadingAnchor
-        switch items[row] {
-        case .header(let title):
-            text.stringValue = title
-        case .page(let page):
-            text.stringValue = page.title
-            let image = NSImageView(image: FluxUIStyle.symbol(page.symbolName, label: page.title) ?? NSImage())
-            image.translatesAutoresizingMaskIntoConstraints = false
-            image.setAccessibilityElement(false)
-            cell.imageView = image
-            cell.addSubview(image)
-            NSLayoutConstraint.activate([
-                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                image.widthAnchor.constraint(equalToConstant: 18),
-            ])
-            leading = image.trailingAnchor
+        for view in [image, text] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(view)
         }
         NSLayoutConstraint.activate([
-            text.leadingAnchor.constraint(equalTo: leading, constant: 6),
+            image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            image.widthAnchor.constraint(equalToConstant: 20),
+            image.heightAnchor.constraint(equalToConstant: 20),
+            text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 8),
             text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -4),
             text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
         ])
@@ -231,8 +220,27 @@ private final class SettingsSidebarController: NSViewController, NSTableViewData
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !applyingSelection, tableView.selectedRow >= 0,
-              case .page(let page) = items[tableView.selectedRow] else { return }
-        onSelect?(page)
+        guard !applyingSelection, pages.indices.contains(tableView.selectedRow) else { return }
+        onSelect?(pages[tableView.selectedRow])
+    }
+
+    /// A white symbol on a rounded color tile, like the System Settings sidebar.
+    static func tile(_ page: SettingsPage) -> NSImage {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            .applying(.init(paletteColors: [.white]))
+        let symbol = FluxUIStyle.symbol(page.symbolName, label: page.title)?.withSymbolConfiguration(configuration)
+        let color = page.tileColor
+        let image = NSImage(size: NSSize(width: 20, height: 20), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+            if let symbol {
+                let size = symbol.size
+                symbol.draw(in: NSRect(x: (rect.width - size.width) / 2, y: (rect.height - size.height) / 2,
+                                       width: size.width, height: size.height))
+            }
+            return true
+        }
+        image.accessibilityDescription = page.title
+        return image
     }
 }

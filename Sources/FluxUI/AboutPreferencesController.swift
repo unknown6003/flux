@@ -20,6 +20,7 @@ public enum CrashNotice: Equatable, Sendable {
 public struct AboutPreferencesState: Equatable, Sendable {
     public let version: String
     public let build: String
+    public let automaticUpdateChecks: Bool
     public let update: UpdateStatus
     public let diagnostics: DiagnosticStatus
     public let crashNotice: CrashNotice
@@ -27,12 +28,14 @@ public struct AboutPreferencesState: Equatable, Sendable {
     public init(
         version: String,
         build: String,
+        automaticUpdateChecks: Bool = true,
         update: UpdateStatus = .idle,
         diagnostics: DiagnosticStatus = .ready,
         crashNotice: CrashNotice = .none
     ) {
         self.version = version
         self.build = build
+        self.automaticUpdateChecks = automaticUpdateChecks
         self.update = update
         self.diagnostics = diagnostics
         self.crashNotice = crashNotice
@@ -41,6 +44,7 @@ public struct AboutPreferencesState: Equatable, Sendable {
 
 /// Requests from Settings › About. The parent copies the report and opens links.
 public enum AboutPreferencesAction: Equatable, Sendable {
+    case setAutomaticUpdateChecks(Bool)
     case checkForUpdates
     case installUpdate
     case copyDiagnosticReport
@@ -75,87 +79,94 @@ public final class AboutPreferencesController: FormPageController {
     override func makeSections() -> [NSView] {
         var sections = [brand()]
         if case .previousSessionUnclean(let camera) = state.crashNotice { sections.append(crashBanner(cameraWasRunning: camera)) }
-        sections += [FluxUIStyle.section(L("about.updates", "Updates"), [
-            updateRow(self, id: "about.updates.action", status: state.update) { [weak self] in self?.onAction($0 ? .installUpdate : .checkForUpdates) },
-        ]), diagnosticSection(), feedbackSection(), creditSection()]
+        sections += [updateSection(), helpSection(), creditSection()]
         return sections
     }
 
-    private func feedbackSection() -> NSView {
-        let rate = button("about.feedback.rate", L("about.feedback.rate", "Rate Flux…")) { [weak self] in
-            self?.onAction(.rateFlux)
-        }
-        return FluxUIStyle.section(L("about.feedback", "Feedback"), [
-            FluxUIStyle.row(L("about.feedback.title", "Rate Flux"), helper: L(
-                "about.feedback.helper",
-                "Sends one number from 1 to 5 when usage data is on in General. It sends no text."
-            ), control: rate),
-        ])
+    private func brand() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.setAccessibilityElement(false)
+        icon.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        let name = FluxUIStyle.label("Flux", style: .title1, wraps: false)
+        name.font = .systemFont(ofSize: 22, weight: .semibold)
+        let version = FluxUIStyle.label(String(format: L("about.version", "Version %@ (%@)"), state.version, state.build),
+                                        secondary: true, wraps: false)
+        version.isSelectable = true
+        let stack = NSStackView(views: [icon, name, version])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 4
+        stack.setCustomSpacing(10, after: icon)
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 2, right: 0)
+        return stack
     }
 
     private func crashBanner(cameraWasRunning: Bool) -> NSView {
-        let icon = NSImageView(image: FluxUIStyle.symbol("exclamationmark.triangle.fill", label: "") ?? NSImage())
-        icon.contentTintColor = .systemYellow
-        icon.setAccessibilityElement(false)
-        let title = FluxUIStyle.label(L("about.crash.title", "The last Flux session did not close cleanly"), style: .headline)
-        var detail = L("about.crash.detail", "This notice is from the last run. Flux is running now. A crash, Force Quit or logout can cause it.")
-        if cameraWasRunning { detail += " " + L("about.crash.camera", "The camera was on when that run ended.") }
-        detail += " " + L("about.crash.next", "Copy the report to check that run.")
-        let body = FluxUIStyle.label(detail, style: .callout, secondary: true)
-        let copy = button("about.crash.copy", L("about.diagnostics.copy", "Copy Diagnostic Report"), enabled: state.diagnostics != .unavailable) { [weak self] in
+        var detail = L("about.crash.detail", "A crash, Force Quit or logout can cause this.")
+        if cameraWasRunning { detail += " " + L("about.crash.camera", "The camera was on.") }
+        let copy = button("about.crash.copy", L("about.crash.copy", "Copy Report"), enabled: state.diagnostics != .unavailable) { [weak self] in
             self?.onAction(.copyDiagnosticReport)
         }
         let dismiss = button("about.crash.dismiss", L("about.crash.dismiss", "Dismiss")) { [weak self] in
             self?.onAction(.dismissCrashNotice)
         }
         dismiss.setAccessibilityLabel(L("about.crash.dismiss.ax", "Dismiss last session notice"))
-        let text = FluxUIStyle.vstack([title, body, FluxUIStyle.hstack([copy, dismiss])], spacing: 6)
-        let row = FluxUIStyle.hstack([icon, text], spacing: 12)
-        row.alignment = .top
-        let box = FluxUIStyle.group(row)
-        box.setAccessibilityElement(true)
-        box.setAccessibilityRole(.group)
-        box.setAccessibilityLabel(L("about.crash.title", "The last Flux session did not close cleanly"))
-        return box
+        let title = L("about.crash.title", "The last session did not close cleanly")
+        let section = FluxUIStyle.section(nil, [
+            FluxUIStyle.row(title, helper: detail, control: FluxUIStyle.hstack([dismiss, copy], spacing: 8)),
+        ])
+        section.setAccessibilityElement(true)
+        section.setAccessibilityRole(.group)
+        section.setAccessibilityLabel(title)
+        return section
     }
 
-    private func brand() -> NSView {
-        let name = FluxUIStyle.label("Flux", style: .largeTitle, wraps: false)
-        let version = FluxUIStyle.label(String(format: L("about.version", "Version %@ (%@)"), state.version, state.build), secondary: true)
-        version.isSelectable = true
-        let trust = FluxUIStyle.label(L("about.trust", "Self-signed. Not notarized."), style: .callout, secondary: true)
-        return FluxUIStyle.vstack([name, version, trust], spacing: 4)
+    private func updateSection() -> NSView {
+        let install: Bool
+        if case .available = state.update { install = true } else { install = false }
+        let status = state.update.text
+        return FluxUIStyle.section(L("about.updates", "Updates"), [
+            switchRow("about.updates.auto", L("about.updates.auto", "Check automatically"),
+                      isOn: state.automaticUpdateChecks) { [weak self] in self?.onAction(.setAutomaticUpdateChecks($0)) },
+            buttonRow("about.updates.action", L("about.updates.title", "Software update"), help: status.isEmpty ? nil : status,
+                      action: install ? L("update.install", "Install Update") : L("update.check", "Check Now"),
+                      enabled: !state.update.isBusy) { [weak self] in self?.onAction(install ? .installUpdate : .checkForUpdates) },
+        ])
     }
 
-    private func diagnosticSection() -> NSView {
-        let copy = button("about.diagnostics.copy", L("about.diagnostics.copy", "Copy Diagnostic Report"), enabled: state.diagnostics != .unavailable) { [weak self] in
-            self?.onAction(.copyDiagnosticReport)
+    private func helpSection() -> NSView {
+        let report: String? = switch state.diagnostics {
+        case .ready: nil
+        case .copied: L("about.diagnostics.copied", "Copied to the clipboard.")
+        case .unavailable: L("about.diagnostics.unavailable", "Not available now.")
         }
-        let helper: String = switch state.diagnostics {
-        case .ready: L("about.diagnostics.ready", "Copies fixed status lines to the clipboard. It has no IDs, file names or log text.")
-        case .copied: L("about.diagnostics.copied", "Report copied to the clipboard.")
-        case .unavailable: L("about.diagnostics.unavailable", "The report is not available now.")
-        }
-        return FluxUIStyle.section(L("about.diagnostics", "Diagnostics"), [
-            FluxUIStyle.row(L("about.diagnostics.title", "Diagnostic report"), helper: helper, control: copy),
+        return FluxUIStyle.section(L("about.help", "Feedback"), [
+            buttonRow("about.feedback.rate", L("about.feedback.title", "Rate Flux"), action: L("about.feedback.rate", "Rate…")) { [weak self] in
+                self?.onAction(.rateFlux)
+            },
+            buttonRow("about.diagnostics.copy", L("about.diagnostics.title", "Diagnostic report"), help: report,
+                      action: L("about.diagnostics.copy", "Copy Report"), enabled: state.diagnostics != .unavailable) { [weak self] in
+                self?.onAction(.copyDiagnosticReport)
+            },
         ])
     }
 
     private func creditSection() -> NSView {
+        let source = button("about.credits.source", L("about.credits.source", "View on GitHub")) { [weak self] in
+            self?.onAction(.openSourceRepository)
+        }
+        source.setAccessibilityLabel(L("about.credits.source.ax", "View Flux source code"))
         let license = button("about.credits.license", L("about.credits.license", "View License")) { [weak self] in
             self?.onAction(.openMediaRemoteAdapterLicense)
         }
         license.setAccessibilityLabel(L("about.credits.license.ax", "View MediaRemoteAdapter license"))
-        let source = button("about.credits.source", L("about.credits.source", "View Source")) { [weak self] in
-            self?.onAction(.openSourceRepository)
-        }
-        source.setAccessibilityLabel(L("about.credits.source.ax", "View Flux source code"))
         return FluxUIStyle.section(L("about.credits", "Credits"), [
+            FluxUIStyle.row(L("about.credits.repo", "Source code"), control: source),
             FluxUIStyle.row(L("about.credits.media", "MediaRemoteAdapter"), helper: L(
-                "about.credits.media.helper",
-                "Now Playing uses MediaRemoteAdapter by Jonas van den Berg and contributors, under the BSD 3-Clause License."
+                "about.credits.media.helper", "Used by Now Playing. BSD 3-Clause License."
             ), control: license),
-            FluxUIStyle.row(L("about.credits.repo", "Source code"), helper: L("about.credits.repo.helper", "Flux source code is on GitHub."), control: source),
         ])
     }
 }

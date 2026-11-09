@@ -24,12 +24,9 @@ public final class SettingsCoordinator {
 
     // Per-visit results. Cleared when the page goes away.
     private var shortcutRejections: [ShortcutRole: ShortcutConflict] = [:]
-    private var analyticsWorking = 0
-    private var analyticsWasReset = false
     private var diagnostics: DiagnosticStatus = .ready
 
     // Keep async work in request order.
-    private var analyticsTask: Task<Void, Never>?
     private var clipboardTask: Task<Void, Never>?
 
     // One rating visit: the open sheet, its retry token and its one send.
@@ -112,7 +109,6 @@ public final class SettingsCoordinator {
         endRating()
         page = nil
         shortcutRejections = [:]
-        analyticsWasReset = false
         diagnostics = .ready
     }
 
@@ -129,17 +125,8 @@ public final class SettingsCoordinator {
             notchShortcut: shortcut(.notch),
             notchConflict: conflict(.notch, hotkeys: hotkeys),
             appearance: value(Preferences.appearance),
-            automaticUpdateChecks: value(Preferences.automaticUpdateChecks),
-            update: effects.updateStatus(),
-            analytics: analyticsStatus,
             permissions: effects.permissionRows()
         )
-    }
-
-    private var analyticsStatus: AnalyticsStatus {
-        if analyticsWorking > 0 { return .working }
-        if analyticsWasReset { return .reset }
-        return usage.enabled ? .on : .off
     }
 
     private func conflict(_ role: ShortcutRole, hotkeys: Bool) -> ShortcutConflict {
@@ -190,6 +177,7 @@ public final class SettingsCoordinator {
         AboutPreferencesState(
             version: version.version,
             build: version.build,
+            automaticUpdateChecks: value(Preferences.automaticUpdateChecks),
             update: effects.updateStatus(),
             diagnostics: diagnostics,
             crashNotice: effects.crashNotice()
@@ -216,19 +204,6 @@ public final class SettingsCoordinator {
             setShortcut(shortcut, for: .notch)
         case .setAppearance(let appearance):
             save(appearance, Preferences.appearance, then: .appearance(appearance))
-        case .setAutomaticUpdateChecks(let enabled):
-            save(enabled, Preferences.automaticUpdateChecks, then: .automaticUpdateChecks(enabled))
-        case .checkForUpdates:
-            effects.checkForUpdates()
-        case .installUpdate:
-            effects.installUpdate()
-        case .setAnalyticsEnabled(let enabled):
-            endRating()
-            runAnalytics { usage in await usage.setEnabled(enabled) }
-        case .resetAnalyticsID:
-            endRating()
-            runAnalytics { usage in await usage.resetIdentity() }
-            analyticsWasReset = true
         case .openPermissionSettings(let kind):
             effects.openPermissionSettings(kind)
         }
@@ -268,21 +243,6 @@ public final class SettingsCoordinator {
             if live, !effects.replaceShortcut(role, with: previous) {
                 shortcutRejections[role] = .unavailable
             }
-        }
-    }
-
-    /// Runs one UsageCollection change after the previous one finished.
-    private func runAnalytics(_ work: @escaping @Sendable @MainActor (UsageCollection) async -> Void) {
-        let previous = analyticsTask
-        let usage = usage
-        analyticsWorking += 1
-        analyticsWasReset = false
-        analyticsTask = Task { @MainActor [weak self] in
-            await previous?.value
-            await work(usage)
-            guard let self else { return }
-            self.analyticsWorking -= 1
-            self.refresh()
         }
     }
 
@@ -409,6 +369,8 @@ public final class SettingsCoordinator {
 
     private func handle(_ action: AboutPreferencesAction) {
         switch action {
+        case .setAutomaticUpdateChecks(let enabled):
+            save(enabled, Preferences.automaticUpdateChecks, then: .automaticUpdateChecks(enabled))
         case .checkForUpdates: effects.checkForUpdates()
         case .installUpdate: effects.installUpdate()
         case .copyDiagnosticReport: diagnostics = effects.copyDiagnosticReport() ? .copied : .unavailable

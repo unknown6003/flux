@@ -1,5 +1,7 @@
 # Telemetry wakeup diagnosis
 
+> Later change: anonymous collection is now always on, with no Settings switch or reset control. See TELEMETRY.md. Consent and on/off wording below is historical.
+
 Outcome: explain the observed post-request wakeups before another transport
 change. Keep the existing +0.1 interrupt-wakeups/s gate.
 

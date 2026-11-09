@@ -135,40 +135,100 @@ struct ViewLifetimeTests {
         panel.onWillDismiss = nil
     }
 
-    @Test @MainActor func analyticsStartsOffAndDoesNotInvokeCallbacksDuringReadback() {
-        _ = NSApplication.shared
-        let view = AnalyticsSettingsView()
-        var requested = false
-        view.onSetEnabled = { _ in requested = true }
-        view.onResetID = { requested = true }
-        #expect(view.toggle.state == .off)
-        view.update(.working)
-        #expect(!view.toggle.isEnabled)
-        view.update(.on)
-        #expect(view.toggle.state == .on)
-        view.update(.off)
-        #expect(view.toggle.state == .off)
-        #expect(!requested)
-    }
-
-    @Test @MainActor func generalReadbackIsSilentAndItsAnalyticsControlForwardsTypedAction() throws {
+    @Test @MainActor func generalReadbackIsSilentAndHasNoAnalyticsControl() throws {
         _ = NSApplication.shared
         var requested: [GeneralPreferencesAction] = []
-        func state(_ analytics: AnalyticsStatus) -> GeneralPreferencesState {
-            .init(launchAtLoginRequested: false, loginStatus: .disabled, hotkeysEnabled: true,
+        func state(hotkeys: Bool) -> GeneralPreferencesState {
+            .init(launchAtLoginRequested: false, loginStatus: .disabled, hotkeysEnabled: hotkeys,
                   revealShortcut: .init(keyCode: 3, carbonModifiers: 6400),
                   notchShortcut: .init(keyCode: 45, carbonModifiers: 6400),
-                  appearance: .system, automaticUpdateChecks: true, analytics: analytics)
+                  appearance: .system, permissions: [.init(kind: .accessibility, status: .allowed)])
         }
-        let page = GeneralPreferencesController(state: state(.off)) { requested.append($0) }
+        let page = GeneralPreferencesController(state: state(hotkeys: false)) { requested.append($0) }
         _ = page.view
-        page.update(state: state(.on))
+        page.update(state: state(hotkeys: true))
         #expect(requested.isEmpty)
-        let toggle = try #require(Self.find("analytics.enabled", in: page.view) as? NSSwitch)
-        #expect(toggle.state == .on)
-        toggle.state = .off
-        _ = toggle.sendAction(toggle.action, to: toggle.target)
-        #expect(requested == [.setAnalyticsEnabled(false)])
+        #expect(Self.find("analytics.enabled", in: page.view) == nil)
+        #expect(Self.find("analytics.reset", in: page.view) == nil)
+        let hotkeys = try #require(Self.find("general.hotkeys", in: page.view) as? NSSwitch)
+        #expect(hotkeys.state == .on)
+        hotkeys.state = .off
+        _ = hotkeys.sendAction(hotkeys.action, to: hotkeys.target)
+        #expect(requested == [.setHotkeysEnabled(false)])
+    }
+
+    @Test @MainActor func aboutAutomaticUpdateSwitchSendsItsAction() throws {
+        _ = NSApplication.shared
+        var requested: [AboutPreferencesAction] = []
+        let page = AboutPreferencesController(state: .init(version: "1", build: "1", automaticUpdateChecks: true)) {
+            requested.append($0)
+        }
+        _ = page.view
+        let auto = try #require(Self.find("about.updates.auto", in: page.view) as? NSSwitch)
+        #expect(auto.state == .on)
+        auto.state = .off
+        _ = auto.sendAction(auto.action, to: auto.target)
+        #expect(requested == [.setAutomaticUpdateChecks(false)])
+    }
+
+    @Test @MainActor func settingsWindowUsesSystemSettingsSizesAndSidebarOrder() throws {
+        _ = NSApplication.shared
+        let settings = SettingsWindowController { _ in
+            let controller = NSViewController()
+            controller.view = NSView()
+            return controller
+        }
+        defer { settings.close() }
+        let window = try #require(settings.window)
+        #expect(window.contentRect(forFrameRect: window.frame).size == SettingsWindowController.defaultSize)
+        #expect(window.contentMinSize == SettingsWindowController.minimumSize)
+        #expect(window.title == SettingsPage.general.title)
+        #expect(SettingsPage.allCases.first == .general)
+        #expect(SettingsPage.allCases.last == .about)
+    }
+
+    @Test @MainActor func rowControlsLineUpAndNeverCoverTheirText() throws {
+        _ = NSApplication.shared
+        let toggle = NSSwitch()
+        toggle.controlSize = .mini
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.addItems(withTitles: ["System", "Light", "Dark"])
+        let button = NSButton(title: "Open Settings", target: nil, action: nil)
+        let rows = [
+            FluxUIStyle.row("Short", control: toggle),
+            FluxUIStyle.row("A much longer title that has to wrap before it reaches the control",
+                            helper: "And a helper line that is also long enough to wrap in a narrow window.", control: popup),
+            FluxUIStyle.row("Middle", helper: "Help.", control: button),
+        ]
+        let section = FluxUIStyle.section("Title", rows, footer: "Footer text.")
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 600))
+        section.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(section)
+        NSLayoutConstraint.activate([
+            section.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            section.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            section.topAnchor.constraint(equalTo: root.topAnchor),
+        ])
+        let window = NSWindow(contentRect: root.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = root
+        root.layoutSubtreeIfNeeded()
+        root.layoutSubtreeIfNeeded()
+        let controls: [NSView] = [toggle, popup, button]
+        let edges = controls.map { $0.convert($0.bounds, to: root).maxX }
+        #expect(edges.allSatisfy { abs($0 - edges[0]) < 0.5 })
+        for (row, control) in zip(rows, controls) {
+            let frame = control.convert(control.bounds, to: root)
+            let texts = row.subviews.flatMap { Self.labels(in: $0) }
+            #expect(!texts.isEmpty)
+            for text in texts {
+                let box = text.convert(text.bounds, to: root)
+                #expect(box.maxX <= frame.minX - 8)
+                #expect(box.height >= text.intrinsicContentSize.height - 1)
+            }
+            #expect(frame.minY >= row.convert(row.bounds, to: root).minY)
+        }
     }
 
     @Test @MainActor func shortAndLongSettingsSectionsFillTheSameAvailableWidth() {
@@ -194,6 +254,11 @@ struct ViewLifetimeTests {
         #expect(short.frame.height > 30)
         #expect(long.frame.maxY <= short.frame.minY || short.frame.maxY <= long.frame.minY)
         window.close()
+    }
+
+    @MainActor private static func labels(in view: NSView) -> [NSTextField] {
+        if let field = view as? NSTextField { return [field] }
+        return view.subviews.flatMap { labels(in: $0) }
     }
 
     @MainActor private static func find(_ id: String, in root: NSView) -> NSView? {

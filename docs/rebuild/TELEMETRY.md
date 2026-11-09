@@ -1,12 +1,12 @@
 # PostHog contract
 
-Status: the Swift 6 client, transport and opt-in controller are implemented. The Flux EU project is configured. Live native probes, rating acknowledgements and restricted server readbacks passed, including the final curl transport source at 2f9c959. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
+Status: the Swift 6 client, transport and always-on controller are implemented. Anonymous collection is on for every profile and has no Settings switch. The Flux EU project is configured. Live native probes, rating acknowledgements and restricted server readbacks passed, including the final curl transport source at 2f9c959. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
 
 ## Data
 
-Product code can submit only `UsageEvent` values. The types have no arbitrary strings or property dictionaries. Allowed data is feature names, action names, result codes and fixed failure codes. Each batch adds event UUIDs, timestamps, a random resettable usage ID, and explicit no-profile and no-GeoIP properties. The project token selects the ingestion project.
+Product code can submit only `UsageEvent` values. The types have no arbitrary strings or property dictionaries. Allowed data is feature names, action names, result codes and fixed failure codes. Each batch adds event UUIDs, timestamps, a random usage ID, and explicit no-profile and no-GeoIP properties. The project token selects the ingestion project.
 
-The ID is independent of an account, hardware, device identifiers and the operating-system user. It still links events from that installation. Resetting it cannot remove data already sent. Do not call linked records unlinkable or promise server deletion from a local reset.
+The ID is independent of an account, hardware, device identifiers and the operating-system user. It still links events from that installation. Settings has no reset control. Do not call linked records unlinkable or promise server deletion.
 
 Never add automatic collection of app names or bundle IDs, track or event names, clipboard text, file names or paths, URLs, window titles, keystrokes, screen images, camera frames, raw errors or arbitrary logs. Diagnostics copied by the user are a separate local flow.
 
@@ -20,7 +20,7 @@ A default SDK installation is insufficient for this contract. Its event filter d
 
 1. Inspect every outgoing request type, including config, flags, events, errors and logs. Use a fake collector and content canaries. Check the complete serialized request and headers.
 2. Verify server IP discard and disabled GeoIP with the actual project's settings and ingested records. A client property alone does not prove server policy. The server still sees a network connection unless a relay removes the source address.
-3. Verify no client, task, timer, file or request exists when analytics is off. Disable during a delayed request, clear queued records, and confirm no later retry. Reset during a pending batch and ensure that batch cannot reintroduce the old ID.
+3. Verify no client, task, timer, file or request exists before `UsageCollection.start()`. The client's own `disable()` and `resetIdentity(_:)` paths keep their tests: disable during a delayed request clears queued records with no later retry, and a reset during a pending batch cannot bring back the old ID.
 4. Verify fixed queue and response-size limits, backpressure, request timeout, cancellation, retry caps and offline loss behavior.
 5. Measure on/off resource and user-action costs with identical workloads. Record uncertainty. Do not claim zero overhead from a passing compile or an idle screenshot.
 
@@ -56,22 +56,22 @@ See ANALYTICS-PAIR.md and TELEMETRY-DIAGNOSIS.md.
 
 A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.
 
-Missing consent keys default to off on both new and upgraded profiles. Only an explicit saved opt-in starts the client. Disabling cancels the pending task and request, drops records and clears cached assignments. A request already received by the server cannot be recalled. Reset drops pending work, clears flags/exposures, and changes the random ID. Late UI submissions carrying the previous local ID are rejected.
+Collection is always on. `UsageCollection.start()` builds the client for new and upgraded profiles after the app is ready. It ignores the old opt-in key `flux.analytics.enabled.v1`, so a saved `false` from an earlier build does not stop events. Settings has no analytics switch, reset control or notice; the data stays anonymous and the source code shows every field. Nothing is built or sent before `start()`. Tests: `eventsSendEvenWhenTheOldOptInWasSavedAsFalse`, `startCollectsOnANewProfileAndKeepsOneIdentity` and `nothingIsBuiltOrWrittenBeforeStart` in `Tests/FluxCoreTests/UsageCollectionTests.swift`.
 
 The encoders support usage events, presentation flags, experiment exposures/conversions, fixed-code manual exceptions, structured code-only logs and fixed rating survey events. A deliberate About rating sheet is bound to the acknowledged submission path. No native crash handler, recorder, AppKit autocapture or automatic survey presentation is installed. Flags and experiments have no active product rollout.
 
-ApplicationHost routes its existing failure callback through the opt-in collector
+ApplicationHost routes its existing failure callback through the collector
 before calling the local reporter. The exhaustive mapping accepts only typed
 ApplicationFailure cases. Settings save, login, clipboard, recovery, timer and
 link failures have fixed codes; runtime and widget failures share the coarse
 serviceUnavailable code. It reads no error object, title, URL, item or payload.
-The off path still invokes the local reporter without constructing a client.
+Before `start()`, the host still invokes the local reporter without constructing a client.
 Native CI 42561810305 at 283d50c completed both host checks. The enabled
 check entered ApplicationHost.report, used the real collector and encoder,
 and captured the exact fixed exception properties through a fake transport.
 The disabled host still reported locally and retained the rejecting client
-factory. These checks use no real network. The 680-point light and dark
-General fixtures show the ID explanation without clipped controls.
+factory. These checks use no real network. Those runs predate always-on collection;
+the enabled check now calls `start()` instead of a saved opt-in.
 
 ## Proposed release budgets
 

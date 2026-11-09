@@ -1,10 +1,13 @@
 import Foundation
 
-/// The app owns this small controller. A disabled profile never constructs a
-/// transport, analytics actor, queue or identifier during startup.
+/// The app owns this small controller. Anonymous usage collection is always
+/// on: `start()` builds the client for every profile. Nothing is built or
+/// sent before `start()`.
 @MainActor
 public final class UsageCollection {
-    public static let enabledKey = "flux.analytics.enabled.v1"
+    /// The old opt-in switch. Collection ignores it, so a saved `false` from
+    /// an earlier version does not stop events.
+    public static let legacyEnabledKey = "flux.analytics.enabled.v1"
     public static let identityKey = "flux.analytics.randomID.v1"
     private let defaults: UserDefaults
     private let factory: @MainActor (UsageIdentity) throws -> PostHogClient
@@ -22,32 +25,10 @@ public final class UsageCollection {
         self.factory = factory
     }
 
-    /// Restore only a saved opt-in. Missing keys do not silently enable a new collector.
+    /// Starts collection. A saved `legacyEnabledKey` value is ignored.
     public func start() {
-        guard !enabled, defaults.object(forKey: Self.enabledKey) as? Bool == true else { return }
+        guard !enabled else { return }
         enable()
-    }
-
-    public func setEnabled(_ value: Bool) async {
-        defaults.set(value, forKey: Self.enabledKey)
-        if value {
-            if !enabled { enable() }
-        } else {
-            enabled = false
-            activeIdentity = nil
-            let previous = client
-            client = nil
-            await previous?.disable()
-        }
-    }
-
-    public func resetIdentity() async {
-        let replacement = UsageIdentity()
-        defaults.set(replacement.value.uuidString.lowercased(), forKey: Self.identityKey)
-        if enabled { activeIdentity = replacement }
-        recordsInWindow = 0
-        rateWindow = .now
-        await client?.resetIdentity(replacement)
     }
 
     /// Fire after an action settles. The caller never awaits networking or encoding.

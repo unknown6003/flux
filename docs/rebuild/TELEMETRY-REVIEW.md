@@ -1,5 +1,7 @@
 # Telemetry review
 
+> Later change: anonymous collection is now always on, with no Settings switch or reset control. See TELEMETRY.md. Consent and on/off wording below is historical.
+
 Independent Standards, Spec and Risk contexts reviewed4efe32fe1d01547fca6e212e06e26dbfa1e95c03 against2d81d9dd0549324dbfef3bf8da2aa68665e84229. All16 changed files were in scope. The parent checked each finding against source. No production app or live account was claimed.
 
 ## Standards

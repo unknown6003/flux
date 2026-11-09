@@ -28,7 +28,6 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/SettingsWindowController.swift` | `SettingsPage`, `SettingsPageFocus`, `SettingsWindowController` |
 | `Sources/FluxUI/MenuBarPreferencesModel.swift` | `MenuBarPageMode`, `MenuBarApplyResult`, `MenuBarAppRow`, `MenuBarPageState`, `MenuBarPageActions` |
 | `Sources/FluxUI/MenuBarPreferencesController.swift` | `MenuBarPreferencesController` |
-| `Sources/FluxUI/AnalyticsSettingsView.swift` | `AnalyticsStatus`, `AnalyticsSettingsView` |
 | `Sources/FluxUI/PermissionCardView.swift` | `PermissionCardView`, `PermissionCardView.Content` |
 | `Sources/FluxUI/NotchPanelController.swift` | `NotchGeometry`, `NotchPanelController` |
 | `Sources/FluxApplication/Notch/NotchWindowCoordinator.swift` | `NotchWindowCoordinator`, `.Presentation`, `.Callbacks` |
@@ -63,7 +62,8 @@ settings.show()           // or settings.show(.menuBar)
 - Bind the "Settings…" menu item (⌘,) to `show(_:)`. Esc closes the window.
 - A page that adopts `SettingsPageFocus` gets its `preferredFirstResponder` focused when `show(_:)` opens it.
 - Teardown: `onClose` runs once, after the page is discarded. Release the controller there. The window has `isReleasedWhenClosed = false`.
-- Sidebar groups follow the design: **Flux** (Menu Bar, Notch, Lock Screen) and **System** (General, About).
+- The window follows macOS System Settings: a sidebar with color icon tiles in `SettingsPage.allCases` order (General, Menu Bar, Notch, Lock Screen, About), the page name in the toolbar, and grouped sections on the right. It opens at `SettingsWindowController.defaultSize` (720 × 560) and can't go below `minimumSize` (640 × 420).
+- Shared form parts in `FluxUIStyle`: `section(_:_:footer:)` is an optional header, a rounded group with separators, and an optional one-line footer. `row(_:helper:control:)` puts the text on the left and the control on the right, vertically centered, so controls line up. A row whose controls are all disabled dims its text. Switches use the mini size, as in System Settings. `FormPageController` adds `switchRow`, `popupRow` and `buttonRow`, so a new setting is one line in a section.
 - FluxUI gives all five pages: `MenuBarPreferencesController`, `NotchPreferencesController`, `LockScreenPreferencesController`, `GeneralPreferencesController`, `AboutPreferencesController`.
 
 ## Menu Bar page
@@ -101,7 +101,7 @@ settings.show()           // or settings.show(.menuBar)
 
 ## General Permissions (slice 5)
 
-`GeneralPreferencesState.permissions: [PermissionRow]` (default empty, which hides the section). The section sits before Analytics, in the order the parent sends.
+`GeneralPreferencesState.permissions: [PermissionRow]` (default empty, which hides the section). The section is last, in the order the parent sends.
 
 - `PermissionRow(kind: PermissionKind, status: PermissionStatus)`.
 - `PermissionKind`: `.accessibility`, `.screenRecording`, `.calendar`, `.camera`, `.bluetooth`. Each has a fixed title and a fixed line that names the feature that uses it.
@@ -119,19 +119,9 @@ settings.show()           // or settings.show(.menuBar)
 
 `FormPageController.rebuild()` and the Menu Bar options section use `FormControls.restoreFocus`. If the focused control is disabled after the new state, for example Move Up on the new first widget, focus goes to the nearest enabled control in the same row. On a tie the later control wins, so a disabled Up goes to Down and a disabled Down goes to Up. If the row has no enabled control, focus does not move to a disabled one. The control helpers moved from `FormPageController` into `FormControls`. The page methods `toggle`, `popup` and `button` keep their signatures.
 
-## Analytics group (General)
+## Analytics
 
-```swift
-let analytics = AnalyticsSettingsView(status: collection.enabled ? .on : .off)
-analytics.onSetEnabled = { on in analytics.update(.working); Task { await collection.setEnabled(on); analytics.update(on ? .on : .off) } }
-analytics.onResetID = { analytics.update(.working); Task { await collection.resetIdentity(); analytics.update(.reset) } }
-```
-
-- Default state is `.off`. Pass `.on` only after a saved opt-in.
-- The view never shows or logs the ID. It never sends anything.
-- Copy names only fixed feature names, results, error codes and a random ID. It does not mention OS versions, replay, surveys, autocapture or crash reports.
-- Off text says requests already received can't be recalled. Reset text says data sent before stays with the old ID.
-- The `Task` above is the parent's code, not FluxUI's.
+Settings has no analytics control. Anonymous collection is always on; see TELEMETRY.md. `AnalyticsSettingsView` and `AnalyticsStatus` were removed.
 
 ## Permission and empty-state cards
 
@@ -278,7 +268,6 @@ The fixture captures at `build/native-ui-d8a951d` and `build/native-ui-51d1d63` 
 - `vstack` uses `.leading` alignment and `WidthStackView`, which gives each arranged view an explicit width constraint equal to the stack. Groups and rows fill the page width at 680 and 840 pt. No FluxUI code uses `.alignment = .width`.
 - Wrapping labels have low horizontal compression resistance. App names use one line with tail truncation and a tooltip. Segmented controls, buttons and "Managed by macOS" resist compression, so the group choices stay reachable.
 - Not proven: no new capture has run with this fix. The root probe must capture again on macOS.
-- The probe's General fixture hosts `AnalyticsSettingsView` with no bottom constraint. That is valid, because the view now has a fitting height.
 
 ## Slice 2 additions
 
@@ -297,47 +286,44 @@ let general = GeneralPreferencesController(state: GeneralPreferencesState(
     revealConflict: .clear,
     notchShortcut: Shortcut(keyCode: 45, carbonModifiers: 6400),
     notchConflict: .clear,
-    appearance: store.value(for: Preferences.appearance),
-    automaticUpdateChecks: store.value(for: Preferences.automaticUpdateChecks),
-    update: .idle,
-    analytics: .off                      // .on only after a saved opt-in
+    appearance: store.value(for: Preferences.appearance)
 )) { action in parentHandle(action) }
 general.update(state: next)              // after each saved change
 ```
 
 The `store.value(for:)` calls are the parent's reads. FluxUI reads nothing.
 
-State fields, all `let`: `launchAtLoginRequested: Bool`, `loginStatus: LoginStatus` (`.disabled`, `.enabled`, `.requiresApproval`, `.unavailable`), `hotkeysEnabled: Bool`, `revealShortcut: Shortcut`, `revealConflict: ShortcutConflict`, `notchShortcut: Shortcut`, `notchConflict: ShortcutConflict` (`.clear`, `.otherFluxShortcut`, `.unavailable`), `appearance: Appearance`, `automaticUpdateChecks: Bool`, `update: UpdateStatus`, `analytics: AnalyticsStatus`. The conflicts, update and analytics fields have defaults: `.clear`, `.idle`, `.off`.
+State fields, all `let`: `launchAtLoginRequested: Bool`, `loginStatus: LoginStatus` (`.disabled`, `.enabled`, `.requiresApproval`, `.unavailable`), `hotkeysEnabled: Bool`, `revealShortcut: Shortcut`, `revealConflict: ShortcutConflict`, `notchShortcut: Shortcut`, `notchConflict: ShortcutConflict` (`.clear`, `.otherFluxShortcut`, `.unavailable`), `appearance: Appearance`, `permissions: [PermissionRow]`. The conflicts and permissions have defaults: `.clear` and empty.
 
-`GeneralPreferencesAction` cases: `.setLaunchAtLogin(Bool)`, `.openLoginItems`, `.setHotkeysEnabled(Bool)`, `.setRevealShortcut(Shortcut)`, `.setNotchShortcut(Shortcut)`, `.setAppearance(Appearance)`, `.setAutomaticUpdateChecks(Bool)`, `.checkForUpdates`, `.installUpdate`, `.setAnalyticsEnabled(Bool)`, `.resetAnalyticsID`.
+`GeneralPreferencesAction` cases: `.setLaunchAtLogin(Bool)`, `.openLoginItems`, `.setHotkeysEnabled(Bool)`, `.setRevealShortcut(Shortcut)`, `.setNotchShortcut(Shortcut)`, `.setAppearance(Appearance)`, `.openPermissionSettings(PermissionKind)`.
 
-- Sections: Startup, Keyboard shortcuts, Appearance, Updates, then the existing `AnalyticsSettingsView`. The page owns one analytics view and routes its two callbacks into the action enum.
-- The login switch shows the requested value. Its helper text names the effective status. `.unavailable` turns the switch off for input but keeps the value. `.requiresApproval` adds a "Needs approval in Login Items" row with Open Login Items.
+- Sections: a first group (Launch at login, Appearance), Keyboard shortcuts, then Permissions. Updates moved to About.
+- The login switch shows the requested value. Help text shows only for `.requiresApproval` and `.unavailable`. `.unavailable` turns the switch off for input but keeps the value. `.requiresApproval` adds an "Allow in Login Items" row with Open Login Items.
 - Each recorder sends one action. It reads keys only while it has focus, through `ShortcutRecorderView`. With global shortcuts off, both recorders are off for input and keep their values. Each recorder shows its own conflict text.
-- The update button says Install Update only for `.available(version:)`. Otherwise it says Check for Updates. It is off while `.checking` or `.installing`.
 - `update(state:)` ignores an equal state. Otherwise it rebuilds the rows and gives focus back to the control with the same identifier. It never sends an action.
-- Identifiers: `general.login`, `general.login.approve`, `general.hotkeys`, `general.shortcut.reveal`, `general.shortcut.notch`, `general.appearance`, `general.updates.auto`, `general.updates.action`, `analytics.enabled`, `analytics.reset`.
-- Parent owns: saving, `SMAppService`, opening Login Items, Carbon registration and conflict checks, the update checker and installer, and `UsageCollection`.
+- Identifiers: `general.login`, `general.login.approve`, `general.hotkeys`, `general.shortcut.reveal`, `general.shortcut.notch`, `general.appearance`, `general.permission.<kind>`.
+- Parent owns: saving, `SMAppService`, opening Login Items, Carbon registration and conflict checks, and opening System Settings.
 
 ## About page (slice 3)
 
 ```swift
 let about = AboutPreferencesController(state: AboutPreferencesState(
     version: bundleShortVersion, build: bundleVersion,   // from Bundle.main
-    update: .idle, diagnostics: .ready
+    automaticUpdateChecks: true, update: .idle, diagnostics: .ready
 )) { action in parentHandle(action) }
 about.update(state: next)
 ```
 
-State fields, all `let`: `version: String`, `build: String`, `update: UpdateStatus`, `diagnostics: DiagnosticStatus` (`.ready`, `.copied`, `.unavailable`).
+State fields, all `let`: `version: String`, `build: String`, `automaticUpdateChecks: Bool`, `update: UpdateStatus`, `diagnostics: DiagnosticStatus` (`.ready`, `.copied`, `.unavailable`).
 
-`AboutPreferencesAction` cases: `.checkForUpdates`, `.installUpdate`, `.copyDiagnosticReport`, `.dismissCrashNotice`, `.openMediaRemoteAdapterLicense`, `.openSourceRepository`, `.rateFlux`.
+`AboutPreferencesAction` cases: `.setAutomaticUpdateChecks(Bool)`, `.checkForUpdates`, `.installUpdate`, `.copyDiagnosticReport`, `.dismissCrashNotice`, `.openMediaRemoteAdapterLicense`, `.openSourceRepository`, `.rateFlux`.
 
-- Shows "Flux", "Version <version> (<build>)" exactly as passed, and the design's trust note "Self-signed. Not notarized." Then Updates, Diagnostics, Feedback and Credits.
-- Feedback has one row, "Rate Flux", with the button "Rate Flux…". It sends `.rateFlux` and nothing else. The state has no new field.
+- Shows the app icon, "Flux" and "Version <version> (<build>)" exactly as passed. Then Updates (Check automatically, Software update), Feedback (Rate Flux, Diagnostic report) and Credits.
+- The update button says Install Update only for `.available(version:)`. Otherwise it says Check Now. It is off while `.checking` or `.installing`.
+- "Rate Flux" has the button "Rate…". It sends `.rateFlux` and nothing else.
 - Diagnostic text is fixed per status. The page never shows the report, logs, error text or IDs. Copy is off for `.unavailable`.
 - Credits name MediaRemoteAdapter by Jonas van den Berg and contributors, BSD 3-Clause (`Vendor/mediaremote-adapter/LICENSE`). The parent opens the license and the source repository.
-- Identifiers: `about.updates.action`, `about.diagnostics.copy`, `about.feedback.rate`, `about.credits.license`, `about.credits.source`.
+- Identifiers: `about.updates.auto`, `about.updates.action`, `about.diagnostics.copy`, `about.feedback.rate`, `about.credits.license`, `about.credits.source`.
 
 ## Notch page (slice 4)
 
@@ -425,8 +411,8 @@ Fixed text:
 
 | State | Text |
 |---|---|
-| collection off | Usage data is off, so Flux can't send a rating. Turn it on in General to send one. |
-| `.ready` | Usage data is on, so Flux sends this number. It sends no text. |
+| collection not started | Flux can't send a rating right now. |
+| `.ready` | 1 is poor, 5 is great. |
 | `.sending` | Sending… |
 | `.sent` | Rating received. Thank you. |
 | `.failed(.busy)` | Flux is busy. Try again in a moment. |
@@ -438,7 +424,7 @@ The status label's accessibility label is the same text. It posts `valueChanged`
 Coordinator lifecycle (`Sources/FluxApplication/Settings/SettingsCoordinator.swift`, "Rating sheet"):
 
 1. Open. `.rateFlux` opens a sheet only when Settings shows About and no rating sheet is open. Each open is a new visit with a new `FeedbackRatingController`. The coordinator holds the sheet strongly. The sheet's action closure holds the coordinator weakly.
-2. Collection off. The form shows the fixed General text. Submit stays off. The coordinator never calls `setEnabled` from the form. The user turns usage data on with the General switch.
+2. Collection not started (only before `start()` or when the client could not be built). The form shows the fixed text and Submit stays off.
 3. Submit. It does nothing while a send is in progress. If the coordinator has no token, or the token is for a different rating, it calls `usage.makeRatingSubmission(rating)` for a new one. A nil token puts the form back to `.ready` with the current `usage.enabled`. Otherwise it sets `.sending` and starts one `Task` that awaits `usage.submitRating(token)`. The task holds the coordinator and the sheet weakly.
 4. Result. The task ignores its result if it was cancelled or if the open sheet is not the one that started it. That covers a closed sheet and a later visit.
 
@@ -452,7 +438,7 @@ Coordinator lifecycle (`Sources/FluxApplication/Settings/SettingsCoordinator.swi
 
 A kept token makes a retry of the same rating send the same submission. A changed rating makes a new token.
 
-5. End. `endRating()` cancels the task, drops the token, and dismisses the sheet. These call it: Cancel, Done, Esc, `close()`, a Settings page switch or window close (through `onPageWillDisappear`), the General analytics switch, and Reset ID. Cancel may stop the transport. It can't recall a request the server already has. Core still checks the identity on its own.
+5. End. `endRating()` cancels the task, drops the token, and dismisses the sheet. These call it: Cancel, Done, Esc, `close()`, and a Settings page switch or window close (through `onPageWillDisappear`). Cancel may stop the transport. It can't recall a request the server already has. Core still checks the identity on its own.
 
 Test hooks, internal and reached with `@testable import FluxApplication`:
 
@@ -600,7 +586,8 @@ Rules the coordinator applies:
 - Login: the switch saves `flux.launchAtLogin` first, then calls `setLoginItem`. A throw reports `.loginItemFailed`. The page always shows `loginStatus()`, read fresh. Refresh never saves the choice.
 - Shortcuts: a chord equal to the other Flux shortcut shows `.otherFluxShortcut` and saves nothing. While hotkeys are on, `replaceShortcut` must return true before the save. On false the page shows `.unavailable` and the old chord must still work. If the save throws after a good register, the coordinator registers the old chord again.
 - Appearance: `apply(.appearance)` runs after the save.
-- Analytics: the switch and Reset ID await `UsageCollection.setEnabled` and `resetIdentity` in order. The page shows `.working` until each finishes, then `.on`, `.off` or `.reset`. No ID is shown.
+- Analytics: Settings has no analytics control. The coordinator only reads `UsageCollection` for the rating sheet. Opening Settings never builds a client.
+- Updates: the About switch saves `automaticUpdateChecks`, then sends `.automaticUpdateChecks`.
 - Widget order: saved unknown IDs keep their index. A known duplicate keeps its first position. Missing known widgets go at the end. Up and Down swap with the nearest known widget.
 - Widgets map to `nowPlayingEnabled`, `shelfEnabled`, `calendarEnabled`, `mirrorEnabled`, `clipboardEnabled`. Activities map to `batteryEnabled`, `bluetoothEnabled`, `calendarEventEnabled`, `timerEnabled`, `soundHUDEnabled`. A switch that changes a live service sends `.features(FeatureConfiguration)`. Timer and other display values send `.presentation`.
 - Clipboard saving calls `setClipboardPersistence` first, then saves. A failed save sets the repository back. Clear calls `clearClipboardHistory`. Both run in request order and report `.clipboardFailed` on a throw.
