@@ -105,6 +105,7 @@ public final class NotchWindowCoordinator {
     private var screenTask: Task<Void, Never>?
     private var resampleTask: Task<Void, Never>?
     private var dragSessionEntered = false
+    private var lastState: NotchState = .collapsed
     private var isShowingMenu = false {
         didSet { viewModel.suppressHover = isShowingMenu }
     }
@@ -336,6 +337,7 @@ public final class NotchWindowCoordinator {
             physicalNotchRect = notchRect
             window.setFrame(frame, display: true)
             hostingView?.rootView = makeRootView(notchRect: notchRect, panelFrame: window.frame)
+            viewModel.interactiveRect = shapeRect(for: viewModel.state)
         }
         if !window.isVisible { window.orderFrontRegardless() }
         let wasPresenting = isPresenting
@@ -400,7 +402,20 @@ public final class NotchWindowCoordinator {
                                      collapsedFrame: collapsed.width > 0 ? collapsed : nil))
     }
 
+    /// The shape for `state`, computed here as well as in the root view, so
+    /// hit-testing and drops never wait for SwiftUI to lay out.
+    private func shapeRect(for state: NotchState) -> CGRect {
+        guard let window, !physicalNotchRect.isNull else { return .zero }
+        let collapsed = NotchMetrics.collapsedFrame(notchRect: physicalNotchRect, panelFrame: window.frame)
+        return NotchLayout.rect(for: state, panelWidth: window.frame.width, notchSize: physicalNotchRect.size,
+                                collapsedFrame: collapsed.width > 0 ? collapsed : nil,
+                                duo: viewModel.duoActive && widgets.contains(.calendar))
+    }
+
     private func stateChanged(_ state: NotchState) {
+        // The root view narrows this union again once its spring settles.
+        if isPresenting { viewModel.interactiveRect = shapeRect(for: lastState).union(shapeRect(for: state)) }
+        lastState = state
         updatePresentation()
         updatePassThrough(for: state)
     }

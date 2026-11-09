@@ -131,10 +131,13 @@ enum LockScreenWidgetPosition {
         finishFadeOut()
         fading = windows
         windows.forEach { Self.animate($0, to: 0, duration: Self.fadeOutDuration) }
+        // The task owns the windows it closes, so they close even when this
+        // owner goes away during the fade.
         fadeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.fadeOutDuration))
-            guard let self, !Task.isCancelled else { return }
-            self.finishFadeOut()
+            guard !Task.isCancelled else { return }
+            windows.forEach(Self.close)
+            if let self, self.fading.elementsEqual(windows, by: ===) { self.fading = []; self.fadeTask = nil }
         }
     }
 

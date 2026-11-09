@@ -54,20 +54,8 @@ public struct NotchRootView: View {
     // MARK: Geometry
 
     private func size(for state: NotchState) -> CGSize {
-        switch state {
-        case .collapsed:
-            return validCollapsedFrame?.size ?? notchSize
-        case .activity:
-            return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2,
-                          height: max(notchSize.height, 32))
-        case .expanded(let widget):
-            if isDuoLayout(for: widget) {
-                return CGSize(width: NotchMetrics.duoWidth(for: notchSize.width),
-                              height: NotchMetrics.duoHeight(for: notchSize.width))
-            }
-            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
-                          height: NotchMetrics.expandedHeight(for: notchSize.width))
-        }
+        NotchLayout.size(for: state, notchSize: notchSize, collapsedFrame: collapsedFrame,
+                         duo: viewModel.duoActive && viewModel.widgets.contains(.calendar))
     }
 
     private func isDuoLayout(for widget: FluxCore.Widget) -> Bool {
@@ -75,17 +63,12 @@ public struct NotchRootView: View {
         return viewModel.widgets.contains(.calendar)
     }
 
-    private var validCollapsedFrame: CGRect? {
-        guard let collapsedFrame, collapsedFrame.width > 0, collapsedFrame.height > 0 else { return nil }
-        return collapsedFrame
-    }
 
     private var containerSize: CGSize { size(for: viewModel.state) }
 
     private func rect(for state: NotchState, panelWidth: CGFloat) -> CGRect {
-        if case .collapsed = state, let validCollapsedFrame { return validCollapsedFrame }
-        let size = size(for: state)
-        return CGRect(origin: CGPoint(x: (panelWidth - size.width) / 2, y: 0), size: size)
+        NotchLayout.rect(for: state, panelWidth: panelWidth, notchSize: notchSize, collapsedFrame: collapsedFrame,
+                         duo: viewModel.duoActive && viewModel.widgets.contains(.calendar))
     }
 
     /// Widens the hit rect to the union of both shapes during a morph, then
@@ -322,6 +305,36 @@ private struct SoundVisualizer: View {
         }
         .frame(width: 25, height: 15)
         .accessibilityHidden(true)
+    }
+}
+
+/// The shape's footprint for each state, in the panel's top-left space.
+/// Top-anchored and centered, except the exact physical notch when closed.
+public enum NotchLayout {
+    public static func size(for state: NotchState, notchSize: CGSize, collapsedFrame: CGRect?, duo: Bool) -> CGSize {
+        switch state {
+        case .collapsed:
+            if let collapsedFrame, collapsedFrame.width > 0, collapsedFrame.height > 0 { return collapsedFrame.size }
+            return notchSize
+        case .activity:
+            return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2, height: max(notchSize.height, 32))
+        case .expanded(let widget):
+            if widget == .nowPlaying, duo {
+                return CGSize(width: NotchMetrics.duoWidth(for: notchSize.width),
+                              height: NotchMetrics.duoHeight(for: notchSize.width))
+            }
+            return CGSize(width: NotchMetrics.expandedWidth(for: notchSize.width),
+                          height: NotchMetrics.expandedHeight(for: notchSize.width))
+        }
+    }
+
+    public static func rect(for state: NotchState, panelWidth: CGFloat, notchSize: CGSize,
+                            collapsedFrame: CGRect?, duo: Bool) -> CGRect {
+        if case .collapsed = state, let collapsedFrame, collapsedFrame.width > 0, collapsedFrame.height > 0 {
+            return collapsedFrame
+        }
+        let size = size(for: state, notchSize: notchSize, collapsedFrame: collapsedFrame, duo: duo)
+        return CGRect(origin: CGPoint(x: (panelWidth - size.width) / 2, y: 0), size: size)
     }
 }
 
