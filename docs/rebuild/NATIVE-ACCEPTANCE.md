@@ -18,8 +18,10 @@ flags before changing an app. Candidate-only version 0.22.0 build 64 is not a
 published update. Launch through Launch Services, not the raw executable.
 
 Save the installed app identity, executable hash, complete exported preference
-domain, clipboard bytes and the current input/session state. Prepare a bounded
-restore guard before replacing the app. Compare settings again after the old
+domain, clipboard bytes and the current input/session state. Prepare and inspect
+the exact restore commands before replacing the app. A verified original-app backup and bounded finally/trap cleanup are sufficient
+for the narrow launch/capture trial. An independent automated app-restore
+watchdog is not a prerequisite for that trial. Compare settings again after the old
 app quits, so its last preference flush is included. Preserve any concurrent
 user changes instead of importing an old snapshot over them.
 
@@ -44,6 +46,27 @@ It is off by default. Confirm the returned process is the new candidate at
 the requested path before interacting or signaling it.
 
 ## Owned fixture and actions
+
+On macOS 27, first use the same owned fixture to answer the native allowance
+question. Leave the candidate's spacer trial flag off for this comparison.
+Find the fixture's actual Allow in the Menu Bar switch in System Settings.
+With a readable same-process baseline, turn only that fixture off, capture
+after one and three seconds, restore it on, and capture again. Compare the
+fixed region and readable label, not only the switch or saved flag.
+
+If that native pair passes and time remains, compare the existing guarded CF
+channel on this same fixture. Freshly validate its one unambiguous bundle row,
+aliases and original allowed value. Arm an independent restore guard before
+the false write. Use the verified Copy/Set/Synchronize declarations and merge
+only the fixture's flag into a fresh document. The original flag must be
+restored and independently reread before the guard ends. A native-switch
+pass with a CF failure is useful evidence of a distinct apply route. Neither
+one alone is whole-app acceptance. Do not write a third-party flag, guess a
+notification or restart a system process.
+
+Run the public-spacer sequence below as a separate bounded trial if the
+native comparison does not provide an accepted route. It needs the explicit
+environment flag. Do not silently mix the two backends in one verdict.
 
 Use one disposable AppKit fixture, with an unambiguous label such as
 FLUX-TEST, an actual bundle ID and a status item whose width can be changed.

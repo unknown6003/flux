@@ -66,51 +66,61 @@ Zero cost is not a testable promise. Measure analytics on and off on the same si
 
 ## Current integration checkpoint
 
-CI 42545438106 at 593579d passed 73 Core, 30 Platform, 11 UI and
-24 Application tests, plus eleven synthetic updater recovery cases. It
-rendered 77 AppKit fixtures. These are component checks, not signed product
-acceptance. The old app remains 0.21.35 build 62.
+CI 42550755852 at 958222a passed 73 Core, 43 Platform, 11 UI and
+40 Application tests, plus eleven synthetic updater recovery cases. It
+rendered 77 AppKit fixtures and built a matching-signed native candidate,
+version 0.22.0 build 64. These are component and artifact checks. No rewrite
+has been released. The installed app remains 0.21.35 build 62.
 
-ApplicationHost binds the Settings actions to the new services. The host's
-off-feature test uses a private profile and fake external backends. Shelf
-expiry preserves source files and recent copies, with no idle expiry timer.
-The updater prepares and checks a manual DMG in a private Downloads folder
-when the automatic destination is not writable. Cache reuse checks the full
-file hash. Native controls passed; a signed mount/install/rollback remains
-unproved.
+The real-widget viewport regression is fixed. Inspected Duo fixtures show
+Now Playing beside Calendar with zero, one and four events. A real-window
+control checks natural content height and scrolling under the height cap.
+The dark lock card now has a readable pause glyph. These fixture images do
+not prove hardware integration or lock-screen presentation.
 
-Duo is the existing Now Playing and Calendar layout. Opus implemented the
-layout and refit hooks. The parent bound the shared calendar feed, event
-boundaries and view lifecycle. The height-cap regression now passes with a
-scrollable tall widget. Inspection of the new screenshots then found that
-real media and Duo widgets collapse to the tab strip. Test 69ce5fa exercises
-the actual widgets in the real window. The next Opus slice must fix that
-case without restoring the oversized-window bug.
+ApplicationHost binds Settings to the new services. Retained widget controls
+lose their visit authorization on dismiss, and queued media commands recheck
+a revocable authorization at process launch. Arrange Done rejects a stale
+policy revision. Every preview crop checks owner geometry before capture
+and again before delivery. No screenshot/AX operation is atomic, so physical
+ownership remains a separate acceptance check.
 
-The lock-screen content views compile, and empty-view hit and accessibility
-checks pass. They do not establish presentation over the lock screen or
-window-level click-through. The installed arm64 SkyLight paths carry 64-bit
-space IDs. The old Int32 bindings risk truncation. Failure and cleanup
-contracts remain unresolved, so no private bridge has been enabled.
+PositionMenuBarService implements guided native arrangement without posting
+synthetic drags. It merges saved choices and preserves ambiguous geometry.
+Its public spacer backend remains unverified and requires an explicit trial
+flag. Default candidate startup leaves that backend paused. Compact spacing,
+signer approval and trustworthy overflow counts remain incomplete.
 
-The matching-signed Launch Services capture probe returned
-screenCaptureNotAllowed before taking an image. Further capture-only retries
-are stopped until the real signed executable and permission flow are ready.
-The public defaults suite returned nil in the read comparison; explicit
-container CF reads returned equal data. The native setter uses an app-ID
-search list, while the explicit setter uses identifier/user/host sources.
-Both inspected paths reach the same lower-level source setter and local
-observer loop. Neither the cross-process signal nor physical hiding is
-proved. No production write-path change follows from those traces.
+The private lock bridge remains unavailable. The installed arm64 SkyLight
+paths use 64-bit space IDs and 32-bit window IDs. Array conversion paths are
+traced, but cleanup completion, return types and some argument meanings
+remain unresolved. No private bridge is enabled from these static traces.
+
+The native per-app allowance path is also unproved. Native defaults and the
+explicit-container CF setter reach a common lower-level source setter, but
+cross-process observation and settled physical hiding remain unknown. No
+production write-path change follows from the trace.
+
+The candidate has an explicit, finite same-process menu capture diagnostic.
+It runs only when launched with a private temporary output directory and
+signaled by the tester. This uses the real app's identity and permission
+flow. The first Mac trial verified the candidate but stopped before install
+because the requested independent restore watchdog was not prepared. It
+produced no runtime evidence. A narrower launch/capture trial uses a verified
+original-app backup and bounded cleanup instead. See NATIVE-ACCEPTANCE.md.
+
+Shelf expiry preserves source files and recent copies, with no idle expiry
+timer. The updater verifies cached data and can prepare a manual DMG when
+the automatic destination is not writable. Signed mount/install/rollback,
+whole-app migration, grants and performance remain unproved.
 
 Parent owns Core, Platform, application composition, tests, Package.swift,
 CI and probes. Opus owns FluxUI and its integration notes in the existing
-locked worktree. The menu-preview child owns only StatusPreview.swift and
-its scoped test. Terra owns finite Mac trials. Keep at most three spaces.
+locked worktree. Terra owns finite Mac trials. Keep at most three spaces.
 
-Remaining release gates are the new executable, a proved menu-bar backend,
-accepted lock-screen backend, real-widget layout, drag-to-open Shelf,
-full-screen and display handling, signed migration and grant tests, actual
-update installation and rollback, paired whole-process performance, clean
-product action recordings, and final independent review at the release SHA.
-No rewrite release has been made.
+Remaining release gates are a proved menu-bar backend, an accepted lock-screen
+backend, drag-to-open Shelf, full-screen and display handling, signed migration
+and grant tests, actual update installation and rollback, paired whole-process
+performance with analytics on and off, clean product action recordings, and
+independent review at the release SHA. Anonymous event wiring and acknowledged
+feedback submission also need completion. No rewrite release has been made.
