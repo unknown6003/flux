@@ -104,6 +104,39 @@ import FluxUI
             window.close()
             if let failure { throw failure }
         }
+        for count in [0, 1, 4] {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let events = (0..<count).map { index in
+                CalendarWidgetEvent(id: "duo-\(index)", title: "A long example meeting title", location: "Example room",
+                    start: now.addingTimeInterval(Double(index) * 3600),
+                    end: now.addingTimeInterval(Double(index + 1) * 3600), isAllDay: false)
+            }
+            let geometry = NotchGeometry(screenFrame: .init(x: 0, y: 0, width: 1728, height: 1117),
+                cameraWidth: 180, topInset: 33)
+            let controller = NotchPanelController(widgets: [.nowPlaying, .calendar], geometry: geometry) { widget in
+                if widget == .calendar {
+                    return CalendarWidgetController(state: .events(today: events, tomorrow: []), onAction: { _ in })
+                }
+                return NowPlayingWidgetController(state: .init(status: .playing, title: "An example song title",
+                    artist: "Example artist", elapsed: 65, duration: 240, canGoPrevious: true, canGoNext: true), onAction: { _ in })
+            }
+            controller.setDuo(count > 0)
+            let window = NSWindow(contentRect: .init(x: -10_000, y: -10_000, width: 440, height: 600),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.backgroundColor = .black
+            window.contentViewController = controller
+            controller.view.widthAnchor.constraint(equalToConstant: 440).isActive = true
+            controller.show(.nowPlaying)
+            window.orderFrontRegardless()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            controller.view.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            try render(controller.view, to: output.appendingPathComponent("duo-\(count)-events.png"))
+            controller.dismiss()
+            window.close()
+        }
         for notched in [false, true] {
             let geometry = NotchGeometry(screenFrame: NSRect(x: 0, y: 0, width: 1728, height: 1117),
                                          cameraWidth: notched ? 180 : 0, topInset: 33)

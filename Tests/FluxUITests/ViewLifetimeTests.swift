@@ -5,6 +5,38 @@ import FluxCore
 
 @Suite(.serialized)
 struct ViewLifetimeTests {
+    @Test @MainActor func duoAddsAndRemovesOnlyTheCalendarCompanion() {
+        _ = NSApplication.shared
+        var made: [Widget] = []
+        var companions: [Widget?] = []
+        let panel = NotchPanelController(widgets: [.nowPlaying, .calendar, .mirror],
+            geometry: .init(screenFrame: .init(x: 0, y: 0, width: 1728, height: 1117), cameraWidth: 180, topInset: 33)) { widget in
+            made.append(widget)
+            let child = NSViewController()
+            child.view = NSView()
+            return child
+        }
+        panel.onCompanionChange = { companions.append($0) }
+        _ = panel.view
+        panel.show(.nowPlaying)
+        let primary = panel.children.first
+        panel.setDuo(true)
+        #expect(made == [.nowPlaying, .calendar])
+        #expect(panel.children.count == 2)
+        #expect(panel.children.first === primary)
+        panel.setDuo(true)
+        #expect(made.count == 2)
+        panel.setDuo(false)
+        #expect(panel.children.count == 1)
+        #expect(panel.children.first === primary)
+        panel.setDuo(true)
+        panel.onWillDismiss = { _ in #expect(panel.children.count == 2) }
+        panel.dismiss()
+        #expect(panel.children.isEmpty)
+        #expect(companions == [.calendar, nil, .calendar, nil])
+        #expect(panel.current == nil)
+    }
+
     @Test @MainActor func lateAppearanceCannotRestartADismissedWidget() {
         _ = NSApplication.shared
         var made: [Widget] = []

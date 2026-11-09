@@ -16,6 +16,39 @@ struct NotchWindowTests {
         }
     }
 
+    @Test @MainActor func lateContentRefitsTheRealWindowAndCannotReopenACollapsedPanel() async throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        var content: NSView?
+        var height: NSLayoutConstraint?
+        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
+            makeWidget: { _ in
+                let controller = NSViewController()
+                controller.view = NSView()
+                content = controller.view
+                let constraint = controller.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
+                constraint.isActive = true
+                height = constraint
+                return controller
+            }, willDismissWidget: { _ in }, compactAction: { _ in }))
+        defer { owner.stop() }
+        owner.start(screen: screen, widgets: [.calendar])
+        owner.expand(.calendar, focus: false)
+        let window = try #require(content?.window)
+        let initialHeight = window.frame.height
+        height?.constant = 600
+        owner.contentDidChange(.calendar)
+        owner.contentDidChange(.calendar)
+        try await drainAppearanceChanges { window.frame.height > initialHeight }
+        #expect(window.frame.height > initialHeight)
+        #expect(window.frame.height <= screen.frame.height * 0.8 + 1)
+        owner.contentDidChange(.calendar)
+        owner.collapse()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(owner.presentation == .compact)
+        #expect(content?.window == nil)
+    }
+
     @Test @MainActor func actualPanelStopsWidgetBeforeItReleasesTheController() async throws {
         _ = NSApplication.shared
         let screen = try #require(NSScreen.screens.first)

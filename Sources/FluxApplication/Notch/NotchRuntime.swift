@@ -61,6 +61,9 @@ public final class NotchRuntime: WidgetEffects {
     private let serviceOverride: FeatureRuntime.Factory?
     private var active = false
     private var visibleWidget: Widget?
+    private var companionWidget: Widget?
+    private var agenda: AgendaReadResult?
+    private var calendarBoundary: Task<Void, Never>?
     private var phase: SessionPhase = .locked
     private var monitor: SessionMonitor?
     private weak var volumeFeed: SoundHUDFeed?
@@ -74,14 +77,26 @@ public final class NotchRuntime: WidgetEffects {
         willShowWidget: { [unowned self] _, next in
             self.visibleWidget = next
             self.applyDemand()
+            self.reconcileCalendar()
         },
-        makeWidget: { [unowned self] in self.widgets.makeWidget($0) },
+        makeWidget: { [unowned self] widget in
+            if widget == .calendar, self.companionWidget == .calendar, self.visibleWidget == .nowPlaying {
+                return self.widgets.makeCalendarCompanion()
+            }
+            return self.widgets.makeWidget(widget)
+        },
         willDismissWidget: { [unowned self] _ in
             self.visibleWidget = nil
+            self.calendarBoundary?.cancel(); self.calendarBoundary = nil
             self.applyDemand()
             self.widgets.dismiss()
         },
-        compactAction: { [unowned self] in self.callbacks.compactAction($0) }))
+        compactAction: { [unowned self] in self.callbacks.compactAction($0) },
+        companionChanged: { [unowned self] widget in
+            self.companionWidget = widget
+            if widget == nil { self.widgets.removeCalendarCompanion() }
+        }))
+        self.widgets.onContentChange = { [weak owner] in owner?.contentDidChange($0) }
         owner.onPresentationChange = { [weak self] in self?.callbacks.presenting($0 == .compact) }
         return owner
     }()
@@ -133,12 +148,15 @@ public final class NotchRuntime: WidgetEffects {
     public func stop() {
         guard active else { return }
         active = false
+        calendarBoundary?.cancel(); calendarBoundary = nil
         monitor?.stop(); monitor = nil
         services.stop()
         callbacks.cameraRunning(false)
         window.stop()
         widgets.dismiss()
         visibleWidget = nil
+        companionWidget = nil
+        agenda = nil
     }
 
     /// Re-read saved options and current grants after an explicit change or
@@ -156,6 +174,7 @@ public final class NotchRuntime: WidgetEffects {
                             closeDelay: preferences.value(for: Preferences.hoverCloseDelay))
         } else { window.stop() }
         widgets.refresh()
+        reconcileCalendar()
     }
 
     public func toggle() { guard active else { return }; window.toggle() }
@@ -184,6 +203,7 @@ public final class NotchRuntime: WidgetEffects {
         applyDemand()
         window.setSessionLocked(next != .unlocked)
         widgets.refresh()
+        reconcileCalendar()
         callbacks.phaseChanged(next)
     }
 
@@ -258,7 +278,28 @@ public final class NotchRuntime: WidgetEffects {
     }
 
     public func report(_ failure: WidgetFailure) { callbacks.report(.widget(failure)) }
+    private func reconcileCalendar(now: Date = .now) {
+        calendarBoundary?.cancel(); calendarBoundary = nil
+        let configuration = FeatureConfiguration(preferences: preferences)
+        let permitted = active && phase == .unlocked && configuration.notchEnabled
+            && configuration.enabledWidgets.contains(.calendar) && permission(.calendar) == .allowed
+        let snapshot: AgendaSnapshot?
+        if permitted, case .ready(let value)? = agenda { snapshot = value } else { snapshot = nil }
+        let relevant = snapshot.map { DuoCalendarPolicy.hasEvents($0, at: now) } ?? false
+        window.setDuo(configuration.duoEnabled && relevant)
+        guard permitted, visibleWidget == .calendar || (visibleWidget == .nowPlaying && configuration.duoEnabled),
+              let snapshot, let boundary = DuoCalendarPolicy.nextBoundary(snapshot, after: now) else { return }
+        calendarBoundary = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0.05, boundary.timeIntervalSinceNow))) }
+            catch { return }
+            guard let self, self.active, !Task.isCancelled else { return }
+            self.widgets.refresh()
+            self.reconcileCalendar()
+        }
+    }
+
     public func widgetEvent(_ event: WidgetEvent) {
+        if case .calendar(let result) = event { agenda = result; reconcileCalendar() }
         if case .camera(let state) = event { callbacks.cameraRunning(state == .running) }
         callbacks.event(event)
     }

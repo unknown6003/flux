@@ -43,8 +43,11 @@ public final class WidgetCoordinator {
     private weak var clipboardLease: ServiceLease<ClipboardFeed>?
     private weak var cameraLease: ServiceLease<CameraFeed>?
 
-    // The one visible widget.
+    public var onContentChange: (@MainActor (Widget) -> Void)?
+
+    // The primary widget and its optional Calendar companion.
     private var visible: Widget?
+    private var calendarIsCompanion = false
     private var writeAuthorization: ClipboardWriteAuthorization?
     private weak var nowPlayingView: NowPlayingWidgetController?
     private weak var calendarView: CalendarWidgetController?
@@ -140,6 +143,21 @@ public final class WidgetCoordinator {
     /// Cancels visible work and drops view references. A shelf copy job keeps going.
     public func dismiss() { hideVisible() }
 
+    /// The panel owns this controller beside Now Playing. It shares the
+    /// existing Calendar feed and never replaces the primary widget.
+    public func makeCalendarCompanion() -> NSViewController {
+        precondition(visible == .nowPlaying)
+        calendarIsCompanion = true
+        let controller = CalendarWidgetController(state: calendarState()) { [weak self] in self?.calendar($0) }
+        calendarView = controller
+        return controller
+    }
+
+    public func removeCalendarCompanion() {
+        calendarIsCompanion = false
+        if visible != .calendar { calendarView = nil }
+    }
+
     /// Re-renders the visible widget, for example after the app became active
     /// and permission status may have changed.
     public func refresh() {
@@ -152,6 +170,8 @@ public final class WidgetCoordinator {
         case .shelf: shelfView?.update(shelfState())
         case nil: break
         }
+        if visible == .nowPlaying, calendarView != nil { refreshCalendar() }
+        if let visible { onContentChange?(visible) }
     }
 
     private func hideVisible() {
@@ -174,6 +194,7 @@ public final class WidgetCoordinator {
         clipboardView = nil
         shelfView = nil
         visible = nil
+        calendarIsCompanion = false
     }
 
     // MARK: Feeds. FeatureRuntime's factory calls these.
@@ -253,11 +274,12 @@ public final class WidgetCoordinator {
         calendarLease = nil
         agenda = nil
         effects.widgetEvent(.calendar(.unavailable))
-        calendarView?.update(calendarState())
+        refreshCalendar()
     }
 
     private func refreshNowPlaying() {
         nowPlayingView?.update(nowPlayingState())
+        if nowPlayingView != nil { onContentChange?(.nowPlaying) }
         updateElapsedTask()
     }
 
@@ -365,7 +387,12 @@ public final class WidgetCoordinator {
     private func agendaChanged(_ result: AgendaReadResult) {
         agenda = result
         effects.widgetEvent(.calendar(result))
+        refreshCalendar()
+    }
+
+    private func refreshCalendar() {
         calendarView?.update(calendarState())
+        if calendarView != nil { onContentChange?(.calendar) }
     }
 
     private func calendarState(now: Date = .now) -> CalendarWidgetState {
@@ -374,8 +401,9 @@ public final class WidgetCoordinator {
         let calendar = Calendar.current
         if case .ready(let snapshot)? = agenda, snapshot.today == calendar.startOfDay(for: now) {
             let afterTomorrow = calendar.date(byAdding: .day, value: 1, to: snapshot.tomorrow) ?? snapshot.tomorrow
+            let entries = calendarIsCompanion ? DuoCalendarPolicy.events(snapshot, at: now) : snapshot.entries
             func rows(_ start: Date, _ end: Date, upcomingOnly: Bool) -> [CalendarWidgetEvent] {
-                snapshot.entries.filter { entry in
+                entries.filter { entry in
                     entry.start < end && entry.end > start && (!upcomingOnly || entry.allDay || entry.end > now)
                 }.map { entry in
                     CalendarWidgetEvent(id: entry.id, title: entry.title, location: entry.location,
@@ -655,7 +683,7 @@ public final class WidgetCoordinator {
                 self.shelfFailed = true
                 self.effects.report(.shelfLoad)
             }
-            self?.shelfView?.update(self?.shelfState() ?? FileShelfWidgetState(status: .failed))
+            self?.refreshShelf()
         }
     }
 
@@ -667,6 +695,11 @@ public final class WidgetCoordinator {
         }
         let status: FileShelfWidgetStatus = copyJob != nil ? .busy : (shelfLoaded ? .ready : .loading)
         return FileShelfWidgetState(items: copyingRows + rows, status: status)
+    }
+
+    private func refreshShelf() {
+        shelfView?.update(shelfState())
+        if shelfView != nil { onContentChange?(.shelf) }
     }
 
     private func shelfAction(_ action: FileShelfWidgetAction) {
@@ -693,7 +726,7 @@ public final class WidgetCoordinator {
             if copyingRows.contains(where: { $0.id == id }) {
                 copyJob?.cancel(id)
                 copyingRows.removeAll { $0.id == id }
-                shelfView?.update(shelfState())
+                refreshShelf()
             } else { removeShelf { try await $0.remove([id]) } }
         case .clearAll:
             copyJob?.cancelAll()
@@ -730,7 +763,7 @@ public final class WidgetCoordinator {
             self?.copyFinished(added: added, failed: failed)
         })
         copyJob?.start()
-        shelfView?.update(shelfState())
+        refreshShelf()
     }
 
     private func copyFinished(added: Int, failed: Int) {
