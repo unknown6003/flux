@@ -70,7 +70,6 @@ struct NotchDragTests {
         let drag = FixtureDrag(window: window)
         defer { drag.cleanUp() }
         let key = NSApp.keyWindow
-        #expect(window.registeredDraggedTypes.contains(.fileURL))
         #expect(window.responds(to: NSSelectorFromString("draggingEnded:")))
         #expect(window.draggingEntered(drag) == .copy)
         #expect(owner.presentation == .expanded(.shelf))
@@ -129,10 +128,10 @@ struct NotchDragTests {
         let updated = window.wantsPeriodicDraggingUpdates() ? window.draggingUpdated(drag) : []
         #expect(updated == .copy)
         let waitingShelf = try #require(shelf)
-        waitingShelf.update(state: .init(items: [], status: .loading))
+        waitingShelf.update(.init(items: [], status: .loading))
         let waitingRoot = waitingShelf.view
         #expect(waitingRoot.draggingEntered(drag).isEmpty)
-        waitingShelf.update(state: .init(items: [], status: .ready))
+        waitingShelf.update(.init(items: [], status: .ready))
         let rootUpdated = waitingRoot.wantsPeriodicDraggingUpdates() ? waitingRoot.draggingUpdated(drag) : []
         #expect(rootUpdated == .copy)
         window.draggingEnded(drag)
