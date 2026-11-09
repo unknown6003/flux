@@ -6,7 +6,7 @@ import FluxUI
 /// The app delegate keeps one host. Required menu-bar and lock-screen owners
 /// complete the composition; this type has no placeholder implementations.
 @MainActor public final class ApplicationHost: SettingsEffects {
-    private let session: ApplicationSession
+    private let session: any HostSession
     private let menuBar: any MenuBarService
     private let lockScreen: any LockScreenService
     private let bundle: Bundle
@@ -39,10 +39,17 @@ import FluxUI
             activityChanged: { [weak self] in self?.lockScreen.updateActivity($0) },
             makeLockScreenService: { [unowned self] in try self.lockScreen.makeHandle() }))
 
-    public init(session: ApplicationSession, menuBar: any MenuBarService, lockScreen: any LockScreenService,
+    public convenience init(session: ApplicationSession, menuBar: any MenuBarService, lockScreen: any LockScreenService,
                 bundle: Bundle = .main, failure: @escaping @MainActor (ApplicationFailure) -> Void,
                 quit: @escaping @MainActor () -> Void) {
-        self.session = session; self.menuBar = menuBar; self.lockScreen = lockScreen
+        self.init(owner: session, menuBar: menuBar, lockScreen: lockScreen, bundle: bundle,
+                  failure: failure, quit: quit)
+    }
+
+    init(owner: any HostSession, menuBar: any MenuBarService, lockScreen: any LockScreenService,
+         bundle: Bundle = .main, failure: @escaping @MainActor (ApplicationFailure) -> Void,
+         quit: @escaping @MainActor () -> Void) {
+        self.session = owner; self.menuBar = menuBar; self.lockScreen = lockScreen
         self.bundle = bundle; self.failure = failure; self.quit = quit
     }
 
@@ -56,9 +63,10 @@ import FluxUI
         menuBar.onChange = { [weak self] in self?.settings.refresh() }
         menuBar.onOverflow = { [weak self] in self?.notch.setOverflowCount($0) }
         lockScreen.onChange = { [weak self] in self?.settings.refresh() }
-        menuBar.start()
         shortcuts.start()
         notch.start()
+        // A synchronous first menu-bar scan can now publish its overflow.
+        menuBar.start()
         try session.markReady()
         updates.start(automatic: session.preferences.value(for: Preferences.automaticUpdateChecks))
     }
@@ -209,7 +217,9 @@ import FluxUI
     }
     public func dismissCrashNotice() { crashDismissed = true }
     public func openMediaRemoteAdapterLicense() {
-        open(URL(string: "https://github.com/ungive/mediaremote-adapter/blob/master/LICENSE")!)
+        let license = bundle.bundleURL.appendingPathComponent("Contents/Resources/MediaRemoteAdapter-LICENSE.txt")
+        guard FileManager.default.fileExists(atPath: license.path) else { failure(.link); return }
+        open(license)
     }
     public func openSourceRepository() { open(URL(string: "https://github.com/unknown6003/flux")!) }
     public func assign(_ application: ApplicationID, to group: MenuBarGroup) { menuBar.assign(application, to: group) }
