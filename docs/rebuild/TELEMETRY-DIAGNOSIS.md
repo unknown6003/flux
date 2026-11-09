@@ -77,3 +77,50 @@ build control is a passing app performance result.
 
 [Raw failed trial](https://templink.bdwy.xyz/media/1794821627-1794908027-10d56c5a166188301b51c0d0.bin).
 The link expires on 16 November 2026.
+
+## Isolated result at 8d2235f
+
+One idle, one direct-transport and one client run completed on macOS 27.0.1.
+Interrupt wakeups over the 60-second quiet sample were 1, 42 and 37. Each live
+mode completed exactly one HTTP 200 request before quietStarted, with no later
+request start. Both bursts ended around 40 seconds after completion. Parent
+verification matched all 48 archive hashes and recomputed the wakeup totals.
+Restricted backend readback found the three marked launch events from the two
+primary modes and the separate profile, with no person profile, IP property
+or GeoIP fields.
+
+AppKit and the full app are not required for this reproduction. Neither are
+extra requests or a retained PostHogClient. This narrows the boundary to the
+native transport/network path. It does not identify a particular timer or
+prove delayed Foundation cleanup. A separate 20-second sample mostly showed
+blocked threads; one sparse active stack was on com.apple.network.connections.
+That sample cannot establish the cause. Its overhead is excluded from metrics.
+
+The installed app and clipboard were not accessed. All owned diagnostic,
+sampler and profiler processes exited. These are diagnostic observations,
+not an app budget pass or a variance estimate.
+
+[Isolated receipts, metrics and profile](https://templink.bdwy.xyz/media/1794822654-1794909054-41c7e25c53f307aaf07a51b9.bin).
+The link expires on 16 November 2026.
+
+## Next boundary comparison
+
+A diagnostic-only C shim now sends the same fixed marked launch body with the
+system libcurl easy API. The existing direct mode still uses the production
+Foundation transport. Idle, direct and curl run in the same probe binary with
+the same hold and sampler. The live modes must complete successfully before
+sampling. The shim has a fixed HTTPS EU endpoint, peer/host verification,
+no redirects, 5-second connection and 8-second transfer limits, and a 64 KiB
+response cap. It runs on a utility worker. No app transport is replaced.
+
+Prediction: if the new engine avoids the post-completion burst while direct
+reproduces it in the same build, that supports a transport-driver alternative.
+It does not identify the old timer or accept a production replacement. The
+shim is intentionally single-transfer and diagnostic-only. Production global
+lifetime, cancellation, headers, proxies, error paths and all endpoint contracts
+would need their own native proof before promotion.
+
+Primary contracts: [blocking easy transfer](https://curl.se/libcurl/c/curl_easy_perform.html),
+[bounded write callback](https://curl.se/libcurl/c/CURLOPT_WRITEFUNCTION.html),
+[transfer timeout](https://curl.se/libcurl/c/CURLOPT_TIMEOUT_MS.html), and
+[allowed protocols](https://curl.se/libcurl/c/CURLOPT_PROTOCOLS_STR.html).
