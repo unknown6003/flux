@@ -61,6 +61,14 @@ public final class UsageCollection {
         Task(priority: .utility) { await client.log(code, level: level, expectedIdentity: identity) }
     }
 
+    public func submitRating(_ rating: UsageRating, submission: UUID) async -> UsageDeliveryResult {
+        guard enabled, let client else { return .disabled }
+        guard let identity = admitRecord() else { return .limited }
+        let result = await client.submitRating(rating, submission: submission, expectedIdentity: identity)
+        guard enabled, activeIdentity == identity else { return .cancelled }
+        return result
+    }
+
     /// Best effort. App termination must never wait for analytics delivery.
     public func flush() {
         guard let client else { return }

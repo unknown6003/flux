@@ -22,6 +22,7 @@ private actor NoNetworkUsageTransport: UsageTransport {
     collection.record(.launched)
     collection.log(.serviceStarted)
     collection.flush()
+    #expect(await collection.submitRating(.four, submission: UUID()) == .disabled)
     #expect(!collection.enabled)
     #expect(constructions == 0)
     #expect(defaults.object(forKey: UsageCollection.identityKey) == nil)

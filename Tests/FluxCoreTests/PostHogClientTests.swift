@@ -179,3 +179,96 @@ private actor BlockingUsageTransport: UsageTransport {
     #expect(requests[1].endpoint == .logs)
     await client.disable()
 }
+
+@Test func manualRatingUsesAnAcknowledgedSingleEventAndStableSubmissionID() async throws {
+    let transport = RecordingUsageTransport(response: .init(status: 200, body: Data(#"{"status":1}"#.utf8)))
+    let identity = UsageIdentity(), submission = UUID()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
+    #expect(await client.submitRating(.four, submission: submission, expectedIdentity: identity) == .accepted)
+    let requests = await transport.snapshot()
+    #expect(requests.count == 1)
+    let request = try #require(requests.first)
+    let body = try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
+    let batch = try #require(body["batch"] as? [[String: Any]])
+    #expect(batch.count == 1)
+    #expect(batch[0]["uuid"] as? String == submission.uuidString.lowercased())
+    #expect(batch[0]["event"] as? String == "survey sent")
+    let properties = try #require(batch[0]["properties"] as? [String: Any])
+    #expect(properties["$survey_id"] as? String == FluxRatingSurvey.surveyID.uuidString.lowercased())
+    #expect(properties["$survey_response_" + FluxRatingSurvey.questionID.uuidString.lowercased()] as? String == "4")
+    #expect(properties["$process_person_profile"] as? Bool == false)
+    #expect(properties["$geoip_disable"] as? Bool == true)
+    await client.disable()
+}
+
+@Test func ratingDeliveryRequiresTheIngestionAckAndRejectsQuotaSuppression() {
+    let cases: [(UsageResponse, UsageDeliveryResult)] = [
+        (.init(status: 200, body: Data(#"{"status":1}"#.utf8)), .accepted),
+        (.init(status: 200, body: Data(#"{"status":1,"quota_limited":[]}"#.utf8)), .accepted),
+        (.init(status: 200, body: Data(#"{"status":1,"quota_limited":["events"]}"#.utf8)), .limited),
+        (.init(status: 200, body: Data(#"{"status":1,"quota_limited":true}"#.utf8)), .failed),
+        (.init(status: 200, body: Data(#"{"status":true}"#.utf8)), .failed),
+        (.init(status: 200, body: Data(#"{"status":1.5}"#.utf8)), .failed),
+        (.init(status: 200, body: Data(#"{"status":0}"#.utf8)), .failed),
+        (.init(status: 200), .failed),
+        (.init(status: 403, body: Data(#"{"status":1}"#.utf8)), .failed),
+    ]
+    for (response, expected) in cases { #expect(PostHogWire.ratingAcknowledgement(response) == expected) }
+}
+
+@Test(.timeLimit(.minutes(1))) func optingOutCancelsAnExplicitRatingAndCannotReturnAccepted() async throws {
+    let transport = BlockingUsageTransport()
+    let identity = UsageIdentity()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
+    let submission = Task { await client.submitRating(.three, submission: UUID(), expectedIdentity: identity) }
+    var iterator = await transport.started.makeAsyncIterator()
+    _ = await iterator.next()
+    await client.disable()
+    #expect(await submission.value == .cancelled)
+    #expect(await transport.cancelled)
+    #expect(await transport.snapshot().count == 1)
+}
+
+@Test(.timeLimit(.minutes(1))) func closingTheRatingRequestCancelsItsTransportWithoutOptingOut() async throws {
+    let transport = BlockingUsageTransport()
+    let identity = UsageIdentity()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
+    let submission = Task { await client.submitRating(.two, submission: UUID(), expectedIdentity: identity) }
+    var iterator = await transport.started.makeAsyncIterator()
+    _ = await iterator.next()
+    submission.cancel()
+    #expect(await submission.value == .cancelled)
+    #expect(await transport.cancelled)
+    #expect(await transport.snapshot().count == 1)
+    await client.disable()
+}
+
+private actor RatingAcknowledgementGate: UsageTransport {
+    let started: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private var result: CheckedContinuation<UsageResponse, Never>?
+    init() { (started, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1)) }
+    func send(_ request: UsageRequest) async throws -> UsageResponse {
+        continuation.yield(())
+        return await withCheckedContinuation { result = $0 }
+    }
+    func release() {
+        result?.resume(returning: .init(status: 200, body: Data(#"{"status":1}"#.utf8)))
+        result = nil
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) func anOldRatingAckCannotCrossIdentityResetAndConcurrentSendsStayBounded() async throws {
+    let transport = RatingAcknowledgementGate()
+    let identity = UsageIdentity()
+    let client = try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport)
+    let submission = Task { await client.submitRating(.three, submission: UUID(), expectedIdentity: identity) }
+    var iterator = await transport.started.makeAsyncIterator()
+    _ = await iterator.next()
+    #expect(await client.submitRating(.five, submission: UUID(), expectedIdentity: identity) == .busy)
+    await client.resetIdentity(UsageIdentity())
+    await transport.release()
+    #expect(await submission.value == .cancelled)
+    #expect(await client.submitRating(.five, submission: UUID(), expectedIdentity: identity) == .cancelled)
+    await client.disable()
+}

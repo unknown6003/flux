@@ -59,6 +59,34 @@ public actor PostHogClient {
         schedule()
     }
 
+    /// An explicit rating waits for the ingestion acknowledgement, outside
+    /// the UI actor. It never enters the best-effort queue or disk storage.
+    public func submitRating(_ rating: UsageRating, submission: UUID,
+                             expectedIdentity: UsageIdentity) async -> UsageDeliveryResult {
+        guard enabled else { return .disabled }
+        guard expectedIdentity == identity, !Task.isCancelled else { return .cancelled }
+        guard !busy else { return .busy }
+        guard admitRecord() else { return .limited }
+        let record = UsageRecord(id: submission,
+            event: .surveyAnswered(survey: FluxRatingSurvey.surveyID, question: FluxRatingSurvey.questionID,
+                                   rating: rating, submission: submission),
+            assignments: usedAssignments, isVerification: isVerification)
+        guard let body = try? UsageBatchEncoder.encode([record], identity: identity, projectToken: projectToken)
+        else { return .failed }
+        scheduled?.cancel(); scheduled = nil
+        let revision = generation
+        busy = true
+        let response = await perform(UsageRequest(endpoint: .events, body: body, projectToken: projectToken),
+                                     observingCancellation: true)
+        guard revision == generation, enabled, expectedIdentity == identity else { return .cancelled }
+        request = nil
+        busy = false
+        schedule()
+        guard !Task.isCancelled else { return .cancelled }
+        guard let response else { return .failed }
+        return PostHogWire.ratingAcknowledgement(response)
+    }
+
     /// Cached presentation choice. A flag read never starts a request.
     public func variant(_ flag: UsageFlag) -> UsageVariant {
         guard enabled, let variant = usedAssignments[flag] ?? assignments[flag] else { return .control }
@@ -180,7 +208,7 @@ public actor PostHogClient {
         }
     }
 
-    private func perform(_ payload: UsageRequest) async -> UsageResponse? {
+    private func perform(_ payload: UsageRequest, observingCancellation: Bool = false) async -> UsageResponse? {
         let transport = transport
         let task = Task(priority: .utility) {
             for attempt in 0..<3 {
@@ -195,6 +223,11 @@ public actor PostHogClient {
             throw PostHogWireError.invalidResponse
         }
         request = task
+        if observingCancellation {
+            return await withTaskCancellationHandler {
+                try? await task.value
+            } onCancel: { task.cancel() }
+        }
         let result = try? await task.value
         // reset/disable can replace this task while the actor is suspended.
         return result
