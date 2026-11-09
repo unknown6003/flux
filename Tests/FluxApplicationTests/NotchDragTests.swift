@@ -121,6 +121,22 @@ struct NotchDragTests {
         #expect(window.draggingEntered(drag) == .copy)
         try #require(shelf).view.draggingEnded(drag)
         #expect(owner.presentation == .compact)
+        ready = false
+        drag.draggingSequenceNumber = 6
+        #expect(window.draggingEntered(drag) == .copy)
+        #expect(window.draggingUpdated(drag).isEmpty)
+        ready = true
+        let updated = window.wantsPeriodicDraggingUpdates() ? window.draggingUpdated(drag) : []
+        #expect(updated == .copy)
+        let waitingShelf = try #require(shelf)
+        waitingShelf.update(state: .init(items: [], status: .loading))
+        let waitingRoot = waitingShelf.view
+        #expect(waitingRoot.draggingEntered(drag).isEmpty)
+        waitingShelf.update(state: .init(items: [], status: .ready))
+        let rootUpdated = waitingRoot.wantsPeriodicDraggingUpdates() ? waitingRoot.draggingUpdated(drag) : []
+        #expect(rootUpdated == .copy)
+        window.draggingEnded(drag)
+        #expect(owner.presentation == .compact)
         owner.expand(.calendar, focus: false)
         #expect(window.draggingEntered(drag).isEmpty)
         #expect(owner.presentation == .expanded(.calendar))

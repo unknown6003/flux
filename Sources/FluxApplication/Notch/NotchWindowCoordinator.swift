@@ -617,7 +617,9 @@ extension NotchWindow: @preconcurrency NSDraggingDestination {
     func draggingExited(_ sender: (any NSDraggingInfo)?) { onDragExit?(sender) }
     func performDragOperation(_ sender: any NSDraggingInfo) -> Bool { onDragPerform?(sender) ?? false }
     func draggingEnded(_ sender: any NSDraggingInfo) { onDragEnd?(sender) }
-    func wantsPeriodicDraggingUpdates() -> Bool { false }
+    // Shelf loading can finish while the pointer stays still. AppKit must
+    // refresh the accepted operation during that drag, including [] to copy.
+    func wantsPeriodicDraggingUpdates() -> Bool { true }
 }
 
 /// Receives tracking-area events. Holds no window or view.

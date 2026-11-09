@@ -270,7 +270,7 @@ private final class FileShelfDropView: NSView {
         onDragEvent?(.ended(session: sender.draggingSequenceNumber))
     }
 
-    override func wantsPeriodicDraggingUpdates() -> Bool { false }
+    override func wantsPeriodicDraggingUpdates() -> Bool { true }
 
     private func operation(_ sender: any NSDraggingInfo) -> NSDragOperation {
         guard canDrop(), !isOwnDrag(sender.draggingSource),
