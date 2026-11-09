@@ -163,8 +163,8 @@ request can reach the server before cancellation takes effect. Reset and disable
 still reject late application results through the existing generation guards.
 
 Proxy environment settings use curl's standard routing. This does not yet prove
-parity with macOS system proxy or PAC settings. No proxy credentials are read
-or logged by Flux. The header cap limits bytes accepted by our callback;
+parity with macOS system proxy or PAC settings. Flux does not inspect or log proxy environment values itself. Libcurl may
+consume credentials included in a configured proxy URL. The header cap limits bytes accepted by our callback;
 libcurl can buffer an individual header internally before delivering it.
 
 The old Foundation implementation now lives only in the isolated diagnostic.
@@ -176,3 +176,12 @@ Primary contracts: [thread safety](https://curl.se/libcurl/c/threadsafe.html),
 [TLS peer checks](https://curl.se/libcurl/c/CURLOPT_SSL_VERIFYPEER.html),
 [proxy routing](https://curl.se/libcurl/c/CURLOPT_PROXY.html), and
 [fixture connection mapping](https://curl.se/libcurl/c/CURLOPT_CONNECT_TO.html).
+
+
+Source reviews of `6de2f5c..3164012` covered Standards, Spec and Risk in three
+separate contexts. No blocking finding survived primary source checks. The
+Standards heuristic about numeric C result codes was accepted and the Swift
+switch now uses named constants. The proxy paragraph was clarified because
+libcurl can consume credentials from proxy environment URLs. A primary follow-up
+also makes Swift task cancellation take precedence over a simultaneous result
+copy error. Native tests and real performance remain required.

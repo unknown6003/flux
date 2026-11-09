@@ -87,46 +87,52 @@ public actor NativeUsageTransport: UsageTransport {
         let caPath = fixtureCAPath
         busy = true
         defer { busy = false }
-        let response: UsageResponse = try await withTaskCancellationHandler {
-            try Task.checkCancellation()
-            return try await withCheckedThrowingContinuation { continuation in
-                // Blocking DNS/TLS/HTTP stays off the main actor and Swift's
-                // cooperative executor. One transfer per transport is admitted.
-                queue.async {
-                    let code = payload.body.withUnsafeBytes { bytes in
-                        payload.projectToken.withCString { token in
-                            caPath.withCString { ca in
-                                FluxHTTPPerform(transfer.pointer, regionCode, endpointCode,
-                                    bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count,
-                                    token, port, port == 0 ? nil : ca)
+        let response: UsageResponse
+        do {
+            response = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation { continuation in
+                    // Blocking DNS/TLS/HTTP stays off the main actor and Swift's
+                    // cooperative executor. One transfer per transport is admitted.
+                    queue.async {
+                        let code = payload.body.withUnsafeBytes { bytes in
+                            payload.projectToken.withCString { token in
+                                caPath.withCString { ca in
+                                    FluxHTTPPerform(transfer.pointer, regionCode, endpointCode,
+                                        bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count,
+                                        token, port, port == 0 ? nil : ca)
+                                }
                             }
                         }
+                        do {
+                            switch code {
+                            case Int32(FluxHTTPSuccess.rawValue): break
+                            case Int32(FluxHTTPCancelled.rawValue): throw CancellationError()
+                            case Int32(FluxHTTPInvalidRequest.rawValue): throw UsageTransportFailure.invalidRequest
+                            case Int32(FluxHTTPOversizedResponse.rawValue): throw PostHogWireError.oversizedResponse
+                            case Int32(FluxHTTPUnavailable.rawValue): throw UsageTransportFailure.unavailable
+                            default: throw UsageTransportFailure.network
+                            }
+                            let count = FluxHTTPBodyLength(transfer.pointer)
+                            guard count <= PostHogWire.maximumResponseBytes else {
+                                throw PostHogWireError.oversizedResponse
+                            }
+                            var body = Data(count: count)
+                            let copied = body.withUnsafeMutableBytes { bytes in
+                                FluxHTTPCopyBody(transfer.pointer,
+                                    bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count)
+                            }
+                            guard copied == count else { throw PostHogWireError.invalidResponse }
+                            continuation.resume(returning: UsageResponse(
+                                status: Int(FluxHTTPStatus(transfer.pointer)), body: body))
+                        } catch { continuation.resume(throwing: error) }
                     }
-                    do {
-                        switch code {
-                        case 0: break
-                        case 1: throw CancellationError()
-                        case 2: throw UsageTransportFailure.invalidRequest
-                        case 3: throw PostHogWireError.oversizedResponse
-                        case 5: throw UsageTransportFailure.unavailable
-                        default: throw UsageTransportFailure.network
-                        }
-                        let count = FluxHTTPBodyLength(transfer.pointer)
-                        guard count <= PostHogWire.maximumResponseBytes else {
-                            throw PostHogWireError.oversizedResponse
-                        }
-                        var body = Data(count: count)
-                        let copied = body.withUnsafeMutableBytes { bytes in
-                            FluxHTTPCopyBody(transfer.pointer,
-                                bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count)
-                        }
-                        guard copied == count else { throw PostHogWireError.invalidResponse }
-                        continuation.resume(returning: UsageResponse(
-                            status: Int(FluxHTTPStatus(transfer.pointer)), body: body))
-                    } catch { continuation.resume(throwing: error) }
                 }
-            }
-        } onCancel: { transfer.cancel() }
+            } onCancel: { transfer.cancel() }
+        } catch {
+            try Task.checkCancellation()
+            throw error
+        }
         try Task.checkCancellation()
         return response
     }
