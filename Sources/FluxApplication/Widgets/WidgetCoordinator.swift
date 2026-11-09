@@ -107,7 +107,9 @@ public final class WidgetCoordinator {
 
     // MARK: Panel
 
-    private func action<Value>(_ visit: UUID, perform: @escaping (WidgetCoordinator, Value) -> Void) -> (Value) -> Void {
+    private func action<Value: Sendable>(_ visit: UUID,
+        perform: @escaping @MainActor @Sendable (WidgetCoordinator, Value) -> Void
+    ) -> @MainActor @Sendable (Value) -> Void {
         { [weak self] value in
             guard let self, self.widgetVisit == visit || self.calendarVisit == visit else { return }
             perform(self, value)
