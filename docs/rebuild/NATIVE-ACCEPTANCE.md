@@ -123,3 +123,31 @@ Report observed outcomes for launch, settings, preview permission, each
 physical pair, guided arrangement, arrow reachability and cleanup. Mark
 unrun cases explicitly. A pass accepts this source's public spacer component,
 not the lock bridge, every widget, full migration, performance or release.
+
+## 958222a launch and permission result
+
+The actual signed candidate launched through Launch Services. PID 50884's
+first capture receipt reported screenCaptureNotAllowed and produced no PNG.
+The normal app action reached the Flux Screen Recording switch, but changing
+it required local Touch ID or a Mac password. The tester canceled that prompt.
+No grant changed and no second capture ran. Physical hiding remains untested.
+
+The original 0.21.35 build 62 was restored. Its strict signature and executable
+hash matched. Preferences matched the saved post-quit export, and serialized
+clipboard snapshots matched. The report identified an orphan helper, which
+the tester stopped. Its process parent was not retained, so candidate origin
+is not independently proved. Source inspection separately found that media
+feed stop queued helper termination on its actor; final app exit could preempt
+that task. New synchronous process revocation is under native test.
+
+Read-only signature checks found identical designated requirements for the
+original and candidate. Each passed the other's requirement. That does not
+guarantee TCC grant inheritance. Local permission input is pending at
+https://templink.bdwy.xyz/flux-screen-permission-20261109, interaction
+screen-recording-ready. Read response.sh before acting on a reply. Do not
+repeat capture/install trials until there is a distinct grant or code change.
+
+Mac evidence remains private at:
+/private/tmp/flux-native-trial-20261109-023731/report.md.
+The permission-identity follow-up is thread db1acbb5ebd8b154b0ff35fa785ca0e851078cc7a6a1353021117173f1912082
+on environment 490f7909-9f35-49f3-b5ff-7bc95fd91d2b.

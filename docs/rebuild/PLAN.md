@@ -106,8 +106,10 @@ It runs only when launched with a private temporary output directory and
 signaled by the tester. This uses the real app's identity and permission
 flow. The first Mac trial verified the candidate but stopped before install
 because the requested independent restore watchdog was not prepared. It
-produced no runtime evidence. A narrower launch/capture trial uses a verified
-original-app backup and bounded cleanup instead. See NATIVE-ACCEPTANCE.md.
+produced no runtime evidence. A narrower launch/capture trial launched the candidate, but its receipt
+reported screenCaptureNotAllowed. The normal grant route required local
+authentication, so visual acceptance now waits for that user step. The original
+app, preferences and clipboard were restored. See NATIVE-ACCEPTANCE.md.
 
 Shelf expiry preserves source files and recent copies, with no idle expiry
 timer. The updater verifies cached data and can prepare a manual DMG when
