@@ -57,7 +57,7 @@ final class MenuBarLayoutEditorView: NSView {
     }
 
     /// The right-click menu: Move to each other group, then Move Left/Right.
-    fileprivate func menu(for id: MenuBarItemID) -> NSMenu {
+    func menu(for id: MenuBarItemID) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         guard let tile = tiles[id], tile.isMovable else {
