@@ -56,6 +56,13 @@ import FluxUI
     var blocksPreview = false
     var blockedPreview: CheckedContinuation<Void, Never>?
     var previewImage: NSImage?
+    var identityRequirement = Data([1])
+    var identityMatch: Bool?
+    var identityAvailable = true
+    var identityAccepted = false
+    var identityConfirmations = 0
+    var blocksIdentityConfirmation = false
+    var blockedIdentityConfirmation: CheckedContinuation<Bool, Never>?
     var owner: PositionMenuBarService!
 
     init(support: PositionMenuBarHidingSupport = .unverified) throws {
@@ -78,7 +85,18 @@ import FluxUI
                 return [self.app: image]
             }, stopPreviews: { [unowned self] in self.previewCloses += 1 },
             screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
-            quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false)
+            quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false,
+            readIdentity: { [unowned self] _, saved in
+                guard self.identityAvailable else { return nil }
+                return .init(requirement: self.identityRequirement,
+                             matchesSaved: self.identityMatch ?? (saved == nil || saved == self.identityRequirement))
+            }, confirmIdentity: { [unowned self] _ in
+                self.identityConfirmations += 1
+                if self.blocksIdentityConfirmation {
+                    return await withCheckedContinuation { self.blockedIdentityConfirmation = $0 }
+                }
+                return self.identityAccepted
+            })
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -86,12 +104,98 @@ import FluxUI
         delay.release()
         blockedRead?.resume(); blockedRead = nil
         blockedPreview?.resume(); blockedPreview = nil
+        blockedIdentityConfirmation?.resume(returning: false); blockedIdentityConfirmation = nil
         try await owner.stop()
         defaults.removePersistentDomain(forName: domain)
     }
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func changedIdentityNeedsConsentAndKeepsTheSavedVisibilityChoice() async throws {
+        let fixture = try PositionServiceFixture(support: .byPosition)
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.assign(fixture.app, to: .hidden)
+        let firstPins = try MenuBarIdentityPins(propertyList: fixture.defaults.object(forKey: "flux.menuBar.identities.v1"))
+        #expect(firstPins.requirement(for: fixture.app) == Data([1]))
+        fixture.identityRequirement = Data([2])
+        fixture.owner.refresh()
+        await fixture.settle()
+        #expect(fixture.owner.state.rows.first?.needsIdentityReview == true)
+        #expect(fixture.controls.capability == .unavailable)
+        fixture.owner.assign(fixture.app, to: .shown)
+        fixture.owner.reviewIdentity(fixture.app)
+        await fixture.settle()
+        #expect(fixture.identityConfirmations == 1)
+        #expect(fixture.owner.state.rows.first?.needsIdentityReview == true)
+        fixture.identityAccepted = true
+        fixture.owner.reviewIdentity(fixture.app)
+        await fixture.settle()
+        let pins = try MenuBarIdentityPins(propertyList: fixture.defaults.object(forKey: "flux.menuBar.identities.v1"))
+        let policy = try VisibilityPolicy(legacyPropertyList: fixture.defaults.object(forKey: "flux.macOS27IconLayout"))
+        #expect(pins.requirement(for: fixture.app) == Data([2]))
+        #expect(policy.group(for: fixture.app) == .hidden)
+        #expect(fixture.owner.state.rows.first?.needsIdentityReview == false)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func aMatchingUpdateDoesNotReplaceThePinOrAskForReview() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.identityRequirement = Data([3])
+        fixture.identityMatch = true
+        fixture.owner.refresh()
+        await fixture.settle()
+        let pins = try MenuBarIdentityPins(propertyList: fixture.defaults.object(forKey: "flux.menuBar.identities.v1"))
+        #expect(pins.requirement(for: fixture.app) == Data([1]))
+        #expect(fixture.owner.state.rows.first?.needsIdentityReview == false)
+        #expect(fixture.identityConfirmations == 0)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func changingTheAppOrLeavingThePageCannotApproveAnOldReview() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.identityRequirement = Data([2])
+        fixture.owner.refresh()
+        await fixture.settle()
+        fixture.blocksIdentityConfirmation = true
+        fixture.owner.reviewIdentity(fixture.app)
+        await fixture.settle()
+        fixture.identityRequirement = Data([3])
+        fixture.blockedIdentityConfirmation?.resume(returning: true); fixture.blockedIdentityConfirmation = nil
+        await fixture.settle()
+        let first = try MenuBarIdentityPins(propertyList: fixture.defaults.object(forKey: "flux.menuBar.identities.v1"))
+        #expect(first.requirement(for: fixture.app) == Data([1]))
+        #expect(fixture.owner.state.mode == .failed(code: "identityChangedDuringReview"))
+        fixture.owner.refresh()
+        await fixture.settle()
+        fixture.owner.reviewIdentity(fixture.app)
+        await fixture.settle()
+        fixture.owner.setEditorVisible(false)
+        fixture.blockedIdentityConfirmation?.resume(returning: true); fixture.blockedIdentityConfirmation = nil
+        await fixture.settle()
+        let final = try MenuBarIdentityPins(propertyList: fixture.defaults.object(forKey: "flux.menuBar.identities.v1"))
+        #expect(final.requirement(for: fixture.app) == Data([1]))
+        try await fixture.close()
+    }
+
+    @Test @MainActor func invalidIdentityStorageAndMissingEvidenceLeavePinsAndGroupsUntouched() async throws {
+        let fixture = try PositionServiceFixture(support: .byPosition)
+        fixture.defaults.set(["version": 7, "requirements": [fixture.app.rawValue: Data([9])]],
+                             forKey: "flux.menuBar.identities.v1")
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.assign(fixture.app, to: .hidden)
+        #expect(fixture.controls.capability == .unavailable)
+        #expect((fixture.defaults.dictionary(forKey: "flux.menuBar.identities.v1")?["version"] as? Int) == 7)
+        #expect(fixture.defaults.object(forKey: "flux.macOS27IconLayout") == nil)
+        try await fixture.close()
+    }
+
     @Test @MainActor func aChoiceMadeDuringDoneWinsEvenWhenItRepeatsTheOriginalGroup() async throws {
         let fixture = try PositionServiceFixture()
         fixture.owner.start()
@@ -264,7 +368,7 @@ import FluxUI
         #expect(!fixture.owner.state.showsRealIcons)
         #expect(fixture.owner.state.rows.allSatisfy { $0.preview == nil })
         fixture.owner.reviewIdentity(fixture.app)
-        #expect(fixture.owner.state.rows.first?.result == .failed(code: "identityReviewUnavailable"))
+        #expect(fixture.identityConfirmations == 0)
         fixture.owner.setCompactSpacing(true)
         #expect(fixture.owner.state.options.compactSpacing == nil)
         #expect(fixture.owner.state.mode == .failed(code: "compactSpacingUnavailable"))

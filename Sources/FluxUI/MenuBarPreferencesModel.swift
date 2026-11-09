@@ -52,7 +52,7 @@ public struct MenuBarAppRow {
     public var group: MenuBarGroup
     /// System and Flux items cannot change group. The row is read-only.
     public var isFixed: Bool
-    /// Same bundle ID with a different signer. Shows a Review button.
+    /// Same bundle ID no longer matches its saved signing requirement.
     public var needsIdentityReview: Bool
     public var result: MenuBarApplyResult?
 

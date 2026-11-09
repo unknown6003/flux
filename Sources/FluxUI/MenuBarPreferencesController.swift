@@ -226,7 +226,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     }
 
     private func makeReviewRow(_ row: MenuBarAppRow) -> NSView {
-        let text = FluxUIStyle.label(String(format: L("menuBar.review.text", "%@ · different signer than before"), row.name))
+        let text = FluxUIStyle.label(String(format: L("menuBar.review.text", "%@ · signing identity changed"), row.name))
         let button = ReviewButton(title: L("menuBar.review", "Review…"), target: self, action: #selector(review(_:)))
         button.applicationID = row.id
         button.setAccessibilityLabel(String(format: L("menuBar.review.ax", "Review %@"), row.name))

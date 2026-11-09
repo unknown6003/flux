@@ -39,6 +39,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public private(set) var state: MenuBarPageState
 
     private static let policyKey = "flux.macOS27IconLayout"
+    private static let identityKey = "flux.menuBar.identities.v1"
     private let defaults: UserDefaults
     private let domain: String
     private let preferences: PreferenceStore
@@ -53,10 +54,14 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let quartzFrame: @MainActor (CGRect) -> CGRect
     private let sleep: @Sendable (TimeInterval) async throws -> Void
     private let observesSystem: Bool
+    private let readIdentity: @MainActor (ApplicationID, Data?) async -> MenuBarIdentityEvidence?
+    private let confirmIdentity: @MainActor (String) async -> Bool
     private var observations: [PositionMenuBarObservation] = []
     private var scanTask: Task<Void, Never>?
     private var rehideTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
+    private var identityTask: Task<Void, Never>?
+    private var identityID: UUID?
     private var scanID: UUID?
     private var rehideID: UUID?
     private var previewID: UUID?
@@ -69,6 +74,12 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private var reveal: MenuBarReveal = .collapsed
     private var policyFailure = false
     private var actionFailure: String?
+    private var identityPins = MenuBarIdentityPins()
+    private var identities: [ApplicationID: MenuBarIdentityEvidence] = [:]
+    private var identitiesValidated = false
+    private var identityFailure = false
+
+    private var needsInventory: Bool { editorVisible || arranging || support == .byPosition }
 
     /// Defaults and domain must be the same pair used to create preferences.
     /// The default keeps physical hiding disabled until native proof exists.
@@ -76,6 +87,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
                             hidingSupport: PositionMenuBarHidingSupport = .unverified) {
         let inventory = StatusInventory()
         let preview = StatusPreview()
+        let identityReader = MenuBarIdentityReader()
+        let prompt = MenuBarIdentityPrompt()
         self.init(defaults: defaults, domain: domain, preferences: preferences,
                   hidingSupport: hidingSupport, controls: MenuBarControls(),
                   readInventory: {
@@ -119,7 +132,17 @@ private struct PositionMenuBarArrangementContext: Equatable {
                   }, quartzFrame: { frame in
                       CGRect(x: frame.minX, y: (NSScreen.screens.first?.frame.maxY ?? 0) - frame.maxY,
                              width: frame.width, height: frame.height)
-                  }, sleep: { seconds in try await Task.sleep(for: .seconds(seconds)) }, observesSystem: true)
+                  }, sleep: { seconds in try await Task.sleep(for: .seconds(seconds)) }, observesSystem: true,
+                  readIdentity: { application, saved in
+                      let running = NSWorkspace.shared.runningApplications.filter {
+                          !$0.isTerminated && $0.bundleIdentifier == application.rawValue
+                      }
+                      guard running.count == 1, let app = running.first else { return nil }
+                      let result = await identityReader.read(processID: app.processIdentifier,
+                          application: application, savedRequirement: saved)
+                      guard !app.isTerminated else { return nil }
+                      return result
+                  }, confirmIdentity: { await prompt.confirm(name: $0) })
     }
 
     init(defaults: UserDefaults, domain: String, preferences: PreferenceStore,
@@ -131,16 +154,20 @@ private struct PositionMenuBarArrangementContext: Equatable {
          stopPreviews: @escaping @MainActor () -> Void,
          screens: @escaping @MainActor () -> [PositionMenuBarScreen],
          quartzFrame: @escaping @MainActor (CGRect) -> CGRect,
-         sleep: @escaping @Sendable (TimeInterval) async throws -> Void, observesSystem: Bool) {
+         sleep: @escaping @Sendable (TimeInterval) async throws -> Void, observesSystem: Bool,
+         readIdentity: @escaping @MainActor (ApplicationID, Data?) async -> MenuBarIdentityEvidence?,
+         confirmIdentity: @escaping @MainActor (String) async -> Bool) {
         self.defaults = defaults; self.domain = domain; self.preferences = preferences
         support = hidingSupport; self.controls = controls; self.readInventory = readInventory
         self.permissionStatus = permissionStatus; self.requestPreviewPermission = requestPreviewPermission
         self.capturePreviews = capturePreviews; self.stopPreviews = stopPreviews
         self.screens = screens; self.quartzFrame = quartzFrame; self.sleep = sleep
         self.observesSystem = observesSystem
+        self.readIdentity = readIdentity; self.confirmIdentity = confirmIdentity
         state = MenuBarPageState(mode: .paused)
         super.init()
         loadPolicy()
+        loadIdentities()
         updateOptions()
         updateMode()
     }
@@ -155,14 +182,18 @@ private struct PositionMenuBarArrangementContext: Equatable {
         controls.contextMenu = makeMenu()
         controls.start()
         configure()
+        updateObservations()
+        if needsInventory { requestScan(arrangeResult: false) }
         onOverflow?(0)
     }
 
     public func stop() async throws {
         started = false; editorVisible = false; arranging = false
+        identitiesValidated = false
         observations.removeAll()
-        let scan = scanTask; let rehide = rehideTask
+        let rehide = rehideTask
         cancelScan(); cancelRehide(); discardPreviews()
+        cancelIdentityReview()
         controls.setArranging(false)
         controls.configure(capability: .unavailable, reveal: .all,
                            alwaysHiddenEnabled: false, style: state.options.iconStyle)
@@ -173,12 +204,12 @@ private struct PositionMenuBarArrangementContext: Equatable {
         state.savedLayoutStillApplies = false
         state.mode = .paused
         changed()
-        await scan?.value
         await rehide?.value
     }
 
     public func configure() {
         loadPolicy()
+        loadIdentities()
         updateOptions()
         cancelRehide()
         applyControls()
@@ -186,8 +217,10 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     public func refresh() {
-        guard started, editorVisible || arranging else { return }
+        guard started, needsInventory else { return }
         actionFailure = nil
+        identitiesValidated = false
+        applyControls()
         requestScan(arrangeResult: false)
     }
 
@@ -202,6 +235,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
             arranging = false
             controls.setArranging(false)
             cancelScan()
+            cancelIdentityReview()
             discardPreviews()
             state.isArranging = false
             updateObservations()
@@ -229,6 +263,10 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func assign(_ application: ApplicationID, to group: MenuBarGroup) {
         guard !application.isManagedBySystem else { return }
         guard let row = state.rows.first(where: { $0.id == application }), !row.isFixed else { return }
+        guard !identityFailure, (try? currentIdentities()) == identityPins, identities[application] != nil else {
+            results[application] = .failed(code: "identityUnavailable")
+            updateRows(); changed(); return
+        }
         guard !row.needsIdentityReview else {
             results[application] = .failed(code: "identityReviewRequired")
             updateRows(); changed(); return
@@ -301,10 +339,34 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     public func reviewIdentity(_ application: ApplicationID) {
-        guard state.rows.contains(where: { $0.id == application }) else { return }
-        results[application] = .failed(code: "identityReviewUnavailable")
-        updateRows()
-        changed()
+        guard started, editorVisible, identityTask == nil,
+              let row = state.rows.first(where: { $0.id == application }), row.needsIdentityReview,
+              let evidence = identities[application],
+              let previous = identityPins.requirement(for: application) else { return }
+        actionFailure = nil
+        let id = UUID()
+        identityID = id
+        identityTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, self.identityID == id else { return }
+            let accepted = await self.confirmIdentity(row.name)
+            guard !Task.isCancelled, self.identityID == id, self.started, self.editorVisible else { return }
+            if accepted {
+                let fresh = await self.readIdentity(application, previous)
+                guard !Task.isCancelled, self.identityID == id, self.started, self.editorVisible else { return }
+                do {
+                    var pins = try self.currentIdentities()
+                    guard pins.requirement(for: application) == previous,
+                          let fresh, fresh == evidence else { throw MenuBarIdentityError.invalidRequirement }
+                    try pins.trust(application, requirement: fresh.requirement)
+                    self.cancelScan()
+                    self.saveIdentities(pins)
+                    self.results.removeValue(forKey: application)
+                } catch { self.actionFailure = "identityChangedDuringReview" }
+            }
+            self.identityTask = nil; self.identityID = nil
+            if accepted, self.actionFailure == nil { self.requestScan(arrangeResult: false) }
+            self.applyControls(); self.changed()
+        }
     }
 
     public func setCompactSpacing(_ enabled: Bool) {
@@ -325,6 +387,24 @@ private struct PositionMenuBarArrangementContext: Equatable {
         try VisibilityPolicy(legacyPropertyList: defaults.persistentDomain(forName: domain)?[Self.policyKey])
     }
 
+    private func currentIdentities() throws -> MenuBarIdentityPins {
+        try MenuBarIdentityPins(propertyList: defaults.persistentDomain(forName: domain)?[Self.identityKey])
+    }
+
+    private func loadIdentities() {
+        do {
+            let fresh = try currentIdentities()
+            if fresh != identityPins { identitiesValidated = false }
+            identityPins = fresh; identityFailure = false
+        } catch { identityFailure = true; identitiesValidated = false }
+    }
+
+    private func saveIdentities(_ pins: MenuBarIdentityPins) {
+        let original = defaults.persistentDomain(forName: domain)?[Self.identityKey] as? [String: Any] ?? [:]
+        defaults.set(pins.propertyList(updating: original), forKey: Self.identityKey)
+        identityPins = pins; identityFailure = false
+    }
+
     private func loadPolicy() {
         do { policy = try currentPolicy(); policyFailure = false; updateRows() }
         catch { failPolicy() }
@@ -343,20 +423,25 @@ private struct PositionMenuBarArrangementContext: Equatable {
         for index in state.rows.indices {
             state.rows[index].group = policy.group(for: state.rows[index].id)
             state.rows[index].result = results[state.rows[index].id]
+            state.rows[index].needsIdentityReview = identities[state.rows[index].id]?.matchesSaved == false
         }
     }
 
     private func updateMode() {
         if policyFailure { state.mode = .failed(code: "invalidStoredLayout") }
+        else if identityFailure { state.mode = .failed(code: "invalidStoredIdentity") }
         else if let actionFailure { state.mode = .failed(code: actionFailure) }
         else if support == .unverified { state.mode = .paused }
         else if permissionStatus() != .allowed { state.mode = .needsAccessibility }
+        else if identities.values.contains(where: { !$0.matchesSaved }) { state.mode = .failed(code: "identityReviewRequired") }
+        else if !identitiesValidated { state.mode = .paused }
         else { state.mode = .byPosition }
     }
 
     private func applyControls() {
         updateMode()
-        let capability: MenuBarCapability = started && support == .byPosition && !policyFailure ? .byPosition : .unavailable
+        let capability: MenuBarCapability = started && support == .byPosition && !policyFailure
+            && !identityFailure && identitiesValidated && permissionStatus() == .allowed ? .byPosition : .unavailable
         let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal
         controls.configure(capability: capability, reveal: effectiveReveal,
                            alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
@@ -390,6 +475,10 @@ private struct PositionMenuBarArrangementContext: Equatable {
         state.isRefreshing = false
     }
 
+    private func cancelIdentityReview() {
+        identityID = nil; identityTask?.cancel(); identityTask = nil
+    }
+
     private func discardPreviews() {
         previewID = nil; previewTask?.cancel(); previewTask = nil
         stopPreviews()
@@ -398,24 +487,51 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     private func requestScan(arrangeResult: Bool) {
-        guard started, editorVisible || arranging, scanTask == nil else { return }
+        guard started, needsInventory, scanTask == nil else { return }
         discardPreviews()
         let id = UUID()
         scanID = id
         state.isRefreshing = true
+        identitiesValidated = false
+        applyControls()
         changed()
         scanTask = Task { @MainActor [weak self] in
             guard !Task.isCancelled, let self, self.scanID == id,
-                  self.started, self.editorVisible || self.arranging else { return }
+                  self.started, self.needsInventory else { return }
             let context = arrangeResult ? self.arrangementContext() : nil
             let revision = self.policyRevision
             let initialPolicy = try? self.currentPolicy()
+            let initialPins = try? self.currentIdentities()
             let snapshot = await self.readInventory()
+            var identities: [ApplicationID: MenuBarIdentityEvidence] = [:]
+            if snapshot.accessibilityAllowed, let initialPins {
+                let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+                let counts = Dictionary(grouping: snapshot.applications, by: \.id).mapValues(\.count)
+                for app in snapshot.applications.prefix(128) where !app.id.isManagedBySystem && counts[app.id] == 1 {
+                    guard !Task.isCancelled, self.scanID == id, ContinuousClock.now < deadline else { break }
+                    identities[app.id] = await self.readIdentity(app.id, initialPins.requirement(for: app.id))
+                }
+            }
             guard !Task.isCancelled, self.scanID == id, self.started,
-                  self.editorVisible || self.arranging else { return }
+                  self.needsInventory else { return }
             self.scanTask = nil; self.scanID = nil
             self.state.isRefreshing = false
             if snapshot.accessibilityAllowed {
+                self.identities = identities
+                self.identitiesValidated = false
+                if let initialPins, (try? self.currentIdentities()) == initialPins {
+                    do {
+                        var pins = initialPins
+                        for (application, evidence) in identities where pins.requirement(for: application) == nil {
+                            try pins.trust(application, requirement: evidence.requirement)
+                        }
+                        if pins != initialPins { self.saveIdentities(pins) }
+                        self.identityPins = pins; self.identityFailure = false
+                        self.identitiesValidated = snapshot.complete && snapshot.applications.allSatisfy {
+                            $0.id.isManagedBySystem || identities[$0.id]?.matchesSaved == true
+                        }
+                    } catch { self.identityFailure = true }
+                } else { self.identityFailure = true }
                 self.publish(snapshot)
                 if let context, let initialPolicy, revision == self.policyRevision,
                    (try? self.currentPolicy()) == initialPolicy, context == self.arrangementContext() {
@@ -438,7 +554,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
         var seen: Set<ApplicationID> = []
         state.rows = snapshot.applications.filter { seen.insert($0.id).inserted }.map { app in
             MenuBarAppRow(id: app.id, name: app.name, icon: app.icon,
-                iconCount: app.frames.count, group: policy.group(for: app.id), result: results[app.id])
+                iconCount: app.frames.count, group: policy.group(for: app.id),
+                needsIdentityReview: identities[app.id]?.matchesSaved == false, result: results[app.id])
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -456,6 +573,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         do {
             var saved = try currentPolicy()
             for (application, group) in assignments {
+                guard identities[application]?.matchesSaved == true else { continue }
                 try saved.assign(application, to: group)
                 // A geometry observation does not prove a macOS policy write.
                 results.removeValue(forKey: application)
@@ -466,7 +584,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     private func updateObservations() {
-        guard observesSystem, started, editorVisible || arranging else {
+        guard observesSystem, started, needsInventory else {
             observations.removeAll(); return
         }
         guard observations.isEmpty else { return }
