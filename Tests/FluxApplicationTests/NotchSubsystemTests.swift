@@ -21,6 +21,7 @@ struct NotchSubsystemTests {
                 contentChanged: { _ in Issue.record("An off feature emitted content") },
                 phaseChanged: { _ in }, cameraRunning: { running in #expect(!running) },
                 accessChanged: {}, timerCompleted: { _ in Issue.record("No timer expired") },
+                activityChanged: { _ in },
                 makeLockScreenService: { Issue.record("An off feature was constructed"); throw Unexpected.service }))
         defer { subsystem.stop() }
         subsystem.start()

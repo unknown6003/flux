@@ -8,6 +8,9 @@ import FluxUI
 @MainActor private final class SettingsFixtureEffects: SettingsEffects {
     var changes: [SettingsChange] = []
     var failures: [SettingsFailure] = []
+    var visits: [String] = []
+    func settingsWillShow(_ page: SettingsPage) { visits.append("show." + page.rawValue) }
+    func settingsWillHide(_ page: SettingsPage) { visits.append("hide." + page.rawValue) }
     func loginStatus() -> LoginStatus { .disabled }
     func shortcutConflict(_ role: ShortcutRole) -> ShortcutConflict { .clear }
     func updateStatus() -> UpdateStatus { .idle }
@@ -73,6 +76,7 @@ struct SettingsCoordinatorTests {
                                            version: .init(), effects: effects)
         defer { settings.close() }
         settings.show(.general)
+        #expect(effects.visits == ["show.general"])
         #expect(effects.changes.isEmpty)
         let hotkeys = try #require(Self.find("general.hotkeys") as? NSSwitch)
         hotkeys.state = .off
@@ -84,6 +88,7 @@ struct SettingsCoordinatorTests {
         #expect(effects.changes.count == 1)
 
         settings.show(.notch)
+        #expect(effects.visits == ["show.general", "hide.general", "show.notch"])
         let clipboard = try #require(Self.find("notch.widget.clipboard") as? NSSwitch)
         #expect(clipboard.state == .off)
         clipboard.state = .on
@@ -97,6 +102,8 @@ struct SettingsCoordinatorTests {
         #expect(effects.failures.isEmpty)
         #expect(!usage.enabled)
         #expect(defaults.object(forKey: UsageCollection.identityKey) == nil)
+        settings.close()
+        #expect(effects.visits.last == "hide.notch")
     }
 
     @Test func widgetOrderMovesKnownNeighborsWithoutDiscardingFutureIDs() {

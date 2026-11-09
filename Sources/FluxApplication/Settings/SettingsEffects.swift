@@ -43,6 +43,11 @@ public enum SettingsFailure: String, Sendable {
 /// may show a macOS permission prompt unless the method name says "request".
 @MainActor
 public protocol SettingsEffects: AnyObject, Sendable {
+    /// Open and close the page's live work with its actual view lifetime.
+    /// In particular, leaving Menu Bar must stop previews and arrange mode.
+    func settingsWillShow(_ page: SettingsPage)
+    func settingsWillHide(_ page: SettingsPage)
+
     // MARK: Fresh readings. Each call reads now. Do not cache across actions.
 
     /// `LoginItem.state`, mapped to the UI type.

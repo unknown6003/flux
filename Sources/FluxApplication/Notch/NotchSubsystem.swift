@@ -13,6 +13,7 @@ import FluxPlatform
         public var cameraRunning: @MainActor (Bool) -> Void
         public var accessChanged: @MainActor () -> Void
         public var timerCompleted: @MainActor (Countdown) -> Void
+        public var activityChanged: @MainActor (ActivityItem?) -> Void
         public var makeLockScreenService: @MainActor () throws -> any FeatureServiceHandle
 
         public init(report: @escaping @MainActor (NotchRuntimeFailure) -> Void,
@@ -21,10 +22,12 @@ import FluxPlatform
                     cameraRunning: @escaping @MainActor (Bool) -> Void,
                     accessChanged: @escaping @MainActor () -> Void,
                     timerCompleted: @escaping @MainActor (Countdown) -> Void,
+                    activityChanged: @escaping @MainActor (ActivityItem?) -> Void,
                     makeLockScreenService: @escaping @MainActor () throws -> any FeatureServiceHandle) {
             self.report = report; self.contentChanged = contentChanged
             self.phaseChanged = phaseChanged; self.cameraRunning = cameraRunning
             self.accessChanged = accessChanged; self.timerCompleted = timerCompleted
+            self.activityChanged = activityChanged
             self.makeLockScreenService = makeLockScreenService
         }
     }
@@ -38,6 +41,7 @@ import FluxPlatform
     private lazy var activities: ActivityCoordinator = ActivityCoordinator(preferences: preferences,
         publish: { [weak self] item, image, count, restorable in
             self?.runtime.updateActivity(item, artwork: image, count: count, restorableCount: restorable)
+            self?.callbacks.activityChanged(item)
         }, timerCompleted: { [weak self] in self?.callbacks.timerCompleted($0) })
     private lazy var runtime: NotchRuntime = NotchRuntime(preferences: preferences, files: files,
         mediaScript: mediaScript, mediaFramework: mediaFramework, callbacks: .init(

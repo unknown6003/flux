@@ -49,7 +49,10 @@ public final class SettingsCoordinator {
         let controller = SettingsWindowController(initialPage: page ?? .general) { [weak self] page in
             self?.makePage(page) ?? NSViewController()
         }
-        controller.onPageWillDisappear = { [weak self] _ in self?.pageWillDisappear() }
+        controller.onPageWillDisappear = { [weak self] page in
+            self?.effects.settingsWillHide(page)
+            self?.pageWillDisappear()
+        }
         controller.onClose = { [weak self] in self?.window = nil }
         window = controller
         controller.show(nil)
@@ -74,6 +77,7 @@ public final class SettingsCoordinator {
     // MARK: Pages
 
     private func makePage(_ kind: SettingsPage) -> NSViewController {
+        effects.settingsWillShow(kind)
         let controller: NSViewController
         switch kind {
         case .general:
