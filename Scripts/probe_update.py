@@ -131,7 +131,7 @@ def shell_probe(reference=None, native=False):
         raise RuntimeError("FAIL: no emitted install helper found")
     template = textwrap.dedent(match.group(1))
     failures = []
-    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch", "accepted_crash", "ready_crash", "alive_unconfirmed", "inspection_failure", "worker_outlives_command"]:
+    for case in ["success", "parent_alive", "swap_failure", "relaunch_failure", "hung_relaunch", "accepted_crash", "ready_crash", "alive_unconfirmed", "inspection_failure", "worker_outlives_command"] + (["signature_failure"] if native else []):
         with tempfile.TemporaryDirectory(prefix="flux-swap-probe-") as directory:
             root = Path(directory)
             install_parent = root / "installed"
@@ -149,7 +149,7 @@ def shell_probe(reference=None, native=False):
                          'mkdir -p "$2"; echo partial > "$2/version"; exit 1; fi\n'
                          'cp -R "$1" "$2"',
                 "xattr": "exit 0",
-                "codesign": "exit 0",
+                "codesign": "exit 1" if case == "signature_failure" else "exit 0",
                 "hdiutil": "exit 0",
                 "open": 'exit 1',
                 "mv": 'if [ "' + case + '" = swap_failure ] && [ "$1" = '

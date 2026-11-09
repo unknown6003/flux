@@ -95,8 +95,7 @@ public actor UpdateStager {
 
     public func discard(_ update: PreparedUpdate) throws {
         guard !busy, let stage = prepared, stage.update.token == update.token else { throw UpdateStageError.notPrepared }
-        try FileManager.default.removeItem(at: stage.directory)
-        try FileManager.default.removeItem(at: stage.workspace)
+        try UpdateStageFiles.discard(directory: stage.directory, workspace: stage.workspace)
         prepared = nil
     }
 
@@ -144,5 +143,16 @@ public actor UpdateStager {
             throw error
         }
         prepared = nil
+    }
+}
+
+/// A stopped helper may already have removed either owned path. Retrying
+/// cleanup must not strand the preparation token on an absent file.
+enum UpdateStageFiles {
+    static func discard(directory: URL, workspace: URL) throws {
+        for path in [directory, workspace] {
+            do { try FileManager.default.removeItem(at: path) }
+            catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {}
+        }
     }
 }
