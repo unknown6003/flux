@@ -107,9 +107,15 @@ let package = Package(
         ),
         .executableTarget(
             name: "FluxTelemetryIdleProbe",
-            dependencies: ["FluxCore"],
+            dependencies: ["FluxCore", "FluxTelemetryCurlProbe"],
             path: "Scripts/rebuild/TelemetryIdleProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "FluxTelemetryCurlProbe",
+            path: "Scripts/rebuild/TelemetryCurlProbe",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("curl")]
         )
     ]
 )

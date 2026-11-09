@@ -3,11 +3,13 @@ import Darwin
 import Foundation
 #if FLUX_TELEMETRY_IDLE_DIAGNOSTIC
 @testable import FluxCore
+import FluxTelemetryCurlProbe
 
 private enum Mode: String {
     case idle
     case direct
     case client
+    case curl
 }
 
 private struct Phase: Encodable {
@@ -19,13 +21,18 @@ private struct Phase: Encodable {
     let distinctID: String?
     let request: Int?
     let status: Int?
+    let protocolCode: Int?
+    let engine: String?
+    let failureCode: Int?
 }
 
 private func emit(_ phase: String, mode: Mode, identity: UsageIdentity? = nil,
-                  request: Int? = nil, status: Int? = nil) {
+                  request: Int? = nil, status: Int? = nil, protocolCode: Int? = nil,
+                  engine: String? = nil, failureCode: Int? = nil) {
     let value = Phase(phase: phase, mode: mode.rawValue, at: Date(),
         uptime: ProcessInfo.processInfo.systemUptime, processID: getpid(),
-        distinctID: identity?.value.uuidString.lowercased(), request: request, status: status)
+        distinctID: identity?.value.uuidString.lowercased(), request: request, status: status,
+        protocolCode: protocolCode, engine: engine, failureCode: failureCode)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.sortedKeys]
@@ -34,23 +41,48 @@ private func emit(_ phase: String, mode: Mode, identity: UsageIdentity? = nil,
     }
 }
 
+private struct CurlProbeFailure: Error { let code: Int }
+
 private actor TracedTransport: UsageTransport {
-    private let native = NativeUsageTransport(region: FluxUsageProject.region)
+    private let native: NativeUsageTransport?
     private let mode: Mode
     private var count = 0
 
-    init(mode: Mode) { self.mode = mode }
+    init(mode: Mode) {
+        self.mode = mode
+        native = mode == .curl ? nil : NativeUsageTransport(region: FluxUsageProject.region)
+    }
 
     func send(_ request: UsageRequest) async throws -> UsageResponse {
         count += 1
         let number = count
         emit("requestStarted", mode: mode, request: number)
         do {
-            let response = try await native.send(request)
-            emit("requestFinished", mode: mode, request: number, status: response.status)
+            let response: UsageResponse
+            var protocolCode: Int?
+            if mode == .curl {
+                let result = try await Task.detached(priority: .utility) {
+                    guard request.endpoint == .events else { throw CurlProbeFailure(code: -1) }
+                    var result = FluxCurlProbeResult()
+                    request.body.withUnsafeBytes { bytes in
+                        FluxCurlProbePost(bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count, &result)
+                    }
+                    guard result.code == 0 else { throw CurlProbeFailure(code: Int(result.code)) }
+                    let length = Int(result.length)
+                    guard length <= PostHogWire.maximumResponseBytes else { throw CurlProbeFailure(code: -2) }
+                    let body = withUnsafePointer(to: &result.body) { Data(bytes: $0, count: length) }
+                    return (UsageResponse(status: Int(result.status), body: body), Int(result.protocol_code))
+                }.value
+                response = result.0
+                protocolCode = result.1
+            } else {
+                guard let native else { throw CurlProbeFailure(code: -3) }
+                response = try await native.send(request)
+            }
+            emit("requestFinished", mode: mode, request: number, status: response.status, protocolCode: protocolCode)
             return response
         } catch {
-            emit("requestFailed", mode: mode, request: number)
+            emit("requestFailed", mode: mode, request: number, failureCode: (error as? CurlProbeFailure)?.code)
             throw error
         }
     }
@@ -62,7 +94,7 @@ private actor TracedTransport: UsageTransport {
         guard ProcessInfo.processInfo.environment["FLUX_ALLOW_TELEMETRY_IDLE_PROBE"] == "1",
               arguments.count == 3, let mode = Mode(rawValue: arguments[1]),
               let seconds = Int(arguments[2]), (1...120).contains(seconds) else {
-            FileHandle.standardError.write(Data("Expected an enabled diagnostic and idle|direct|client with hold seconds 1...120\n".utf8))
+            FileHandle.standardError.write(Data("Expected an enabled diagnostic and idle|direct|client|curl with hold seconds 1...120\n".utf8))
             exit(2)
         }
         if mode == .idle {
@@ -74,8 +106,9 @@ private actor TracedTransport: UsageTransport {
         let identity = UsageIdentity()
         let transport = TracedTransport(mode: mode)
         var client: PostHogClient?
-        emit("ready", mode: mode, identity: identity)
-        if mode == .direct {
+        let engine = mode == .curl ? String(cString: FluxCurlProbeVersion()) : nil
+        emit("ready", mode: mode, identity: identity, engine: engine)
+        if mode != .client {
             let body = try UsageBatchEncoder.encode([
                 UsageRecord(event: .launched, isVerification: true)
             ], identity: identity, projectToken: FluxUsageProject.token)
