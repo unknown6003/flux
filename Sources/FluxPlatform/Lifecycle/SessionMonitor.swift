@@ -55,6 +55,11 @@ private final class DistributedObservation: @unchecked Sendable {
         observe(workspace, NSWorkspace.activeSpaceDidChangeNotification) { $0.onEnvironmentChange?() }
         observe(application, NSApplication.didChangeScreenParametersNotification) { $0.onEnvironmentChange?() }
         observe(application, .NSSystemTimeZoneDidChange) { $0.onEnvironmentChange?() }
+        observe(application, .NSSystemClockDidChange) { $0.onEnvironmentChange?() }
+        observe(application, NSApplication.didBecomeActiveNotification) { owner in
+            owner.setPhase(owner.readPhase())
+            owner.onEnvironmentChange?()
+        }
         if let center {
             distributed = [
                 DistributedObservation(center: center, name: .init("com.apple.screenIsLocked")) { [weak self] _ in

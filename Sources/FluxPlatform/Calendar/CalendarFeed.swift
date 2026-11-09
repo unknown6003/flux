@@ -91,7 +91,7 @@ public actor EventKitAgendaReader: AgendaReading {
 @MainActor public final class CalendarFeed: FeatureServiceHandle {
     public var onChange: ((AgendaReadResult) -> Void)?
     private let reader: any AgendaReading
-    private var observation: NotificationObservation?
+    private var observations: [NotificationObservation] = []
     private var readTask: Task<Void, Never>?
     private var midnight: Task<Void, Never>?
     private var active = true
@@ -103,8 +103,10 @@ public actor EventKitAgendaReader: AgendaReading {
                 onChange: @escaping (AgendaReadResult) -> Void) {
         self.reader = reader
         self.onChange = onChange
-        observation = NotificationObservation(center: center, name: .EKEventStoreChanged) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refresh() }
+        observations = [Notification.Name.EKEventStoreChanged, .NSSystemClockDidChange, .NSSystemTimeZoneDidChange].map { name in
+            NotificationObservation(center: center, name: name) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
         }
         refresh()
     }
@@ -139,7 +141,7 @@ public actor EventKitAgendaReader: AgendaReading {
         active = false
         generation &+= 1
         onChange = nil
-        observation = nil
+        observations = []
         readTask?.cancel()
         readTask = nil
         midnight?.cancel()
