@@ -6,6 +6,42 @@ import FluxUI
 
 @Suite(.serialized)
 struct NotchWindowTests {
+    @Test @MainActor func actualMediaAndDuoWidgetsKeepAVisibleViewport() async throws {
+        _ = NSApplication.shared
+        let screen = try #require(NSScreen.screens.first)
+        var primary: NSView?
+        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
+            makeWidget: { widget in
+                if widget == .calendar {
+                    return CalendarWidgetController(state: .events(today: [
+                        .init(id: "example", title: "Example meeting", location: "Example room",
+                              start: Date(), end: Date().addingTimeInterval(1800), isAllDay: false)
+                    ], tomorrow: []), onAction: { _ in })
+                }
+                let controller = NowPlayingWidgetController(state: .init(status: .playing,
+                    title: "Example song", artist: "Example artist", elapsed: 65, duration: 240), onAction: { _ in })
+                primary = controller.view
+                return controller
+            }, willDismissWidget: { _ in }, compactAction: { _ in }))
+        defer { owner.stop() }
+        owner.start(screen: screen, widgets: [.nowPlaying, .calendar])
+        owner.expand(.nowPlaying, focus: false)
+        // Inspect the real window through its bound child, not an isolated
+        // widget whose fixture gives it an unrelated fixed height.
+        let window = try #require(primary?.window)
+        let panel = try #require(window.contentViewController as? NotchPanelController)
+        try await Task.sleep(for: .milliseconds(50))
+        panel.view.layoutSubtreeIfNeeded()
+        #expect(panel.contentViewportHeight >= 120)
+        owner.setDuo(true)
+        try await Task.sleep(for: .milliseconds(50))
+        panel.view.layoutSubtreeIfNeeded()
+        #expect(panel.companion == .calendar)
+        #expect(panel.contentViewportHeight >= 120)
+        #expect(panel.contentDocumentHeight >= 120)
+        #expect(window.frame.height <= screen.frame.height * 0.8 + 1)
+    }
+
     @MainActor private func drainAppearanceChanges(until released: @MainActor () -> Bool) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(2))
