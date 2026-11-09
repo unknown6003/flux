@@ -61,6 +61,10 @@ on:
         description: Run performance probes that grant temporary Accessibility access
         type: boolean
         default: false
+      native_telemetry_idle_probe:
+        description: Build the isolated telemetry lifetime diagnostic without installing or releasing Flux
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,7 +76,7 @@ concurrency:
 
 jobs:
   native-core:
-    if: ${{ inputs.native_core_only }}
+    if: ${{ inputs.native_core_only && !inputs.native_telemetry_idle_probe }}
     runs-on: xcode-27
     timeout-minutes: ${{ inputs.native_candidate && 12 || 8 }}
     steps:
@@ -586,3 +590,45 @@ jobs:
           printf 'Release artifact source: `%s`\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
           gh release create "$GITHUB_REF_NAME" build/Flux.dmg --repo "$GITHUB_REPOSITORY" \
             --verify-tag --title "Flux $VERSION" --generate-notes
+
+  native-telemetry-idle:
+    if: ${{ inputs.native_telemetry_idle_probe }}
+    runs-on: xcode-27
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build isolated telemetry diagnostic
+        run: |
+          swift build -c release --product FluxTelemetryIdleProbe -Xswiftc -enable-testing
+          BIN="$(swift build -c release --show-bin-path)"
+          mkdir -p build/native-telemetry-idle
+          cp "$BIN/FluxTelemetryIdleProbe" build/native-telemetry-idle/
+          FLUX_ALLOW_TELEMETRY_IDLE_PROBE=1 build/native-telemetry-idle/FluxTelemetryIdleProbe idle 1 > build/native-telemetry-idle/control.jsonl
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess, zipfile
+          root = pathlib.Path('build/native-telemetry-idle')
+          binary = root / 'FluxTelemetryIdleProbe'
+          rows = [json.loads(line) for line in (root / 'control.jsonl').read_text().splitlines()]
+          assert [row['phase'] for row in rows] == ['quietStarted', 'finished']
+          assert all(row['mode'] == 'idle' and 'distinctID' not in row for row in rows)
+          archive = root / 'FluxTelemetryIdleProbe.zip'
+          with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
+              output.write(binary, binary.name)
+          report = dict(sourceRevision=subprocess.check_output(['git', 'rev-parse', 'HEAD'], timeout=10).decode().strip(),
+                        diagnosticOnly=True, sizeBytes=archive.stat().st_size,
+                        sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        executableSHA256=hashlib.sha256(binary.read_bytes()).hexdigest())
+          (root / 'artifact.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report))
+          PY
+      - name: Upload isolated telemetry diagnostic
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-telemetry-idle
+          path: |
+            build/native-telemetry-idle/FluxTelemetryIdleProbe.zip
+            build/native-telemetry-idle/artifact.json
+            build/native-telemetry-idle/control.jsonl
+          if-no-files-found: error

@@ -104,6 +104,12 @@ let package = Package(
             name: "FluxMenuBarLayoutProbe",
             path: "Scripts/rebuild/MenuBarLayoutProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "FluxTelemetryIdleProbe",
+            dependencies: ["FluxCore"],
+            path: "Scripts/rebuild/TelemetryIdleProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )
