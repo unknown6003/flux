@@ -150,7 +150,8 @@ private func traceDocument(_ url: URL) throws -> [String: Any] {
         #expect(PerformanceTrace.isEnabled)
         #expect(throws: PerformanceTraceError.alreadyStarted) { try PerformanceTrace.begin(directory: directory.url) }
         PerformanceTrace.record(.appReady)
-        let output = try #require(PerformanceTrace.finish())
+        let finishedOutput = try PerformanceTrace.finish()
+        let output = try #require(finishedOutput)
         #expect(!PerformanceTrace.isEnabled)
         let bytes = try Data(contentsOf: output)
         DispatchQueue.concurrentPerform(iterations: 64) { _ in PerformanceTrace.record(.appStop) }

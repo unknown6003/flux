@@ -232,7 +232,7 @@ jobs:
           if-no-files-found: warn
 
   drag-probes:
-    if: ${{ inputs.drag_probe_plan && !inputs.native_core_only }}
+    if: ${{ inputs.drag_probe_plan && !inputs.native_core_only && !inputs.native_performance_trace }}
     runs-on: xcode-27
     timeout-minutes: 10
     permissions:
@@ -325,7 +325,7 @@ jobs:
 
   build:
     name: macOS checks and app build
-    if: ${{ !inputs.drag_probe_plan && !inputs.native_core_only }}
+    if: ${{ !inputs.drag_probe_plan && !inputs.native_core_only && !inputs.native_performance_trace }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
     timeout-minutes: 55
     steps:
@@ -576,7 +576,7 @@ jobs:
 
   publish:
     name: Publish checked release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.native_performance_trace }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -596,7 +596,7 @@ jobs:
             --verify-tag --title "Flux $VERSION" --generate-notes
 
   native-telemetry-idle:
-    if: ${{ inputs.native_telemetry_idle_probe }}
+    if: ${{ inputs.native_telemetry_idle_probe && !inputs.native_performance_trace }}
     runs-on: xcode-27
     timeout-minutes: 5
     steps:
