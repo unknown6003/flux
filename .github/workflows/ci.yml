@@ -82,7 +82,7 @@ jobs:
       - name: Record checked source
         run: git rev-parse HEAD
       - name: Test native core
-        run: swift test --filter FluxCoreTests
+        run: python3 Scripts/rebuild/run_native_tests.py FluxCoreTests
       - name: Compile native interface
         run: swift build --target FluxUI
       - name: Compile native platform adapters
@@ -90,11 +90,18 @@ jobs:
       - name: Compile native application wiring
         run: swift build --target FluxApplication
       - name: Check native platform lifetimes
-        run: swift test --filter FluxPlatformTests
+        run: python3 Scripts/rebuild/run_native_tests.py FluxPlatformTests
       - name: Check native view lifetimes
-        run: swift test --filter FluxUITests
+        run: python3 Scripts/rebuild/run_native_tests.py FluxUITests
       - name: Check native application actions
-        run: swift test --filter FluxApplicationTests
+        run: python3 Scripts/rebuild/run_native_tests.py FluxApplicationTests
+      - name: Upload native test output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-test-logs
+          path: build/native-test-logs/
+          if-no-files-found: warn
       - name: Collect native test crash report
         if: failure()
         run: |

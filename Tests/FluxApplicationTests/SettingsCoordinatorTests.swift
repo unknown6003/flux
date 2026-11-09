@@ -190,18 +190,25 @@ extension SettingsCoordinatorTests {
     }
 
     @Test(.timeLimit(.minutes(1))) @MainActor func ratingControlsWaitForAckAndIgnoreRepeatedSubmit() async throws {
+        FileHandle.standardError.write(Data("rating-test: begin\n".utf8))
         let fixture = try RatingFixture()
         defer { fixture.close() }
         await fixture.usage.setEnabled(true)
+        FileHandle.standardError.write(Data("rating-test: enabled\n".utf8))
         let sheet = try fixture.open()
+        FileHandle.standardError.write(Data("rating-test: opened\n".utf8))
         try RatingFixture.choose(3, in: sheet)
+        FileHandle.standardError.write(Data("rating-test: chosen\n".utf8))
         let submit = try RatingFixture.control("feedback.submit", in: sheet, as: NSButton.self)
         submit.performClick(nil)
+        FileHandle.standardError.write(Data("rating-test: submitted\n".utf8))
         #expect(sheet.state.submission == .sending)
         #expect(!submit.isEnabled)
         _ = submit.sendAction(submit.action, to: submit.target)
         var started = await fixture.transport.started.makeAsyncIterator()
+        FileHandle.standardError.write(Data("rating-test: awaiting transport\n".utf8))
         _ = await started.next()
+        FileHandle.standardError.write(Data("rating-test: transport started\n".utf8))
         #expect(await fixture.transport.snapshot().count == 1)
         let send = try #require(fixture.settings.ratingSend)
         await fixture.transport.release()
