@@ -146,3 +146,25 @@ pair. The transport cleanup change failed the fresh signed measurement in all
 three interrupt-wakeup pairs. A Core-only diagnostic now separates completed
 network requests from client and app work. See ANALYTICS-PAIR.md,
 TELEMETRY-DIAGNOSIS.md and TELEMETRY.md. No rewrite release has been made.
+
+
+### 9 November, bounded curl transport
+
+The isolated engine run observed idle 1, Foundation 44 and curl 1 interrupt
+wakeups over one 60-second sample each. Root verified all 44 evidence hashes,
+raw counters and both restricted ingestion records. No variance or full-app
+claim follows.
+
+The production UsageTransport now uses a small C driver and an asynchronous
+Swift owner. It keeps fixed TLS routes, finite deadlines, caps and cancellation
+off the main actor. Foundation remains only in the diagnostic direct mode.
+Three source review axes found no blocking defect; the named-code heuristic
+and proxy wording were fixed. A primary follow-up makes cancellation win a
+response-copy race.
+
+CI at 3164012 passed 85 Core, 46 Platform, 11 UI and 50 Application tests; its
+candidate and live ingestion steps were still running at this checkpoint.
+The final source adds a pre-cancelled request test and explicit fixture
+lifetimes. It must pass native CI before the next three signed-app performance
+pairs. Physical menu-bar and lock-screen acceptance remain open. The owner's
+Screen Recording step is still pending. No update was released.
