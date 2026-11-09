@@ -41,10 +41,9 @@ import OSLog
             let support = PositionMenuBarHidingSupport.current(hider: hider)
             let menu = PositionMenuBarService(defaults: .standard, domain: ApplicationSession.domain,
                 preferences: session.preferences, hidingSupport: support, perApplicationHider: hider)
-            // No verified private bridge is linked into this candidate. The
-            // saved choice is preserved and Settings reports unavailable.
-            let lock = NativeLockScreenService(preferences: session.preferences,
-                availability: { .unavailable }, makeBridge: { throw LockScreenServiceError.unavailable })
+            // The 0.21.35 SkyLight space. Settings reports unavailable only
+            // when that private bridge does not load.
+            let lock = NativeLockScreenService(preferences: session.preferences)
             let owner = ApplicationHost(session: session, menuBar: menu, lockScreen: lock,
                 failure: { [weak self] failure in self?.record(failure) },
                 quit: { NSApp.terminate(nil) })

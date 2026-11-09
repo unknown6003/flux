@@ -882,6 +882,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     private func changed() { onChange?() }
 
+    public func contextMenu() -> NSMenu? { makeMenu() }
+
     /// The chevron's right-click menu. Clicks show and hide icons, so the menu
     /// keeps only what a click cannot do.
     private func makeMenu() -> NSMenu {

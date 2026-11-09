@@ -3,6 +3,7 @@ import Testing
 import FluxCore
 import FluxPlatform
 @testable import FluxApplication
+@testable import FluxUI
 
 @MainActor private final class WidgetActionEffects: WidgetEffects {
     var retries = 0
@@ -14,10 +15,6 @@ import FluxPlatform
 }
 
 struct WidgetActionLifetimeTests {
-    @MainActor private func retryButton(in view: NSView) -> NSButton? {
-        if let button = view as? NSButton, button.title == "Check Again" { return button }
-        return view.subviews.lazy.compactMap { retryButton(in: $0) }.first
-    }
 
     @Test @MainActor func aRetainedOldWidgetCannotActAfterDismissOrOnANewVisit() throws {
         _ = NSApplication.shared
@@ -30,17 +27,18 @@ struct WidgetActionLifetimeTests {
         let widgets = WidgetCoordinator(preferences: preferences, shelf: ShelfFiles(root: root),
             clipboard: ClipboardRepository(historyURL: root.appendingPathComponent("clipboard.json")),
             pasteboard: PasteboardChannel(), mediaScript: root, mediaFramework: root, effects: effects)
-        let old = widgets.makeWidget(.nowPlaying)
-        let button = try #require(retryButton(in: old.view))
-        button.performClick(nil)
+        // A retained SwiftUI view keeps its model, so the action itself must
+        // be dead once its visit ends.
+        let old = try #require(widgets.makeWidget(.nowPlaying) as? NowPlayingWidgetController).model.onAction
+        old(.checkAgain)
         #expect(effects.retries == 1)
         widgets.dismiss()
-        button.performClick(nil)
+        old(.checkAgain)
         #expect(effects.retries == 1)
-        let current = widgets.makeWidget(.nowPlaying)
-        button.performClick(nil)
+        let current = try #require(widgets.makeWidget(.nowPlaying) as? NowPlayingWidgetController)
+        old(.checkAgain)
         #expect(effects.retries == 1)
-        try #require(retryButton(in: current.view)).performClick(nil)
+        current.model.onAction(.checkAgain)
         #expect(effects.retries == 2)
         widgets.dismiss()
         #expect(!FileManager.default.fileExists(atPath: root.path))

@@ -35,9 +35,11 @@ import FluxUI
                 self?.lockScreen.setPhase(phase)
             }, cameraRunning: { [weak self] in self?.session.cameraIsRunning($0) },
             accessChanged: { [weak self] in self?.settings.refresh() },
-            timerCompleted: { _ in NSSound.beep() },
+            timerCompleted: { _ in },
             activityChanged: { [weak self] in self?.lockScreen.updateActivity($0) },
-            makeLockScreenService: { [unowned self] in try self.lockScreen.makeHandle() }))
+            makeLockScreenService: { [unowned self] in try self.lockScreen.makeHandle() },
+            contextMenu: { [weak self] in self?.menuBar.contextMenu() },
+            openMenuBarSettings: { [weak self] in self?.showSettings(.menuBar) }))
 
     public convenience init(session: ApplicationSession, menuBar: any MenuBarService, lockScreen: any LockScreenService,
                 bundle: Bundle = .main, failure: @escaping @MainActor (ApplicationFailure) -> Void,

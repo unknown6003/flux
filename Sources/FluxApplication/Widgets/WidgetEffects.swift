@@ -44,6 +44,8 @@ public enum WidgetEvent: Sendable {
     case camera(CameraState?)
     /// A shelf copy job ended. Counts only.
     case shelfCopyFinished(added: Int, failed: Int)
+    /// The notch took a file drop and started copying. Count only.
+    case shelfDropAccepted(count: Int)
 }
 
 /// App work that the widgets need. Every method is required, so a missing

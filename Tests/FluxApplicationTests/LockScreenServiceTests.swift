@@ -16,6 +16,11 @@ import FluxPlatform
     }
 }
 
+@MainActor private func fixtureGeometry(_ screen: NSScreen) -> LockScreenGeometry {
+    LockScreenGeometry(notch: CGRect(x: screen.frame.midX - 90, y: screen.frame.maxY - 32, width: 180, height: 32),
+                       screenFrame: screen.frame)
+}
+
 @Suite(.serialized) struct LockScreenServiceTests {
     @MainActor private func profile(_ body: (PreferenceStore) throws -> Void) throws {
         let domain = "org.fluxfixture.lock.\(UUID())"
@@ -47,14 +52,15 @@ import FluxPlatform
         }
     }
 
-    @Test @MainActor func emptyLockCardCannotTakeInputAndUnlockReleasesItsWindowsOnce() throws {
+    @Test @MainActor func emptyLockCardCannotTakeInputAndUnlockReleasesItsWindowsOnce() async throws {
         _ = NSApplication.shared
+        var faded: [NSWindow] = []
         try profile { preferences in
             let screen = try #require(NSScreen.screens.first)
             let bridge = FixtureLockBridge()
             var sounds = 0
             let service = NativeLockScreenService(preferences: preferences, availability: { .available },
-                makeBridge: { bridge }, screen: { screen }, unlockSound: { sounds += 1 })
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) }, unlockSound: { sounds += 1 })
             let handle = try service.makeHandle()
             defer { handle.stop() }
             service.setPhase(.locked)
@@ -72,9 +78,49 @@ import FluxPlatform
             service.setPhase(.unlocked)
             #expect(bridge.detaches == 1)
             #expect(sounds == 1)
-            #expect(windows.allSatisfy { !$0.isVisible })
+            faded = windows
             handle.stop()
             #expect(bridge.detaches == 1)
+        }
+        // The 0.21.35 fade out takes 0.25 s before the windows close.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while faded.contains(where: \.isVisible), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(faded.allSatisfy { !$0.isVisible })
+    }
+
+    @Test @MainActor func lockPillUsesTheOldCaptionRule() throws {
+        let timer = try ActivityItem(kind: .timer, leading: .symbol("timer"), trailing: .text("4:31"), priority: 110, duration: nil)
+        #expect(NativeLockScreenService.caption(timer) == .init(symbolName: "timer", text: "4:31"))
+        let device = try ActivityItem(kind: .bluetoothDevice, leading: .symbol("airpodspro"),
+                                      trailing: .symbolText(symbol: "battery.75", text: "80%"), priority: 100, duration: 4)
+        #expect(NativeLockScreenService.caption(device) == .init(symbolName: "airpodspro", text: "80%"))
+        let battery = try ActivityItem(kind: .battery, leading: .symbol("battery.0"), trailing: .text("9%"), priority: 200, duration: nil)
+        #expect(NativeLockScreenService.caption(battery) == nil)
+        let sound = try ActivityItem(kind: .soundHUD, leading: .none, trailing: .soundGauge(value: 0.5, symbol: "speaker.fill"),
+                                     priority: 300, duration: 1.5)
+        #expect(NativeLockScreenService.caption(sound) == nil)
+        // Media card centered at 28% of the screen from the bottom, but never
+        // below 20%; the caption alone centers at 21%.
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        #expect(LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 164, hasMedia: true)
+                == 982 * 0.20)
+        let tall = CGRect(x: 0, y: 0, width: 3000, height: 2000)
+        #expect(abs(LockScreenWidgetPosition.originY(screenFrame: tall, notchHeight: 32, widgetHeight: 100, hasMedia: true) - 510) < 0.001)
+        #expect(LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 38, hasMedia: false)
+                == 982 * 0.21 - 19)
+    }
+
+    /// Loads SkyLight's private symbols on this Mac without locking the
+    /// screen or making a space. On macOS 27 this must report available.
+    @Test @MainActor func skyLightBridgeLoadsAndSettingsReportAvailable() throws {
+        let loadable = SkyLightLockScreenSpace.isLoadable
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        print("skylight.lockscreen.loadable=\(loadable) macOS=\(version.majorVersion).\(version.minorVersion)")
+        if version.majorVersion >= 27 { #expect(loadable) }
+        try profile { preferences in
+            let service = NativeLockScreenService(preferences: preferences)
+            #expect(service.capability == (loadable ? .available : .unavailable))
+            #expect(service.failureCode == nil)
         }
     }
 
@@ -85,7 +131,7 @@ import FluxPlatform
             let bridge = FixtureLockBridge()
             var created = 0
             let service = NativeLockScreenService(preferences: preferences, availability: { .available },
-                makeBridge: { created += 1; return bridge }, screen: { screen }, unlockSound: {})
+                makeBridge: { created += 1; return bridge }, geometry: { fixtureGeometry(screen) }, unlockSound: {})
             let handle = try service.makeHandle()
             defer { handle.stop() }
             service.setPhase(.locked)

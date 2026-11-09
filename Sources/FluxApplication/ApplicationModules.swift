@@ -32,6 +32,12 @@ public enum MenuBarAction: Sendable {
     func setCompactSpacing(_ enabled: Bool)
     /// Move one real item, as the layout editor asked. Progress is in `state.moveStatus`.
     func moveItem(_ move: MenuBarItemMove)
+    /// The app menu, shown by a right-click on the notch as in 0.21.35.
+    func contextMenu() -> NSMenu?
+}
+
+public extension MenuBarService {
+    func contextMenu() -> NSMenu? { nil }
 }
 
 /// Construction reads no media and creates no window or private space.

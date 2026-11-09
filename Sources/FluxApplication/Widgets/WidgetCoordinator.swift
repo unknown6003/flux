@@ -2,6 +2,7 @@ import AppKit
 import FluxCore
 import FluxPlatform
 import FluxUI
+import QuickLookThumbnailing
 
 /// Makes the five notch widget controllers and binds them to the real feeds,
 /// repositories and files.
@@ -86,6 +87,9 @@ public final class WidgetCoordinator {
     private var clipboardPrepare: Task<Void, Never>?
     private var shelfFiles: [ShelvedFile] = []
     private var shelfURLs: [UUID: URL] = [:]
+    /// QuickLook thumbnails, made only while File Shelf is open, as in 0.21.35.
+    private var shelfThumbnails: [UUID: NSImage] = [:]
+    private var thumbnailRequests: Set<UUID> = []
     private var shelfFailed = false
     private var shelfLoaded = false
     private var copyJob: ShelfCopyBatch?
@@ -427,20 +431,20 @@ public final class WidgetCoordinator {
         let calendar = Calendar.current
         if case .ready(let snapshot)? = agenda, snapshot.today == calendar.startOfDay(for: now) {
             let afterTomorrow = calendar.date(byAdding: .day, value: 1, to: snapshot.tomorrow) ?? snapshot.tomorrow
-            let entries = calendarIsCompanion ? DuoCalendarPolicy.events(snapshot, at: now) : snapshot.entries
-            func rows(_ start: Date, _ end: Date, upcomingOnly: Bool) -> [CalendarWidgetEvent] {
-                entries.filter { entry in
-                    entry.start < end && entry.end > start && (!upcomingOnly || entry.allDay || entry.end > now)
-                }.map { entry in
+            // 0.21.35: events still running from now to the end of tomorrow,
+            // the 20 earliest, grouped by the day they start.
+            let upcoming = snapshot.entries.filter { $0.end > now && $0.start < afterTomorrow }
+                .sorted { $0.start < $1.start }.prefix(CalendarWidgetController.maximumRowsPerDay)
+            func rows(_ start: Date, _ end: Date) -> [CalendarWidgetEvent] {
+                upcoming.filter { $0.start >= start && $0.start < end }.map { entry in
                     CalendarWidgetEvent(id: entry.id, title: entry.title, location: entry.location,
                                         start: entry.start, end: entry.end, isAllDay: entry.allDay,
                                         color: CalendarWidgetColor(red: entry.color.red, green: entry.color.green,
                                                                    blue: entry.color.blue))
                 }
             }
-            // The widget shows four rows per day and "N more" for the rest.
-            return .events(today: rows(snapshot.today, snapshot.tomorrow, upcomingOnly: true),
-                           tomorrow: rows(snapshot.tomorrow, afterTomorrow, upcomingOnly: false))
+            return .events(today: rows(snapshot.today, snapshot.tomorrow),
+                           tomorrow: rows(snapshot.tomorrow, afterTomorrow))
         }
         if agenda == .needsPermission { return .needsPermission }
         if agenda == nil { return .loading }
@@ -497,7 +501,8 @@ public final class WidgetCoordinator {
             switch camera {
             case .starting: return .starting
             case .running: return .running
-            case .needsPermission: return .needsPermission
+            case .needsPermission:
+                return PermissionAccess.status(.camera) == .notAsked ? .needsPermission : .denied
             case .unavailable: return .unavailable
             case .interrupted: return .interrupted
             case .failed: return .failed
@@ -505,7 +510,7 @@ public final class WidgetCoordinator {
         }
         switch PermissionAccess.status(.camera) {
         case .notAsked: return .needsPermission
-        case .notAllowed: return .unavailable
+        case .notAllowed: return .denied
         // Allowed but no feed: the runtime did not start it, or it failed.
         case .allowed, .unknown: return .failed
         }
@@ -592,7 +597,8 @@ public final class WidgetCoordinator {
             case .unsupported: kind = .other
             }
             return ClipboardWidgetItem(id: record.id, preview: record.preview, kind: kind, image: image,
-                                       color: color, hasPayload: record.canCopy, link: record.browserURL)
+                                       color: color, hasPayload: record.canCopy, link: record.browserURL,
+                                       capturedAt: record.capturedAt)
         }
         return ClipboardWidgetState(items: items, copiedID: copiedID)
     }
@@ -700,6 +706,7 @@ public final class WidgetCoordinator {
                 self.shelfLoad = nil
                 self.shelfFiles = files
                 self.shelfURLs = urls
+                self.requestShelfThumbnails()
                 self.shelfFailed = false
                 self.shelfLoaded = true
             } catch {
@@ -716,11 +723,37 @@ public final class WidgetCoordinator {
     private func shelfState() -> FileShelfWidgetState {
         if shelfFailed { return FileShelfWidgetState(items: copyingRows, status: .failed) }
         let rows = shelfFiles.map { file in
-            FileShelfWidgetItem(id: file.id, name: file.fileName, dragURL: shelfURLs[file.id],
-                                status: shelfURLs[file.id] == nil ? .failed : .ready)
+            FileShelfWidgetItem(id: file.id, name: file.fileName, image: shelfThumbnails[file.id],
+                                dragURL: shelfURLs[file.id],
+                                status: shelfURLs[file.id] == nil ? .failed : .ready, addedAt: file.addedAt)
         }
         let status: FileShelfWidgetStatus = copyJob != nil ? .busy : (shelfLoaded ? .ready : .loading)
         return FileShelfWidgetState(items: copyingRows + rows, status: status)
+    }
+
+    /// One QuickLook request per file, for the 100 newest. A file with no
+    /// thumbnail gets its Finder icon.
+    private func requestShelfThumbnails() {
+        let ids = Set(shelfFiles.map(\.id))
+        shelfThumbnails = shelfThumbnails.filter { ids.contains($0.key) }
+        guard visible == .shelf else { return }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        for file in shelfFiles.prefix(100) where shelfThumbnails[file.id] == nil {
+            guard let url = shelfURLs[file.id], thumbnailRequests.insert(file.id).inserted else { continue }
+            let id = file.id
+            let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 64, height: 64),
+                                                       scale: scale, representationTypes: .thumbnail)
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in
+                let image = representation?.nsImage
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.thumbnailRequests.remove(id)
+                    guard self.shelfFiles.contains(where: { $0.id == id }) else { return }
+                    self.shelfThumbnails[id] = image ?? NSWorkspace.shared.icon(forFile: url.path)
+                    self.refreshShelf()
+                }
+            }
+        }
     }
 
     private func refreshShelf() {

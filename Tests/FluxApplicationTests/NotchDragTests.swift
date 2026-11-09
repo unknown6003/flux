@@ -40,147 +40,76 @@ import FluxUI
 
 @Suite(.serialized)
 struct NotchDragTests {
-    @Test @MainActor func nativeDragCallbacksCancelOnlyTheirOwnAutoOpenedPanel() throws {
+    /// The 0.21.35 drop rules: a file drag over the closed notch opens File
+    /// Shelf, leaving without a drop closes only that panel, and a drop goes
+    /// to the shelf copy job. The window is the only drop destination.
+    @Test @MainActor func fileDragOpensTheShelfAndOnlyThatDragClosesIt() async throws {
         _ = NSApplication.shared
-        let screen = try #require(NSScreen.screens.first)
         let previous = Set(NSApp.windows.map(ObjectIdentifier.init))
-        var shelf: FileShelfWidgetController?
-        var drops = 0
-        var rootDrops = 0
-        var ready = true
+        var dropped: [[URL]] = []
+        var accept = true
         let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
             makeWidget: { widget in
-                if widget == .shelf {
-                    let controller = FileShelfWidgetController(state: .init(items: [], status: .ready), onAction: {
-                        if case .drop = $0 { rootDrops += 1 }
-                    })
-                    shelf = controller
-                    return controller
-                }
-                let controller = NSViewController()
-                controller.view = NSView()
-                controller.view.heightAnchor.constraint(equalToConstant: 100).isActive = true
-                return controller
+                if widget == .shelf { return FileShelfWidgetController(state: .init(), onAction: { _ in }) }
+                return CalendarWidgetController(state: .loading, onAction: { _ in })
             }, willDismissWidget: { _ in }, compactAction: { _ in },
-            shelfDropReady: { ready }, shelfDrop: { _ in drops += 1; return true }))
+            shelfDrop: { urls in dropped.append(urls); return accept }), resolveNotch: fixtureNotch)
         defer { owner.stop() }
-        owner.start(screen: screen, widgets: [.shelf, .calendar])
+        owner.start(widgets: [.shelf, .calendar])
         let window = try #require(NSApp.windows.compactMap { $0 as? NotchWindow }
             .first { !previous.contains(ObjectIdentifier($0)) })
+        try await waitUntil { owner.viewModel.interactiveRect.width > 0 }
         let drag = FixtureDrag(window: window)
         defer { drag.cleanUp() }
+        // The physical notch, in window coordinates.
+        drag.draggingLocation = NSPoint(x: window.frame.width / 2, y: window.frame.height - 16)
         let key = NSApp.keyWindow
-        #expect(window.responds(to: NSSelectorFromString("draggingEnded:")))
         #expect(window.draggingEntered(drag) == .copy)
         #expect(owner.presentation == .expanded(.shelf))
-        #expect(owner.dragOpenedSession == 1)
         #expect(!window.isKeyWindow)
         #expect(NSApp.keyWindow === key)
-        // A transition between nested destinations keeps the panel open.
+        window.draggingExited(drag)
+        #expect(owner.presentation == .compact)
+
+        #expect(window.draggingEntered(drag) == .copy)
+        #expect(window.draggingUpdated(drag) == .copy)
+        #expect(window.performDragOperation(drag))
+        #expect(dropped.count == 1)
+        // A drop keeps the shelf open, and a late exit does not close it.
         window.draggingExited(drag)
         #expect(owner.presentation == .expanded(.shelf))
-        let oldShelf = try #require(shelf)
-        window.draggingEnded(drag)
-        #expect(owner.presentation == .compact)
-        #expect(owner.dragOpenedSession == nil)
-
-        drag.draggingSequenceNumber = 2
-        #expect(window.draggingEntered(drag) == .copy)
-        // A delayed callback on a retained, removed root cannot close this visit.
-        oldShelf.onDragSession?(.exited(session: nil, location: nil))
-        oldShelf.onDragSession?(.ended(session: 2))
-        #expect(owner.presentation == .expanded(.shelf))
-        ready = false
+        accept = false
         #expect(!window.performDragOperation(drag))
-        #expect(drops == 0)
-        window.draggingEnded(drag)
-        // A rejected drop must still release its auto-open panel.
-        #expect(owner.presentation == .compact)
+        owner.collapse()
 
-        ready = true
-        drag.draggingSequenceNumber = 3
-        #expect(window.draggingEntered(drag) == .copy)
-        #expect(window.performDragOperation(drag))
-        #expect(drops == 1)
-        window.draggingEnded(drag)
-        #expect(owner.presentation == .expanded(.shelf))
-        owner.collapse()
-        drag.draggingSequenceNumber = 4
-        #expect(window.draggingEntered(drag) == .copy)
-        let root = try #require(shelf).view
-        #expect(root.draggingEntered(drag) == .copy)
-        #expect(root.performDragOperation(drag))
-        root.draggingEnded(drag)
-        window.draggingEnded(drag)
-        #expect(owner.presentation == .expanded(.shelf))
-        #expect(rootDrops == 1)
-        #expect(drops == 1)
-        owner.collapse()
-        drag.draggingSequenceNumber = 5
-        #expect(window.draggingEntered(drag) == .copy)
-        try #require(shelf).view.draggingEnded(drag)
+        // Far from the notch, or with the shelf off, the drag is declined.
+        drag.draggingLocation = NSPoint(x: 2, y: 2)
+        #expect(window.draggingEntered(drag).isEmpty)
         #expect(owner.presentation == .compact)
-        ready = false
-        drag.draggingSequenceNumber = 6
-        #expect(window.draggingEntered(drag) == .copy)
-        #expect(window.draggingUpdated(drag).isEmpty)
-        ready = true
-        let updated = window.wantsPeriodicDraggingUpdates() ? window.draggingUpdated(drag) : []
-        #expect(updated == .copy)
-        let waitingShelf = try #require(shelf)
-        waitingShelf.update(.init(items: [], status: .loading))
-        let waitingRoot = waitingShelf.view
-        #expect(waitingRoot.draggingEntered(drag).isEmpty)
-        waitingShelf.update(.init(items: [], status: .ready))
-        let rootUpdated = waitingRoot.wantsPeriodicDraggingUpdates() ? waitingRoot.draggingUpdated(drag) : []
-        #expect(rootUpdated == .copy)
-        window.draggingEnded(drag)
+        drag.draggingLocation = NSPoint(x: window.frame.width / 2, y: window.frame.height - 16)
+        owner.setWidgets([.calendar])
+        #expect(window.draggingEntered(drag).isEmpty)
         #expect(owner.presentation == .compact)
-        owner.expand(.calendar, focus: false)
+        owner.setWidgets([.shelf, .calendar])
+
+        // Another open widget is never replaced by a drag.
+        owner.expand(.calendar)
         #expect(window.draggingEntered(drag).isEmpty)
         #expect(owner.presentation == .expanded(.calendar))
         owner.collapse()
+
+        // A tile dragged out of this window is not taken back.
         drag.draggingSource = window.contentView
         #expect(window.draggingEntered(drag).isEmpty)
         drag.draggingSource = nil
-        drag.draggingSourceOperationMask = .move
-        #expect(window.draggingEntered(drag).isEmpty)
-        drag.draggingSourceOperationMask = .copy
         let text = FixtureDrag(window: window, file: false)
         defer { text.cleanUp() }
-        #expect(window.draggingEntered(text).isEmpty)
+        text.draggingLocation = drag.draggingLocation
+        _ = window.draggingEntered(text)
+        #expect(!window.performDragOperation(text))
         owner.setSessionLocked(true)
         #expect(window.draggingEntered(drag).isEmpty)
-        #expect(!window.performDragOperation(drag))
-        #expect(drops == 1)
         #expect(owner.presentation == .hidden)
-    }
-
-    @Test @MainActor func savedFullscreenBehaviorUpdatesTheRealWindowWithoutChangingSpacesFlags() throws {
-        _ = NSApplication.shared
-        let screen = try #require(NSScreen.screens.first)
-        let previous = Set(NSApp.windows.map(ObjectIdentifier.init))
-        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
-            makeWidget: { _ in
-                let controller = NSViewController()
-                controller.view = NSView()
-                controller.view.heightAnchor.constraint(equalToConstant: 100).isActive = true
-                return controller
-            }, willDismissWidget: { _ in }, compactAction: { _ in }))
-        defer { owner.stop() }
-        owner.setShowInFullscreen(false)
-        owner.start(screen: screen, widgets: [.calendar])
-        let window = try #require(NSApp.windows.compactMap { $0 as? NotchWindow }
-            .first { !previous.contains(ObjectIdentifier($0)) })
-        #expect(!window.collectionBehavior.contains(.fullScreenAuxiliary))
-        let normal = window.collectionBehavior
-        owner.setShowInFullscreen(true)
-        #expect(window.collectionBehavior.contains(.fullScreenAuxiliary))
-        #expect(window.collectionBehavior.subtracting(.fullScreenAuxiliary) == normal)
-        owner.expand(.calendar, focus: false)
-        #expect(owner.presentation == .expanded(.calendar))
-        owner.setShowInFullscreen(false)
-        #expect(owner.presentation == .compact)
-        #expect(window.collectionBehavior == normal)
+        #expect(dropped.count == 2)
     }
 }

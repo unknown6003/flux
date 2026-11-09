@@ -4,146 +4,173 @@ import FluxCore
 import FluxUI
 @testable import FluxApplication
 
+/// A 180 x 32 pt notch at the top center of the first screen, so the window
+/// tests run the same way on a Mac with or without a physical notch.
+@MainActor func fixtureNotch() -> (screen: NSScreen, notch: CGRect)? {
+    guard let screen = NSScreen.screens.first else { return nil }
+    return (screen, CGRect(x: screen.frame.midX - 90, y: screen.frame.maxY - 32, width: 180, height: 32))
+}
+
+@MainActor func waitUntil(_ condition: @MainActor () -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+}
+
 @Suite(.serialized)
 struct NotchWindowTests {
-    @Test @MainActor func actualMediaAndDuoWidgetsKeepAVisibleViewport() async throws {
+    @Test @MainActor func widgetsAreMadeAndStoppedInTheOldTransitionOrder() async throws {
         _ = NSApplication.shared
-        let screen = try #require(NSScreen.screens.first)
-        var primary: NSView?
-        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
-            makeWidget: { widget in
-                if widget == .calendar {
-                    return CalendarWidgetController(state: .events(today: [
-                        .init(id: "example", title: "Example meeting", location: "Example room",
-                              start: Date(), end: Date().addingTimeInterval(1800), isAllDay: false)
-                    ], tomorrow: []), onAction: { _ in })
-                }
-                let controller = NowPlayingWidgetController(state: .init(status: .playing,
-                    title: "Example song", artist: "Example artist", elapsed: 65, duration: 240), onAction: { _ in })
-                primary = controller.view
-                return controller
-            }, willDismissWidget: { _ in }, compactAction: { _ in }))
-        defer { owner.stop() }
-        owner.start(screen: screen, widgets: [.nowPlaying, .calendar])
-        owner.expand(.nowPlaying, focus: false)
-        // Inspect the real window through its bound child, not an isolated
-        // widget whose fixture gives it an unrelated fixed height.
-        let window = try #require(primary?.window)
-        let panel = try #require(window.contentViewController as? NotchPanelController)
-        try await Task.sleep(for: .milliseconds(50))
-        panel.view.layoutSubtreeIfNeeded()
-        #expect(panel.contentViewportHeight > 60)
-        #expect(abs(panel.contentViewportHeight - panel.contentDocumentHeight) <= 1)
-        #expect(panel.contentDocumentHeight >= (primary?.fittingSize.height ?? 0) - 1)
-        owner.setDuo(true)
-        try await Task.sleep(for: .milliseconds(50))
-        panel.view.layoutSubtreeIfNeeded()
-        #expect(panel.companion == .calendar)
-        #expect(panel.contentViewportHeight > 60)
-        #expect(abs(panel.contentViewportHeight - panel.contentDocumentHeight) <= 1)
-        #expect(panel.contentDocumentHeight >= (primary?.fittingSize.height ?? 0) - 1)
-        #expect(window.frame.height <= screen.frame.height * 0.8 + 1)
-    }
-
-    @MainActor private func drainAppearanceChanges(until released: @MainActor () -> Bool) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
-        while !released(), clock.now < deadline {
-            // AppKit appearance tasks must get the main actor back. A nested
-            // synchronous run loop cannot run queued main-actor tasks.
-            try await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    @Test @MainActor func lateContentRefitsTheRealWindowAndCannotReopenACollapsedPanel() async throws {
-        _ = NSApplication.shared
-        let screen = try #require(NSScreen.screens.first)
-        var content: NSView?
-        var height: NSLayoutConstraint?
-        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
-            makeWidget: { _ in
-                let controller = NSViewController()
-                controller.view = NSView()
-                content = controller.view
-                let constraint = controller.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
-                constraint.isActive = true
-                height = constraint
-                return controller
-            }, willDismissWidget: { _ in }, compactAction: { _ in }))
-        defer { owner.stop() }
-        owner.start(screen: screen, widgets: [.calendar])
-        owner.expand(.calendar, focus: false)
-        let window = try #require(content?.window)
-        let initialHeight = window.frame.height
-        height?.constant = 600
-        owner.contentDidChange(.calendar)
-        owner.contentDidChange(.calendar)
-        try await drainAppearanceChanges { window.frame.height > initialHeight }
-        #expect(window.frame.height > initialHeight)
-        #expect(window.frame.height <= screen.frame.height * 0.8 + 1)
-        let panel = try #require(window.contentViewController as? NotchPanelController)
-        #expect(panel.contentDocumentHeight >= 600)
-        #expect(panel.contentDocumentHeight > panel.contentViewportHeight)
-        let scroll = try #require(panel.view.subviews.compactMap { $0 as? NSScrollView }.first)
-        let document = try #require(scroll.documentView)
-        scroll.contentView.scroll(to: .init(x: 0, y: document.frame.height - scroll.contentView.bounds.height))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        #expect(scroll.documentVisibleRect.maxY >= document.bounds.maxY - 1)
-        owner.contentDidChange(.calendar)
-        owner.collapse()
-        try await Task.sleep(for: .milliseconds(30))
-        #expect(owner.presentation == .compact)
-        #expect(content?.window == nil)
-    }
-
-    @Test @MainActor func actualPanelStopsWidgetBeforeItReleasesTheController() async throws {
-        _ = NSApplication.shared
-        let screen = try #require(NSScreen.screens.first)
         var calls: [String] = []
         weak var child: NSViewController?
         var presentations: [NotchWindowCoordinator.Presentation] = []
         let owner = NotchWindowCoordinator(callbacks: .init(
-            willShowWidget: { _, widget in calls.append("demand.\(widget.rawValue)") },
+            willShowWidget: { from, widget in calls.append("demand.\(from?.rawValue ?? "nil").\(widget.rawValue)") },
             makeWidget: { widget in
                 calls.append("make.\(widget.rawValue)")
                 let controller = NSViewController()
                 controller.view = NSView()
-                controller.view.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
                 child = controller
                 return controller
-            }, willDismissWidget: { _ in
+            }, willDismissWidget: { widget in
                 #expect(child != nil)
-                calls.append("stop")
-            }, compactAction: { _ in Issue.record("No compact action was requested") }))
+                calls.append("stop.\(widget?.rawValue ?? "nil")")
+            }, compactAction: { _ in Issue.record("No queue action was requested") }),
+            resolveNotch: fixtureNotch)
         defer { owner.stop() }
         owner.onPresentationChange = { presentations.append($0) }
-        owner.start(screen: screen, widgets: [.mirror, .shelf])
+        owner.start(widgets: [.mirror, .shelf])
         #expect(owner.presentation == .compact)
-        autoreleasepool { owner.expand(.mirror, focus: false) }
-        #expect(calls == ["demand.mirror", "make.mirror"])
+        autoreleasepool { owner.expand(.mirror) }
+        #expect(calls == ["demand.nil.mirror", "make.mirror"])
         #expect(owner.presentation == .expanded(.mirror))
-        // Reapplying configuration on the same screen must stop a disabled
-        // Mirror just as changing the widget list directly would.
-        autoreleasepool { owner.start(screen: screen, widgets: [.shelf]) }
+        // Disabling the open widget moves to the next one, as 0.21.35 did.
+        autoreleasepool { owner.start(widgets: [.shelf]) }
         #expect(owner.presentation == .expanded(.shelf))
-        #expect(calls.suffix(2) == ["demand.shelf", "make.shelf"])
+        #expect(calls.suffix(2) == ["demand.mirror.shelf", "make.shelf"])
         autoreleasepool { owner.collapse() }
-        #expect(calls.last == "stop")
-        try await drainAppearanceChanges { child == nil }
+        #expect(calls.last == "stop.shelf")
+        try await waitUntil { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .compact)
-        autoreleasepool { owner.expand(.shelf, focus: false) }
+        // The shortcut reopens the last widget.
+        autoreleasepool { owner.toggle() }
+        #expect(owner.presentation == .expanded(.shelf))
         autoreleasepool { owner.setSessionLocked(true) }
-        #expect(calls.suffix(3) == ["demand.shelf", "make.shelf", "stop"])
-        try await drainAppearanceChanges { child == nil }
+        #expect(calls.suffix(3) == ["demand.nil.shelf", "make.shelf", "stop.shelf"])
+        try await waitUntil { child == nil }
         #expect(child == nil)
         #expect(owner.presentation == .hidden)
-        owner.expand(.mirror, focus: true)
+        owner.expand(.mirror)
+        owner.toggle()
         #expect(owner.presentation == .hidden)
         owner.setSessionLocked(false)
         #expect(owner.presentation == .compact)
-        #expect(child == nil)
-        #expect(presentations == [.compact, .expanded(.mirror), .expanded(.shelf), .hidden, .compact,
-                                   .expanded(.shelf), .hidden, .compact])
+        #expect(presentations == [.compact, .expanded(.mirror), .expanded(.shelf), .compact,
+                                  .expanded(.shelf), .hidden, .compact])
+    }
+
+    @Test @MainActor func duoCalendarPaneFollowsNowPlaying() throws {
+        _ = NSApplication.shared
+        var calls: [String] = []
+        let owner = NotchWindowCoordinator(callbacks: .init(
+            willShowWidget: { _, widget in calls.append("show.\(widget.rawValue)") },
+            makeWidget: { widget in
+                calls.append("make.\(widget.rawValue)")
+                if widget == .calendar { return CalendarWidgetController(state: .loading, onAction: { _ in }) }
+                return NowPlayingWidgetController(state: .empty, onAction: { _ in })
+            }, willDismissWidget: { widget in calls.append("stop.\(widget?.rawValue ?? "nil")") },
+            compactAction: { _ in },
+            companionChanged: { calls.append("companion.\($0?.rawValue ?? "nil")") }),
+            resolveNotch: fixtureNotch)
+        defer { owner.stop() }
+        owner.start(widgets: [.nowPlaying, .calendar, .shelf])
+        owner.expand(.nowPlaying)
+        owner.setDuo(true)
+        #expect(owner.companion == .calendar)
+        #expect(owner.viewModel.duoActive)
+        owner.setDuo(true)
+        owner.viewModel.swiped(.left)
+        #expect(owner.presentation == .expanded(.calendar))
+        #expect(owner.companion == nil)
+        owner.viewModel.swiped(.right)
+        #expect(owner.companion == .calendar)
+        owner.collapse()
+        #expect(owner.companion == nil)
+        #expect(calls == ["show.nowPlaying", "make.nowPlaying", "companion.calendar", "make.calendar",
+                          "companion.nil", "show.calendar", "make.calendar",
+                          "show.nowPlaying", "make.nowPlaying", "companion.calendar", "make.calendar",
+                          "stop.nowPlaying", "companion.nil"])
+    }
+
+    @Test @MainActor func fixedPanelSitsOnThePhysicalNotchAndPassesClicksThroughWhileClosed() throws {
+        _ = NSApplication.shared
+        let (screen, notch) = try #require(fixtureNotch())
+        let previous = Set(NSApp.windows.map(ObjectIdentifier.init))
+        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
+            makeWidget: { _ in NSViewController(nibName: nil, bundle: nil) }, willDismissWidget: { _ in },
+            compactAction: { _ in }), resolveNotch: fixtureNotch)
+        defer { owner.stop() }
+        owner.setShowInFullscreen(false)
+        owner.start(widgets: [.calendar])
+        let windows = NSApp.windows.filter { !previous.contains(ObjectIdentifier($0)) }
+        let panel = try #require(windows.compactMap { $0 as? NotchWindow }.first)
+        let bounds = NotchMetrics.panelBounds(for: notch.width)
+        #expect(panel.frame == CGRect(x: notch.midX - bounds.width / 2, y: screen.frame.maxY - bounds.height,
+                                      width: bounds.width, height: bounds.height))
+        #expect(panel.ignoresMouseEvents)
+        #expect(!panel.canBecomeKey)
+        #expect(panel.level == .statusBar)
+        let trigger = try #require(windows.compactMap { $0 as? NotchHoverPanel }.first)
+        #expect(trigger.frame == notch)
+        #expect(trigger.isVisible)
+        #expect(!panel.collectionBehavior.contains(.fullScreenAuxiliary))
+        owner.setShowInFullscreen(true)
+        #expect(panel.collectionBehavior.contains(.fullScreenAuxiliary))
+        #expect(trigger.collectionBehavior.contains(.fullScreenAuxiliary))
+        owner.expand(.calendar)
+        #expect(!trigger.isVisible)
+        owner.collapse()
+        #expect(trigger.isVisible)
+    }
+
+    @Test @MainActor func withoutANotchedDisplayNothingShowsOrOpens() {
+        _ = NSApplication.shared
+        var made = 0
+        let owner = NotchWindowCoordinator(callbacks: .init(willShowWidget: { _, _ in },
+            makeWidget: { _ in made += 1; return NSViewController(nibName: nil, bundle: nil) },
+            willDismissWidget: { _ in }, compactAction: { _ in }), resolveNotch: { nil })
+        defer { owner.stop() }
+        owner.start(widgets: [.calendar])
+        owner.toggle()
+        owner.expand(.calendar)
+        #expect(owner.presentation == .hidden)
+        #expect(made == 0)
+    }
+
+    @Test @MainActor func oldHoverClickAndDragRulesAreKept() {
+        let notch = CGRect(x: 666, y: 950, width: 180, height: 32)
+        #expect(NotchWindowCoordinator.collapsedHoverRect(notchRect: notch) == CGRect(x: 642, y: 930, width: 228, height: 52))
+        #expect(NotchWindowCoordinator.collapsedClickRect(notchRect: notch) == CGRect(x: 650, y: 950, width: 212, height: 32))
+        #expect(NotchWindowCoordinator.collapsedHoverPanelRect(notchRect: notch) == notch)
+        #expect(NotchWindowCoordinator.collapsedHoverRect(notchRect: .zero).isNull)
+        #expect(NotchWindowCoordinator.openHoverRect(interactiveRect: CGRect(x: 10, y: 0, width: 100, height: 50))
+                == CGRect(x: 6, y: -4, width: 108, height: 58))
+        #expect(NotchWindowCoordinator.shouldIgnoreMouseEvents(state: .collapsed, pointInsideVisibleShape: true))
+        #expect(!NotchWindowCoordinator.shouldIgnoreMouseEvents(state: .expanded(.shelf), pointInsideVisibleShape: true))
+        #expect(NotchWindowCoordinator.shouldIgnoreMouseEvents(state: .expanded(.shelf), pointInsideVisibleShape: false))
+        #expect(NotchWindowCoordinator.shouldAcceptDrag(state: .collapsed, pointInNotch: true, shelfEnabled: true))
+        #expect(!NotchWindowCoordinator.shouldAcceptDrag(state: .collapsed, pointInNotch: true, shelfEnabled: false))
+        #expect(NotchWindowCoordinator.shouldAcceptDrag(state: .expanded(.shelf), pointInNotch: true, shelfEnabled: true))
+        #expect(!NotchWindowCoordinator.shouldAcceptDrag(state: .expanded(.calendar), pointInNotch: true, shelfEnabled: true))
+        #expect(!NotchWindowCoordinator.shouldAcceptDrag(state: .activity(UUID()), pointInNotch: true, shelfEnabled: true))
+        #expect(NotchWindowCoordinator.shouldAcceptMonitoredInput(isPresenting: true, mainWindowVisible: true,
+            triggerWindowVisible: false, showInFullscreen: true, mainWindowOnActiveSpace: false, triggerWindowOnActiveSpace: false))
+        #expect(!NotchWindowCoordinator.shouldAcceptMonitoredInput(isPresenting: true, mainWindowVisible: true,
+            triggerWindowVisible: false, showInFullscreen: false, mainWindowOnActiveSpace: false, triggerWindowOnActiveSpace: false))
+        #expect(NotchWindowCoordinator.dragSlop == 20)
+        #expect(NotchScreenGeometry.notchRect(frame: CGRect(x: 0, y: 0, width: 1512, height: 982), safeAreaTop: 32,
+            menuBarThickness: 37, leftArea: CGRect(x: 0, y: 950, width: 663, height: 32),
+            rightArea: CGRect(x: 849, y: 950, width: 663, height: 32), backingScaleFactor: 2)
+                == CGRect(x: 664, y: 950, width: 184, height: 32))
     }
 }

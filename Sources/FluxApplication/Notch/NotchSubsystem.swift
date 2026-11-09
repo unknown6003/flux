@@ -16,6 +16,10 @@ import FluxUI
         public var timerCompleted: @MainActor (Countdown) -> Void
         public var activityChanged: @MainActor (ActivityItem?) -> Void
         public var makeLockScreenService: @MainActor () throws -> any FeatureServiceHandle
+        /// The menu a right-click on the notch shows, as in 0.21.35.
+        public var contextMenu: @MainActor () -> NSMenu?
+        /// A tap on the menu-bar overflow wing. 0.21.35 opened Menu Bar settings.
+        public var openMenuBarSettings: @MainActor () -> Void
 
         public init(report: @escaping @MainActor (NotchRuntimeFailure) -> Void,
                     contentChanged: @escaping @MainActor (WidgetEvent) -> Void,
@@ -24,12 +28,16 @@ import FluxUI
                     accessChanged: @escaping @MainActor () -> Void,
                     timerCompleted: @escaping @MainActor (Countdown) -> Void,
                     activityChanged: @escaping @MainActor (ActivityItem?) -> Void,
-                    makeLockScreenService: @escaping @MainActor () throws -> any FeatureServiceHandle) {
+                    makeLockScreenService: @escaping @MainActor () throws -> any FeatureServiceHandle,
+                    contextMenu: @escaping @MainActor () -> NSMenu? = { nil },
+                    openMenuBarSettings: @escaping @MainActor () -> Void = {}) {
             self.report = report; self.contentChanged = contentChanged
             self.phaseChanged = phaseChanged; self.cameraRunning = cameraRunning
             self.accessChanged = accessChanged; self.timerCompleted = timerCompleted
             self.activityChanged = activityChanged
             self.makeLockScreenService = makeLockScreenService
+            self.contextMenu = contextMenu
+            self.openMenuBarSettings = openMenuBarSettings
         }
     }
 
@@ -61,7 +69,13 @@ import FluxUI
                 self?.callbacks.phaseChanged(phase)
             }, presenting: { [weak self] in self?.activities.setPresenting($0) },
             environmentChanged: { [weak self] in self?.activities.reconcile() },
-            makeAdditionalService: { [unowned self] _ in try self.callbacks.makeLockScreenService() }))
+            makeAdditionalService: { [unowned self] _ in try self.callbacks.makeLockScreenService() },
+            contextMenu: { [unowned self] in self.callbacks.contextMenu() },
+            activityTap: { [unowned self] kind in
+                guard kind == .menuBarOverflow else { return false }
+                self.callbacks.openMenuBarSettings()
+                return true
+            }))
 
     public init(preferences: PreferenceStore, files: ApplicationFiles, mediaScript: URL,
                 mediaFramework: URL, callbacks: Callbacks) {
@@ -91,7 +105,7 @@ import FluxUI
     public func setOverflowCount(_ count: Int) { guard active else { return }; activities.setOverflowCount(count) }
     public func startTimer(minutes: Int) throws {
         guard active, [1, 5, 10, 25].contains(minutes) else { return }
-        try activities.timers.start(duration: TimeInterval(minutes * 60), label: "\(minutes)m")
+        try activities.timers.start(duration: TimeInterval(minutes * 60), label: "\(minutes) min")
     }
     public func cancelAllTimers() { guard active else { return }; activities.timers.cancelAll() }
     public var timerCount: Int { active ? activities.timers.timers.count : 0 }

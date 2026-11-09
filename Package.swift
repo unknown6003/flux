@@ -125,6 +125,12 @@ let package = Package(
             dependencies: ["FluxApplication", "FluxCore", "FluxPlatform", "FluxUI"],
             path: "Scripts/rebuild/MenuBarArrangeProbe",
             swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "FluxNotchProbe",
+            dependencies: ["FluxCore", "FluxUI"],
+            path: "Scripts/rebuild/NotchProbe",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]
 )
