@@ -51,4 +51,16 @@ public enum MenuBarAction: Sendable {
 public enum ApplicationFailure: Sendable {
     case settings(SettingsFailure), runtime(NotchRuntimeFailure)
     case menuBarRecovery, timer, link
+
+    var usageCode: UsageEvent.Failure {
+        switch self {
+        case .settings(.saveFailed): .preferenceSaveFailed
+        case .settings(.loginItemFailed): .loginItemFailed
+        case .settings(.clipboardFailed): .clipboardFailed
+        case .runtime: .serviceUnavailable
+        case .menuBarRecovery: .visibilityUnavailable
+        case .timer: .timerFailed
+        case .link: .linkFailed
+        }
+    }
 }

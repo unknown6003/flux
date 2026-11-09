@@ -16,14 +16,15 @@ import FluxUI
     let previousSessionWasUnclean = false
     let previousCameraWasRunning = false
     let trace: HostTrace
-    init(root: URL, defaults: UserDefaults, domain: String, trace: HostTrace) throws {
+    init(root: URL, defaults: UserDefaults, domain: String, trace: HostTrace,
+         usage: UsageCollection? = nil) throws {
         files = ApplicationFiles(applicationSupport: root)
         preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
         try preferences.set(false, for: Preferences.notchEnabled)
         try preferences.set(false, for: Preferences.automaticUpdateChecks)
         try preferences.set(false, for: Preferences.enableHotkey)
         try preferences.set(3, for: Preferences.shelfExpiryDays)
-        usage = UsageCollection(defaults: defaults) { _ in
+        self.usage = usage ?? UsageCollection(defaults: defaults) { _ in
             Issue.record("An off analytics client was constructed")
             throw FixtureError.unexpected
         }
@@ -35,6 +36,18 @@ import FluxUI
 }
 
 private enum FixtureError: Error { case unexpected }
+
+private actor HostUsageTransport: UsageTransport {
+    let received: AsyncStream<UsageRequest>
+    private let continuation: AsyncStream<UsageRequest>.Continuation
+    init() {
+        (received, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+    }
+    func send(_ request: UsageRequest) async throws -> UsageResponse {
+        continuation.yield(request)
+        return UsageResponse(status: 200, body: Data(#"{"status":"Ok"}"#.utf8))
+    }
+}
 
 @MainActor private final class HostFixtureMenu: MenuBarService {
     var onAction: (@MainActor (MenuBarAction) -> Void)?
@@ -79,6 +92,42 @@ private enum FixtureError: Error { case unexpected }
 
 @Suite(.serialized)
 struct ApplicationHostTests {
+    @Test(.timeLimit(.minutes(1))) @MainActor func hostFailureReachesTheOptedInCollectorAsAFixedCode() async throws {
+        let domain = "org.fluxfixture.host.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let transport = HostUsageTransport()
+        let usage = UsageCollection(defaults: defaults) { identity in
+            try PostHogClient(projectToken: "phc_fixture", identity: identity, transport: transport,
+                              flushDelay: .milliseconds(1))
+        }
+        await usage.setEnabled(true)
+        let trace = HostTrace()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("flux-host-\(UUID())")
+        let session = try HostFixtureSession(root: root, defaults: defaults, domain: domain, trace: trace, usage: usage)
+        var reported = false
+        let host = ApplicationHost(owner: session, menuBar: HostFixtureMenu(trace), lockScreen: HostFixtureLockScreen(),
+            failure: { value in
+                if case .settings(.saveFailed) = value { reported = true }
+                else { Issue.record("Unexpected host failure") }
+            }, quit: { Issue.record("Unexpected quit") })
+        host.report(.saveFailed)
+        #expect(reported)
+        var iterator = await transport.received.makeAsyncIterator()
+        let request = try #require(await iterator.next())
+        await usage.setEnabled(false)
+        #expect(request.endpoint == .events)
+        let payload = try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
+        let batch = try #require(payload["batch"] as? [[String: Any]])
+        #expect(batch.count == 1)
+        #expect(batch.first?["event"] as? String == "$exception")
+        let properties = try #require(batch.first?["properties"] as? [String: Any])
+        #expect(properties["failure_code"] as? String == "preferenceSaveFailed")
+        #expect(Set(properties.keys) == Set(["failure_code", "$process_person_profile", "$geoip_disable",
+                                           "$exception_list", "$exception_fingerprint"]))
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+
     @Test @MainActor func offFeatureStartupAndSettingsVisitsUseTheRealHostAndStopBeforeSessionFinish() async throws {
         _ = NSApplication.shared
         let appearance = NSApp.appearance
@@ -90,9 +139,15 @@ struct ApplicationHostTests {
         let trace = HostTrace()
         let session = try HostFixtureSession(root: root, defaults: defaults, domain: domain, trace: trace)
         let menu = HostFixtureMenu(trace)
+        var failures = 0
         let host = ApplicationHost(owner: session, menuBar: menu, lockScreen: HostFixtureLockScreen(),
-            failure: { _ in Issue.record("Unexpected host failure") }, quit: { Issue.record("Unexpected quit") })
+            failure: { value in
+                if case .settings(.saveFailed) = value { failures += 1 }
+                else { Issue.record("Unexpected host failure") }
+            }, quit: { Issue.record("Unexpected quit") })
         try host.start()
+        host.report(.saveFailed)
+        #expect(failures == 1)
         #expect(trace.calls == ["menu.start", "session.ready"])
         #expect(!FileManager.default.fileExists(atPath: root.path))
         host.showSettings(.menuBar)

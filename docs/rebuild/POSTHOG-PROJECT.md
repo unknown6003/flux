@@ -18,7 +18,7 @@ Raw evidence is ignored under `build/native-posthog-22fcc49/`: transport.json, s
 
 ## Open gates
 
-The native candidate binds the Settings consent control to UsageCollection. No rollout flag, experiment or production dashboard has been activated. A fixed manual rating survey is prepared as a draft; its native entry and fake-transport acknowledgement flow passed four AppKit scenarios. Live rating readback remains open. The client can encode these fixed-schema uses; that is not a finished user flow. Replay and AppKit interaction autocapture are excluded by the privacy and performance contract. Manual fixed-code exceptions do not prove automatic crash reporting.
+The native candidate binds the Settings consent control to UsageCollection. No rollout flag, experiment or production dashboard has been activated. A fixed manual rating survey is prepared as a draft; its native entry and fake-transport acknowledgement flow passed four AppKit scenarios. Live synthetic rating acknowledgement and server readback passed as described below. Signed product acceptance remains open. Replay and AppKit interaction autocapture are excluded by the privacy and performance contract. Manual fixed-code exceptions do not prove automatic crash reporting.
 
 Whole-app performance with analytics on and off, signed upgrade acceptance and outgoing content-canary tests remain release gates. The new client is not in the installed0.21.35 app.
 
@@ -36,7 +36,7 @@ A UI acknowledgement requires HTTP 200 with the documented batch status
 "Ok" or legacy numeric status 1, and no reported quota suppression. It rejects late replies after reset or opt-out and observes
 caller cancellation. This is ingestion acknowledgement, not proof that a
 server query has processed the event. Native controls and the fake acknowledgement path passed CI42559152812.
-Live rating readback remains required. A canceled or failed request may already have reached the server.
+A canceled or failed request may already have reached the server.
 
 References: https://posthog.com/docs/api/surveys,
 https://posthog.com/docs/surveys/implementing-custom-surveys and
@@ -53,5 +53,15 @@ Live probe CI42559974776 returned HTTP200 for all four requests, but the new
 rating acknowledgement check rejected the15-byte batch reply. The official
 API overview documents status "Ok". Core now accepts that exact value plus
 legacy numeric1, rejects false/error/string-number forms, and retains quota
-suppression checks. The failed run is not a rating-delivery pass. The next
-live run and server readback must prove the corrected contract.
+suppression checks. The failed run is not a passing acknowledgement result.
+
+CI42560579111 at64c1fcf passed the corrected native probe. Its receipt reports
+ratingAccepted=true and transportAccepted=true. Flags, events, logs and the
+rating request returned HTTP200. A separate authenticated readback found
+exactly three synthetic events for that probe's random ID: feature opened,
+the fixed exception and one survey response. The rating was string "4", with
+the configured survey ID and completed marker. All three had the validation
+and no-profile markers, with no IP or location fields. The person API returned
+zero profiles. Evidence is in ignored build/native-posthog-64c1fcf/transport.json
+and server-readback.json. This is synthetic client/server proof, not a rating
+sent through the installed app's sheet.

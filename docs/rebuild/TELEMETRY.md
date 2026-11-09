@@ -1,6 +1,6 @@
 # PostHog contract
 
-Status: the Swift 6 client, transport and opt-in controller are implemented. Forty-one core tests passed on macOS at22fcc49. The Flux EU project is configured. A live native probe and server readback passed. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
+Status: the Swift 6 client, transport and opt-in controller are implemented. The Flux EU project is configured. A live native probe, rating acknowledgement and server readback passed at64c1fcf. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
 
 ## Data
 
@@ -36,7 +36,15 @@ A one-shot flush task exists only while records wait. Empty and disabled clients
 
 Missing consent keys default to off on both new and upgraded profiles. Only an explicit saved opt-in starts the client. Disabling cancels the pending task and request, drops records and clears cached assignments. A request already received by the server cannot be recalled. Reset drops pending work, clears flags/exposures, and changes the random ID. Late UI submissions carrying the previous local ID are rejected.
 
-The encoders support usage events, presentation flags, experiment exposures/conversions, fixed-code manual exceptions, structured code-only logs and fixed rating survey events. No native crash handler, recorder, AppKit autocapture or survey presentation is installed. Do not label a rating event encoder as a completed survey experience.
+The encoders support usage events, presentation flags, experiment exposures/conversions, fixed-code manual exceptions, structured code-only logs and fixed rating survey events. A deliberate About rating sheet is bound to the acknowledged submission path. No native crash handler, recorder, AppKit autocapture or automatic survey presentation is installed. Flags and experiments have no active product rollout.
+
+ApplicationHost routes its existing failure callback through the opt-in collector
+before calling the local reporter. The exhaustive mapping accepts only typed
+ApplicationFailure cases. Settings save, login, clipboard, recovery, timer and
+link failures have fixed codes; runtime and widget failures share the coarse
+serviceUnavailable code. It reads no error object, title, URL, item or payload.
+The off path still invokes the local reporter without constructing a client.
+This wiring needs the next native host check before it is counted as passed.
 
 ## Proposed release budgets
 

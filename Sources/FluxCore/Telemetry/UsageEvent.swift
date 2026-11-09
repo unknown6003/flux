@@ -17,6 +17,7 @@ public enum UsageEvent: Sendable, Equatable {
 
     public enum Failure: String, Sendable, CaseIterable {
         case visibilityUnavailable, policyConflict, permissionDenied, updateFailed, serviceUnavailable
+        case preferenceSaveFailed, loginItemFailed, clipboardFailed, timerFailed, linkFailed
     }
 
     case launched

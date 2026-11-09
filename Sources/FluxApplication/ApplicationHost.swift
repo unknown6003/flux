@@ -10,7 +10,7 @@ import FluxUI
     private let menuBar: any MenuBarService
     private let lockScreen: any LockScreenService
     private let bundle: Bundle
-    private let failure: @MainActor (ApplicationFailure) -> Void
+    private let onFailure: @MainActor (ApplicationFailure) -> Void
     private let quit: @MainActor () -> Void
     private var active = false
     private var crashDismissed = false
@@ -50,7 +50,7 @@ import FluxUI
          bundle: Bundle = .main, failure: @escaping @MainActor (ApplicationFailure) -> Void,
          quit: @escaping @MainActor () -> Void) {
         self.session = owner; self.menuBar = menuBar; self.lockScreen = lockScreen
-        self.bundle = bundle; self.failure = failure; self.quit = quit
+        self.bundle = bundle; self.onFailure = failure; self.quit = quit
     }
 
     deinit { permissionTask?.cancel() }
@@ -245,4 +245,9 @@ import FluxUI
         }
     }
     private func open(_ url: URL) { if !NSWorkspace.shared.open(url) { failure(.link) } }
+
+    private func failure(_ value: ApplicationFailure) {
+        session.usage.record(.failed(value.usageCode))
+        onFailure(value)
+    }
 }
