@@ -114,7 +114,7 @@ def main():
                   executableSHA256=hashlib.sha256((contents / "MacOS/Flux").read_bytes()).hexdigest(),
                   bundleID=info["CFBundleIdentifier"],
                   version=info["CFBundleShortVersionString"], build=info["CFBundleVersion"],
-                  privateLockBridgeEnabled=False, macOS27Hiding="MenuBarAgent allow list",
+                  privateLockBridgeEnabled=True, macOS27Hiding="MenuBarAgent allow list",
                   sameProcessMenuCaptureRequiresExplicitTemporaryDirectory=True,
                   leafSHA256=hashlib.sha256(leaf).hexdigest(), sizeBytes=archive.stat().st_size,
                   sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
