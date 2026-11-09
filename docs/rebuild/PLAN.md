@@ -162,9 +162,11 @@ Three source review axes found no blocking defect; the named-code heuristic
 and proxy wording were fixed. A primary follow-up makes cancellation win a
 response-copy race.
 
-CI at 3164012 passed 85 Core, 46 Platform, 11 UI and 50 Application tests; its
-candidate and live ingestion steps were still running at this checkpoint.
-The final source adds a pre-cancelled request test and explicit fixture
-lifetimes. It must pass native CI before the next three signed-app performance
-pairs. Physical menu-bar and lock-screen acceptance remain open. The owner's
+Final-source CI 42599206633 at 2f9c959 passed 86 Core, 46 Platform, 11 UI
+and 50 Application tests, the four rating and one identity confirmation
+scenarios, updater controls and the matching-signed candidate build. Restricted
+readback confirmed three synthetic events including the rating, no person
+profiles and no stored IP/geolocation fields. The final source includes a
+pre-cancelled request test and explicit fixture lifetimes. The next three
+signed-app analytics on/off performance pairs are running on the Mac. Physical menu-bar and lock-screen acceptance remain open. The owner's
 Screen Recording step is still pending. No update was released.

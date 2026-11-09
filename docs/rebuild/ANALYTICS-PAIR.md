@@ -1,6 +1,6 @@
 # Analytics idle pairs, 9 November 2026
 
-Result: **FAIL** at source `283d50c734e9d4115d23a9df258d0c6d2d3d7bd4`.
+Historical Foundation result: **FAIL** at source `283d50c734e9d4115d23a9df258d0c6d2d3d7bd4`.
 Pair three exceeded the interrupt wakeup budget. The mean does not pass a
 failed pair. All CPU, physical-footprint and idle-wakeup pairs passed.
 
@@ -37,11 +37,10 @@ property-list and history serialization bytes changed; session state and
 timestamps also changed. The trial did not overwrite user content to force
 byte equality.
 
-The retained URLSession is one source hypothesis, not a proved cause. The
-new transport creates a session only when sending and invalidates it on every
-exit. Source review found no retained defect. Native lifecycle tests and a
-fresh three-pair run of the new signed artifact must pass before any cost
-reduction claim. The original budget remains unchanged.
+The retained URLSession is one source hypothesis, not a proved cause. The next
+Foundation candidate created a session only when sending and invalidated it
+on every exit. Source review found no retained defect, but the fresh three-pair
+measurement below failed. The original budget remains unchanged.
 
 This empty-profile trial does not accept hiding, active features, user-action
 latency, full-system performance or release readiness.
@@ -61,9 +60,10 @@ all six raw sample metrics.
 
 The burst is concentrated in the first 20–25 seconds of sampling and then ends.
 The transport change did not pass its intended budget. Do not increase the
-warmup, select a quiet tail or relax the limit to turn it into a pass. The next
-step is a smaller direct-transport/client/idle experiment, not another guessed
-production change. See TELEMETRY-DIAGNOSIS.md.
+warmup, select a quiet tail or relax the limit to turn it into a pass. The following direct-transport/client/idle experiment reproduced the burst in
+Foundation. A later narrow curl comparison supported a driver alternative.
+See TELEMETRY-DIAGNOSIS.md for its limits and the bounded production change.
+The new curl-backed signed app still needs the same three-pair budget test.
 
 The original app and full preferences were restored. Clipboard bytes changed
 and changeCount rose from 1230 to 1231. Current content was preserved. Saved

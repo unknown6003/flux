@@ -1,6 +1,6 @@
 # PostHog contract
 
-Status: the Swift 6 client, transport and opt-in controller are implemented. The Flux EU project is configured. A live native probe, rating acknowledgement and server readback passed at64c1fcf. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
+Status: the Swift 6 client, transport and opt-in controller are implemented. The Flux EU project is configured. Live native probes, rating acknowledgements and restricted server readbacks passed, including the final curl transport source at 2f9c959. The old installed app has no new telemetry integration. See POSTHOG-PROJECT.md for evidence and limits.
 
 ## Data
 
@@ -30,21 +30,25 @@ The owner account and restricted maintenance key are in the shared credential st
 
 ## Chosen client
 
-Use the native public HTTP contracts, without the SDK. It has a serial actor, an ephemeral URLSession with no cookies, cache or credential store, one active request, fixed hosts, refused redirects, five-second request and eight-second resource timeouts. Response decoding stops at 64 KiB. There are at most 64 queued events and 32 queued logs. Each send takes at most 20 records. Rate limits apply before the UI controller creates asynchronous work and again at the actor.
+Use the native public HTTP contracts, without the SDK. The client is a serial actor. A small C libcurl driver runs on a utility queue, with one active transfer, fixed HTTPS hosts, verified TLS, refused redirects, five-second connect and eight-second transfer timeouts. Each transfer uses a fresh handle with no cookies or netrc. Request and response bodies stop at 64 KiB; accepted response headers stop at 16 KiB. Atomic cancellation aborts transfer callbacks, and Swift rejects canceled results. Libcurl is initialized once for the process; per-request cleanup never tears down shared global state. There are at most 64 queued events and 32 queued logs. Each send takes at most 20 records. Rate limits apply before the UI controller creates asynchronous work and again at the actor.
 
 The first three empty-profile on/off pairs at 283d50c failed the wakeup
 budget in pair three: +0.11665 interrupt wakeups per second. Other measured
 budgets passed. Network settling was not measured, so the source of those
 wakeups is unresolved. The transport retained its session between requests.
-It now creates an ephemeral session only for a send and invalidates it on
-every exit. Native Core checks at b480a59 passed the real URLSession lifecycle
+The next candidate created an ephemeral session only for a send and invalidated
+it on every exit. Native Core checks at b480a59 passed the real URLSession lifecycle
 fixture, including lazy creation and invalidation after three successful sends
 and an oversized response. Source review found no retained issue. These checks
 prove cleanup in those cases, not a resource saving. A new paired measurement
 was run at e10b2c0 and failed all three interrupt-wakeup comparisons, with
 extra rates of +0.316641, +0.316662 and +0.349920 per second. No cost reduction
-is claimed. The source of the wakes remains unresolved. A separate Core-only
-probe now distinguishes network completion, retries and work from the app.
+is claimed. The source of the wakes remains unresolved. A Core-only probe distinguished network completion, retries and work from the app.
+A later one-run-per-engine comparison observed idle 1, Foundation 44 and curl 1
+interrupt wakeups over 60 seconds each. That supported the bounded curl change;
+it did not estimate variance or pass the signed app budget. Native TLS tests
+cover all routes, trust and hostname rejection, redirects, caps, cancellation
+and timeout. The new three-pair app measurement remains due.
 See ANALYTICS-PAIR.md and TELEMETRY-DIAGNOSIS.md.
 
 A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.

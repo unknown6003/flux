@@ -185,3 +185,29 @@ switch now uses named constants. The proxy paragraph was clarified because
 libcurl can consume credentials from proxy environment URLs. A primary follow-up
 also makes Swift task cancellation take precedence over a simultaneous result
 copy error. Native tests and real performance remain required.
+
+
+## Final native check and next app measurement
+
+[CI 42599206633](https://github.com/unknown6003/flux/actions/runs/42599206633)
+passed at source `2f9c9598f2f2693b341622259b0df0f63f525463`: 86 Core,
+46 Platform, 11 UI and 50 Application tests, four rating scenarios and one
+identity confirmation scenario, updater controls and a matching-signed
+0.22.0 build 64 candidate. The local TLS tests include pre-cancelled work,
+active cancellation, recovery, trust/hostname refusal, redirects, all routes,
+response caps and timeout. Restricted fresh server readback confirmed the
+three synthetic events including the acknowledged rating, no person profiles
+and no stored IP/geolocation fields. Initial reads returned no events; later
+fresh blocking reads confirmed ingestion. HTTP 200 alone was not counted as
+ingestion proof.
+
+Candidate ZIP SHA-256 is
+`7ed7198f11be24b69aa429567750a0394c496aafb592bf0cf6e609874168937e`,
+1,807,677 bytes. Its executable SHA-256 is
+`0e3fda115787b08434f1f072f48c439f85c740d7f6c239178e740344ef4a564f`.
+The uploaded copy was downloaded and matched. The next signed-app trial uses
+that exact artifact, unchanged 45-second warmups, six 60-second samples and
+the original per-pair budgets. It must restore the installed app and saved
+state without overwriting concurrent user changes. It is running, not passed.
+Physical hiding, normal workloads, action latency and release acceptance remain
+open. No update was published.
