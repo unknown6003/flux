@@ -45,6 +45,9 @@ import FluxUI
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentViewController = page
+        // The page is a scroll view with no fitting size; keep the window readable.
+        window.setContentSize(NSSize(width: 680, height: 700))
+        window.setFrameTopLeftPoint(NSPoint(x: 80, y: (NSScreen.main?.visibleFrame.maxY ?? 800) - 40))
         window.orderFrontRegardless()
         service.onChange = { page.update(service.state) }
         service.start()

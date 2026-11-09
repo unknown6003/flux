@@ -163,11 +163,29 @@ def main():
                     raise RuntimeError(f"fixtures did not appear: {counts}")
                 time.sleep(1)
 
-            try:
-                video = subprocess.Popen(["/usr/sbin/screencapture", "-x", "-v", "-V", "75", str(output / "arrange.mov")],
-                                         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except OSError:
-                video = None
+            def start_video():
+                try:
+                    log = (output / "video.log").open("w")
+                    process = subprocess.Popen(["/usr/sbin/screencapture", "-x", "-v", "-V", "45",
+                                                str(output / "arrange.mov")], start_new_session=True,
+                                               stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+                except OSError:
+                    return None
+                time.sleep(2)
+                return process
+
+            def finish_video(process):
+                # A timed recording saves its file when it runs to the end.
+                try:
+                    status = process.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGINT)
+                    try:
+                        status = process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        status = "killed"
+                print(f"video: exit {status}, saved={(output / 'arrange.mov').exists()}", flush=True)
 
             order = {}
 
@@ -188,6 +206,8 @@ def main():
                 (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 
             with accessibility_grant(PROBE_ID), screen_capture_grant(PROBE_ID):
+                # Start after the grants: a TCC change can stall a running recording.
+                video = start_video()
                 probe = subprocess.Popen([str(binary), ids["magenta"], ids["cyan"], ids["yellow"]],
                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1, start_new_session=True)
@@ -216,6 +236,9 @@ def main():
                         finished = line.strip()
                 status = probe.wait(timeout=30)
                 log.close()
+                if video:
+                    finish_video(video)
+                    video = None
                 if status != 0 or finished != "PASS":
                     raise RuntimeError(f"the arrange probe ended with {status}: {finished}")
         finally:
@@ -226,12 +249,8 @@ def main():
                     os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-            if video:
-                # A timed recording saves its file only when it runs to the end.
-                try:
-                    video.wait(timeout=100)
-                except subprocess.TimeoutExpired:
-                    os.killpg(video.pid, signal.SIGINT)
+            if video and video.poll() is None:
+                os.killpg(video.pid, signal.SIGKILL)
             for action in reversed(cleanup):
                 action()
             run(["defaults", "delete", PROBE_ID], 10, check=False)
@@ -239,7 +258,7 @@ def main():
     failed = [r["step"] for r in results if not r["passed"]]
     missing = [step for step in steps if step not in {r["step"] for r in results}]
     summary = dict(result="pass" if not failed and not missing else "fail", failed=failed, missing=missing,
-                   steps=len(results))
+                   steps=len(results), video=(output / "arrange.mov").exists())
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary), flush=True)
     if failed or missing:
