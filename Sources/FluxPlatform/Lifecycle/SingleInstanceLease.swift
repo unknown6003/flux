@@ -6,7 +6,7 @@ public enum SingleInstanceError: Error, Equatable { case unsafeDirectory, unsafe
 /// One descriptor holds the writer lease until shutdown or process death.
 /// LOCK_NB never waits for another Flux process. Helpers cannot inherit it.
 public final class SingleInstanceLease: @unchecked Sendable {
-    private let descriptor: Int32
+    let descriptor: Int32
 
     public init(directory: URL) throws {
         let manager = FileManager.default
