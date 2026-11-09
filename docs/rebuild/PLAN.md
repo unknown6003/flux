@@ -96,8 +96,13 @@ ownership remains a separate acceptance check.
 PositionMenuBarService implements guided native arrangement without posting
 synthetic drags. It merges saved choices and preserves ambiguous geometry.
 Its public spacer backend remains unverified and requires an explicit trial
-flag. Default candidate startup leaves that backend paused. Compact spacing,
-signer approval and trustworthy overflow counts remain incomplete.
+flag. Default candidate startup leaves that backend paused. Compact spacing
+and trustworthy overflow counts remain incomplete. Signer
+approval is implemented with local requirement pins, fresh-read guards and
+a cancel-first native sheet. All 186 regular native tests and the sheet
+control passed CI 42589502622 at e10b2c0. The sheet bitmap was black and was
+rejected as visual proof. Interactive Mac acceptance remains open. See
+IDENTITY.md.
 
 The private lock bridge remains unavailable. The installed arm64 SkyLight
 paths use 64-bit space IDs and 32-bit window IDs. Array conversion paths are
@@ -132,5 +137,10 @@ Remaining release gates are a proved menu-bar backend, an accepted lock-screen
 backend, drag-to-open Shelf, full-screen and display handling, signed migration
 and grant tests, actual update installation and rollback, paired whole-process
 performance with analytics on and off, clean product action recordings, and
-independent review at the release SHA. Anonymous event wiring and acknowledged
-feedback submission also need completion. No rewrite release has been made.
+independent review at the release SHA. Fixed failure and launch events and an
+acknowledged manual rating are wired.
+Their synthetic native transport and backend readbacks passed. Replay and
+AppKit autocapture are excluded, and remote experiments are inactive. The
+first three analytics idle pairs failed the interrupt-wakeup budget in one
+pair. The transport cleanup change needs a fresh signed measurement. See
+ANALYTICS-PAIR.md and TELEMETRY.md. No rewrite release has been made.

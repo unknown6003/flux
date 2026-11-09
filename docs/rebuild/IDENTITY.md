@@ -8,7 +8,13 @@ Proof: the Menu Bar owner tests exercise first enrollment, a matching update,
 decline, approval, replacement during review, page exit and malformed storage.
 A native signed process checks actual Security requirement evaluation. The
 AppKit probe drives the real confirmation buttons and task cancellation.
-These checks are pending for the first implementation; they are not passes.
+CI 42589502622 at e10b2c0 passed 79 Core, 46 Platform, 11 UI and
+50 Application tests, plus four rating scenarios and the composite identity
+sheet control. The latter checked Cancel, approval and task cancellation.
+AppKit resets default shortcuts while presenting NSAlert, so Flux sets Cancel
+as the default after presentation and the control checks the actual default
+button cell. The saved sheet bitmap was black and was rejected as visual proof.
+These are component checks, not an interactive Mac or hiding acceptance result.
 
 ## Check and storage
 

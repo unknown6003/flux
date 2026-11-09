@@ -37,8 +37,11 @@ budget in pair three: +0.11665 interrupt wakeups per second. Other measured
 budgets passed. Network settling was not measured, so the source of those
 wakeups is unresolved. The transport retained its session between requests.
 It now creates an ephemeral session only for a send and invalidates it on
-every exit. This removes idle connection ownership; a native lifecycle check
-and a new paired measurement are required before claiming a cost reduction.
+every exit. Native Core checks at b480a59 passed the real URLSession lifecycle
+fixture, including lazy creation and invalidation after three successful sends
+and an oversized response. Source review found no retained issue. These checks
+prove cleanup in those cases, not a resource saving. A new paired measurement
+is required before claiming a cost reduction. See ANALYTICS-PAIR.md.
 
 A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.
 
