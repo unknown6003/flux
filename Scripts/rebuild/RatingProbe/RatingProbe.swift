@@ -128,17 +128,8 @@ private actor RatingFixtureTransport: UsageTransport {
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        let keyDeadline = ContinuousClock.now.advanced(by: .seconds(3))
-        while NSApp.keyWindow !== window {
-            guard ContinuousClock.now < keyDeadline else {
-                FileHandle.standardError.write(Data("Identity fixture did not become key\n".utf8))
-                throw RatingProbeFailure.missingFixture
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let prompt = MenuBarIdentityPrompt()
+        let prompt = MenuBarIdentityPrompt(parentWindow: { window })
         func waitForSheet(_ present: Bool) async throws {
             let deadline = ContinuousClock.now.advanced(by: .seconds(3))
             while (window.attachedSheet != nil) != present {

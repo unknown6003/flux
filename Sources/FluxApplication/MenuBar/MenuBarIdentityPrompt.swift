@@ -1,11 +1,16 @@
 import AppKit
 
 @MainActor final class MenuBarIdentityPrompt {
+    private let parentWindow: @MainActor () -> NSWindow?
     private var alert: NSAlert?
     private var completion: CheckedContinuation<Bool, Never>?
 
+    init(parentWindow: @escaping @MainActor () -> NSWindow? = { NSApp.keyWindow }) {
+        self.parentWindow = parentWindow
+    }
+
     func confirm(name: String) async -> Bool {
-        guard alert == nil, let window = NSApp.keyWindow, window.attachedSheet == nil else { return false }
+        guard alert == nil, let window = parentWindow(), window.attachedSheet == nil else { return false }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 guard !Task.isCancelled else { continuation.resume(returning: false); return }
