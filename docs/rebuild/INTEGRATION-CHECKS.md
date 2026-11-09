@@ -165,9 +165,12 @@ removed stage directory, rather than retaining a permanently busy token.
 CI42540130699 atc8590cf passed73 Core,29 Platform,9 UI and17 Application tests,
 including idempotent cleanup and the coordinator action controls. The quiet automatic fallback control passed in CI42541924774.
 The app coordinator adopts a user check into an in-flight background check,
-and drops late responses after stop. An unwritable destination currently
-opens the release page from a manual install action. It does not implement
-the previous cached DMG in Downloads flow yet.
+and drops late responses after stop. An unwritable destination now prepares a verified manual DMG in a private
+Downloads folder. A quiet automatic check does not open it. An explicit
+Install action opens the verified file. Cache reuse checks its complete
+hash; changed or missing files cannot reuse that result. The native controls
+passed in CI 42544306921 and CI 42545438106. Actual signed mounting and
+installation remain untested.
 
 ## Remaining product gates
 
@@ -178,9 +181,9 @@ Menu-bar physical hiding and its live apply signal are not accepted. No
 assessment-mode fallback is accepted: upstream documents that assessment mode
 can block Notification Center, so that side effect must not be hidden from
 acceptance. Guided native ordering replaces synthetic drags in the design.
-Lock-screen presentation remains open. Opus completed Duo and late-content
-refit hooks atb78def7. Parent feed binding, lifecycle checks and new fixtures
-are pending native CI and inspection. No substitute UI model ran. The whole signed app, migration, hardware use,
+Lock-screen presentation remains open. Duo feed binding and lifecycle
+controls pass. The 77 rendered fixtures exposed collapsed real-widget
+content after the scroll-cap fix, so layout acceptance remains open. No substitute UI model ran. The whole signed app, migration, hardware use,
 resource comparison and clean action media remain release gates. No release
 has been made.
 
@@ -217,3 +220,28 @@ the container value in that process. No setter, input, grant or app-state
 change was performed. Private Mac reports are retained at
 /tmp/flux-receiver-construction-2026-11-09.md and
 /tmp/flux-suite-comparison-20261109/report.md. They do not accept live hiding.
+
+## Latest native and visual check
+
+CI 42545438106 at 593579d passed 73 Core, 30 Platform, 11 UI and
+24 Application cases. The tall-widget window-cap test now passes and reaches
+the bottom of the document by scrolling. The rendered Duo fixtures show only
+the tab strip, however. The real widget viewport must also remain visible.
+Commit 69ce5fa adds that control with actual Now Playing and Calendar views.
+
+Eight lock-content fixtures rendered. The dark card, caption and transport
+controls are readable. The empty fixture has no content. This proves neither
+a lock-screen window nor click-through to password entry. The private space
+bridge remains absent. Installed arm64 disassembly uses 64-bit space IDs;
+Int32 declarations are unsafe for that inspected path. Creation failure,
+array formats and ordered cleanup still need proof.
+
+Two read-only Mac traces also found no basis for a production preference
+signal change. The registry subscribes to objectWillChange and rereads the
+allow flag. A downstream loop changes stored bytes and calls more work, but
+its physical window effect is not resolved. Native and explicit CF setters
+use different source lookup routes and both reach a shared lower-level
+source setter and local observer loop. The native local defaults notification
+does not prove cross-process delivery. The reports remain private at
+/tmp/flux-abi-501/report.md and
+/tmp/flux-defaults-setter-trace-20261109.md on the Mac.

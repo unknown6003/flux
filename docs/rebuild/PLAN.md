@@ -47,7 +47,7 @@ The language alone cannot fix a broken OS assumption. First prove the menu-bar b
 
 Parent: app architecture, OS experiments, core/services, integration and release. Opus field study: reference evidence only. Opus experience design: flows and visual artifacts. An isolated Opus implementation task will own Sources/FluxUI only; parent owns Package.swift and the app wiring. Inventory/capabilities agent: read-only evidence. Terra: real Mac probes and media, each with a bounded task. Keep at most three repository spaces and serialize integration.
 
-Opus's native UI task failed three times at the provider's429 rate limit, then completed on the fourth attempt. Its scoped library commit54a5753 was integrated as ffa1918. The AppKit library compiles in Swift6 on Mac CI at6642e8b. It provides Settings, menu bar groups, analytics, permission cards and the notch content container. Remaining Settings page contents, widgets and app wiring are not complete. The prepared third worktree stays locked. No fallback model ran.
+Opus's native UI task failed three times at the provider's429 rate limit, then completed on the fourth attempt. Its scoped library commit54a5753 was integrated as ffa1918. The AppKit library compiles in Swift6 on Mac CI at6642e8b. It provides Settings, menu bar groups, analytics, permission cards and the notch content container. Later slices added all five Settings pages, five widgets and their application bindings. Product acceptance remains open. The prepared third worktree stays locked. No fallback model ran.
 
 See MIGRATION.md for the tested source contract. FeatureDemand defines service requirements from one settings/session/presentation snapshot. It does not construct listeners. The app must stop removed services before removing their views or starting replacements. Camera demand requires an unlocked session, the visible Mirror tab, its enabled setting and an existing grant. Clipboard capture pauses while locked. Useful media and activity listeners may remain while the notch is closed. This is a state-policy implementation, not hardware lifecycle proof.
 
@@ -66,75 +66,51 @@ Zero cost is not a testable promise. Measure analytics on and off on the same si
 
 ## Current integration checkpoint
 
-CI42539763718 at03a4fc5 passed73 Core,28 Platform,9 UI and15 Application tests
-and rendered66 AppKit fixtures. Core, Platform, FluxUI and FluxApplication
-compile together in Swift6. These checks now cover the real widget/window
-owners, activity queue and deadlines, accessory notifications, shortcut
-registration rollback, volume-key admission, process lease release and
-bounded release downloads. They are component checks, not signed product
-acceptance. See INTEGRATION-CHECKS.md for the failures, fixes and proof limits.
+CI 42545438106 at 593579d passed 73 Core, 30 Platform, 11 UI and
+24 Application tests, plus eleven synthetic updater recovery cases. It
+rendered 77 AppKit fixtures. These are component checks, not signed product
+acceptance. The old app remains 0.21.35 build 62.
 
-All five widgets and five Settings pages have native bindings. Opus designed
-and implemented their UI. Its remaining Duo and content-resize slice is
-blocked by the provider's rate limit. Root has not substituted another UI
-model. ApplicationHost now binds all SettingsEffects actions to the new services.
-The executable entry and concrete menu-bar and lock-screen services remain
-to be written and accepted. The old installed app is still0.21.35 build62.
+ApplicationHost binds the Settings actions to the new services. The host's
+off-feature test uses a private profile and fake external backends. Shelf
+expiry preserves source files and recent copies, with no idle expiry timer.
+The updater prepares and checks a manual DMG in a private Downloads folder
+when the automatic destination is not writable. Cache reuse checks the full
+file hash. Native controls passed; a signed mount/install/rollback remains
+unproved.
 
-The matching-signed Launch Services capture probe now records its exact early
-failure. It returned screenCaptureNotAllowed before taking an image. Further
-capture-only retries are stopped until the real signed executable is ready.
-The direct command's earlier readable and black captures do not establish
-that launch's permission state. No physical native preference hide/show
-cycle or public-spacer backend has passed. The live apply path remains a
-backend gate. Assessment-mode hiding also has an upstream Notification Center
-side effect, so it is not an accepted replacement.
+Duo is the existing Now Playing and Calendar layout. Opus implemented the
+layout and refit hooks. The parent bound the shared calendar feed, event
+boundaries and view lifecycle. The height-cap regression now passes with a
+scrollable tall widget. Inspection of the new screenshots then found that
+real media and Duo widgets collapse to the tab strip. Test 69ce5fa exercises
+the actual widgets in the real window. The next Opus slice must fix that
+case without restoring the oversized-window bug.
 
-The new updater downloads bounded assets, checks their digest, stages a
-publisher-pinned app copy and keeps the existing startup/rollback receipt.
-Eleven local synthetic helper cases pass. The recovery fixes and
-UpdateCoordinator tests passed in CI42540130699 atc8590cf with73 Core,29
-Platform,9 UI and17 Application tests. The quiet automatic fallback control passed in CI42541924774. Signed successful install,
-tamper rejection at handoff and true Launch Services rollback still need
-acceptance. The previous cached manual DMG fallback also remains open.
+The lock-screen content views compile, and empty-view hit and accessibility
+checks pass. They do not establish presentation over the lock screen or
+window-level click-through. The installed arm64 SkyLight paths carry 64-bit
+space IDs. The old Int32 bindings risk truncation. Failure and cleanup
+contracts remain unresolved, so no private bridge has been enabled.
 
-Remaining work includes the executable entry, proved menu bar backend,
-accepted Duo and dynamic sizing, drag-to-open shelf, full-screen/display handling,
-lock-screen presentation, complete update fallback, migration and grant tests,
-paired whole-process performance, clean product recordings, final independent
-review and release. No rewrite release has been made.
+The matching-signed Launch Services capture probe returned
+screenCaptureNotAllowed before taking an image. Further capture-only retries
+are stopped until the real signed executable and permission flow are ready.
+The public defaults suite returned nil in the read comparison; explicit
+container CF reads returned equal data. The native setter uses an app-ID
+search list, while the explicit setter uses identifier/user/host sources.
+Both inspected paths reach the same lower-level source setter and local
+observer loop. Neither the cross-process signal nor physical hiding is
+proved. No production write-path change follows from those traces.
 
-Parent owns Core, Platform, app composition, tests, Package.swift, CI and
-probes. Opus owns FluxUI and its integration notes in the existing locked
-worktree. Terra owns bounded real-Mac trials. Keep at most three spaces.
-No line may publish the rewrite before all release gates pass.
+Parent owns Core, Platform, application composition, tests, Package.swift,
+CI and probes. Opus owns FluxUI and its integration notes in the existing
+locked worktree. The menu-preview child owns only StatusPreview.swift and
+its scoped test. Terra owns finite Mac trials. Keep at most three spaces.
 
-## Host and retained data checkpoint
-
-CI42541924774 at9709dba passed73 Core,29 Platform,9 UI and19 Application
-checks. The real host was tested with a private profile and off features.
-It starts the menu owner before marking startup ready, forwards page visits,
-and stops the menu service before ending the session. No fake backend result
-is a proof of native hiding or lock-screen presentation.
-
-CI42542583680 ata9aab7a passed the same suites with20 Application checks.
-The added retention case expires only the old owned shelf copy, preserves the
-original file and the recent copy, and runs without opening a widget. Off
-features with saved positive expiry still create no shelf files. Retention
-runs after configuration, before a shelf load and after a copy, with no idle
-expiry timer.
-
-Opus completed the remaining Duo layout atb78def7, integrated asfdc45b2.
-Duo is the existing Now Playing and Calendar layout. The earlier root brief
-incorrectly called it two compact activities. No such compact feature or
-saved key exists, so that invented requirement is dropped. Parent binding,
-shared feed ownership, evening/event boundaries, coalesced content refitting
-and three new Duo fixtures are awaiting native CI and visual inspection.
-
-Read-only Mac comparison on9 November found that the public defaults suite
-returned nil twice, while explicit-container CF reads returned6620 equal
-bytes twice. The public suite is not a verified replacement for that adapter.
-The native wrapper uses NSUserDefaults forgroup.com.apple.controlcenter and
-its immediate setter posts a defaults-change notification, but the relevant
-observer and live physical hiding remain unknown. No production I/O change
-was made from this trace.
+Remaining release gates are the new executable, a proved menu-bar backend,
+accepted lock-screen backend, real-widget layout, drag-to-open Shelf,
+full-screen and display handling, signed migration and grant tests, actual
+update installation and rollback, paired whole-process performance, clean
+product action recordings, and final independent review at the release SHA.
+No rewrite release has been made.
