@@ -172,8 +172,11 @@ def main():
             run(["/usr/bin/ditto", str(args.app), str(installed)], 60)
             cleanup.append(lambda: shutil.rmtree(installed, ignore_errors=True))
             run(["codesign", "--verify", "--deep", "--strict", str(installed)], 30)
-            run(["defaults", "write", "com.flux.menubar", "flux.macOS27IconLayout", "-dict",
-                 "hidden", "-array", ids["cyan"], ids["magenta"], "alwaysHidden", "-array", ids["magenta"]])
+            layout = plistlib.dumps({"hidden": [ids["cyan"], ids["magenta"]], "alwaysHidden": [ids["magenta"]]},
+                                    fmt=plistlib.FMT_XML).decode()
+            layout = layout[layout.index("<dict>"):layout.rindex("</dict>") + len("</dict>")]
+            run(["defaults", "write", "com.flux.menubar", "flux.macOS27IconLayout", layout])
+            print(run(["defaults", "read", "com.flux.menubar", "flux.macOS27IconLayout"], 10), flush=True)
             run(["defaults", "write", "com.flux.menubar", "flux.autoRehide", "-bool", "false"])
             cleanup.append(lambda: run(["defaults", "delete", "com.flux.menubar"], 10, check=False))
             time.sleep(2)
