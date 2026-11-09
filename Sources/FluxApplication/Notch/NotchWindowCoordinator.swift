@@ -326,15 +326,21 @@ public final class NotchWindowCoordinator {
             if started, !isLocked, isPresenting { losePresentation() }
             return
         }
-        physicalNotchRect = notchRect
         let window = window ?? makeWindow()
         let bounds = NotchMetrics.panelBounds(for: notchRect.width)
         let frame = NSRect(x: notchRect.midX - bounds.width / 2, y: screen.frame.maxY - bounds.height,
                            width: bounds.width, height: bounds.height)
-        window.setFrame(frame, display: true)
-        hostingView?.rootView = makeRootView(notchRect: notchRect, panelFrame: window.frame)
-        window.orderFrontRegardless()
+        // A refresh on the same display keeps the live view and its animation.
+        let changed = notchRect != physicalNotchRect || window.frame != frame
+        if changed || !isPresenting {
+            physicalNotchRect = notchRect
+            window.setFrame(frame, display: true)
+            hostingView?.rootView = makeRootView(notchRect: notchRect, panelFrame: window.frame)
+        }
+        if !window.isVisible { window.orderFrontRegardless() }
+        let wasPresenting = isPresenting
         isPresenting = true
+        guard changed || !wasPresenting else { return }
         updatePresentation()
         updatePassThrough(for: viewModel.state)
         if case .collapsed = viewModel.state { refreshHover() }
@@ -377,7 +383,11 @@ public final class NotchWindowCoordinator {
         hosting.appearance = appearance
         window.contentView = hosting
         hostingView = hosting
-        window.onDraggingMoved = { [weak self] location in self?.draggingUpdated(at: location) ?? [] }
+        window.onDraggingMoved = { [weak self, weak window] info in
+            // A tile dragged out of the open shelf is never dropped back onto it.
+            if let source = info.draggingSource as? NSView, source.window === window { return [] }
+            return self?.draggingUpdated(at: info.draggingLocation) ?? []
+        }
         window.onDraggingExited = { [weak self] in self?.draggingExited() }
         window.onPerformDragOperation = { [weak self] pasteboard in self?.performDrag(pasteboard) ?? false }
         self.window = window

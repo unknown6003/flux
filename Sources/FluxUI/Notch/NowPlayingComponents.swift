@@ -194,7 +194,7 @@ struct FlippingArtwork: View {
     let flipKey: AnyHashable
     let side: CGFloat
 
-    private static let cornerRadius: CGFloat = 13
+    private nonisolated static let cornerRadius: CGFloat = 13
     private static let halfDuration: Double = 0.175
 
     /// The keyframe-animated value: just the Y-axis rotation angle, in
@@ -234,8 +234,8 @@ struct FlippingArtwork: View {
 
     var body: some View {
         // Swift 6: the animator content closure is nonisolated and Sendable.
-        nonisolated(unsafe) let oldImage = settledImage
-        nonisolated(unsafe) let newImage = image
+        let oldImage = settledImage
+        let newImage = image
         let side = side
         return Color.clear
             .frame(width: side, height: side)

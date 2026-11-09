@@ -34,7 +34,7 @@ enum NotchOverlayStyle {
 final class NotchWindow: NSPanel {
     private let viewModel: NotchViewModel
 
-    var onDraggingMoved: (@MainActor (NSPoint) -> NSDragOperation)?
+    var onDraggingMoved: (@MainActor (any NSDraggingInfo) -> NSDragOperation)?
     var onDraggingExited: (@MainActor () -> Void)?
     var onPerformDragOperation: (@MainActor (NSPasteboard) -> Bool)?
 
@@ -134,11 +134,11 @@ final class NotchWindow: NSPanel {
 // Objective-C category. The conformance exposes these witnesses by selector.
 extension NotchWindow: NSDraggingDestination {
     func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        onDraggingMoved?(sender.draggingLocation) ?? []
+        onDraggingMoved?(sender) ?? []
     }
 
     func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        onDraggingMoved?(sender.draggingLocation) ?? []
+        onDraggingMoved?(sender) ?? []
     }
 
     func draggingExited(_ sender: (any NSDraggingInfo)?) {

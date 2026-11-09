@@ -157,8 +157,12 @@ struct ActivityCoordinatorTests {
         owner.reconcile()
         #expect(owner.queue.current == nil)
         owner.perform(.restoreActivity)
-        #expect(owner.queue.current?.trailing == .text("Private calendar canary · in 4m"))
+        #expect(owner.queue.current?.trailing == .text("Private calendar canary in 4m"))
+        // 0.21.35 kept the wing through the start minute as "now".
         clock.date += 240
+        owner.reconcile()
+        #expect(owner.queue.current?.trailing == .text("Private calendar canary now"))
+        clock.date += 60
         owner.reconcile()
         #expect(owner.queue.current == nil)
         #expect(owner.queue.restorableCount == 0)

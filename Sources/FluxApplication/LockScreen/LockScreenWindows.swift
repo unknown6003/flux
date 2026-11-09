@@ -111,7 +111,12 @@ enum LockScreenWidgetPosition {
         card?.ignoresMouseEvents = true
         content?.update(.empty)
         if bridge != nil {
-            do { try bridge?.detach() } catch { cleanupPending = true; throw error }
+            do { try bridge?.detach() } catch {
+                // Keep the bridge for an explicit retry, but take the windows away now.
+                cleanupPending = true
+                windows.forEach { $0.orderOut(nil) }
+                throw error
+            }
         }
         cleanupPending = false
         bridge = nil

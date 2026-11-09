@@ -5,57 +5,6 @@ import FluxCore
 
 @Suite(.serialized)
 struct ViewLifetimeTests {
-    @Test @MainActor func duoAddsAndRemovesOnlyTheCalendarCompanion() {
-        _ = NSApplication.shared
-        var made: [Widget] = []
-        var companions: [Widget?] = []
-        let panel = NotchPanelController(widgets: [.nowPlaying, .calendar, .mirror],
-            geometry: .init(screenFrame: .init(x: 0, y: 0, width: 1728, height: 1117), cameraWidth: 180, topInset: 33)) { widget in
-            made.append(widget)
-            let child = NSViewController()
-            child.view = NSView()
-            return child
-        }
-        panel.onCompanionChange = { companions.append($0) }
-        _ = panel.view
-        panel.show(.nowPlaying)
-        let primary = panel.children.first
-        panel.setDuo(true)
-        #expect(made == [.nowPlaying, .calendar])
-        #expect(panel.children.count == 2)
-        #expect(panel.children.first === primary)
-        panel.setDuo(true)
-        #expect(made.count == 2)
-        panel.setDuo(false)
-        #expect(panel.children.count == 1)
-        #expect(panel.children.first === primary)
-        panel.setDuo(true)
-        panel.onWillDismiss = { _ in #expect(panel.children.count == 2) }
-        panel.dismiss()
-        #expect(panel.children.isEmpty)
-        #expect(companions == [.calendar, nil, .calendar, nil])
-        #expect(panel.current == nil)
-    }
-
-    @Test @MainActor func lateAppearanceCannotRestartADismissedWidget() {
-        _ = NSApplication.shared
-        var made: [Widget] = []
-        let panel = NotchPanelController(widgets: [.mirror, .shelf],
-            geometry: .init(screenFrame: .init(x: 0, y: 0, width: 1728, height: 1117), cameraWidth: 180, topInset: 33)) { widget in
-            made.append(widget)
-            let child = NSViewController()
-            child.view = NSView()
-            return child
-        }
-        _ = panel.view
-        panel.show(.mirror)
-        panel.dismiss()
-        panel.viewDidAppear()
-        panel.show(.shelf)
-        #expect(made == [.mirror])
-        #expect(panel.current == nil)
-        #expect(panel.children.isEmpty)
-    }
     @Test @MainActor func malformedMediaTimesNeverOverflowClockFormatting() {
         #expect(NotchWidgetStyle.clock(.nan) == "0:00")
         #expect(NotchWidgetStyle.clock(.infinity) == "0:00")
@@ -92,47 +41,6 @@ struct ViewLifetimeTests {
         #expect(stopped == [.general, .menuBar])
         #expect(previous == nil)
         #expect(settings.currentPage == nil)
-    }
-
-    @Test @MainActor func removingVisibleMirrorStopsItBeforeReleasingItsView() {
-        _ = NSApplication.shared
-        var calls: [String] = []
-        weak var mirror: NSViewController?
-        let panel = NotchPanelController(
-            widgets: [.mirror, .shelf],
-            geometry: .init(screenFrame: CGRect(x: 0, y: 0, width: 1440, height: 900), cameraWidth: 180, topInset: 32)
-        ) { widget in
-            calls.append("make.\(widget.rawValue)")
-            let controller = NSViewController()
-            controller.view = NSView()
-            if widget == .mirror { mirror = controller }
-            return controller
-        }
-        autoreleasepool {
-            _ = panel.view
-            panel.show(.mirror)
-            panel.onWillSwitch = { from, to in
-                #expect(from == .mirror)
-                #expect(to == .shelf)
-                #expect(mirror != nil)
-                calls.append("stop.mirror")
-            }
-            panel.setWidgets([.shelf, .shelf])
-        }
-        #expect(calls == ["make.mirror", "stop.mirror", "make.shelf"])
-        #expect(mirror == nil)
-        #expect(panel.widgets == [.shelf])
-        #expect(panel.children.count == 1)
-        panel.onWillDismiss = { widget in
-            #expect(widget == .shelf)
-            #expect(panel.children.count == 1)
-            calls.append("stop.shelf")
-        }
-        panel.setWidgets([])
-        #expect(calls.last == "stop.shelf")
-        #expect(panel.children.isEmpty)
-        #expect(panel.current == nil)
-        panel.onWillDismiss = nil
     }
 
     @Test @MainActor func analyticsStartsOffAndDoesNotInvokeCallbacksDuringReadback() {

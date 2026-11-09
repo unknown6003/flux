@@ -743,8 +743,8 @@ public final class WidgetCoordinator {
             let id = file.id
             let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 64, height: 64),
                                                        scale: scale, representationTypes: .thumbnail)
-            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
-                nonisolated(unsafe) let image = representation?.nsImage
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in
+                let image = representation?.nsImage
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.thumbnailRequests.remove(id)
