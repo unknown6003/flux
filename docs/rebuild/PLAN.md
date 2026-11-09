@@ -167,6 +167,10 @@ and 50 Application tests, the four rating and one identity confirmation
 scenarios, updater controls and the matching-signed candidate build. Restricted
 readback confirmed three synthetic events including the rating, no person
 profiles and no stored IP/geolocation fields. The final source includes a
-pre-cancelled request test and explicit fixture lifetimes. The next three
-signed-app analytics on/off performance pairs are running on the Mac. Physical menu-bar and lock-screen acceptance remain open. The owner's
+pre-cancelled request test and explicit fixture lifetimes. The three signed-app analytics on/off pairs completed. Pair three failed
+the interrupt limit at +0.166647/s; CPU, footprint and idle wakeups passed.
+Root verified all 37 evidence hashes and raw run metrics. The original app,
+preferences and clipboard were restored; history serialization and session
+fields changed. No performance pass or release is claimed. A repeated
+production-driver/client CLI diagnostic is running to isolate the late burst. Physical menu-bar and lock-screen acceptance remain open. The owner's
 Screen Recording step is still pending. No update was released.

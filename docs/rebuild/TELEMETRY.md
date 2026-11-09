@@ -48,7 +48,10 @@ A later one-run-per-engine comparison observed idle 1, Foundation 44 and curl 1
 interrupt wakeups over 60 seconds each. That supported the bounded curl change;
 it did not estimate variance or pass the signed app budget. Native TLS tests
 cover all routes, trust and hostname rejection, redirects, caps, cancellation
-and timeout. The new three-pair app measurement remains due.
+and timeout. The production curl app trial then failed pair three at +0.166647 interrupt
+wakeups/s. The other two pairs and every CPU, footprint and idle-wakeup
+comparison passed. A repeated driver-only/client diagnostic with explicit
+request timing is now running. No app performance pass is claimed.
 See ANALYTICS-PAIR.md and TELEMETRY-DIAGNOSIS.md.
 
 A one-shot flush task exists only while records wait. Empty and disabled clients have no periodic flush. Retryable failures get at most three attempts with bounded delays. There is no telemetry disk spool. Offline records can be lost; preserving every usage event does not outrank app memory and privacy.

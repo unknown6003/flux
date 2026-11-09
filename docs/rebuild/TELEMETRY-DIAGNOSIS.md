@@ -246,8 +246,12 @@ in one isolated CLI, explicit request phases, a fixed 15-second delay after
 completion, then 13 observations over 60 seconds. A historical Foundation
 direct mode is a positive control for the already observed burst. Hold each
 process for 90 seconds after quietStarted. No app swap or saved data access.
-The sample delay matches the approximate time from the launch batch to the
-app sample; it is a new diagnostic, not a rerun or replacement budget result.
+Run native and client three times each, plus one idle and one historical
+Foundation positive control, in fixed order idle/native/client/direct/native/
+client/native/client. This gives eight runs without selective retries. The
+sample delay matches the approximate time from the launch batch to the app
+sample; it is a new diagnostic, not a rerun or replacement budget result.
+Three quiet repeats do not disprove an intermittent source.
 
 Ranked predictions before testing:
 
