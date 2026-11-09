@@ -98,15 +98,8 @@ import FluxUI
     private func handle(_ action: MenuBarAction) {
         guard active else { return }
         switch action {
-        case .toggle: menuBar.toggle()
-        case .showAll: menuBar.showAll()
-        case .organize: showSettings(.menuBar)
-        case .openNotch: notch.toggle()
         case .settings: showSettings()
         case .quit: quit()
-        case .startTimer(let minutes):
-            do { try notch.startTimer(minutes: minutes) } catch { failure(.timer) }
-        case .cancelTimers: notch.cancelAllTimers()
         }
     }
 
@@ -233,6 +226,7 @@ import FluxUI
     public func checkAccessibility() { menuBar.checkAccessibility(); notch.refresh(); settings.refresh() }
     public func reviewIdentity(_ application: ApplicationID) { menuBar.reviewIdentity(application) }
     public func setCompactSpacing(_ enabled: Bool) { menuBar.setCompactSpacing(enabled) }
+    public func moveMenuBarItem(_ move: MenuBarItemMove) { menuBar.moveItem(move) }
 
     private func systemPermission(_ kind: NotchAccessKind) -> SystemPermission {
         switch kind { case .calendar: .calendar; case .camera: .camera; case .accessibility: .accessibility }

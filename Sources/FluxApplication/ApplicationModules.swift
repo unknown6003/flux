@@ -3,9 +3,9 @@ import FluxCore
 import FluxPlatform
 import FluxUI
 
+/// The Flux chevron's right-click menu. A left click shows and hides icons.
 public enum MenuBarAction: Sendable {
-    case toggle, showAll, organize, openNotch, settings, quit
-    case startTimer(minutes: Int), cancelTimers
+    case settings, quit
 }
 
 /// The native menu-bar owner supplies real state and all of its actions.
@@ -30,6 +30,8 @@ public enum MenuBarAction: Sendable {
     func checkAccessibility()
     func reviewIdentity(_ application: ApplicationID)
     func setCompactSpacing(_ enabled: Bool)
+    /// Move one real item, as the layout editor asked. Progress is in `state.moveStatus`.
+    func moveItem(_ move: MenuBarItemMove)
 }
 
 /// Construction reads no media and creates no window or private space.

@@ -93,11 +93,11 @@ import FluxUI
                 return self.inventory
             }, permissionStatus: { .allowed }, requestPreviewPermission: { [unowned self] in
                 self.permissionRequests += 1; return .allowed
-            }, capturePreviews: { [unowned self] in
+            }, capturePreviews: { [unowned self] _ in
                 self.previewCaptures += 1
                 if self.blocksPreview { await withCheckedContinuation { self.blockedPreview = $0 } }
                 guard let image = self.previewImage else { throw StatusPreviewError.unavailable }
-                return [self.app: image]
+                return [MenuBarItemID(application: self.app, index: 0): image]
             }, stopPreviews: { [unowned self] in self.previewCloses += 1 },
             screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
             quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false,

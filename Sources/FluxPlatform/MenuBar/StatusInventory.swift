@@ -92,7 +92,7 @@ public actor StatusInventory {
                         deadline: ContinuousClock.now.advanced(by: .seconds(1)))
     }
 
-    static func previewRegion(frame: CGRect, displays: [StatusPreviewDisplayBounds]) -> StatusPreviewRegion? {
+    public static func previewRegion(frame: CGRect, displays: [StatusPreviewDisplayBounds]) -> StatusPreviewRegion? {
         guard frame.size.width > 0, frame.size.width <= 256, frame.size.height > 0, frame.size.height <= 64,
               [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height].allSatisfy(\.isFinite) else { return nil }
         let matches = displays.filter { display in

@@ -71,6 +71,7 @@ private actor HostUsageTransport: UsageTransport {
     func checkAccessibility() { unexpected() }
     func reviewIdentity(_ application: ApplicationID) { unexpected() }
     func setCompactSpacing(_ enabled: Bool) { unexpected() }
+    func moveItem(_ move: MenuBarItemMove) { unexpected() }
 }
 
 @MainActor private final class HostFixtureLockScreen: LockScreenService {

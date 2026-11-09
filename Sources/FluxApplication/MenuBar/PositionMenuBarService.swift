@@ -41,6 +41,29 @@ extension PerApplicationHider: PerApplicationHidingOwner {}
 
 extension MenuBarControls: PositionMenuBarControlOwner {}
 
+/// What the layout editor needs from the system to move real items.
+struct PositionMenuBarArrangeTools {
+    var drag: @MainActor (CGPoint, CGPoint) async throws -> Void
+    var inputIsQuiet: @MainActor () -> Bool
+    /// Screen Recording is already allowed, so images need no prompt.
+    var previewAllowed: @MainActor () -> Bool
+    var sleep: @Sendable (TimeInterval) async throws -> Void
+    /// Flux's own bundle. Its chevron and boundaries are not editor items.
+    var ownApplication: ApplicationID?
+
+    static let unavailable = PositionMenuBarArrangeTools(
+        drag: { _, _ in throw MenuBarItemDragError.eventsUnavailable }, inputIsQuiet: { true },
+        previewAllowed: { false }, sleep: { _ in }, ownApplication: nil)
+
+    @MainActor static func system() -> PositionMenuBarArrangeTools {
+        .init(drag: { try await MenuBarItemDrag.perform(from: $0, to: $1) },
+              inputIsQuiet: { MenuBarItemDrag.inputIsQuiet() },
+              previewAllowed: { PermissionAccess.status(.screenRecording) == .allowed },
+              sleep: { try await Task.sleep(for: .seconds($0)) },
+              ownApplication: Bundle.main.bundleIdentifier.flatMap(ApplicationID.init(rawValue:)))
+    }
+}
+
 private struct PositionMenuBarArrangementContext: Equatable {
     let hidden: CGRect?
     let always: CGRect?
@@ -69,7 +92,12 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let readInventory: @MainActor () async -> PositionMenuBarInventory
     private let permissionStatus: @MainActor () -> SystemAccess
     private let requestPreviewPermission: @MainActor () async -> SystemAccess
-    private let capturePreviews: @MainActor () async throws -> [ApplicationID: NSImage]
+    private let capturePreviews: @MainActor ([MenuBarLayoutItem]) async throws -> [MenuBarItemID: NSImage]
+    private let tools: PositionMenuBarArrangeTools
+    private var lastInventory: PositionMenuBarInventory?
+    private var itemImages: [MenuBarItemID: NSImage] = [:]
+    private var moveTask: Task<Void, Never>?
+    private var moveID: UUID?
     private let stopPreviews: @MainActor () -> Void
     private let screens: @MainActor () -> [PositionMenuBarScreen]
     private let quartzFrame: @MainActor (CGRect) -> CGRect
@@ -126,24 +154,24 @@ private struct PositionMenuBarArrangementContext: Equatable {
                       }, accessibilityAllowed: snapshot.accessibilityAllowed, complete: snapshot.complete)
                   }, permissionStatus: { PermissionAccess.status(.accessibility) },
                   requestPreviewPermission: { await PermissionAccess.request(.screenRecording) },
-                  capturePreviews: {
+                  capturePreviews: { items in
                       preview.open()
                       let displays = NSScreen.screens.compactMap { screen -> StatusPreviewDisplayBounds? in
                           guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return nil }
                           return .init(id: id, frame: CGDisplayBounds(id))
                       }
-                      let candidates = await inventory.previewCandidates(RunningApplication.snapshot(), displays: displays)
-                      try Task.checkCancellation()
-                      let byID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.region.id, $0) })
-                      let images = try await preview.capture(candidates.map(\.region), validating: { region in
-                          guard let candidate = byID[region.id],
-                                NSRunningApplication(processIdentifier: candidate.processID)?.bundleIdentifier == candidate.application.rawValue else { return false }
-                          return await inventory.validatePreview(candidate)
-                      })
-                      let apps = Dictionary(uniqueKeysWithValues: candidates.map { ($0.region.id, $0.application) })
-                      var result: [ApplicationID: NSImage] = [:]
+                      var owners: [UUID: MenuBarItemID] = [:]
+                      let regions = items.prefix(128).compactMap { item -> StatusPreviewRegion? in
+                          guard let region = StatusInventory.previewRegion(frame: item.frame, displays: displays) else { return nil }
+                          owners[region.id] = item.id
+                          return region
+                      }
+                      // The service rereads the menu bar after capture and
+                      // drops any image whose item moved meanwhile.
+                      let images = try await preview.capture(regions, validating: { _ in true })
+                      var result: [MenuBarItemID: NSImage] = [:]
                       for image in images {
-                          if let app = apps[image.id] { result[app] = image.image }
+                          if let id = owners[image.id] { result[id] = image.image }
                       }
                       return result
                   }, stopPreviews: { preview.close() },
@@ -168,7 +196,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
                           application: application, savedRequirement: saved)
                       guard !app.isTerminated else { return nil }
                       return result
-                  }, confirmIdentity: { await prompt.confirm(name: $0) })
+                  }, confirmIdentity: { await prompt.confirm(name: $0) }, tools: .system())
     }
 
     init(defaults: UserDefaults, domain: String, preferences: PreferenceStore,
@@ -177,13 +205,15 @@ private struct PositionMenuBarArrangementContext: Equatable {
          readInventory: @escaping @MainActor () async -> PositionMenuBarInventory,
          permissionStatus: @escaping @MainActor () -> SystemAccess,
          requestPreviewPermission: @escaping @MainActor () async -> SystemAccess,
-         capturePreviews: @escaping @MainActor () async throws -> [ApplicationID: NSImage],
+         capturePreviews: @escaping @MainActor ([MenuBarLayoutItem]) async throws -> [MenuBarItemID: NSImage],
          stopPreviews: @escaping @MainActor () -> Void,
          screens: @escaping @MainActor () -> [PositionMenuBarScreen],
          quartzFrame: @escaping @MainActor (CGRect) -> CGRect,
          sleep: @escaping @Sendable (TimeInterval) async throws -> Void, observesSystem: Bool,
          readIdentity: @escaping @MainActor (ApplicationID, Data?) async -> MenuBarIdentityEvidence?,
-         confirmIdentity: @escaping @MainActor (String) async -> Bool) {
+         confirmIdentity: @escaping @MainActor (String) async -> Bool,
+         tools: PositionMenuBarArrangeTools = .unavailable) {
+        self.tools = tools
         self.defaults = defaults; self.domain = domain; self.preferences = preferences
         support = hidingSupport; self.controls = controls; self.hider = hider; self.readInventory = readInventory
         self.permissionStatus = permissionStatus; self.requestPreviewPermission = requestPreviewPermission
@@ -225,6 +255,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
         identityVersion = nil
         observations.removeAll()
         let rehide = rehideTask
+        let move = moveTask
+        moveID = nil; moveTask?.cancel(); moveTask = nil; state.moveStatus = nil
         cancelScan(); cancelRehide(); discardPreviews()
         cancelIdentityReview()
         controls.setArranging(false)
@@ -240,6 +272,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
         state.mode = .paused
         changed()
         await rehide?.value
+        // A drag in flight finishes its few posted events, then stops.
+        await move?.value
     }
 
     public func configure() {
@@ -352,29 +386,144 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func showRealIcons() {
         guard started, editorVisible, previewTask == nil else { return }
         actionFailure = nil
+        capturePreviewImages(askFirst: true)
+    }
+
+    /// Reads each item's real image. Asks for Screen Recording only after the
+    /// user's own click. Images whose item moved during capture are dropped.
+    private func capturePreviewImages(askFirst: Bool) {
+        guard started, editorVisible, previewTask == nil, moveTask == nil else { return }
         let id = UUID()
         previewID = id
         previewTask = Task { @MainActor [weak self] in
             guard !Task.isCancelled, let self, self.previewID == id,
                   self.editorVisible, self.started else { return }
-            let access = await self.requestPreviewPermission()
+            let access = askFirst ? await self.requestPreviewPermission() : .allowed
             guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
-            var images: [ApplicationID: NSImage] = [:]
+            var images: [MenuBarItemID: NSImage] = [:]
             if access == .allowed {
-                do { images = try await self.capturePreviews() }
-                catch {
+                do {
+                    let before = self.layoutItems(self.lastInventory)
+                    images = try await self.capturePreviews(before)
+                    let after = Dictionary(self.layoutItems(await self.readInventory()).map { ($0.id, $0.frame) },
+                                           uniquingKeysWith: { first, _ in first })
+                    images = images.filter { id, _ in before.first(where: { $0.id == id })?.frame == after[id] }
+                } catch {
                     guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
-                    self.actionFailure = "previewUnavailable"
+                    if askFirst { self.actionFailure = "previewUnavailable" }
                 }
             } else { self.actionFailure = "previewPermissionRequired" }
             guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
             self.previewTask = nil; self.previewID = nil
-            for index in self.state.rows.indices { self.state.rows[index].preview = images[self.state.rows[index].id] }
-            self.state.showsRealIcons = self.state.rows.contains { $0.preview != nil }
-            if access == .allowed, self.actionFailure == nil, !self.state.showsRealIcons { self.actionFailure = "previewNoEligibleItems" }
+            self.itemImages = images
+            for index in self.state.rows.indices {
+                self.state.rows[index].preview = images[MenuBarItemID(application: self.state.rows[index].id, index: 0)]
+            }
+            self.state.showsRealIcons = !images.isEmpty
+            if askFirst, access == .allowed, self.actionFailure == nil, images.isEmpty { self.actionFailure = "previewNoEligibleItems" }
+            self.updateTiles()
             self.applyControls()
             self.changed()
         }
+    }
+
+    /// Moves one real item, as the layout editor asked. On macOS 27 the group
+    /// is saved first, because MenuBarAgent hides whole apps. Then a paced
+    /// Cmd-drag puts the item between its new neighbours, checked by a fresh read.
+    public func moveItem(_ move: MenuBarItemMove) {
+        guard started, editorVisible, moveTask == nil else { return }
+        let name = tileName(move.item)
+        cancelScan(); discardPreviewTask()
+        actionFailure = nil
+        state.moveStatus = .moving(name: name, attempt: 1)
+        let id = UUID()
+        moveID = id
+        let tools = tools
+        moveTask = Task { @MainActor [weak self] in
+            guard let self, self.moveID == id else { return }
+            var failure: MenuBarMoveFailure?
+            do throws(MenuBarMoveFailure) {
+                try self.saveGroup(for: move)
+                let engine = MenuBarMoveEngine(read: { [weak self] in await self?.readLayout() },
+                                               drag: tools.drag, inputIsQuiet: tools.inputIsQuiet, sleep: tools.sleep)
+                try await engine.run(move) { [weak self] attempt in
+                    guard let self, self.moveID == id else { return }
+                    self.state.moveStatus = .moving(name: name, attempt: attempt)
+                    self.changed()
+                }
+            } catch { failure = error }
+            guard self.moveID == id, self.started else { return }
+            self.moveTask = nil; self.moveID = nil
+            self.state.moveStatus = failure.map { .failed(name: name, $0) } ?? .moved(name: name)
+            // By position, the new place is the new group: save it from geometry.
+            self.requestScan(arrangeResult: self.support == .byPosition && failure == nil, keepImages: true)
+            self.changed()
+        }
+        changed()
+    }
+
+    private func saveGroup(for move: MenuBarItemMove) throws(MenuBarMoveFailure) {
+        guard support == .perApplication else { return }
+        let application = move.item.application
+        let current = policy.group(for: application)
+        let shown = current == .alwaysHidden && !state.alwaysHiddenEnabled ? .hidden : current
+        guard shown != move.group else { return }
+        if move.group == .alwaysHidden, !state.alwaysHiddenEnabled { throw .alwaysHiddenOff }
+        guard state.rows.contains(where: { $0.id == application }) else { throw .itemGone }
+        assign(application, to: move.group)
+        if case .failed(let code)? = results[application] { throw .groupNotSaved(code: code) }
+        guard policy.group(for: application) == move.group else { throw .groupNotSaved(code: "notSaved") }
+    }
+
+    private func readLayout() async -> MenuBarLayout? {
+        let snapshot = await readInventory()
+        guard snapshot.accessibilityAllowed else { return nil }
+        return MenuBarLayout(items: layoutItems(snapshot), grouping: layoutGrouping())
+    }
+
+    /// Every item with a frame, except Flux's own. An app that runs twice is
+    /// skipped, because its items cannot be told apart.
+    private func layoutItems(_ snapshot: PositionMenuBarInventory?) -> [MenuBarLayoutItem] {
+        guard let snapshot else { return [] }
+        let counts = Dictionary(grouping: snapshot.applications, by: \.id).mapValues(\.count)
+        return snapshot.applications.flatMap { app -> [MenuBarLayoutItem] in
+            guard counts[app.id] == 1, app.id != tools.ownApplication else { return [] }
+            return app.frames.enumerated().compactMap { index, frame in
+                guard let frame, frame.width > 0, frame.height > 0 else { return nil }
+                return MenuBarLayoutItem(id: MenuBarItemID(application: app.id, index: index), frame: frame)
+            }
+        }
+    }
+
+    private func layoutGrouping() -> MenuBarGrouping {
+        switch support {
+        case .perApplication:
+            return .perApplication(policy, alwaysHiddenEnabled: state.alwaysHiddenEnabled)
+        case .byPosition:
+            guard state.mode == .byPosition, let hidden = controls.hiddenBoundary.map(quartzFrame) else { return .none }
+            return .byPosition(hidden: hidden,
+                               always: state.alwaysHiddenEnabled ? controls.alwaysHiddenBoundary.map(quartzFrame) : nil)
+        case .unverified:
+            return .none
+        }
+    }
+
+    private func updateTiles() {
+        let layout = MenuBarLayout(items: layoutItems(lastInventory), grouping: layoutGrouping())
+        let apps = Dictionary((lastInventory?.applications ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        state.tiles = layout.items.map { item in
+            MenuBarLayoutTile(id: item.id, name: tileName(item.id),
+                              image: itemImages[item.id] ?? apps[item.id.application]?.icon,
+                              group: layout.group(of: item), isMovable: item.isMovable)
+        }
+    }
+
+    private func tileName(_ id: MenuBarItemID) -> String {
+        guard let app = lastInventory?.applications.first(where: { $0.id == id.application }) else {
+            return id.application.rawValue
+        }
+        let count = app.frames.compactMap { $0 }.count
+        return count > 1 ? "\(app.name) \(id.index + 1)" : app.name
     }
 
     public func checkAccessibility() {
@@ -518,6 +667,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     private func applyControls() {
         updateMode()
+        updateTiles()
         updateOutsideClickMonitor(reveal: editorVisible || arranging ? .collapsed : reveal)
         if support == .perApplication {
             let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal
@@ -572,16 +722,24 @@ private struct PositionMenuBarArrangementContext: Equatable {
         identityID = nil; identityTask?.cancel(); identityTask = nil
     }
 
-    private func discardPreviews() {
+    private func discardPreviewTask() {
         previewID = nil; previewTask?.cancel(); previewTask = nil
         stopPreviews()
-        state.showsRealIcons = false
-        for index in state.rows.indices { state.rows[index].preview = nil }
     }
 
-    private func requestScan(arrangeResult: Bool) {
+    private func discardPreviews() {
+        discardPreviewTask()
+        state.showsRealIcons = false
+        itemImages.removeAll()
+        for index in state.rows.indices { state.rows[index].preview = nil }
+        updateTiles()
+    }
+
+    /// `keepImages` keeps item images across a read that follows a move:
+    /// images belong to items, not to places.
+    private func requestScan(arrangeResult: Bool, keepImages: Bool = false) {
         guard started, needsInventory, scanTask == nil else { return }
-        discardPreviews()
+        if keepImages { discardPreviewTask() } else { discardPreviews() }
         let id = UUID()
         scanID = id
         state.isRefreshing = true
@@ -610,10 +768,11 @@ private struct PositionMenuBarArrangementContext: Equatable {
                   self.needsInventory else { return }
             self.scanTask = nil; self.scanID = nil
             guard inventoryVersion == self.inventoryVersion else {
-                self.requestScan(arrangeResult: arrangeResult)
+                self.requestScan(arrangeResult: arrangeResult, keepImages: keepImages)
                 return
             }
             self.state.isRefreshing = false
+            self.state.layoutAccessible = snapshot.accessibilityAllowed
             self.identityVersion = nil
             if snapshot.accessibilityAllowed {
                 self.identities = identities
@@ -647,6 +806,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
                     self.loadPolicy()
                 }
             } else {
+                self.lastInventory = nil
                 self.identities.removeAll()
                 for application in self.pendingAssignments.keys { self.results[application] = .failed(code: "identityUnavailable") }
                 self.pendingAssignments.removeAll()
@@ -658,11 +818,17 @@ private struct PositionMenuBarArrangementContext: Equatable {
                 self.updateObservations()
             }
             self.applyControls()
+            if self.editorVisible, snapshot.accessibilityAllowed, self.tools.previewAllowed() {
+                self.capturePreviewImages(askFirst: false)
+            }
             self.changed()
         }
     }
 
     private func publish(_ snapshot: PositionMenuBarInventory) {
+        lastInventory = snapshot
+        let present = Set(layoutItems(snapshot).map(\.id))
+        itemImages = itemImages.filter { present.contains($0.key) }
         var seen: Set<ApplicationID> = []
         state.rows = snapshot.applications.filter { seen.insert($0.id).inserted }.map { app in
             MenuBarAppRow(id: app.id, name: app.name, icon: app.icon,
@@ -709,39 +875,25 @@ private struct PositionMenuBarArrangementContext: Equatable {
         }
         observations.append(PositionMenuBarObservation(center: .default,
             name: NSApplication.didChangeScreenParametersNotification, receive: receive))
+        // Back from System Settings: a new Accessibility grant shows at once.
+        observations.append(PositionMenuBarObservation(center: .default,
+            name: NSApplication.didBecomeActiveNotification, receive: receive))
     }
 
     private func changed() { onChange?() }
 
+    /// The chevron's right-click menu. Clicks show and hide icons, so the menu
+    /// keeps only what a click cannot do.
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
-        func add(_ title: String, _ selector: Selector, represented: Any? = nil) {
-            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-            item.target = self; item.representedObject = represented; menu.addItem(item)
+        for (title, action) in [("Settings…", #selector(menuSettings)), ("Quit Flux", #selector(menuQuit))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
         }
-        add("Show or Hide Icons", #selector(menuToggle))
-        add("Reveal All Icons", #selector(menuShowAll))
-        add("Organize Menu Bar…", #selector(menuOrganize))
-        menu.addItem(.separator())
-        add("Open Notch", #selector(menuNotch))
-        for minutes in [1, 5, 10, 25] {
-            add("Start \(minutes) Minute Timer", #selector(menuTimer(_:)), represented: minutes)
-        }
-        add("Cancel Timers", #selector(menuCancelTimers))
-        menu.addItem(.separator())
-        add("Settings…", #selector(menuSettings))
-        add("Quit Flux", #selector(menuQuit))
         return menu
     }
 
-    @objc private func menuToggle() { toggle() }
-    @objc private func menuShowAll() { showAll() }
-    @objc private func menuOrganize() { onAction?(.organize) }
-    @objc private func menuNotch() { onAction?(.openNotch) }
-    @objc private func menuTimer(_ sender: NSMenuItem) {
-        if let minutes = sender.representedObject as? Int { onAction?(.startTimer(minutes: minutes)) }
-    }
-    @objc private func menuCancelTimers() { onAction?(.cancelTimers) }
     @objc private func menuSettings() { onAction?(.settings) }
     @objc private func menuQuit() { onAction?(.quit) }
 }

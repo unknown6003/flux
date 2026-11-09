@@ -48,6 +48,7 @@ import FluxUI
     func checkAccessibility() { unexpected() }
     func reviewIdentity(_ application: ApplicationID) { unexpected() }
     func setCompactSpacing(_ enabled: Bool) { unexpected() }
+    func moveMenuBarItem(_ move: MenuBarItemMove) { unexpected() }
 }
 
 @Suite(.serialized)
