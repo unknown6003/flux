@@ -290,7 +290,7 @@ enum MenuBarText {
         case .applying: String(format: L("menuBar.result.applying", "Applying to %@…"), row.name)
         case .asked: String(format: L("menuBar.result.asked", "Flux asked macOS to apply %@ to %@."), row.group.accessibilityName, row.name)
         case .savedInMacOS: String(format: L("menuBar.result.saved", "Saved in macOS: %@ is %@."), row.name, row.group.accessibilityName)
-        case .notMovedYet: String(format: L("menuBar.result.notMoved", "Saved as %@. Not moved yet. Use Arrange in Menu Bar…"), row.group.accessibilityName)
+        case .notMovedYet: String(format: L("menuBar.result.notMoved", "Saved as %@. Drag the icon into that group to move it."), row.group.accessibilityName)
         case .failed(let code): String(format: L("menuBar.result.failed", "macOS did not confirm the change for %@ (%@)."), row.name, code)
         }
     }

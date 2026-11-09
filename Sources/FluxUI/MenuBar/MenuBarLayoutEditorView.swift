@@ -304,14 +304,14 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
 
     /// Real images keep their width. App icons get a square.
     var preferredWidth: CGFloat {
-        guard let image, image.size.height > 0 else { return 34 }
+        guard let image, image.size.height > 0 else { return 30 }
         let width = image.size.width * min(1, 22 / image.size.height)
-        return min(max(width + 12, 34), 140)
+        return min(max(width + 8, 30), 140)
     }
 
     func apply(_ tile: MenuBarLayoutTile, busy: Bool) {
         let changed = image !== tile.image || name != tile.name || movable != tile.isMovable || self.busy != busy
-        image = tile.image ?? FluxUIStyle.symbol("app.dashed", label: tile.name)
+        image = tile.image ?? Self.tinted("app.dashed")
         name = tile.name
         movable = tile.isMovable
         self.busy = busy
@@ -385,27 +385,35 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
         return result
     }
 
+    /// Real captures carry the menu bar's own background, so the tile adds
+    /// none. Locked items get a small lock in the corner.
     override func draw(_ dirtyRect: NSRect) {
-        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
-        NSColor.controlBackgroundColor.withAlphaComponent(movable ? 0.9 : 0.5).setFill()
-        shape.fill()
+        if let image {
+            let size = image.size.height > 0 ? image.size : NSSize(width: 18, height: 18)
+            let scale = min(1, 22 / max(size.height, 1), (bounds.width - 6) / max(size.width, 1))
+            let drawn = NSSize(width: size.width * scale, height: size.height * scale)
+            let rect = NSRect(x: bounds.midX - drawn.width / 2, y: bounds.midY - drawn.height / 2,
+                              width: drawn.width, height: drawn.height)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).addClip()
+            image.draw(in: rect, from: .zero, operation: .sourceOver,
+                       fraction: movable && !busy ? 1 : 0.45, respectFlipped: true, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+        }
         if window?.firstResponder === self {
+            let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 6, yRadius: 6)
             NSColor.keyboardFocusIndicatorColor.setStroke()
-            shape.lineWidth = 2
-            shape.stroke()
+            ring.lineWidth = 2
+            ring.stroke()
         }
-        guard let image else { return }
-        let size = image.size.height > 0 ? image.size : NSSize(width: 18, height: 18)
-        let scale = min(1, 22 / max(size.height, 1), (bounds.width - 10) / max(size.width, 1))
-        let drawn = NSSize(width: size.width * scale, height: size.height * scale)
-        let rect = NSRect(x: bounds.midX - drawn.width / 2, y: bounds.midY - drawn.height / 2,
-                          width: drawn.width, height: drawn.height)
-        image.draw(in: rect, from: .zero, operation: .sourceOver,
-                   fraction: movable && !busy ? 1 : 0.45, respectFlipped: true, hints: nil)
         if !movable {
-            NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil)?
-                .draw(in: NSRect(x: bounds.maxX - 11, y: bounds.maxY - 12, width: 7, height: 8),
-                      from: .zero, operation: .sourceOver, fraction: 0.7, respectFlipped: true, hints: nil)
+            Self.tinted("lock.fill")?.draw(in: NSRect(x: bounds.maxX - 9, y: bounds.maxY - 10, width: 8, height: 9),
+                                           from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
+    }
+
+    static func tinted(_ symbol: String) -> NSImage? {
+        NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(paletteColors: [.secondaryLabelColor]))
     }
 }
