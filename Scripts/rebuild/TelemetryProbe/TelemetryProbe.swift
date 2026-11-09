@@ -44,6 +44,7 @@ private struct ProbeReport: Codable {
     let distinctID: String
     let requests: [RequestResult]
     let transportAccepted: Bool
+    let ratingAccepted: Bool
     let serverReadbackRequired: Bool
 }
 
@@ -63,12 +64,18 @@ private struct ProbeReport: Codable {
         await client.log(.serviceStarted)
         await client.flush()
         await client.flush()
+        let submission = await client.makeRatingSubmission(.four)
+        let ratingResult: UsageDeliveryResult
+        if let submission { ratingResult = await client.submitRating(submission) }
+        else { ratingResult = .disabled }
         await client.disable()
         let requests = await transport.capturedResults()
         let accepted = Set(requests.map(\.endpoint)) == ["flags", "events", "logs"]
+            && ratingResult == .accepted
             && requests.allSatisfy { (200..<300).contains($0.status) && $0.rejectedLogRecords == 0 }
         let report = ProbeReport(projectID: FluxUsageProject.id, distinctID: identity.value.uuidString.lowercased(),
-                                 requests: requests, transportAccepted: accepted, serverReadbackRequired: true)
+                                 requests: requests, transportAccepted: accepted, ratingAccepted: ratingResult == .accepted,
+                                 serverReadbackRequired: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         print(String(decoding: try encoder.encode(report), as: UTF8.self))
