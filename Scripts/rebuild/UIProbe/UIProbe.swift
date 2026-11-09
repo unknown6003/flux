@@ -77,6 +77,24 @@ import FluxUI
                 }
                 settings.close()
             }
+            for variant in MenuBarVariant.allCases {
+                let settings = SettingsWindowController(initialPage: .menuBar) { _ in menuBarFixture(variant) }
+                guard let window = settings.window, let root = window.contentView else { throw ProbeError.noView }
+                window.appearance = NSAppearance(named: appearance)
+                window.setContentSize(NSSize(width: width, height: 900))
+                window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+                window.orderFrontRegardless()
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+                root.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+                var renderingError: (any Error)?
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    do { try render(root, to: output.appendingPathComponent("menuBar-\(variant.rawValue)-\(theme)-\(width).png")) }
+                    catch { renderingError = error }
+                }
+                if let renderingError { throw renderingError }
+                settings.close()
+            }
             }
         }
         let feedbackStates: [(String, FeedbackRatingState)] = [
@@ -281,20 +299,62 @@ import FluxUI
         return fixtures
     }
 
-    @MainActor private static func menuBarFixture() -> NSViewController {
-        let rows = [
-            ("org.fluxfixture.player", "Example Player", MenuBarGroup.shown),
-            ("org.fluxfixture.calendar", "Example Calendar with a wide label", .hidden),
-            ("org.fluxfixture.sync", "Example Sync", .alwaysHidden),
-            ("com.apple.controlcenter", "Control Center", .shown)
-        ].map { raw, name, group in
+    /// A stand-in for a captured menu bar item: a light glyph on a dark bar.
+    @MainActor private static func menuBarImage(_ symbol: String, width: CGFloat = 24, text: String? = nil) -> NSImage {
+        NSImage(size: NSSize(width: width, height: 22), flipped: false) { rect in
+            NSColor(white: 0.16, alpha: 1).setFill()
+            rect.fill()
+            if let text {
+                let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.menuBarFont(ofSize: 0), .foregroundColor: NSColor.white]
+                let size = text.size(withAttributes: attributes)
+                text.draw(at: NSPoint(x: (rect.width - size.width) / 2, y: (rect.height - size.height) / 2), withAttributes: attributes)
+            } else if let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                        .withSymbolConfiguration(.init(pointSize: 14, weight: .regular)) {
+                let tinted = NSImage(size: glyph.size, flipped: false) { inner in
+                    glyph.draw(in: inner)
+                    NSColor.white.set()
+                    inner.fill(using: .sourceAtop)
+                    return true
+                }
+                tinted.draw(in: NSRect(x: (rect.width - glyph.size.width) / 2, y: (rect.height - glyph.size.height) / 2,
+                                       width: glyph.size.width, height: glyph.size.height))
+            }
+            return true
+        }
+    }
+
+    enum MenuBarVariant: String, CaseIterable { case moving, error, access }
+
+    @MainActor private static func menuBarFixture(_ variant: MenuBarVariant? = nil) -> NSViewController {
+        let apps: [(String, String, MenuBarGroup, String, CGFloat, String?)] = [
+            ("org.fluxfixture.sync", "Example Sync", .alwaysHidden, "arrow.triangle.2.circlepath", 24, nil),
+            ("org.fluxfixture.vpn", "Example VPN", .alwaysHidden, "lock.shield", 24, nil),
+            ("org.fluxfixture.calendar", "Example Calendar", .hidden, "calendar", 24, nil),
+            ("org.fluxfixture.notes", "Example Notes", .hidden, "note.text", 24, nil),
+            ("org.fluxfixture.meter", "Example Meter", .hidden, "", 44, "42%"),
+            ("org.fluxfixture.player", "Example Player", .shown, "music.note", 24, nil),
+            ("org.fluxfixture.cloud", "Example Cloud", .shown, "cloud", 24, nil),
+            ("org.fluxfixture.chat", "Example Chat", .shown, "bubble.left", 24, nil),
+            ("com.apple.controlcenter", "Control Center", .shown, "switch.2", 24, nil),
+        ]
+        let rows = apps.map { raw, name, group, _, _, _ in
             MenuBarAppRow(id: ApplicationID(rawValue: raw)!, name: name,
-                          icon: NSImage(systemSymbolName: "app", accessibilityDescription: nil),
-                          group: group)
+                          icon: NSImage(systemSymbolName: "app", accessibilityDescription: nil), group: group)
+        }
+        let tiles = apps.map { raw, name, group, symbol, width, text in
+            MenuBarLayoutTile(id: MenuBarItemID(application: ApplicationID(rawValue: raw)!, index: 0), name: name,
+                              image: menuBarImage(symbol, width: width, text: text), group: group)
         }
         let actions = MenuBarPageActions(assign: { _, _ in }, beginArrange: {}, endArrange: {},
             showRealIcons: {}, refresh: {}, openAccessibilitySettings: {}, checkAccessibility: {}, reviewIdentity: { _ in }, setOption: { _ in })
-        return MenuBarPreferencesController(state: .init(mode: .perApplication, rows: rows), actions: actions)
+        var state = MenuBarPageState(mode: .perApplication, rows: rows, showsRealIcons: true, tiles: tiles)
+        switch variant {
+        case .moving: state.moveStatus = .moving(name: "Example Notes", attempt: 2)
+        case .error: state.moveStatus = .failed(name: "Example Notes", .notAccepted)
+        case .access: state.layoutAccessible = false; state.tiles = []
+        case nil: break
+        }
+        return MenuBarPreferencesController(state: state, actions: actions)
     }
 
     @MainActor private static func descendants(_ view: NSView) -> [NSView] {

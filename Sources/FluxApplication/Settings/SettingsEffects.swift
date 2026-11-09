@@ -128,4 +128,6 @@ public protocol SettingsEffects: AnyObject, Sendable {
     func reviewIdentity(_ application: ApplicationID)
     /// Compact spacing has no Core key. The app owns the macOS value.
     func setCompactSpacing(_ enabled: Bool)
+    /// Move one real menu bar item from the layout editor.
+    func moveMenuBarItem(_ move: MenuBarItemMove)
 }

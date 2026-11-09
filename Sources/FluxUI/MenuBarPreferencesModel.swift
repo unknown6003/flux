@@ -79,6 +79,33 @@ public struct MenuBarAppRow {
     }
 }
 
+/// One real status item in the layout editor, in menu bar order.
+@MainActor
+public struct MenuBarLayoutTile {
+    public let id: MenuBarItemID
+    /// The owner app's local name. Several items of one app share it.
+    public var name: String
+    /// The real menu bar image when Screen Recording is on, else the app icon.
+    public var image: NSImage?
+    public var group: MenuBarGroup
+    public var isMovable: Bool
+
+    public init(id: MenuBarItemID, name: String, image: NSImage? = nil, group: MenuBarGroup = .shown, isMovable: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.image = image
+        self.group = group
+        self.isMovable = isMovable ?? !id.application.isManagedBySystem
+    }
+}
+
+/// The state of the last move the editor asked for.
+public enum MenuBarMoveStatus: Equatable, Sendable {
+    case moving(name: String, attempt: Int)
+    case moved(name: String)
+    case failed(name: String, MenuBarMoveFailure)
+}
+
 /// Saved Menu Bar options outside the app list. The parent reads them from
 /// `Preferences` and sends them back after each change. FluxUI never writes them.
 public struct MenuBarOptions: Equatable, Sendable {
@@ -136,6 +163,11 @@ public struct MenuBarPageState {
     /// Real previews are on for this page visit.
     public var showsRealIcons: Bool
     public var options: MenuBarOptions
+    /// Real items in menu bar order, for the layout editor.
+    public var tiles: [MenuBarLayoutTile]
+    /// False when the last read found no Accessibility grant.
+    public var layoutAccessible: Bool
+    public var moveStatus: MenuBarMoveStatus?
 
     public init(
         mode: MenuBarPageMode,
@@ -145,7 +177,10 @@ public struct MenuBarPageState {
         isArranging: Bool = false,
         savedLayoutStillApplies: Bool = false,
         showsRealIcons: Bool = false,
-        options: MenuBarOptions = MenuBarOptions()
+        options: MenuBarOptions = MenuBarOptions(),
+        tiles: [MenuBarLayoutTile] = [],
+        layoutAccessible: Bool = true,
+        moveStatus: MenuBarMoveStatus? = nil
     ) {
         self.mode = mode
         self.rows = rows
@@ -155,6 +190,9 @@ public struct MenuBarPageState {
         self.savedLayoutStillApplies = savedLayoutStillApplies
         self.showsRealIcons = showsRealIcons
         self.options = options
+        self.tiles = tiles
+        self.layoutAccessible = layoutAccessible
+        self.moveStatus = moveStatus
     }
 }
 
@@ -175,6 +213,8 @@ public struct MenuBarPageActions {
     public var reviewIdentity: (ApplicationID) -> Void
     /// Saved option changes. The parent saves to `Preferences` and sends new state.
     public var setOption: (MenuBarOptionAction) -> Void
+    /// Move one item in the real menu bar. The parent reports progress in `moveStatus`.
+    public var moveItem: (MenuBarItemMove) -> Void
 
     public init(
         assign: @escaping (ApplicationID, MenuBarGroup) -> Void,
@@ -185,7 +225,8 @@ public struct MenuBarPageActions {
         openAccessibilitySettings: @escaping () -> Void,
         checkAccessibility: @escaping () -> Void,
         reviewIdentity: @escaping (ApplicationID) -> Void,
-        setOption: @escaping (MenuBarOptionAction) -> Void
+        setOption: @escaping (MenuBarOptionAction) -> Void,
+        moveItem: @escaping (MenuBarItemMove) -> Void = { _ in }
     ) {
         self.assign = assign
         self.beginArrange = beginArrange
@@ -196,30 +237,27 @@ public struct MenuBarPageActions {
         self.checkAccessibility = checkAccessibility
         self.reviewIdentity = reviewIdentity
         self.setOption = setOption
+        self.moveItem = moveItem
     }
 }
 
 extension MenuBarGroup {
     var title: String {
         switch self {
-        case .shown: L("menuBar.group.shown", "Shown")
+        case .shown: L("menuBar.group.visible", "Visible")
         case .hidden: L("menuBar.group.hidden", "Hidden")
-        case .alwaysHidden: L("menuBar.group.always", "Always")
+        case .alwaysHidden: L("menuBar.group.alwaysHidden", "Always Hidden")
         }
     }
 
-    var laneTitle: String {
-        switch self {
-        case .shown: L("menuBar.lane.shown", "Shown")
-        case .hidden: L("menuBar.lane.hidden", "Hidden")
-        case .alwaysHidden: L("menuBar.lane.always", "Always Hidden")
-        }
-    }
+    var accessibilityName: String { title }
 
-    var accessibilityName: String {
+    /// One line under each strip title.
+    var stripHelp: String {
         switch self {
-        case .alwaysHidden: L("menuBar.group.alwaysAX", "Always Hidden")
-        default: title
+        case .shown: L("menuBar.strip.visible.help", "Always in the menu bar.")
+        case .hidden: L("menuBar.strip.hidden.help", "Shown when you click the Flux chevron.")
+        case .alwaysHidden: L("menuBar.strip.always.help", "Shown when you Option-click the chevron.")
         }
     }
 }
@@ -238,7 +276,7 @@ enum MenuBarText {
     static func mode(_ mode: MenuBarPageMode) -> String {
         switch mode {
         case .perApplication: L("menuBar.mode.perApp", "Hiding works per app. All icons from one app share a group.")
-        case .byPosition: L("menuBar.mode.byPosition", "Hiding works by position. Arrange icons in the menu bar after you change a group.")
+        case .byPosition: L("menuBar.mode.byPosition", "Hiding works by position. Moving an icon here also moves it in the menu bar.")
         case .needsAccessibility: L("menuBar.mode.access", "To read your menu bar, Flux needs Accessibility.")
         case .paused: L("menuBar.mode.paused", "Hiding is paused. macOS did not confirm the change.")
         case .failed("hidingUnavailable"): L("menuBar.mode.hidingUnavailable", "This macOS version has no menu bar hiding Flux can use. All icons stay visible.")
@@ -252,8 +290,38 @@ enum MenuBarText {
         case .applying: String(format: L("menuBar.result.applying", "Applying to %@…"), row.name)
         case .asked: String(format: L("menuBar.result.asked", "Flux asked macOS to apply %@ to %@."), row.group.accessibilityName, row.name)
         case .savedInMacOS: String(format: L("menuBar.result.saved", "Saved in macOS: %@ is %@."), row.name, row.group.accessibilityName)
-        case .notMovedYet: String(format: L("menuBar.result.notMoved", "Saved as %@. Not moved yet. Use Arrange in Menu Bar…"), row.group.accessibilityName)
+        case .notMovedYet: String(format: L("menuBar.result.notMoved", "Saved as %@. Drag the icon into that group to move it."), row.group.accessibilityName)
         case .failed(let code): String(format: L("menuBar.result.failed", "macOS did not confirm the change for %@ (%@)."), row.name, code)
+        }
+    }
+
+    static func move(_ status: MenuBarMoveStatus) -> String {
+        switch status {
+        case .moving(let name, let attempt):
+            attempt <= 1 ? String(format: L("menuBar.move.moving", "Moving %@…"), name)
+                : String(format: L("menuBar.move.retry", "Moving %@, try %ld of 3…"), name, attempt)
+        case .moved(let name): String(format: L("menuBar.move.done", "Moved %@."), name)
+        case .failed(let name, let failure): moveFailure(failure, name: name)
+        }
+    }
+
+    static func moveFailure(_ failure: MenuBarMoveFailure, name: String) -> String {
+        switch failure {
+        case .accessibilityRequired: L("menuBar.move.access", "Flux needs Accessibility to move icons.")
+        case .itemGone: String(format: L("menuBar.move.gone", "%@ is no longer in the menu bar."), name)
+        case .itemLocked: String(format: L("menuBar.move.locked", "macOS keeps %@ in place."), name)
+        case .neighbourGone: String(format: L("menuBar.move.neighbour", "The icons next to %@ changed. Try again."), name)
+        case .alwaysHiddenOff: L("menuBar.move.alwaysOff", "Turn on the Always Hidden group first.")
+        case .hidingUnavailable: L("menuBar.move.noHiding", "Flux can't hide icons right now, so they all stay visible.")
+        case .inputBusy: L("menuBar.move.input", "Let go of the mouse and keys, then try again.")
+        case .groupNotSaved("identityReviewRequired"):
+            String(format: L("menuBar.move.review", "Review %@ first. Its signing identity changed."), name)
+        case .groupNotSaved("identityUnavailable"):
+            String(format: L("menuBar.move.checking", "Flux is still checking %@. Try again in a moment."), name)
+        case .groupNotSaved:
+            String(format: L("menuBar.move.notSaved", "Flux could not save the group for %@."), name)
+        case .notAccepted:
+            String(format: L("menuBar.move.refused", "macOS did not move %@ after 3 tries. Try again."), name)
         }
     }
 

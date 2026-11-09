@@ -64,6 +64,7 @@ private func requireTrue(_ value: Bool, file: StaticString = #fileID, line: UInt
     func checkAccessibility() { unexpected() }
     func reviewIdentity(_ application: ApplicationID) { unexpected() }
     func setCompactSpacing(_ enabled: Bool) { unexpected() }
+    func moveMenuBarItem(_ move: MenuBarItemMove) { unexpected() }
 }
 
 private actor RatingFixtureTransport: UsageTransport {

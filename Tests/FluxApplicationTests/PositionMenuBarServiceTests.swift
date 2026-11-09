@@ -78,6 +78,8 @@ import FluxUI
     var blocksIdentityRead = false
     var blockedIdentityRead: CheckedContinuation<Void, Never>?
     var owner: PositionMenuBarService!
+    var drags: [(CGPoint, CGPoint)] = []
+    var onDrag: ((CGPoint, CGPoint) -> Void)?
 
     init(support: PositionMenuBarHidingSupport = .unverified) throws {
         defaults = try #require(UserDefaults(suiteName: domain))
@@ -93,11 +95,11 @@ import FluxUI
                 return self.inventory
             }, permissionStatus: { .allowed }, requestPreviewPermission: { [unowned self] in
                 self.permissionRequests += 1; return .allowed
-            }, capturePreviews: { [unowned self] in
+            }, capturePreviews: { [unowned self] _ in
                 self.previewCaptures += 1
                 if self.blocksPreview { await withCheckedContinuation { self.blockedPreview = $0 } }
                 guard let image = self.previewImage else { throw StatusPreviewError.unavailable }
-                return [self.app: image]
+                return [MenuBarItemID(application: self.app, index: 0): image]
             }, stopPreviews: { [unowned self] in self.previewCloses += 1 },
             screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
             quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false,
@@ -113,7 +115,10 @@ import FluxUI
                     return await withCheckedContinuation { self.blockedIdentityConfirmation = $0 }
                 }
                 return self.identityAccepted
-            })
+            }, tools: .init(drag: { [unowned self] from, to in
+                self.drags.append((from, to))
+                self.onDrag?(from, to)
+            }, inputIsQuiet: { true }, previewAllowed: { false }, sleep: { _ in }, ownApplication: nil))
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -513,6 +518,115 @@ import FluxUI
         let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
         #expect(saved.group(for: fixture.app) == .shown)
         #expect(!fixture.owner.state.isArranging)
+        try await fixture.close()
+    }
+
+    @MainActor private func twoItemFixture(support: PositionMenuBarHidingSupport) async throws -> (PositionServiceFixture, ApplicationID) {
+        let fixture = try PositionServiceFixture(support: support)
+        let second = try #require(ApplicationID(rawValue: "org.fluxfixture.second"))
+        fixture.inventory = .init(applications: [
+            .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
+            .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 450, y: 0, width: 24, height: 24)]),
+        ], accessibilityAllowed: true, complete: true)
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        return (fixture, second)
+    }
+
+    @Test @MainActor func chevronMenuOffersOnlySettingsAndQuit() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.owner.start()
+        #expect(fixture.controls.contextMenu?.items.map(\.title) == ["Settings…", "Quit Flux"])
+        try await fixture.close()
+    }
+
+    @Test @MainActor func editorTilesFollowTheRealOrderAndSavedGroups() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication)
+        #expect(fixture.owner.state.tiles.map(\.id.application) == [fixture.app, second])
+        #expect(fixture.owner.state.tiles.map(\.name) == ["Example", "Second"])
+        #expect(fixture.owner.state.tiles.allSatisfy { $0.group == .shown })
+        #expect(fixture.owner.state.layoutAccessible)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func perAppMoveIntoAnEmptyStripSavesTheGroupWithoutDragging() async throws {
+        let (fixture, _) = try await twoItemFixture(support: .perApplication)
+        let item = MenuBarItemID(application: fixture.app, index: 0)
+        fixture.owner.moveItem(.init(item: item, group: .hidden, left: nil, right: nil))
+        await fixture.settle(); await fixture.settle()
+        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
+        #expect(saved.group(for: fixture.app) == .hidden)
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
+        #expect(fixture.owner.state.tiles.first { $0.id == item }?.group == .hidden)
+        // The editor keeps every item visible while it is open.
+        #expect(fixture.hider.applied.last?.reveal == .all)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func reorderDragsAndVerifiesAgainstAFreshRead() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication)
+        fixture.onDrag = { _, _ in
+            fixture.inventory = .init(applications: [
+                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 450, y: 0, width: 24, height: 24)]),
+                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
+            ], accessibilityAllowed: true, complete: true)
+        }
+        fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown,
+                                     left: nil, right: .init(application: fixture.app, index: 0)))
+        await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.count == 1)
+        #expect(fixture.drags.first?.0 == CGPoint(x: 462, y: 12))
+        #expect(fixture.drags.first?.1 == CGPoint(x: 408, y: 12))
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Second"))
+        #expect(fixture.owner.state.tiles.map(\.id.application) == [second, fixture.app])
+        try await fixture.close()
+    }
+
+    @Test @MainActor func aRefusedReorderReportsOneClearFailure() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication)
+        fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown,
+                                     left: nil, right: .init(application: fixture.app, index: 0)))
+        // A second request while the first runs is ignored.
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden, left: nil, right: nil))
+        await fixture.settle(); await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.count == MenuBarMoveEngine.attempts)
+        #expect(fixture.owner.state.moveStatus == .failed(name: "Second", .notAccepted))
+        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
+        #expect(saved.group(for: fixture.app) == .shown)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func byPositionGroupChangeDragsAcrossTheBoundaryAndSavesTheResult() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .byPosition)
+        #expect(fixture.owner.state.mode == .byPosition)
+        // Boundaries: Always Hidden at 300, Hidden at 600. Both items are left of 600, so Hidden.
+        #expect(fixture.owner.state.tiles.allSatisfy { $0.group == .hidden })
+        fixture.onDrag = { _, _ in
+            fixture.inventory = .init(applications: [
+                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
+                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 700, y: 0, width: 24, height: 24)]),
+            ], accessibilityAllowed: true, complete: true)
+        }
+        fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown, left: nil, right: nil))
+        await fixture.settle(); await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.first?.1.x == 624)
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Second"))
+        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
+        #expect(saved.group(for: second) == .shown)
+        #expect(saved.group(for: fixture.app) == .hidden)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func lostAccessibilityShowsInTheEditorState() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.inventory = .init(applications: [], accessibilityAllowed: false, complete: false)
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        #expect(!fixture.owner.state.layoutAccessible)
+        #expect(fixture.owner.state.tiles.isEmpty)
         try await fixture.close()
     }
 
