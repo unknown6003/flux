@@ -63,6 +63,8 @@ import FluxUI
     var identityConfirmations = 0
     var blocksIdentityConfirmation = false
     var blockedIdentityConfirmation: CheckedContinuation<Bool, Never>?
+    var blocksIdentityRead = false
+    var blockedIdentityRead: CheckedContinuation<Void, Never>?
     var owner: PositionMenuBarService!
 
     init(support: PositionMenuBarHidingSupport = .unverified) throws {
@@ -87,9 +89,11 @@ import FluxUI
             screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
             quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false,
             readIdentity: { [unowned self] _, saved in
+                let requirement = self.identityRequirement
+                let matches = self.identityMatch ?? (saved == nil || saved == requirement)
+                if self.blocksIdentityRead { await withCheckedContinuation { self.blockedIdentityRead = $0 } }
                 guard self.identityAvailable else { return nil }
-                return .init(requirement: self.identityRequirement,
-                             matchesSaved: self.identityMatch ?? (saved == nil || saved == self.identityRequirement))
+                return .init(requirement: requirement, matchesSaved: matches)
             }, confirmIdentity: { [unowned self] _ in
                 self.identityConfirmations += 1
                 if self.blocksIdentityConfirmation {
@@ -105,12 +109,38 @@ import FluxUI
         blockedRead?.resume(); blockedRead = nil
         blockedPreview?.resume(); blockedPreview = nil
         blockedIdentityConfirmation?.resume(returning: false); blockedIdentityConfirmation = nil
+        blocksIdentityRead = false
+        blockedIdentityRead?.resume(); blockedIdentityRead = nil
         try await owner.stop()
         defaults.removePersistentDomain(forName: domain)
     }
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func replacementDuringAScanRequiresANewReadBeforeSavingOrHiding() async throws {
+        let fixture = try PositionServiceFixture(support: .byPosition)
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        #expect(fixture.controls.capability == .byPosition)
+        fixture.blocksIdentityRead = true
+        fixture.owner.refresh()
+        await fixture.settle()
+        let reads = fixture.reads
+        fixture.identityRequirement = Data([2])
+        fixture.owner.refresh()
+        fixture.owner.assign(fixture.app, to: .hidden)
+        #expect(fixture.defaults.object(forKey: "flux.macOS27IconLayout") == nil)
+        #expect(fixture.controls.capability == .unavailable)
+        fixture.blocksIdentityRead = false
+        fixture.blockedIdentityRead?.resume(); fixture.blockedIdentityRead = nil
+        await fixture.settle()
+        #expect(fixture.reads == reads + 1)
+        #expect(fixture.owner.state.rows.first?.needsIdentityReview == true)
+        #expect(fixture.controls.capability == .unavailable)
+        #expect(fixture.defaults.object(forKey: "flux.macOS27IconLayout") == nil)
+        try await fixture.close()
+    }
+
     @Test @MainActor func changedIdentityNeedsConsentAndKeepsTheSavedVisibilityChoice() async throws {
         let fixture = try PositionServiceFixture(support: .byPosition)
         fixture.owner.start()

@@ -5,7 +5,11 @@ import Testing
 import FluxCore
 @testable import FluxPlatform
 
-private enum IdentityFixtureError: Error { case command, deadline, requirement }
+private enum IdentityFixtureError: Error {
+    case command
+    case deadline
+    case requirement
+}
 
 private func waitForIdentityFixture(_ process: Process, seconds: TimeInterval) throws {
     let deadline = Date().addingTimeInterval(seconds)

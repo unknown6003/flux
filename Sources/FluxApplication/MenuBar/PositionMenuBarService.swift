@@ -78,6 +78,9 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private var identities: [ApplicationID: MenuBarIdentityEvidence] = [:]
     private var identitiesValidated = false
     private var identityFailure = false
+    private var inventoryVersion: UInt64 = 0
+    private var identityVersion: UInt64?
+    private var pendingAssignments: [ApplicationID: MenuBarGroup] = [:]
 
     private var needsInventory: Bool { editorVisible || arranging || support == .byPosition }
 
@@ -190,6 +193,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func stop() async throws {
         started = false; editorVisible = false; arranging = false
         identitiesValidated = false
+        identityVersion = nil
         observations.removeAll()
         let rehide = rehideTask
         cancelScan(); cancelRehide(); discardPreviews()
@@ -213,12 +217,14 @@ private struct PositionMenuBarArrangementContext: Equatable {
         updateOptions()
         cancelRehide()
         applyControls()
+        if started, needsInventory, identityVersion == nil { requestScan(arrangeResult: false) }
         changed()
     }
 
     public func refresh() {
         guard started, needsInventory else { return }
         actionFailure = nil
+        inventoryVersion &+= 1
         identitiesValidated = false
         applyControls()
         requestScan(arrangeResult: false)
@@ -261,14 +267,22 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     public func assign(_ application: ApplicationID, to group: MenuBarGroup) {
+        guard started, editorVisible || arranging else { return }
         guard !application.isManagedBySystem else { return }
         guard let row = state.rows.first(where: { $0.id == application }), !row.isFixed else { return }
-        guard !identityFailure, (try? currentIdentities()) == identityPins, identities[application] != nil else {
-            results[application] = .failed(code: "identityUnavailable")
-            updateRows(); changed(); return
-        }
         guard !row.needsIdentityReview else {
             results[application] = .failed(code: "identityReviewRequired")
+            updateRows(); changed(); return
+        }
+        if scanTask != nil, !row.needsIdentityReview {
+            pendingAssignments[application] = group
+            policyRevision &+= 1
+            results[application] = .applying
+            updateRows(); changed(); return
+        }
+        guard !identityFailure, identityVersion == inventoryVersion,
+              (try? currentIdentities()) == identityPins, identities[application]?.matchesSaved == true else {
+            results[application] = .failed(code: "identityUnavailable")
             updateRows(); changed(); return
         }
         do {
@@ -394,9 +408,9 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private func loadIdentities() {
         do {
             let fresh = try currentIdentities()
-            if fresh != identityPins { identitiesValidated = false }
+            if fresh != identityPins { identitiesValidated = false; identityVersion = nil }
             identityPins = fresh; identityFailure = false
-        } catch { identityFailure = true; identitiesValidated = false }
+        } catch { identityFailure = true; identitiesValidated = false; identityVersion = nil }
     }
 
     private func saveIdentities(_ pins: MenuBarIdentityPins) {
@@ -473,6 +487,10 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private func cancelScan() {
         scanID = nil; scanTask?.cancel(); scanTask = nil
         state.isRefreshing = false
+        for application in pendingAssignments.keys where results[application] == .applying {
+            results.removeValue(forKey: application)
+        }
+        pendingAssignments.removeAll()
     }
 
     private func cancelIdentityReview() {
@@ -500,6 +518,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
                   self.started, self.needsInventory else { return }
             let context = arrangeResult ? self.arrangementContext() : nil
             let revision = self.policyRevision
+            let inventoryVersion = self.inventoryVersion
             let initialPolicy = try? self.currentPolicy()
             let initialPins = try? self.currentIdentities()
             let snapshot = await self.readInventory()
@@ -515,7 +534,12 @@ private struct PositionMenuBarArrangementContext: Equatable {
             guard !Task.isCancelled, self.scanID == id, self.started,
                   self.needsInventory else { return }
             self.scanTask = nil; self.scanID = nil
+            guard inventoryVersion == self.inventoryVersion else {
+                self.requestScan(arrangeResult: arrangeResult)
+                return
+            }
             self.state.isRefreshing = false
+            self.identityVersion = nil
             if snapshot.accessibilityAllowed {
                 self.identities = identities
                 self.identitiesValidated = false
@@ -527,19 +551,32 @@ private struct PositionMenuBarArrangementContext: Equatable {
                         }
                         if pins != initialPins { self.saveIdentities(pins) }
                         self.identityPins = pins; self.identityFailure = false
+                        self.identityVersion = inventoryVersion
                         self.identitiesValidated = snapshot.complete && snapshot.applications.allSatisfy {
                             $0.id.isManagedBySystem || identities[$0.id]?.matchesSaved == true
                         }
                     } catch { self.identityFailure = true }
                 } else { self.identityFailure = true }
                 self.publish(snapshot)
+                let pending = self.pendingAssignments
+                self.pendingAssignments.removeAll()
+                for (application, group) in pending {
+                    self.results.removeValue(forKey: application)
+                    self.assign(application, to: group)
+                }
                 if let context, let initialPolicy, revision == self.policyRevision,
+                   !self.identityFailure, self.identityVersion == inventoryVersion,
                    (try? self.currentPolicy()) == initialPolicy, context == self.arrangementContext() {
                     self.saveArrangedPositions(snapshot, context: context)
                 } else if arrangeResult {
                     self.loadPolicy()
                 }
-            } else { self.actionFailure = "accessibilityRequired" }
+            } else {
+                self.identities.removeAll()
+                for application in self.pendingAssignments.keys { self.results[application] = .failed(code: "identityUnavailable") }
+                self.pendingAssignments.removeAll()
+                self.actionFailure = "accessibilityRequired"
+            }
             if arrangeResult {
                 self.arranging = false; self.state.isArranging = false
                 self.controls.setArranging(false)

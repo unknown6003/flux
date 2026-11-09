@@ -35,7 +35,8 @@ public actor MenuBarIdentityReader {
         var current: SecRequirement?
         guard SecCodeCopyDesignatedRequirement(staticCode, [], &current) == errSecSuccess,
               let current else { return nil }
-        let flags = SecCSFlags(rawValue: kSecCSNoNetworkAccess)
+        // Apple's CSCommon.h defines this bit; some SDKs omit its Swift name.
+        let flags = SecCSFlags(rawValue: 1 << 29)
         guard SecCodeCheckValidity(dynamic, flags, current) == errSecSuccess else { return nil }
         var data: CFData?
         guard SecRequirementCopyData(current, [], &data) == errSecSuccess, let data else { return nil }

@@ -109,7 +109,8 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         var reviewRows: [NSView] = []
         for row in state.rows {
             let view = rowViews[row.id] ?? makeRowView(row.id)
-            view.apply(row, showsPreview: state.showsRealIcons, alwaysHiddenEnabled: state.alwaysHiddenEnabled)
+            view.apply(row, showsPreview: state.showsRealIcons, alwaysHiddenEnabled: state.alwaysHiddenEnabled,
+                       isRefreshing: state.isRefreshing)
             let matches = needle.isEmpty || row.name.lowercased().contains(needle) || row.id.rawValue.lowercased().contains(needle)
             view.isHidden = !matches
             let lane: MenuBarGroup = (row.group == .alwaysHidden && !state.alwaysHiddenEnabled) ? .hidden : row.group
@@ -358,7 +359,7 @@ final class MenuBarRowView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func apply(_ row: MenuBarAppRow, showsPreview: Bool, alwaysHiddenEnabled: Bool) {
+    func apply(_ row: MenuBarAppRow, showsPreview: Bool, alwaysHiddenEnabled: Bool, isRefreshing: Bool) {
         iconView.image = (showsPreview ? row.preview : nil) ?? row.icon
             ?? FluxUIStyle.symbol("app.dashed", label: row.name)
         nameLabel.stringValue = row.name
@@ -367,6 +368,7 @@ final class MenuBarRowView: NSView {
         let index = MenuBarGroup.allCases.firstIndex(of: row.group) ?? 0
         if groupControl.selectedSegment != index { groupControl.selectedSegment = index }
         groupControl.setEnabled(alwaysHiddenEnabled, forSegment: 2)
+        groupControl.isEnabled = !isRefreshing && !row.needsIdentityReview
         groupControl.isHidden = row.isFixed
         fixedLabel.isHidden = !row.isFixed
         let groupName = row.group.accessibilityName
