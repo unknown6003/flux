@@ -70,6 +70,10 @@ The builder's one-second idle control checks receipts only. It is not a
 performance result. This probe is not a passing app budget or Mac acceptance.
 Normal builds compile a disabled stub, so the diagnostic's test access cannot
 break a plain Release build or enable a diagnostic by an environment flag alone.
+CI 42594259193 at 17778bf passed both the plain Release disabled control and
+the explicitly enabled Release build and one-second idle receipt control.
+The Mac experiment uses the equivalent enabled probe from 8d2235f. Neither
+build control is a passing app performance result.
 
 [Raw failed trial](https://templink.bdwy.xyz/media/1794821627-1794908027-10d56c5a166188301b51c0d0.bin).
 The link expires on 16 November 2026.
