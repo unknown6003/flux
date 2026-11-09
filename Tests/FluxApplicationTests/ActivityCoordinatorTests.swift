@@ -67,7 +67,13 @@ struct ActivityCoordinatorTests {
         try owner.timers.start(duration: 120, label: "Second")
         owner.perform(.dismissActivity)
         #expect(owner.queue.current == nil)
-        try await Task.sleep(for: .milliseconds(10_200))
+        // Test actual delivery without assuming the shared CI main actor
+        // dispatches this callback within an arbitrary 200 ms window. The
+        // clock-driven case below separately checks the ten-second policy.
+        let restorationDeadline = clock.now.advanced(by: .seconds(12))
+        while owner.queue.current?.priority != 110, clock.now < restorationDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(owner.queue.current?.kind == .timer)
         #expect(owner.queue.current?.priority == 110)
         #expect(owner.timers.timers.count == 1)

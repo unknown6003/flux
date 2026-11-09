@@ -220,8 +220,9 @@ public final class ActivityCoordinator {
             // Dismissing the completion removes the queue's expiry deadline.
             // Keep our own one-shot boundary so another timer returns on time.
             if presenting {
+                let wake = ContinuousClock.now.advanced(by: .seconds(completionUntil.timeIntervalSince(date)))
                 timerTask = Task { @MainActor [weak self] in
-                    do { try await Task.sleep(for: .seconds(completionUntil.timeIntervalSince(date))) } catch { return }
+                    do { try await Task.sleep(until: wake, clock: .continuous) } catch { return }
                     guard !Task.isCancelled else { return }
                     self?.refreshTimer()
                 }
