@@ -49,6 +49,8 @@ public enum AboutPreferencesAction: Equatable, Sendable {
     /// Show the MediaRemoteAdapter BSD 3-Clause license text.
     case openMediaRemoteAdapterLicense
     case openSourceRepository
+    /// The user chose Rate Flux…. The parent opens the rating form as a sheet.
+    case rateFlux
 }
 
 /// Settings › About page. It only shows state and sends actions.
@@ -75,8 +77,20 @@ public final class AboutPreferencesController: FormPageController {
         if case .previousSessionUnclean(let camera) = state.crashNotice { sections.append(crashBanner(cameraWasRunning: camera)) }
         sections += [FluxUIStyle.section(L("about.updates", "Updates"), [
             updateRow(self, id: "about.updates.action", status: state.update) { [weak self] in self?.onAction($0 ? .installUpdate : .checkForUpdates) },
-        ]), diagnosticSection(), creditSection()]
+        ]), diagnosticSection(), feedbackSection(), creditSection()]
         return sections
+    }
+
+    private func feedbackSection() -> NSView {
+        let rate = button("about.feedback.rate", L("about.feedback.rate", "Rate Flux…")) { [weak self] in
+            self?.onAction(.rateFlux)
+        }
+        return FluxUIStyle.section(L("about.feedback", "Feedback"), [
+            FluxUIStyle.row(L("about.feedback.title", "Rate Flux"), helper: L(
+                "about.feedback.helper",
+                "Sends one number from 1 to 5 when usage data is on in General. It sends no text."
+            ), control: rate),
+        ])
     }
 
     private func crashBanner(cameraWasRunning: Bool) -> NSView {

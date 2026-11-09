@@ -32,6 +32,16 @@ public final class SettingsCoordinator {
     private var analyticsTask: Task<Void, Never>?
     private var clipboardTask: Task<Void, Never>?
 
+    // One rating visit: the open sheet, its retry token and its one send.
+    // All three end together in `endRating()`.
+    private var ratingSheet: FeedbackRatingController?
+    private var ratingToken: (rating: UsageRating, submission: UsageRatingSubmission)?
+    private var ratingTask: Task<Void, Never>?
+
+    // Test hooks (`@testable`). The open sheet, nil with no visit, and its one send.
+    var ratingController: FeedbackRatingController? { ratingSheet }
+    var ratingSend: Task<Void, Never>? { ratingTask }
+
     public init(preferences: PreferenceStore, usage: UsageCollection,
                 version: ApplicationVersion, effects: any SettingsEffects) {
         self.preferences = preferences
@@ -58,7 +68,10 @@ public final class SettingsCoordinator {
         controller.show(nil)
     }
 
-    public func close() { window?.close() }
+    public func close() {
+        endRating()
+        window?.close()
+    }
 
     /// Rebuilds the state of the visible page only. Call it after an effect
     /// result, a permission change, an update status or a menu bar read.
@@ -96,6 +109,7 @@ public final class SettingsCoordinator {
     }
 
     private func pageWillDisappear() {
+        endRating()
         page = nil
         shortcutRejections = [:]
         analyticsWasReset = false
@@ -209,8 +223,10 @@ public final class SettingsCoordinator {
         case .installUpdate:
             effects.installUpdate()
         case .setAnalyticsEnabled(let enabled):
+            endRating()
             runAnalytics { usage in await usage.setEnabled(enabled) }
         case .resetAnalyticsID:
+            endRating()
             runAnalytics { usage in await usage.resetIdentity() }
             analyticsWasReset = true
         case .openPermissionSettings(let kind):
@@ -399,8 +415,84 @@ public final class SettingsCoordinator {
         case .dismissCrashNotice: effects.dismissCrashNotice()
         case .openMediaRemoteAdapterLicense: effects.openMediaRemoteAdapterLicense()
         case .openSourceRepository: effects.openSourceRepository()
+        case .rateFlux: openRating()
         }
         refresh()
+    }
+
+    // MARK: Rating sheet
+
+    /// Opens a fresh visit on the About page. A second request while a sheet
+    /// is open does nothing.
+    private func openRating() {
+        guard ratingSheet == nil, window?.currentPage == .about,
+              let about = page as? AboutPreferencesController else { return }
+        let sheet = FeedbackRatingController(state: ratingState(.ready)) { [weak self] in self?.handle($0) }
+        ratingSheet = sheet
+        about.presentAsSheet(sheet)
+    }
+
+    private func handle(_ action: FeedbackRatingAction) {
+        switch action {
+        case .submit(let rating): submitRating(rating)
+        case .cancel, .done: endRating()
+        }
+    }
+
+    /// The form is already locked when this runs. It starts at most one send.
+    /// The same rating reuses its token; a changed rating gets a new one.
+    private func submitRating(_ rating: UsageRating) {
+        guard let sheet = ratingSheet, ratingTask == nil else { return }
+        if ratingToken?.rating != rating {
+            ratingToken = usage.makeRatingSubmission(rating).map { (rating: rating, submission: $0) }
+        }
+        guard let submission = ratingToken?.submission else {
+            sheet.update(state: ratingState(.ready))
+            return
+        }
+        sheet.update(state: ratingState(.sending))
+        let usage = usage
+        ratingTask = Task { @MainActor [weak self, weak sheet] in
+            let result = await usage.submitRating(submission)
+            guard !Task.isCancelled, let self, let sheet, self.ratingSheet === sheet else { return }
+            self.ratingTask = nil
+            self.finishRating(result, in: sheet)
+        }
+    }
+
+    private func finishRating(_ result: UsageDeliveryResult, in sheet: FeedbackRatingController) {
+        let submission: FeedbackSubmission
+        switch result {
+        case .accepted:
+            ratingToken = nil
+            submission = .sent
+        case .busy:
+            submission = .failed(.busy)
+        case .limited:
+            submission = .failed(.limited)
+        case .failed:
+            submission = .failed(.unconfirmed)
+        case .disabled, .cancelled:
+            // The token can't be used again. A retry makes a new one.
+            ratingToken = nil
+            submission = usage.enabled ? .failed(.unconfirmed) : .ready
+        }
+        sheet.update(state: ratingState(submission))
+    }
+
+    /// Cancels the send, drops the token and closes the sheet. Cancel can
+    /// stop the transport, but it can't recall a request the server already has.
+    private func endRating() {
+        ratingTask?.cancel()
+        ratingTask = nil
+        ratingToken = nil
+        guard let sheet = ratingSheet else { return }
+        ratingSheet = nil
+        if sheet.presentingViewController != nil { sheet.dismiss(nil) }
+    }
+
+    private func ratingState(_ submission: FeedbackSubmission) -> FeedbackRatingState {
+        FeedbackRatingState(collectionEnabled: usage.enabled, submission: submission)
     }
 
     // MARK: Store

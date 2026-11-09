@@ -6,7 +6,7 @@ FluxUI is an AppKit-only Swift 6 library. It has no SwiftUI, WebKit, timers, bac
 
 - **Slice 4 not compiled.** This Linux host has no Swift or macOS SDK. The parent reports that General and About compiled and four UI tests passed on Mac CI run 42517294441 at 430ad53. The Notch, Lock Screen and rating files have no compile yet.
 - **Not run.** No layout, focus, VoiceOver or keyboard behavior is proven yet.
-- The fixed 1 to 5 rating form is written but not compiled or run.
+- The fixed 1 to 5 rating form and its About › Rate Flux… sheet flow were written on Linux at base 3d8cbd5. They have no compile or run yet. See "Rating form" below.
 - **Slice 6 not compiled.** The Now Playing, Calendar and Mirror widget controllers were written on Linux at base 6f1d987. They have no compile or run yet.
 - **Slice 5 not compiled.** Menu Bar options, General Permissions, the About crash notice and the focus fallback have no compile yet. The parent's CI at c380847 stopped at Platform isolation before tests, so it does not prove that FluxUI compiles at the latest commit.
 
@@ -39,7 +39,7 @@ Strings use `NSLocalizedString` with table `FluxUI` in `Bundle.main`. The Englis
 | `Sources/FluxUI/AboutPreferencesController.swift` | `DiagnosticStatus`, `AboutPreferencesState`, `AboutPreferencesAction`, `AboutPreferencesController` |
 | `Sources/FluxUI/NotchPreferencesController.swift` | `WidgetPreference`, `ShelfExpiry`, `NotchActivity`, `NotchAccessKind`, `NotchAccessStatus`, `NotchPreferencesState`, `NotchPreferencesAction`, `NotchPreferencesController` |
 | `Sources/FluxUI/LockScreenPreferencesController.swift` | `LockScreenCapability`, `LockScreenPreferencesState`, `LockScreenPreferencesAction`, `LockScreenPreferencesController` |
-| `Sources/FluxUI/FeedbackRatingController.swift` | `FeedbackSubmission`, `FeedbackRatingState`, `FeedbackRatingAction`, `FeedbackRatingController` |
+| `Sources/FluxUI/FeedbackRatingController.swift` | `FeedbackFailure`, `FeedbackSubmission`, `FeedbackRatingState`, `FeedbackRatingAction`, `FeedbackRatingController` |
 | `Sources/FluxUI/NowPlayingWidgetController.swift` | `NowPlayingSourceOption`, `NowPlayingWidgetStatus`, `NowPlayingWidgetState`, `NowPlayingWidgetAction`, `NowPlayingWidgetController` |
 | `Sources/FluxUI/CalendarWidgetController.swift` | `CalendarWidgetColor`, `CalendarWidgetEvent`, `CalendarWidgetState`, `CalendarWidgetAction`, `CalendarWidgetController` |
 | `Sources/FluxUI/MirrorWidgetController.swift` | `MirrorWidgetStatus`, `MirrorWidgetAction`, `MirrorWidgetController` |
@@ -331,12 +331,13 @@ about.update(state: next)
 
 State fields, all `let`: `version: String`, `build: String`, `update: UpdateStatus`, `diagnostics: DiagnosticStatus` (`.ready`, `.copied`, `.unavailable`).
 
-`AboutPreferencesAction` cases: `.checkForUpdates`, `.installUpdate`, `.copyDiagnosticReport`, `.openMediaRemoteAdapterLicense`, `.openSourceRepository`.
+`AboutPreferencesAction` cases: `.checkForUpdates`, `.installUpdate`, `.copyDiagnosticReport`, `.dismissCrashNotice`, `.openMediaRemoteAdapterLicense`, `.openSourceRepository`, `.rateFlux`.
 
-- Shows "Flux", "Version <version> (<build>)" exactly as passed, and the design's trust note "Self-signed. Not notarized." Then Updates, Diagnostics and Credits.
+- Shows "Flux", "Version <version> (<build>)" exactly as passed, and the design's trust note "Self-signed. Not notarized." Then Updates, Diagnostics, Feedback and Credits.
+- Feedback has one row, "Rate Flux", with the button "Rate Flux…". It sends `.rateFlux` and nothing else. The state has no new field.
 - Diagnostic text is fixed per status. The page never shows the report, logs, error text or IDs. Copy is off for `.unavailable`.
 - Credits name MediaRemoteAdapter by Jonas van den Berg and contributors, BSD 3-Clause (`Vendor/mediaremote-adapter/LICENSE`). The parent opens the license and the source repository.
-- Identifiers: `about.updates.action`, `about.diagnostics.copy`, `about.credits.license`, `about.credits.source`.
+- Identifiers: `about.updates.action`, `about.diagnostics.copy`, `about.feedback.rate`, `about.credits.license`, `about.credits.source`.
 
 ## Notch page (slice 4)
 
@@ -397,27 +398,71 @@ State fields, all `let`, no defaults: `isEnabled`, `showsNowPlaying`, `showsActi
 
 ## Rating form (slice 4)
 
+`SettingsCoordinator` owns the whole flow. FluxUI only shows state and sends actions. There is no new `SettingsEffects` method and no new public API on the coordinator.
+
 ```swift
-let rating = FeedbackRatingController(state: FeedbackRatingState(
-    collectionEnabled: collection.enabled,   // saved opt-in
-    submission: .ready
-)) { action in
-    switch action {
-    case .submit(let value): parentSend(.surveyAnswered(survey: config.survey, question: config.question, rating: value, submission: UUID()))
-    case .cancel: parentClose()
-    }
-}
-presentingController.presentAsSheet(rating)   // only from a user action
+// Inside SettingsCoordinator. About › Rate Flux… sends .rateFlux.
+let sheet = FeedbackRatingController(state: FeedbackRatingState(
+    collectionEnabled: usage.enabled, submission: .ready
+)) { [weak self] in self?.handle($0) }
+aboutPage.presentAsSheet(sheet)
 ```
 
-State fields, all `let`, no defaults: `collectionEnabled: Bool`, `submission: FeedbackSubmission` (`.ready`, `.sending`, `.sent`, `.failed(code:)`).
+State fields, all `let`, no defaults: `collectionEnabled: Bool`, `submission: FeedbackSubmission` (`.ready`, `.sending`, `.sent`, `.failed(FeedbackFailure)`). `FeedbackFailure` is `.busy`, `.limited` or `.unconfirmed`. It holds no code string, error text or ID.
 
-`FeedbackRatingAction` cases: `.submit(UsageRating)`, `.cancel`. `UsageRating` is the FluxCore type in `Sources/FluxCore/Telemetry/PostHogWire.swift` (`.one` ... `.five`, raw values "1" to "5").
+`FeedbackRatingAction` cases: `.submit(UsageRating)`, `.cancel`, `.done`. `UsageRating` is the FluxCore type (`.one` ... `.five`, raw values "1" to "5").
 
-- One `NSSegmentedControl` with segments 1 to 5, no first choice, labels "1 Poor" and "5 Great". Submit is off until a choice exists, while sending, after `.sent`, and whenever `collectionEnabled` is false. Return submits. Esc and Cancel send `.cancel`.
-- With collection off, the text says Flux can't send a rating. It never shows "sent" unless the parent sets `.sent`. Set `.sent` only after the client reports a send.
-- No text field, no IDs, no network, no timers. FluxUI never opens it. About does not open it. The parent holds the survey config, opens the form only on a user action, and sends only after opt-in.
-- Identifiers: `feedback.rating`, `feedback.cancel`, `feedback.submit`.
+Form:
+
+- One `NSSegmentedControl` with segments 1 to 5, no first choice, labels "1 Poor" and "5 Great". No text field.
+- Submit is off until a choice exists, while sending, after `.sent`, and whenever `collectionEnabled` is false. The rating control is off while sending, after `.sent`, and while collection is off.
+- On a Submit click or Return, the form sets its own state to `.sending` and turns off the rating control and Submit. Then it sends `.submit` once. A second click or Return in that state sends nothing. The parent's next state turns the controls on again.
+- Before `.sent`: Cancel and Esc send `.cancel`. Return submits.
+- After `.sent`: Cancel and Submit are hidden and have no key equivalent. Done shows, takes focus and has Return. Done and Esc send `.done`.
+- No IDs, no network, no timers, no spinner, no animation, no remote text.
+
+Fixed text:
+
+| State | Text |
+|---|---|
+| collection off | Usage data is off, so Flux can't send a rating. Turn it on in General to send one. |
+| `.ready` | Usage data is on, so Flux sends this number. It sends no text. |
+| `.sending` | Sending… |
+| `.sent` | Rating received. Thank you. |
+| `.failed(.busy)` | Flux is still sending a rating. Try again in a moment. |
+| `.failed(.limited)` | Flux can't send more ratings now. Try again later. |
+| `.failed(.unconfirmed)` | Could not confirm that the rating arrived. You can try again. |
+
+The status label's accessibility label is the same text. It posts `valueChanged` on each refresh.
+
+Coordinator lifecycle (`Sources/FluxApplication/Settings/SettingsCoordinator.swift`, "Rating sheet"):
+
+1. Open. `.rateFlux` opens a sheet only when Settings shows About and no rating sheet is open. Each open is a new visit with a new `FeedbackRatingController`. The coordinator holds the sheet strongly. The sheet's action closure holds the coordinator weakly.
+2. Collection off. The form shows the fixed General text. Submit stays off. The coordinator never calls `setEnabled` from the form. The user turns usage data on with the General switch.
+3. Submit. It does nothing while a send is in progress. If the coordinator has no token, or the token is for a different rating, it calls `usage.makeRatingSubmission(rating)` for a new one. A nil token puts the form back to `.ready` with the current `usage.enabled`. Otherwise it sets `.sending` and starts one `Task` that awaits `usage.submitRating(token)`. The task holds the coordinator and the sheet weakly.
+4. Result. The task ignores its result if it was cancelled or if the open sheet is not the one that started it. That covers a closed sheet and a later visit.
+
+| `UsageDeliveryResult` | Token | Form |
+|---|---|---|
+| `.accepted` | dropped | `.sent` |
+| `.busy` | kept | `.failed(.busy)` |
+| `.limited` | kept | `.failed(.limited)` |
+| `.failed` | kept | `.failed(.unconfirmed)` |
+| `.disabled`, `.cancelled` | dropped | `.failed(.unconfirmed)` if `usage.enabled`, else collection-off text |
+
+A kept token makes a retry of the same rating send the same submission. A changed rating makes a new token.
+
+5. End. `endRating()` cancels the task, drops the token, and dismisses the sheet. These call it: Cancel, Done, Esc, `close()`, a Settings page switch or window close (through `onPageWillDisappear`), the General analytics switch, and Reset ID. Cancel may stop the transport. It can't recall a request the server already has. Core still checks the identity on its own.
+
+Test hooks, internal and reached with `@testable import FluxApplication`:
+
+- `SettingsCoordinator.ratingController: FeedbackRatingController?` is the open sheet, nil with no visit.
+- `SettingsCoordinator.ratingSend: Task<Void, Never>?` is the one send in progress. Await `.value` to wait for the result.
+- Drive the real controls by identifier: `about.feedback.rate`, then `feedback.rating` (set `selectedSegment`, send its action), `feedback.submit`, `feedback.cancel`, `feedback.done`. Build `UsageCollection` with a fake transport factory. Use `FeedbackRatingController.state` to read the shown state.
+
+Identifiers: `feedback.rating`, `feedback.cancel`, `feedback.submit`, `feedback.done`.
+
+Not proved: no compile, no native run, no sheet presentation or dismissal on macOS, no focus, VoiceOver or Esc check, and no real ingestion reply.
 
 ## Notch widgets (slice 6)
 
@@ -562,6 +607,7 @@ Rules the coordinator applies:
 - Access buttons call `requestNotchAccess` or the settings openers. Nothing prompts at launch or on refresh.
 - Lock screen capability and failure code come from the effects. The coordinator never assumes `.available`.
 - About shows `ApplicationVersion`. Diagnostics shows `.copied` only when `copyDiagnosticReport()` returns true, else `.unavailable`. The result clears when the page goes away.
+- Rate Flux… opens the rating sheet. The coordinator owns its visit, token and one send. See "Rating form".
 - Menu bar: inventory, mode and arrange state come from `menuBarState()`. The coordinator puts in the saved Always Hidden, auto-rehide, delay (2 to 30 s) and icon style. Group, arrange, previews, refresh, access, identity review and compact spacing go to the effects. Nothing is shown as saved until the app sends a new state.
 
 Limits:
@@ -572,7 +618,7 @@ Limits:
 
 ## Teardown
 
-These pages and the rating form hold no timers, monitors, tasks or observers. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
+These pages and the rating form hold no timers, monitors, tasks or observers. The rating send task belongs to `SettingsCoordinator` and ends with the sheet. Control closures live in the page and capture it weakly. Settings releases the page on a page switch or close. The parent drops any reference it kept in `onPageWillDisappear` or `onClose`. A late `update(state:)` before the view loads only stores the state.
 
 ## Not written yet
 
