@@ -33,7 +33,7 @@ struct NotchRuntimeTests {
             mediaScript: root.appendingPathComponent("not-opened.pl"),
             mediaFramework: root.appendingPathComponent("not-opened.framework"),
             callbacks: .init(report: { _ in Issue.record("Unexpected service failure") },
-                event: { _ in }, battery: { _ in }, volume: { _ in }, device: { _ in }, compactAction: { _ in },
+                event: { _ in }, battery: { _ in }, volume: { _, _ in }, device: { _ in }, compactAction: { _ in },
                 cameraRunning: { camera.append($0) }, accessChanged: {}, phaseChanged: { _ in },
                 presenting: { _ in }, environmentChanged: {},
                 makeAdditionalService: { _ in throw TestFailure.unexpectedFactory }),
@@ -80,7 +80,7 @@ struct NotchRuntimeTests {
             callbacks: .init(report: {
                 if case .service(let service) = $0 { failures.append(service) }
                 else { Issue.record("Unexpected widget failure") }
-            }, event: { _ in }, battery: { _ in }, volume: { _ in }, device: { _ in }, compactAction: { _ in },
+            }, event: { _ in }, battery: { _ in }, volume: { _, _ in }, device: { _ in }, compactAction: { _ in },
                 cameraRunning: { _ in }, accessChanged: {}, phaseChanged: { _ in },
                 presenting: { _ in }, environmentChanged: {},
                 makeAdditionalService: { _ in throw TestFailure.unexpectedFactory }),

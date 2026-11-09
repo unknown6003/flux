@@ -155,10 +155,10 @@ public final class ActivityCoordinator {
         }
     }
 
-    public func receiveVolume(_ snapshot: VolumeSnapshot?) {
+    public func receiveVolume(_ snapshot: VolumeSnapshot?, force: Bool = false) {
         guard active, enabled(.soundHUD) else { return }
         defer { lastVolume = snapshot }
-        guard let snapshot, let previous = lastVolume, snapshot != previous else { return }
+        guard let snapshot, force || lastVolume.map({ snapshot != $0 }) == true else { return }
         let symbol = snapshot.muted ? "speaker.slash.fill" : (snapshot.level > 0.5 ? "speaker.wave.3.fill" : "speaker.wave.1.fill")
         post(.soundHUD, .none, .soundGauge(value: Double(snapshot.level), symbol: symbol), priority: 300, duration: 1.5)
     }

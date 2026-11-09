@@ -17,7 +17,7 @@ public final class NotchRuntime: WidgetEffects {
         public var report: @MainActor (NotchRuntimeFailure) -> Void
         public var event: @MainActor (WidgetEvent) -> Void
         public var battery: @MainActor (PowerSnapshot?) -> Void
-        public var volume: @MainActor (VolumeSnapshot?) -> Void
+        public var volume: @MainActor (VolumeSnapshot?, Bool) -> Void
         public var device: @MainActor (AccessoryConnection) -> Void
         public var compactAction: @MainActor (CompactNotchAction) -> Void
         public var cameraRunning: @MainActor (Bool) -> Void
@@ -32,7 +32,7 @@ public final class NotchRuntime: WidgetEffects {
         public init(report: @escaping @MainActor (NotchRuntimeFailure) -> Void,
                     event: @escaping @MainActor (WidgetEvent) -> Void,
                     battery: @escaping @MainActor (PowerSnapshot?) -> Void,
-                    volume: @escaping @MainActor (VolumeSnapshot?) -> Void,
+                    volume: @escaping @MainActor (VolumeSnapshot?, Bool) -> Void,
                     device: @escaping @MainActor (AccessoryConnection) -> Void,
                     compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
                     cameraRunning: @escaping @MainActor (Bool) -> Void,
@@ -63,7 +63,7 @@ public final class NotchRuntime: WidgetEffects {
     private var visibleWidget: Widget?
     private var phase: SessionPhase = .locked
     private var monitor: SessionMonitor?
-    private weak var volumeFeed: VolumeFeed?
+    private weak var volumeFeed: SoundHUDFeed?
 
     private lazy var widgets = WidgetCoordinator(
         preferences: preferences, shelf: shelf, clipboard: clipboard, pasteboard: pasteboard,
@@ -146,6 +146,7 @@ public final class NotchRuntime: WidgetEffects {
     public func refresh() {
         guard active else { return }
         applyDemand()
+        volumeFeed?.refreshAccess()
         if preferences.value(for: Preferences.notchEnabled), let screen = NSScreen.main ?? NSScreen.screens.first {
             let configuration = FeatureConfiguration(preferences: preferences)
             let order = WidgetOrder(saved: preferences.value(for: Preferences.widgetOrder)).widgets
@@ -206,7 +207,8 @@ public final class NotchRuntime: WidgetEffects {
         case .calendar: return widgets.startCalendarFeed()
         case .battery: return BatteryFeed(onChange: callbacks.battery)
         case .volume:
-            let feed = VolumeFeed(onChange: callbacks.volume)
+            let feed = SoundHUDFeed(receive: callbacks.volume,
+                                    failed: { [weak self] in self?.callbacks.report(.service(.volume)) })
             volumeFeed = feed
             return feed
         case .devices: return DeviceFeed(receive: callbacks.device)

@@ -10,6 +10,23 @@ import FluxPlatform
 
 @Suite(.serialized)
 struct ActivityCoordinatorTests {
+    @Test @MainActor func soundHUDShowsAnAcknowledgedBoundaryKeyButIgnoresStartupVolume() throws {
+        let domain = "org.fluxfixture.activities.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        let owner = ActivityCoordinator(preferences: preferences, publish: { _, _, _, _ in }, timerCompleted: { _ in })
+        defer { owner.stop() }
+        owner.start()
+        let full = VolumeSnapshot(level: 1, muted: false, adjustable: true)
+        owner.receiveVolume(full)
+        owner.receiveVolume(full)
+        #expect(owner.queue.current == nil)
+        owner.receiveVolume(full, force: true)
+        #expect(owner.queue.current?.kind == .soundHUD)
+        #expect(owner.queue.current?.trailing == .soundGauge(value: 1, symbol: "speaker.wave.3.fill"))
+    }
+
     @Test @MainActor func overflowScansRespectDismissalUntilTheBarFitsAgain() throws {
         let domain = "org.fluxfixture.activities.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: domain))

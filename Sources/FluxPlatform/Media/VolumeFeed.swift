@@ -42,6 +42,7 @@ final class AudioObservation: @unchecked Sendable {
 /// Reads and changes the current output device off the UI actor. Listeners
 /// cover the default device, mute, and both channels when main volume is absent.
 public actor VolumeDriver {
+    public var current: VolumeSnapshot? { previous }
     public nonisolated let updates: AsyncStream<VolumeSnapshot?>
     private let output: AsyncStream<VolumeSnapshot?>.Continuation
     private var observers: [AudioObservation] = []
@@ -195,6 +196,7 @@ public actor VolumeDriver {
     deinit { events?.cancel(); let driver = driver; Task { await driver.stop() } }
     public func adjust(by delta: Float) async -> Bool { guard active else { return false }; return await driver.adjust(by: delta) }
     public func toggleMute() async -> Bool { guard active else { return false }; return await driver.toggleMute() }
+    public func current() async -> VolumeSnapshot? { guard active else { return nil }; return await driver.current }
     public func stop() {
         active = false
         onChange = nil
