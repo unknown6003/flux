@@ -33,7 +33,7 @@ import FluxUI
     func resetSpringLoading() {}
     func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?,
         classes: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any],
-        using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+        using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 
     func cleanUp() { draggingPasteboard.releaseGlobally() }
 }
