@@ -15,6 +15,13 @@ static size_t receive_body(char *bytes, size_t size, size_t count, void *context
 
 const char *FluxCurlProbeVersion(void) { return curl_version(); }
 
+size_t FluxCurlProbeCopyBody(const FluxCurlProbeResult *result, unsigned char *destination, size_t capacity) {
+    if (!result || result->length > sizeof(result->body) || result->length > capacity) return 0;
+    if (result->length && !destination) return 0;
+    if (result->length) memcpy(destination, result->body, result->length);
+    return result->length;
+}
+
 void FluxCurlProbePost(const unsigned char *body, size_t count, FluxCurlProbeResult *result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));

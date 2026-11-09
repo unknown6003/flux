@@ -70,7 +70,11 @@ private actor TracedTransport: UsageTransport {
                     guard result.code == 0 else { throw CurlProbeFailure(code: Int(result.code)) }
                     let length = Int(result.length)
                     guard length <= PostHogWire.maximumResponseBytes else { throw CurlProbeFailure(code: -2) }
-                    let body = withUnsafePointer(to: &result.body) { Data(bytes: $0, count: length) }
+                    var body = Data(count: length)
+                    let copied = body.withUnsafeMutableBytes { bytes in
+                        FluxCurlProbeCopyBody(&result, bytes.baseAddress?.assumingMemoryBound(to: UInt8.self), bytes.count)
+                    }
+                    guard copied == length else { throw CurlProbeFailure(code: -4) }
                     return (UsageResponse(status: Int(result.status), body: body), Int(result.protocol_code))
                 }.value
                 response = result.0

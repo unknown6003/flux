@@ -13,5 +13,6 @@ typedef struct {
 } FluxCurlProbeResult;
 
 void FluxCurlProbePost(const unsigned char *body, size_t count, FluxCurlProbeResult *result);
+size_t FluxCurlProbeCopyBody(const FluxCurlProbeResult *result, unsigned char *destination, size_t capacity);
 const char *FluxCurlProbeVersion(void);
 #endif
