@@ -90,6 +90,7 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
 @Suite(.timeLimit(.minutes(1))) struct UsageTransportTests {
     @Test func realTLSMapsBothRegionsAndEveryEndpointWithoutAmbientCredentials() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         for region in [PostHogRegion.eu, .us] {
             let transport = fixture.transport(region: region)
             for endpoint in [UsageEndpoint.events, .flags, .logs] {
@@ -114,6 +115,7 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
 
     @Test func refusesRedirectsAndReturnsHTTPFailuresWithoutTransportRetries() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         let transport = fixture.transport()
         #expect(try await transport.send(fixtureRequest(mode: "redirect")).status == 302)
         #expect(try await transport.send(fixtureRequest(mode: "error")).status == 503)
@@ -122,6 +124,7 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
 
     @Test func boundsAdvertisedChunkedAndHeaderResponsesBeforeAccumulation() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         let transport = fixture.transport()
         #expect(try await transport.send(fixtureRequest(mode: "limit")).body.count == 65_536)
         for mode in ["advertised", "chunked", "headers"] {
@@ -133,6 +136,7 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
 
     @Test func validatesRequestBoundsAndRejectsLogHeaderInjectionBeforeSending() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         let transport = fixture.transport()
         for body in [Data(), Data(repeating: 65, count: 65_537)] {
             await #expect(throws: UsageTransportFailure.invalidRequest) {
@@ -147,7 +151,9 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
 
     @Test func verifiesCertificateTrustAndHostIndependently() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         let wrongHost = try await UsageTLSFixture.start(wrongHost: true)
+        defer { withExtendedLifetime(wrongHost) {} }
         await #expect(throws: UsageTransportFailure.network) {
             try await wrongHost.transport().send(fixtureRequest())
         }
@@ -160,6 +166,7 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
 
     @Test func cancelsAnActiveTransferAndRefusesConcurrentWorkThenRecovers() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         let transport = fixture.transport()
         let task = Task { try await transport.send(fixtureRequest(mode: "stall")) }
         defer { task.cancel() }
@@ -175,8 +182,21 @@ private func fixtureRequest(_ endpoint: UsageEndpoint = .events, mode: String = 
         #expect(try fixture.requests().count == 2)
     }
 
+    @Test func preCancelledTaskNeverStartsARequest() async throws {
+        let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
+        let transport = fixture.transport()
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await transport.send(fixtureRequest())
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try fixture.requests().isEmpty)
+    }
+
     @Test func timesOutAnUnresponsivePeerWithoutWaitingForServerClose() async throws {
         let fixture = try await UsageTLSFixture.start()
+        defer { withExtendedLifetime(fixture) {} }
         let started = ContinuousClock.now
         await #expect(throws: UsageTransportFailure.network) {
             try await fixture.transport().send(fixtureRequest(mode: "stall"))
