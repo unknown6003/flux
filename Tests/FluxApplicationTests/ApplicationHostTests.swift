@@ -22,6 +22,7 @@ import FluxUI
         try preferences.set(false, for: Preferences.notchEnabled)
         try preferences.set(false, for: Preferences.automaticUpdateChecks)
         try preferences.set(false, for: Preferences.enableHotkey)
+        try preferences.set(3, for: Preferences.shelfExpiryDays)
         usage = UsageCollection(defaults: defaults) { _ in
             Issue.record("An off analytics client was constructed")
             throw FixtureError.unexpected

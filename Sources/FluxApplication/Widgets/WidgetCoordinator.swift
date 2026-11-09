@@ -57,6 +57,8 @@ public final class WidgetCoordinator {
     private var elapsedTask: Task<Void, Never>?
     private var clipboardSubscription: Task<Void, Never>?
     private var shelfLoad: Task<Void, Never>?
+    private var shelfMaintenance: Task<Void, Never>?
+    private var shelfExpiry: Double?
 
     // Last-known light states.
     private var media: MediaFeedState?
@@ -95,7 +97,7 @@ public final class WidgetCoordinator {
         self.effects = effects
     }
 
-    deinit { writeAuthorization?.revoke() }
+    deinit { writeAuthorization?.revoke(); shelfMaintenance?.cancel() }
 
     // MARK: Panel
 
@@ -141,6 +143,7 @@ public final class WidgetCoordinator {
     /// Re-renders the visible widget, for example after the app became active
     /// and permission status may have changed.
     public func refresh() {
+        configureShelfExpiry()
         switch visible {
         case .nowPlaying: nowPlayingView?.update(nowPlayingState())
         case .calendar: calendarView?.update(calendarState())
@@ -592,12 +595,48 @@ public final class WidgetCoordinator {
 
     // MARK: File Shelf
 
+    private var requestedShelfExpiry: Double? {
+        guard preferences.value(for: Preferences.notchEnabled),
+              preferences.value(for: Preferences.shelfEnabled) else { return nil }
+        let days = preferences.value(for: Preferences.shelfExpiryDays)
+        return [1.0, 3, 7].contains(days) ? days : nil
+    }
+
+    private func configureShelfExpiry() {
+        let days = requestedShelfExpiry
+        guard days != shelfExpiry else { return }
+        shelfExpiry = days
+        maintainShelf()
+    }
+
+    /// A saved positive expiry sweeps on configure and copy completion. The
+    /// shelf view also sweeps before loading. No idle expiry timer is created.
+    private func maintainShelf() {
+        shelfMaintenance?.cancel(); shelfMaintenance = nil
+        guard let days = requestedShelfExpiry else { return }
+        let shelf = shelf
+        let cutoff = Date().addingTimeInterval(-days * 86_400)
+        shelfMaintenance = Task { @MainActor [weak self] in
+            do {
+                try Task.checkCancellation()
+                try await shelf.expire(olderThan: cutoff)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.effects.report(.shelfRemove)
+            }
+        }
+    }
+
     private func loadShelf(reload: Bool) {
         shelfLoad?.cancel()
         let shelf = shelf
+        let cutoff = requestedShelfExpiry.map { Date().addingTimeInterval(-$0 * 86_400) }
         shelfLoad = Task { @MainActor [weak self] in
             do {
-                let files = reload ? try await shelf.reload() : try await shelf.load()
+                try Task.checkCancellation()
+                if reload { _ = try await shelf.reload() }
+                if let cutoff { try await shelf.expire(olderThan: cutoff) }
+                let files = try await shelf.load()
                 var urls: [UUID: URL] = [:]
                 for file in files {
                     guard !Task.isCancelled else { return }
@@ -697,6 +736,7 @@ public final class WidgetCoordinator {
     private func copyFinished(added: Int, failed: Int) {
         copyJob = nil
         copyingRows = []
+        maintainShelf()
         if failed > 0 { effects.report(.shelfCopy) }
         effects.widgetEvent(.shelfCopyFinished(added: added, failed: failed))
         if visible == .shelf { loadShelf(reload: false) }

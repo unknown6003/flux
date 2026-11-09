@@ -79,6 +79,7 @@ public actor ShelfFiles {
     public func clear() throws { try remove(Set(load().map(\.id))) }
 
     public func expire(olderThan cutoff: Date) throws {
+        try Task.checkCancellation()
         try remove(Set(load().filter { $0.addedAt < cutoff }.map(\.id)))
     }
 

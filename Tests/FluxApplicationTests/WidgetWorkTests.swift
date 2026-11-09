@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import FluxCore
+import FluxPlatform
 @testable import FluxApplication
 
 private actor DecodeGate {
@@ -23,7 +24,43 @@ private actor CopyGate {
     func release() { continuation?.resume(); continuation = nil }
 }
 
+@MainActor private final class ShelfExpiryEffects: WidgetEffects {
+    var failures: [WidgetFailure] = []
+    func requestAccess(_ permission: WidgetPermission) async { Issue.record("Unexpected permission prompt") }
+    func openSettings(_ permission: WidgetPermission) { Issue.record("Unexpected Settings") }
+    func retry(_ service: FeatureService) { Issue.record("Unexpected service retry") }
+    func report(_ failure: WidgetFailure) { failures.append(failure) }
+    func widgetEvent(_ event: WidgetEvent) { Issue.record("Unexpected widget event") }
+}
+
 struct WidgetWorkTests {
+    @Test @MainActor func aSavedShelfExpirySweepsOwnedCopiesWithoutOpeningAWidget() async throws {
+        let domain = "org.fluxfixture.expiry.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        try preferences.set(3, for: Preferences.shelfExpiryDays)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("flux-expiry-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original.txt")
+        try Data("preserve original".utf8).write(to: original)
+        let shelf = ShelfFiles(root: root.appendingPathComponent("Shelf"))
+        let old = try await shelf.addCopy(of: original, at: Date().addingTimeInterval(-4 * 86_400))
+        let recent = try await shelf.addCopy(of: original)
+        let effects = ShelfExpiryEffects()
+        let widgets = WidgetCoordinator(preferences: preferences, shelf: shelf,
+            clipboard: ClipboardRepository(historyURL: root.appendingPathComponent("not-created.json")),
+            pasteboard: PasteboardChannel(), mediaScript: root, mediaFramework: root, effects: effects)
+        widgets.refresh()
+        try await waitFor { (try? await shelf.load().count) == 1 }
+        #expect(try await shelf.load().map(\.id) == [recent.id])
+        #expect(!FileManager.default.fileExists(atPath: old.directory(in: root.appendingPathComponent("Shelf")).path))
+        #expect(try Data(contentsOf: original) == Data("preserve original".utf8))
+        #expect(effects.failures.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("not-created.json").path))
+    }
+
     private enum Deadline: Error { case exceeded }
     @MainActor private func waitFor(_ condition: @MainActor () async -> Bool) async throws {
         let clock = ContinuousClock()
