@@ -61,6 +61,34 @@ struct WidgetWorkTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("not-created.json").path))
     }
 
+    @Test @MainActor func aCalendarCompanionKeepsThePrimaryWidgetBoundUntilOnlyTheCompanionCloses() throws {
+        let domain = "org.fluxfixture.companion.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("flux-companion-\(UUID())")
+        let effects = ShelfExpiryEffects()
+        let widgets = WidgetCoordinator(preferences: preferences, shelf: ShelfFiles(root: root.appendingPathComponent("Shelf")),
+            clipboard: ClipboardRepository(historyURL: root.appendingPathComponent("clipboard.json")),
+            pasteboard: PasteboardChannel(), mediaScript: root, mediaFramework: root, effects: effects)
+        let primary = widgets.makeWidget(.nowPlaying)
+        let companion = widgets.makeCalendarCompanion()
+        var changed: Set<Widget> = []
+        widgets.onContentChange = { changed.insert($0) }
+        widgets.refresh()
+        #expect(changed == [.nowPlaying, .calendar])
+        widgets.removeCalendarCompanion()
+        changed = []
+        widgets.refresh()
+        #expect(changed == [.nowPlaying])
+        widgets.dismiss()
+        changed = []
+        widgets.refresh()
+        #expect(changed.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        withExtendedLifetime((primary, companion)) {}
+    }
+
     private enum Deadline: Error { case exceeded }
     @MainActor private func waitFor(_ condition: @MainActor () async -> Bool) async throws {
         let clock = ContinuousClock()
