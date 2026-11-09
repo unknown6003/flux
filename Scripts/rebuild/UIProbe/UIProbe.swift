@@ -81,7 +81,7 @@ import FluxUI
                 let settings = SettingsWindowController(initialPage: .menuBar) { _ in menuBarFixture(variant) }
                 guard let window = settings.window, let root = window.contentView else { throw ProbeError.noView }
                 window.appearance = NSAppearance(named: appearance)
-                window.setContentSize(NSSize(width: width, height: 900))
+                window.setContentSize(size)
                 window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
                 window.orderFrontRegardless()
                 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
@@ -89,7 +89,7 @@ import FluxUI
                 window.displayIfNeeded()
                 var renderingError: (any Error)?
                 window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                    do { try render(root, to: output.appendingPathComponent("menuBar-\(variant.rawValue)-\(theme)-\(width).png")) }
+                    do { try render(root, to: output.appendingPathComponent("menuBar-\(variant.rawValue)-\(theme)-\(sizeName).png")) }
                     catch { renderingError = error }
                 }
                 if let renderingError { throw renderingError }
