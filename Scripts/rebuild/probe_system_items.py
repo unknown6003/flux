@@ -183,6 +183,33 @@ def input_menu(helper, capture, vanished, labels, report, output):
         return any("TextInputMenuAgent" in label for label in gone)
 
     report["input"] = {}
+    # Apple's own status-item apps: does the bundle allow list hide them?
+    extras = run(["/usr/bin/find", "/System/Applications/Passwords.app", "-name", "*.app", "-maxdepth", "6"], 30,
+                 check=False).split()
+    print("PASSWORDS APPS", extras, flush=True)
+    for extra in extras:
+        if "Menu" not in extra:
+            continue
+        info = run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", extra + "/Contents/Info.plist"], 10,
+                   check=False).strip()
+        run(["/usr/bin/open", "-g", extra], 20, check=False)
+        time.sleep(4)
+        items_now = json.loads(run([str(helper), "dump"], 60).strip().splitlines()[-1])
+        print("PASSWORDS ITEMS", [i for i in items_now if "assword" in i["owner"]], flush=True)
+        everything = ",".join(str(n) for n in range(64))
+        report["input"]["passwords-bundle"] = info
+        base = capture("passwords-shown")
+        process = subprocess.Popen([str(helper), "assert", everything, info, "6"], stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        try:
+            process.stdout.readline()
+            time.sleep(2.5)
+            hidden_path = capture("passwords-excluded")
+        finally:
+            process.wait(timeout=20)
+        print("PASSWORDS shown vs excluded:", run([str(helper), "present", str(base), str(hidden_path),
+              str(output / "items.json"), "1"], 300).strip()[-400:], flush=True)
+        run(["/usr/bin/pkill", "-f", extra], 10, check=False)
     try:
         run(["defaults", "write", "com.apple.TextInputMenu", "visible", "-bool", "false"], 10)
         if not check("pref-only"):
