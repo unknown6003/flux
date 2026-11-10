@@ -89,13 +89,17 @@ public struct MenuBarLayoutTile {
     public var image: NSImage?
     public var group: MenuBarGroup
     public var isMovable: Bool
+    /// False for items macOS keeps drawn: they move only within Visible.
+    public var canHide: Bool
 
-    public init(id: MenuBarItemID, name: String, image: NSImage? = nil, group: MenuBarGroup = .shown, isMovable: Bool? = nil) {
+    public init(id: MenuBarItemID, name: String, image: NSImage? = nil, group: MenuBarGroup = .shown,
+                isMovable: Bool? = nil, canHide: Bool? = nil) {
         self.id = id
         self.name = name
         self.image = image
         self.group = group
         self.isMovable = isMovable ?? !id.application.isManagedBySystem
+        self.canHide = canHide ?? id.application.canBeHidden
     }
 }
 

@@ -36,7 +36,28 @@ import Testing
         let context = try #require(CGContext(data: nil, width: plan.pixelWidth, height: plan.pixelHeight,
             bitsPerComponent: 8, bytesPerRow: plan.pixelWidth * 4,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        // A real item: a dark menu bar with a light glyph. Flat photos are dropped.
+        context.setFillColor(CGColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: plan.pixelWidth, height: plan.pixelHeight))
+        context.setFillColor(CGColor(red: 0.95, green: 0.95, blue: 0.95, alpha: 1))
+        context.fill(CGRect(x: plan.pixelWidth / 4, y: plan.pixelHeight / 4,
+                            width: plan.pixelWidth / 2, height: plan.pixelHeight / 2))
         return try #require(context.makeImage())
+    }
+
+    @Test func aFlatPhotoIsDroppedSoTheTileFallsBackToTheAppIcon() async throws {
+        let preview = StatusPreview(permission: { true }, source: {
+            .init(displays: [display], capture: { plan in
+                let context = try #require(CGContext(data: nil, width: plan.pixelWidth, height: plan.pixelHeight,
+                    bitsPerComponent: 8, bytesPerRow: plan.pixelWidth * 4,
+                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+                context.fill(CGRect(x: 0, y: 0, width: plan.pixelWidth, height: plan.pixelHeight))
+                return try #require(context.makeImage())
+            })
+        })
+        preview.open()
+        #expect(try await preview.capture([region()], validating: { _ in true }).isEmpty)
     }
 
     @Test func mapsSecondaryDisplayWithoutExpandingFractionalCrop() throws {

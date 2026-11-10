@@ -40,7 +40,7 @@ final class MenuBarLayoutEditorView: NSView {
         isBusy = busy
         tiles = Dictionary(newTiles.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         model = MenuBarLayoutEditorModel(tiles: newTiles.map {
-            .init(id: $0.id, group: $0.group, isMovable: $0.isMovable)
+            .init(id: $0.id, group: $0.group, isMovable: $0.isMovable, canHide: $0.canHide)
         }, alwaysHiddenEnabled: alwaysHiddenEnabled)
         for group in MenuBarGroup.allCases {
             guard let strip = strips[group] else { continue }
@@ -67,7 +67,7 @@ final class MenuBarLayoutEditorView: NSView {
             return menu
         }
         let current = model.displayGroup(tile.group)
-        for group in model.groups where group != current {
+        for group in model.groups where group != current && (group == .shown || tile.canHide) {
             let title = String(format: L("menuBar.layout.moveTo", "Move to %@"), group.title)
             menu.addItem(MenuAction(title: title, enabled: !isBusy) { [weak self] in
                 self?.request(self?.model.move(id, to: group))

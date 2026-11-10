@@ -18,6 +18,13 @@ public struct ApplicationID: RawRepresentable, Hashable, Sendable, Codable {
     /// input menu or Passwords, move and hide like any app.
     public var isManagedBySystem: Bool { Self.pinnedBySystem.contains(rawValue) }
 
+    /// False for pinned owners and for items macOS draws even under a hiding
+    /// restriction. On macOS 27 the keyboard input menu and Search stay drawn
+    /// whatever the allow list says (CI probe), so they move but do not hide.
+    public var canBeHidden: Bool { !isManagedBySystem && !Self.alwaysDrawnBySystem.contains(rawValue) }
+
+    public static let alwaysDrawnBySystem: Set<String> = ["com.apple.TextInputMenuAgent", "com.apple.campo"]
+
     public static let pinnedBySystem: Set<String> = [
         "com.flux.menubar", "com.apple.MenuBarAgent", "com.apple.controlcenter",
         "com.apple.systemuiserver", "com.apple.loginwindow",
@@ -83,13 +90,13 @@ public struct VisibilityPolicy: Sendable, Equatable {
     }
 
     public func group(for application: ApplicationID) -> MenuBarGroup {
-        guard !application.isManagedBySystem else { return .shown }
+        guard application.canBeHidden else { return .shown }
         if alwaysHidden.contains(application) { return .alwaysHidden }
         return hidden.contains(application) ? .hidden : .shown
     }
 
     public mutating func assign(_ application: ApplicationID, to group: MenuBarGroup) throws {
-        guard !application.isManagedBySystem else { throw VisibilityPolicyError.protectedApplication }
+        guard application.canBeHidden || group == .shown else { throw VisibilityPolicyError.protectedApplication }
         switch group {
         case .shown:
             hidden.remove(application)
@@ -112,7 +119,7 @@ public struct VisibilityPolicy: Sendable, Equatable {
         case .hidden: requested = alwaysHiddenEnabled ? alwaysHidden : []
         case .all: requested = []
         }
-        return requested.intersection(running).filter { !$0.isManagedBySystem }
+        return requested.intersection(running).filter(\.canBeHidden)
     }
 
     /// Merge only Flux-owned fields. Keep future fields in the existing dictionary.

@@ -51,6 +51,18 @@ private func model(alwaysHidden: Bool = true) -> MenuBarLayoutEditorModel {
         #expect(editor.move(id("a"), to: .shown) == nil)
     }
 
+    @Test func anItemMacOSAlwaysDrawsMovesOnlyWithinVisible() {
+        let tiles: [MenuBarLayoutEditorModel.Tile] = [
+            .init(id: id("d"), group: .hidden, isMovable: true),
+            .init(id: id("a"), group: .shown, isMovable: true),
+            .init(id: id("k"), group: .shown, isMovable: true, canHide: false),
+        ]
+        let editor = MenuBarLayoutEditorModel(tiles: tiles, alwaysHiddenEnabled: true)
+        #expect(editor.move(id("k"), to: .shown, at: 0) == .init(item: id("k"), group: .shown, left: nil, right: id("a")))
+        #expect(editor.move(id("k"), to: .hidden, at: 0) == nil)
+        #expect(editor.move(id("k"), to: .alwaysHidden) == nil)
+    }
+
     @Test func nudgeMovesOnePlaceAndStopsAtTheEnds() {
         let editor = model()
         #expect(editor.nudge(id("a"), by: 1) == .init(item: id("a"), group: .shown, left: id("b"), right: id("c")))

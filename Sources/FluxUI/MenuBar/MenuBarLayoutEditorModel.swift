@@ -8,6 +8,7 @@ struct MenuBarLayoutEditorModel {
         let id: MenuBarItemID
         let group: MenuBarGroup
         let isMovable: Bool
+        var canHide = true
     }
 
     let tiles: [Tile]
@@ -30,7 +31,8 @@ struct MenuBarLayoutEditorModel {
     /// A drop at `index` of the target strip, counted without the dragged tile.
     /// Nil when nothing would change or the tile cannot move.
     func move(_ id: MenuBarItemID, to group: MenuBarGroup, at index: Int) -> MenuBarItemMove? {
-        guard groups.contains(group), let tile = tiles.first(where: { $0.id == id }), tile.isMovable else { return nil }
+        guard groups.contains(group), let tile = tiles.first(where: { $0.id == id }), tile.isMovable,
+              group == .shown || tile.canHide else { return nil }
         let others = strip(group).filter { $0.id != id }
         let slot = min(max(index, 0), others.count)
         let left = slot > 0 ? others[slot - 1].id : nil

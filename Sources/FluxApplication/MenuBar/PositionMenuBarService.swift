@@ -334,7 +334,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     public func assign(_ application: ApplicationID, to group: MenuBarGroup) {
         guard started, editorVisible || arranging else { return }
-        guard !application.isManagedBySystem else { return }
+        guard application.canBeHidden || group == .shown else { return }
         guard let row = state.rows.first(where: { $0.id == application }), !row.isFixed else { return }
         guard !row.needsIdentityReview else {
             results[application] = .failed(code: "identityReviewRequired")

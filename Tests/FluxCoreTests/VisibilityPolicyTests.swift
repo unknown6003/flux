@@ -44,13 +44,25 @@ import Testing
 
 @Test func appleAppsOutsideTheSystemPinsCanBeHidden() throws {
     var policy = VisibilityPolicy()
-    for raw in ["com.apple.TextInputMenuAgent", "com.apple.Passwords.MenuBarExtra", "com.apple.Spotlight"] {
+    for raw in ["com.apple.Passwords.MenuBarExtra", "com.apple.Spotlight", "com.apple.AirPlayUIAgent"] {
         let application = try #require(ApplicationID(rawValue: raw))
         #expect(!application.isManagedBySystem)
         try policy.assign(application, to: .alwaysHidden)
         #expect(policy.group(for: application) == .alwaysHidden)
         #expect(policy.concealedApplications(running: [application], reveal: .collapsed,
                                              alwaysHiddenEnabled: true) == [application])
+    }
+}
+
+@Test func itemsMacOSAlwaysDrawsMoveButDoNotHide() throws {
+    var policy = VisibilityPolicy()
+    for raw in ["com.apple.TextInputMenuAgent", "com.apple.campo"] {
+        let application = try #require(ApplicationID(rawValue: raw))
+        #expect(!application.isManagedBySystem)
+        #expect(!application.canBeHidden)
+        #expect(throws: VisibilityPolicyError.self) { try policy.assign(application, to: .hidden) }
+        try policy.assign(application, to: .shown)
+        #expect(policy.group(for: application) == .shown)
     }
 }
 

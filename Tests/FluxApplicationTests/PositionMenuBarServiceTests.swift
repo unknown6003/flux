@@ -198,10 +198,10 @@ import FluxUI
     }
 
     @Test func perApplicationAllowListDropsAHiddenSystemAgent() {
-        let input = ApplicationID(rawValue: "com.apple.TextInputMenuAgent")!
-        let list = PerApplicationHider.allowList(running: ["com.apple.TextInputMenuAgent", "com.apple.controlcenter"],
-                                                 concealed: [input])
-        #expect(!list.contains("com.apple.TextInputMenuAgent"))
+        let spotlight = ApplicationID(rawValue: "com.apple.Spotlight")!
+        let list = PerApplicationHider.allowList(running: ["com.apple.Spotlight", "com.apple.controlcenter"],
+                                                 concealed: [spotlight])
+        #expect(!list.contains("com.apple.Spotlight"))
         #expect(list.contains("com.apple.controlcenter"))
         #expect(list.contains("com.apple.MenuBarAgent"))
     }
