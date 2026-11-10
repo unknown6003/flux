@@ -140,7 +140,8 @@ def main():
     results, processes, cleanup = [], [], []
     video = None
     with tempfile.TemporaryDirectory(prefix="flux-native-fullscreen-") as directory:
-        temporary = Path(directory)
+        # `open` reports the real path (/private/var/...), so match on that.
+        temporary = Path(directory).resolve()
         try:
             _, helper = bundle(temporary, "FluxFullscreenProbe", "com.flux.native-fullscreen-probe", HELPER, temporary)
             window_app, _ = bundle(temporary, "FluxFullscreenFixture", f"com.flux.fullscreen-window.{uuid.uuid4().hex[:12]}",
@@ -251,6 +252,7 @@ def main():
         finally:
             for pid in flux_pids(executable):
                 os.kill(pid, signal.SIGKILL)
+            run(["/usr/bin/pkill", "-KILL", "-f", "FluxFullscreenFixture.app/Contents/MacOS"], 10, check=False)
             for process in processes:
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
