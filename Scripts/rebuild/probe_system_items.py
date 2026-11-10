@@ -115,6 +115,12 @@ case "assert":
     assertion.invalidate()
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     print("RELEASED"); fflush(stdout)
+case "notify":
+    DistributedNotificationCenter.default().postNotificationName(.init(arguments[2]), object: nil, userInfo: nil,
+                                                                 deliverImmediately: true)
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFNotificationName(arguments[2] as CFString), nil, nil, true)
+    emit(["posted": arguments[2]])
 case "present":
     // present <baseline.png> <test.png> <items.json> <scale>: which baseline item crops still appear.
     guard let a = NSBitmapImageRep(data: try! Data(contentsOf: URL(fileURLWithPath: arguments[2]))),
@@ -158,11 +164,48 @@ default:
 LAYOUT = "com.apple.keylayout.French"
 
 
+AGENT = "/System/Library/CoreServices/TextInputMenuAgent.app/Contents/MacOS/TextInputMenuAgent"
+
+
+def input_menu(helper, capture, vanished, labels, report, output):
+    """Find a way to hide the keyboard input menu, which the assertion keeps."""
+    hints = sorted({line.strip() for line in run(["/usr/bin/strings", "-a", AGENT], 60).splitlines()
+                    if any(word in line for word in ("Visib", "visible", "TextInputMenu", "Notification", "ShowInput"))})
+    (output / "agent-strings.txt").write_text("\n".join(hints) + "\n")
+    print("HINTS", json.dumps(hints[:200]), flush=True)
+    print(run(["defaults", "read", "com.apple.TextInputMenu"], 10, check=False), flush=True)
+
+    def check(name):
+        time.sleep(3)
+        gone, _ = vanished(capture(name))
+        report["input"][name] = gone
+        print(f"{name}: vanished {gone}", flush=True)
+        return any("TextInputMenuAgent" in label for label in gone)
+
+    report["input"] = {}
+    try:
+        run(["defaults", "write", "com.apple.TextInputMenu", "visible", "-bool", "false"], 10)
+        if not check("pref-only"):
+            names = [h for h in hints if h.startswith("com.apple.") and "." in h and " " not in h][:40]
+            for name in names:
+                run([str(helper), "notify", name], 10, check=False)
+            if not check("pref-and-notifications"):
+                run(["/usr/bin/killall", "TextInputMenuAgent"], 10, check=False)
+                check("pref-and-agent-restart")
+    finally:
+        run(["defaults", "write", "com.apple.TextInputMenu", "visible", "-bool", "true"], 10)
+        run(["/usr/bin/killall", "TextInputMenuAgent"], 10, check=False)
+        time.sleep(4)
+        report["input"]["restored"] = vanished(capture("restored"))[0]
+        print(f"restored: vanished {report['input']['restored']}", flush=True)
+
+
 def main():
     if sys.platform != "darwin":
         raise RuntimeError("needs a macOS desktop")
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("build/system-items"))
+    parser.add_argument("--mode", choices=["numbers", "input"], default="numbers")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -212,6 +255,9 @@ def main():
                                            str(scale)], 300).strip().splitlines()[-1])
                     return [label for label, row in zip(labels, rows) if row.get("present") is False], rows
 
+                if args.mode == "input":
+                    input_menu(helper, capture, vanished, labels, report, output)
+                    raise StopIteration
                 for number in range(12):
                     rest = ",".join(str(n) for n in range(64) if n != number)
                     gone, rows = vanished(held(rest, "-", f"without-{number:02d}"))
@@ -225,6 +271,8 @@ def main():
                     report["bundle"][bundle_id] = gone
                     print(f"without bundle {bundle_id}: vanished {gone}", flush=True)
                 report["items"] = labels
+        except StopIteration:
+            pass
         finally:
             print(run([str(helper), "input", "off", LAYOUT], 20, check=False), flush=True)
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
