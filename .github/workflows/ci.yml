@@ -700,7 +700,7 @@ jobs:
           persist-credentials: false
       - name: Map numbered system items
         timeout-minutes: 10
-        run: python3 Scripts/rebuild/probe_system_items.py --mode input --output build/system-items
+        run: python3 Scripts/rebuild/probe_system_items.py --mode drag --output build/system-items
       - name: Upload system item map
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

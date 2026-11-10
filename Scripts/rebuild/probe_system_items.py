@@ -115,6 +115,27 @@ case "assert":
     assertion.invalidate()
     RunLoop.current.run(until: Date().addingTimeInterval(0.5))
     print("RELEASED"); fflush(stdout)
+case "drag":
+    // drag x1 y1 x2 y2: a paced Command-drag, as a person does it.
+    guard AXIsProcessTrusted() else { fail("the probe lacks Accessibility") }
+    let v = arguments[2...5].map { CGFloat(Double($0)!) }
+    let start = CGPoint(x: v[0], y: v[1]), end = CGPoint(x: v[2], y: v[3])
+    func post(_ type: CGEventType, _ point: CGPoint, _ command: Bool) {
+        let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)!
+        if command { e.flags = .maskCommand }
+        e.post(tap: .cghidEventTap)
+    }
+    post(.mouseMoved, start, false); usleep(30_000)
+    post(.leftMouseDown, start, true); usleep(60_000)
+    for step in 1...8 {
+        let t = CGFloat(step) / 8
+        post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t), true)
+        usleep(120_000)
+    }
+    usleep(400_000)
+    post(.leftMouseUp, end, true); usleep(300_000)
+    post(.mouseMoved, CGPoint(x: 400, y: 400), false)
+    emit(["dragged": true])
 case "notify":
     DistributedNotificationCenter.default().postNotificationName(.init(arguments[2]), object: nil, userInfo: nil,
                                                                  deliverImmediately: true)
@@ -229,12 +250,51 @@ def input_menu(helper, capture, vanished, labels, report, output, scale):
         print(f"restored: vanished {report['input']['restored']}", flush=True)
 
 
+DOMAINS = ["com.apple.TextInputMenu", "com.apple.TextInputMenuAgent", "com.apple.controlcenter", "com.apple.MenuBarAgent",
+           "com.apple.HIToolbox", "com.apple.systemuiserver", "NSGlobalDomain", "com.apple.menuextra.textinput"]
+
+
+def snapshot(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    for domain in DOMAINS:
+        for host in ([], ["-currentHost"]):
+            name = domain + ("-currentHost" if host else "")
+            (folder / f"{name}.txt").write_text(run(["defaults"] + host + ["read", domain], 20, check=False))
+    group = Path.home() / "Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist"
+    (folder / "group-controlcenter.txt").write_text(run(["/usr/bin/plutil", "-p", str(group)], 20, check=False))
+
+
+def input_drag(helper, capture, vanished, items, report, output):
+    """Command-drag the input menu off the bar, then see what macOS changed."""
+    target = next((i for i in items if i["owner"] == "com.apple.TextInputMenuAgent"), None)
+    if target is None:
+        raise RuntimeError("no input menu item")
+    snapshot(output / "before")
+    x, y = target["x"] + target["width"] / 2, target["y"] + target["height"] / 2
+    print(run([str(helper), "drag", str(x), str(y), str(x), str(y + 220)], 30), flush=True)
+    time.sleep(3)
+    gone, _ = vanished(capture("after-drag"))
+    report["drag"] = {"vanished": gone}
+    print(f"after command-drag off the bar: vanished {gone}", flush=True)
+    snapshot(output / "after")
+    diff = run(["/usr/bin/diff", "-ru", str(output / "before"), str(output / "after")], 20, check=False)
+    (output / "drag.diff").write_text(diff)
+    print("DIFF", diff[-6000:], flush=True)
+    report["drag"]["diff"] = diff[-6000:]
+    # Try to bring it back the way Settings would: the changed keys, then a restart.
+    run(["defaults", "write", "com.apple.TextInputMenu", "visible", "-bool", "true"], 10, check=False)
+    run(["/usr/bin/killall", "TextInputMenuAgent"], 10, check=False)
+    time.sleep(4)
+    report["drag"]["after-restore"] = vanished(capture("after-restore"))[0]
+    print(f"after restore: vanished {report['drag']['after-restore']}", flush=True)
+
+
 def main():
     if sys.platform != "darwin":
         raise RuntimeError("needs a macOS desktop")
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("build/system-items"))
-    parser.add_argument("--mode", choices=["numbers", "input"], default="numbers")
+    parser.add_argument("--mode", choices=["numbers", "input", "drag"], default="numbers")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -284,6 +344,9 @@ def main():
                                            str(scale)], 300).strip().splitlines()[-1])
                     return [label for label, row in zip(labels, rows) if row.get("present") is False], rows
 
+                if args.mode == "drag":
+                    input_drag(helper, capture, vanished, items, report, output)
+                    raise StopIteration
                 if args.mode == "input":
                     input_menu(helper, capture, vanished, labels, report, output, scale)
                     raise StopIteration
