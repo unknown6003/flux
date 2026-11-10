@@ -167,7 +167,7 @@ LAYOUT = "com.apple.keylayout.French"
 AGENT = "/System/Library/CoreServices/TextInputMenuAgent.app/Contents/MacOS/TextInputMenuAgent"
 
 
-def input_menu(helper, capture, vanished, labels, report, output):
+def input_menu(helper, capture, vanished, labels, report, output, scale):
     """Find a way to hide the keyboard input menu, which the assertion keeps."""
     hints = sorted({line.strip() for line in run(["/usr/bin/strings", "-a", AGENT], 60).splitlines()
                     if any(word in line for word in ("Visib", "visible", "TextInputMenu", "Notification", "ShowInput"))})
@@ -195,7 +195,9 @@ def input_menu(helper, capture, vanished, labels, report, output):
         run(["/usr/bin/open", "-g", extra], 20, check=False)
         time.sleep(4)
         items_now = json.loads(run([str(helper), "dump"], 60).strip().splitlines()[-1])
-        print("PASSWORDS ITEMS", [i for i in items_now if "assword" in i["owner"]], flush=True)
+        mine = [i for i in items_now if "assword" in i["owner"] and i["y"] < 40]
+        print("PASSWORDS ITEMS", mine, flush=True)
+        (output / "passwords-items.json").write_text(json.dumps(mine))
         everything = ",".join(str(n) for n in range(64))
         report["input"]["passwords-bundle"] = info
         base = capture("passwords-shown")
@@ -208,7 +210,7 @@ def input_menu(helper, capture, vanished, labels, report, output):
         finally:
             process.wait(timeout=20)
         print("PASSWORDS shown vs excluded:", run([str(helper), "present", str(base), str(hidden_path),
-              str(output / "items.json"), "1"], 300).strip()[-400:], flush=True)
+              str(output / "passwords-items.json"), str(scale)], 300).strip()[-400:], flush=True)
         run(["/usr/bin/pkill", "-f", extra], 10, check=False)
     try:
         run(["defaults", "write", "com.apple.TextInputMenu", "visible", "-bool", "false"], 10)
@@ -283,7 +285,7 @@ def main():
                     return [label for label, row in zip(labels, rows) if row.get("present") is False], rows
 
                 if args.mode == "input":
-                    input_menu(helper, capture, vanished, labels, report, output)
+                    input_menu(helper, capture, vanished, labels, report, output, scale)
                     raise StopIteration
                 for number in range(12):
                     rest = ",".join(str(n) for n in range(64) if n != number)
