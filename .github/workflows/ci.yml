@@ -13,6 +13,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      system_items_probe:
+        description: Map macOS 27's numbered menu bar system items, without building
+        type: boolean
+        default: false
       native_core_only:
         description: Test the isolated Swift 6 rebuild core without building or publishing the old app
         type: boolean
@@ -413,7 +417,7 @@ jobs:
 
   build:
     name: macOS checks and app build
-    if: ${{ !inputs.drag_probe_plan && !inputs.native_core_only && !inputs.native_performance_trace && !inputs.native_release_check && !startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ !inputs.system_items_probe && !inputs.drag_probe_plan && !inputs.native_core_only && !inputs.native_performance_trace && !inputs.native_release_check && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: xcode-27 # macOS 27 / Xcode 27 public-preview runner
     timeout-minutes: 55
     steps:
@@ -685,6 +689,25 @@ jobs:
           cp build/Flux.dmg "build/Flux-$VERSION.dmg"
           gh release create "$GITHUB_REF_NAME" "build/Flux-$VERSION.dmg" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --latest --title "Flux $VERSION" --generate-notes
+
+  system-items:
+    if: ${{ inputs.system_items_probe }}
+    runs-on: xcode-27
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Map numbered system items
+        timeout-minutes: 10
+        run: python3 Scripts/rebuild/probe_system_items.py --output build/system-items
+      - name: Upload system item map
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: system-items
+          path: build/system-items/
+          if-no-files-found: warn
 
   native-telemetry-idle:
     if: ${{ inputs.native_telemetry_idle_probe && !inputs.native_performance_trace }}
