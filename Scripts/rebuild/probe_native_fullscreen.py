@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Prove the menu bar still drops down in a fullscreen app while Flux hides icons.
 
-macOS 27's MenuBarAgent assessment assertion, which Flux uses to hide apps,
-also stops the menu bar from appearing in a fullscreen Space. Three phases
-run against one fullscreen fixture window and one hidden status-item fixture:
+Two phases run against one fullscreen fixture window and one hidden
+status-item fixture:
 
   control  no Flux: the pointer at the top edge must show the menu bar.
-  blocked  Flux with FLUX_PROBE_KEEP_HIDING_IN_FULLSCREEN=1 (0.22.2 behaviour).
-  fixed    Flux as shipped: the menu bar must appear, and hiding must come
-           back after the fullscreen app quits.
+  flux     Flux hiding the fixture: the menu bar must still drop down, the
+           hidden icon must stay hidden in it, and hiding must hold after
+           the fullscreen app quits.
 
 CI only: it writes com.flux.menubar defaults and a temporary Accessibility grant.
 """
@@ -194,7 +193,7 @@ def main():
                 (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
                 return facts
 
-            def fullscreen_round(phase, menu_bar_expected):
+            def fullscreen_round(phase, top_expected):
                 window_binary = window_app / "Contents/MacOS/FluxFullscreenFixture"
                 # Open through LaunchServices so the window may activate and go fullscreen.
                 run(["/usr/bin/open", "-n", str(window_app)], 20)
@@ -203,10 +202,7 @@ def main():
                     print(run([str(helper), "away", "3"], 20), flush=True)
                     state(phase, "fullscreen-pointer-away", {"fullscreen": True, "menuBar": False})
                     print(run([str(helper), "hover", "3"], 20), flush=True)
-                    expect = {"fullscreen": True}
-                    if menu_bar_expected is not None:
-                        expect["menuBar"] = menu_bar_expected
-                    facts = state(phase, "fullscreen-pointer-top", expect)
+                    facts = state(phase, "fullscreen-pointer-top", {"fullscreen": True, **top_expected})
                     print(run([str(helper), "away", "2"], 20), flush=True)
                     return facts["menuBar"]
                 finally:
@@ -232,21 +228,13 @@ def main():
                 wait_for(lambda: observe(output / "wait.png")[1]["cyan"], 20, "the cyan fixture icon")
                 (output / "wait.png").unlink(missing_ok=True)
                 state("control", "desktop", {"fullscreen": False, "cyan": True})
-                fullscreen_round("control", True)
-
-                flux = launch_flux({"FLUX_PROBE_KEEP_HIDING_IN_FULLSCREEN": "1"})
-                try:
-                    state("blocked", "desktop-hidden", {"fullscreen": False, "cyan": False})
-                    reproduced = not fullscreen_round("blocked", None)
-                finally:
-                    quit_flux(flux)
-                print(f"0.22.2 behaviour blocks the fullscreen menu bar: {reproduced}", flush=True)
+                fullscreen_round("control", {"menuBar": True})
 
                 flux = launch_flux({})
                 try:
-                    state("fixed", "desktop-hidden", {"fullscreen": False, "cyan": False})
-                    fullscreen_round("fixed", True)
-                    state("fixed", "desktop-hidden-again", {"fullscreen": False, "cyan": False})
+                    state("flux", "desktop-hidden", {"fullscreen": False, "cyan": False})
+                    fullscreen_round("flux", {"menuBar": True, "cyan": False})
+                    state("flux", "desktop-hidden-again", {"fullscreen": False, "cyan": False})
                 finally:
                     quit_flux(flux)
         finally:
@@ -267,10 +255,8 @@ def main():
             for action in reversed(cleanup):
                 action()
     failed = [f"{r['phase']}/{r['step']}" for r in results if not r["passed"]]
-    reproduced = any(r["phase"] == "blocked" and r["step"] == "fullscreen-pointer-top" and not r["facts"]["menuBar"]
-                     for r in results)
     summary = dict(result="pass" if results and not failed else "fail", failed=failed, steps=len(results),
-                   reproduced_without_fix=reproduced, video=(output / "fullscreen.mov").exists())
+                   video=(output / "fullscreen.mov").exists())
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary), flush=True)
     if failed:

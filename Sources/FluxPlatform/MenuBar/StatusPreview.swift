@@ -78,6 +78,11 @@ public enum StatusPreviewError: Error, Equatable, Sendable {
                 guard image.width == plan.pixelWidth, image.height == plan.pixelHeight else {
                     throw StatusPreviewError.unavailable
                 }
+                // macOS 27 still reports a frame for an item it does not draw:
+                // one folded into the overflow, under the notch, or not yet
+                // redrawn. That photo is one flat colour. The caller shows the
+                // app icon instead.
+                if StatusPreviewContent.isBlank(image) { continue }
                 images.append(.init(id: plan.region.id,
                                     image: NSImage(cgImage: image, size: plan.region.frame.size)))
             }
@@ -186,5 +191,49 @@ struct StatusPreviewPlan {
             configuration.capturesAudio = false
             return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
         })
+    }
+}
+
+/// Tells a real item photo from an empty patch of menu bar.
+enum StatusPreviewContent {
+    /// True when fewer than 2% of pixels differ visibly from the most common
+    /// colour. Every real item has a glyph, so it differs in far more.
+    static func isBlank(_ image: CGImage) -> Bool {
+        let width = image.width, height = image.height
+        guard width > 0, height > 0, width * height <= 1_048_576 else { return true }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                          bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return true }
+        return isBlank(rgba: pixels)
+    }
+
+    /// `rgba` holds premultiplied RGBA8 pixels.
+    static func isBlank(rgba pixels: [UInt8]) -> Bool {
+        let count = pixels.count / 4
+        guard count > 0 else { return true }
+        // The most common colour, quantised to 16 levels a channel, is the background.
+        var counts: [UInt32: Int] = [:]
+        for index in 0..<count {
+            let base = index * 4
+            let key = UInt32(pixels[base] >> 4) << 12 | UInt32(pixels[base + 1] >> 4) << 8
+                | UInt32(pixels[base + 2] >> 4) << 4 | UInt32(pixels[base + 3] >> 4)
+            counts[key, default: 0] += 1
+        }
+        guard let background = counts.max(by: { $0.value < $1.value })?.key else { return true }
+        let reference = [Int(background >> 12 & 15) * 17, Int(background >> 8 & 15) * 17,
+                         Int(background >> 4 & 15) * 17, Int(background & 15) * 17]
+        var different = 0
+        for index in 0..<count {
+            let base = index * 4
+            let distance = (0..<4).map { abs(Int(pixels[base + $0]) - reference[$0]) }.max() ?? 0
+            if distance > 48 { different += 1 }
+        }
+        return different * 50 < count
     }
 }

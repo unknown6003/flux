@@ -193,7 +193,17 @@ import FluxUI
         #expect(list.contains("org.fluxfixture.other"))
         #expect(list.contains("com.flux.menubar"))
         #expect(list.contains("com.apple.notificationcenterui"))
+        #expect(list.contains("com.apple.TextInputMenuAgent"))
         #expect(list == list.sorted())
+    }
+
+    @Test func perApplicationAllowListDropsAHiddenSystemAgent() {
+        let input = ApplicationID(rawValue: "com.apple.TextInputMenuAgent")!
+        let list = PerApplicationHider.allowList(running: ["com.apple.TextInputMenuAgent", "com.apple.controlcenter"],
+                                                 concealed: [input])
+        #expect(!list.contains("com.apple.TextInputMenuAgent"))
+        #expect(list.contains("com.apple.controlcenter"))
+        #expect(list.contains("com.apple.MenuBarAgent"))
     }
 
     @Test @MainActor func leavingTheEditorDuringReadCompletesAFreshBackgroundValidation() async throws {

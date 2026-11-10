@@ -14,10 +14,10 @@ import FluxCore
 
 /// Hides whole apps on macOS 27 with a MenuBarAgent allow list. Unknown and
 /// newly launched apps stay visible until the next reconcile, which runs on
-/// launch, quit, wake and Space changes. The assertion ends when Flux stops
-/// or exits, and is lifted while a display shows a fullscreen Space.
+/// launch, quit and wake. The assertion ends when Flux stops or exits.
 @MainActor public final class PerApplicationHider {
-    /// System items that must stay reachable while a restriction is active.
+    /// System agents allowed even when they are not in the running list.
+    /// The user can still hide those that are not pinned by the system.
     public nonisolated static let systemAllowed: Set<String> = [
         "com.apple.controlcenter", "com.apple.MenuBarAgent",
         "com.apple.systemuiserver", "com.apple.TextInputMenuAgent",
@@ -44,7 +44,6 @@ import FluxCore
     private var overClock = false
     private var observers: [NSObjectProtocol] = []
     private var mouseMonitor: Any?
-    private var spaceSettle: Task<Void, Never>?
     private var clockFrameCache: (frame: CGRect?, date: Date)?
 
     public init() {
@@ -72,10 +71,6 @@ import FluxCore
                     MainActor.assumeIsolated { self?.reconcile() }
                 })
             }
-            observers.append(center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
-                                                object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.spaceChanged() }
-            })
         }
         reconcile()
     }
@@ -86,14 +81,14 @@ import FluxCore
         for observer in observers { center.removeObserver(observer) }
         observers.removeAll()
         removeMouseMonitor()
-        spaceSettle?.cancel(); spaceSettle = nil
         overClock = false
         releaseAssertion()
     }
 
-    /// The pure allow list for a running set. System items always stay allowed.
+    /// The pure allow list for a running set. System agents stay allowed
+    /// unless the user hid them. Pinned owners are never in `concealed`.
     public nonisolated static func allowList(running: Set<String>, concealed: Set<ApplicationID>) -> [String] {
-        running.subtracting(concealed.map(\.rawValue)).union(systemAllowed).sorted()
+        running.union(systemAllowed).subtracting(concealed.map(\.rawValue)).sorted()
     }
 
     private func reconcile() {
@@ -110,27 +105,7 @@ import FluxCore
         // Assessment mode also blocks Notification Center. Lift it while the
         // pointer is on the clock.
         if overClock { releaseAssertion(); return }
-        // Assessment mode also stops the menu bar from dropping down in a
-        // fullscreen Space. There every icon shows when the menu bar appears.
-        if Self.liftsInFullscreen, FullscreenSpaces.anyActive() == true { releaseAssertion(); return }
         restrict(to: Self.allowList(running: running, concealed: concealed))
-    }
-
-    /// Release probe only: FLUX_PROBE_KEEP_HIDING_IN_FULLSCREEN=1 keeps the
-    /// 0.22.2 behaviour, so CI can show the menu bar is blocked without the lift.
-    private static let liftsInFullscreen =
-        ProcessInfo.processInfo.environment["FLUX_PROBE_KEEP_HIDING_IN_FULLSCREEN"] != "1"
-
-    /// The Space list can lag the notification during the fullscreen
-    /// animation, so read it again once the transition has settled.
-    private func spaceChanged() {
-        reconcile()
-        spaceSettle?.cancel()
-        spaceSettle = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled else { return }
-            self?.reconcile()
-        }
     }
 
     private func restrict(to allowed: [String]) {

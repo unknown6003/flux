@@ -36,9 +36,21 @@ import Testing
     #expect(policy.group(for: application) == .hidden)
     try policy.assign(application, to: .shown)
     #expect(policy.group(for: application) == .shown)
-    for raw in ["com.apple.controlcenter", "com.flux.menubar"] {
+    for raw in ["com.apple.controlcenter", "com.apple.MenuBarAgent", "com.flux.menubar"] {
         let protected = try #require(ApplicationID(rawValue: raw))
         #expect(throws: VisibilityPolicyError.self) { try policy.assign(protected, to: .hidden) }
+    }
+}
+
+@Test func appleAppsOutsideTheSystemPinsCanBeHidden() throws {
+    var policy = VisibilityPolicy()
+    for raw in ["com.apple.TextInputMenuAgent", "com.apple.Passwords.MenuBarExtra", "com.apple.Spotlight"] {
+        let application = try #require(ApplicationID(rawValue: raw))
+        #expect(!application.isManagedBySystem)
+        try policy.assign(application, to: .alwaysHidden)
+        #expect(policy.group(for: application) == .alwaysHidden)
+        #expect(policy.concealedApplications(running: [application], reveal: .collapsed,
+                                             alwaysHiddenEnabled: true) == [application])
     }
 }
 

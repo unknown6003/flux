@@ -12,9 +12,17 @@ public struct ApplicationID: RawRepresentable, Hashable, Sendable, Codable {
         self.rawValue = rawValue
     }
 
-    public var isManagedBySystem: Bool {
-        rawValue.hasPrefix("com.apple.") || rawValue == "com.flux.menubar"
-    }
+    /// Owners whose items macOS keeps in place: Flux's own controls, the
+    /// clock and Control Center button (MenuBarAgent), the Control Center
+    /// modules, and session agents. Other Apple apps, such as the keyboard
+    /// input menu or Passwords, move and hide like any app.
+    public var isManagedBySystem: Bool { Self.pinnedBySystem.contains(rawValue) }
+
+    public static let pinnedBySystem: Set<String> = [
+        "com.flux.menubar", "com.apple.MenuBarAgent", "com.apple.controlcenter",
+        "com.apple.systemuiserver", "com.apple.loginwindow",
+        "com.apple.UserNotificationCenter", "com.apple.notificationcenterui",
+    ]
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
