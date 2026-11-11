@@ -26,7 +26,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from probe_native_hiding import FIXTURE, REGISTER, bundle, flux_pids, run  # noqa: E402
-from probe_tcc import accessibility_grant  # noqa: E402
+from probe_tcc import _stop, accessibility_grant  # noqa: E402
 
 HELPER = r'''
 import AppKit
@@ -124,8 +124,8 @@ def wait_for(predicate, seconds, label):
 
 
 def main():
-    if sys.platform != "darwin":
-        raise RuntimeError("needs a macOS desktop")
+    if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError("needs a disposable macOS CI desktop")
     parser = argparse.ArgumentParser()
     parser.add_argument("app", type=Path)
     parser.add_argument("--output", type=Path, default=Path("build/native-fullscreen"))
@@ -215,13 +215,17 @@ def main():
             def launch_flux(env):
                 process = subprocess.Popen([str(executable)], env=dict(os.environ, **env), start_new_session=True,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                processes.append(process)
                 wait_for(lambda: len(flux_pids(executable)) == 1, 15, "one native Flux process")
                 time.sleep(3)
                 return process
 
             def quit_flux(process):
-                process.terminate()
-                process.wait(timeout=20)
+                try:
+                    process.terminate()
+                    process.wait(timeout=20)
+                finally:
+                    _stop(process)
 
             with accessibility_grant("com.flux.native-fullscreen-probe"):
                 # Fixture apps can take several seconds to draw on a fresh runner.
@@ -242,16 +246,15 @@ def main():
                 os.kill(pid, signal.SIGKILL)
             run(["/usr/bin/pkill", "-KILL", "-f", "FluxFullscreenFixture.app/Contents/MacOS"], 10, check=False)
             for process in processes:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                _stop(process)
             if video:
                 try:
                     os.killpg(video.pid, signal.SIGINT)
                     video.wait(timeout=20)
                 except (ProcessLookupError, subprocess.TimeoutExpired):
                     pass
+                finally:
+                    _stop(video)
             for action in reversed(cleanup):
                 action()
     failed = [f"{r['phase']}/{r['step']}" for r in results if not r["passed"]]

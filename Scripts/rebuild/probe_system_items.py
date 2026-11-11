@@ -13,8 +13,10 @@ CI only: it enables one extra keyboard layout so the input menu shows, and
 disables it again at the end.
 """
 import argparse
+from contextlib import contextmanager
 import json
 import os
+import selectors
 from pathlib import Path
 import subprocess
 import sys
@@ -23,7 +25,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from probe_native_hiding import bundle, run  # noqa: E402
-from probe_tcc import accessibility_grant  # noqa: E402
+from probe_tcc import _stop, accessibility_grant  # noqa: E402
 
 HELPER = r'''
 import AppKit
@@ -58,6 +60,16 @@ func source(_ id: String) -> TISInputSource? {
 }
 let arguments = CommandLine.arguments
 switch arguments[1] {
+case "input-state":
+    guard let layout = source(arguments[2]),
+          let enabled = TISGetInputSourceProperty(layout, kTISPropertyInputSourceIsEnabled) else { fail("input state unavailable") }
+    let current = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+    guard let identifier = TISGetInputSourceProperty(current, kTISPropertyInputSourceID) else { fail("current input unavailable") }
+    emit(["enabled": CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(enabled).takeUnretainedValue()),
+          "selected": Unmanaged<CFString>.fromOpaque(identifier).takeUnretainedValue() as String])
+case "select-input":
+    guard let layout = source(arguments[2]), TISSelectInputSource(layout) == noErr else { fail("input restore failed") }
+    emit(["selected": true])
 case "input":
     guard let layout = source(arguments[3]) else { fail("no input source \(arguments[3])") }
     let status = arguments[2] == "on" ? TISEnableInputSource(layout) : TISDisableInputSource(layout)
@@ -158,9 +170,51 @@ default:
 LAYOUT = "com.apple.keylayout.French"
 
 
+@contextmanager
+def temporary_input_source(helper, layout):
+    def state():
+        return json.loads(run([str(helper), "input-state", layout], 20).strip().splitlines()[-1])
+    before = state()
+    try:
+        if not before["enabled"]:
+            result = json.loads(run([str(helper), "input", "on", layout], 20).strip().splitlines()[-1])
+            if result["status"] != 0:
+                raise RuntimeError("could not enable fixture input source")
+        yield
+    finally:
+        if state()["selected"] != before["selected"]:
+            run([str(helper), "select-input", before["selected"]], 20)
+        if not before["enabled"]:
+            result = json.loads(run([str(helper), "input", "off", layout], 20).strip().splitlines()[-1])
+            if result["status"] != 0:
+                raise RuntimeError("could not disable fixture input source")
+        if state() != before:
+            raise RuntimeError("fixture input source restoration differs from baseline")
+
+
+def wait_for_ready(process, seconds=12):
+    deadline = time.monotonic() + seconds
+    received = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while time.monotonic() < deadline and len(received) < 4096:
+            ready = selector.select(max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            chunk = os.read(process.stdout.fileno(), min(1024, 4096 - len(received)))
+            if not chunk:
+                break
+            received.extend(chunk)
+            if b"\n" in received:
+                if received.split(b"\n", 1)[0].strip() == b"READY":
+                    return
+                break
+    raise RuntimeError("assertion did not report READY within its deadline")
+
+
 def main():
-    if sys.platform != "darwin":
-        raise RuntimeError("needs a macOS desktop")
+    if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError("needs a disposable macOS CI desktop")
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("build/system-items"))
     args = parser.parse_args()
@@ -170,8 +224,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="flux-system-items-") as directory:
         temporary = Path(directory).resolve()
         _, helper = bundle(temporary, "FluxSystemItemsProbe", "com.flux.system-items-probe", HELPER, temporary)
-        print(run([str(helper), "input", "on", LAYOUT], 20), flush=True)
-        try:
+        with temporary_input_source(helper, LAYOUT):
             time.sleep(4)
             screen_width = int(float(run(["/usr/bin/osascript", "-l", "JavaScript", "-e",
                                           "ObjC.import('AppKit'); $.NSScreen.mainScreen.frame.size.width"], 20).strip()))
@@ -185,13 +238,16 @@ def main():
                 process = subprocess.Popen([str(helper), "assert", numbers, excluded, "6"], stdout=subprocess.PIPE,
                                            stderr=subprocess.STDOUT, text=True, start_new_session=True)
                 try:
-                    line = process.stdout.readline().strip()
-                    if line != "READY":
-                        raise RuntimeError(f"assertion {name}: {line} {process.stdout.read()}")
+                    wait_for_ready(process)
                     time.sleep(2.5)
                     return capture(name)
                 finally:
-                    process.wait(timeout=20)
+                    try:
+                        process.communicate(timeout=20)
+                        if process.returncode:
+                            raise RuntimeError(f"assertion {name} exited {process.returncode}")
+                    finally:
+                        _stop(process)
 
             with accessibility_grant("com.flux.system-items-probe"):
                 everything = ",".join(str(n) for n in range(64))
@@ -225,8 +281,6 @@ def main():
                     report["bundle"][bundle_id] = gone
                     print(f"without bundle {bundle_id}: vanished {gone}", flush=True)
                 report["items"] = labels
-        finally:
-            print(run([str(helper), "input", "off", LAYOUT], 20, check=False), flush=True)
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
 

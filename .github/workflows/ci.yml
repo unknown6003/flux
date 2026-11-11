@@ -97,6 +97,8 @@ jobs:
           persist-credentials: false
       - name: Record checked source
         run: git rev-parse HEAD
+      - name: Check menu probe restoration and deadlines
+        run: python3 Scripts/rebuild/test_menu_probe_lifetimes.py
       - name: Test native core
         run: python3 Scripts/rebuild/run_native_tests.py FluxCoreTests
       - name: Compile native interface
@@ -350,6 +352,8 @@ jobs:
           echo "FLUX_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "FLUX_RELEASE_BUILD=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
           printf 'Checked source: `%s`, version %s\n' "$(cat build/checked-source.txt)" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check menu probe restoration and deadlines
+        run: python3 Scripts/rebuild/test_menu_probe_lifetimes.py
       - name: Test native core
         run: python3 Scripts/rebuild/run_native_tests.py FluxCoreTests
       - name: Test native platform

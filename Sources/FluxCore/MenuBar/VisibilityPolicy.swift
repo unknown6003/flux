@@ -15,7 +15,7 @@ public struct ApplicationID: RawRepresentable, Hashable, Sendable, Codable {
     /// Owners whose items macOS keeps in place: Flux's own controls, the
     /// clock and Control Center button (MenuBarAgent), the Control Center
     /// modules, and session agents. Other Apple apps, such as the keyboard
-    /// input menu or Passwords, move and hide like any app.
+    /// input menu or Passwords, can move. Hiding has a separate capability.
     public var isManagedBySystem: Bool { Self.pinnedBySystem.contains(rawValue) }
 
     /// False for pinned owners and for items macOS draws even under a hiding
