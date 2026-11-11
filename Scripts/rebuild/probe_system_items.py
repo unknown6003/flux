@@ -17,6 +17,7 @@ from contextlib import contextmanager
 import json
 import os
 import selectors
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -286,6 +287,7 @@ def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, lambda signum, _frame: (_ for _ in ()).throw(SystemExit(128 + signum)))
     try:
         main()
     except RuntimeError as error:
