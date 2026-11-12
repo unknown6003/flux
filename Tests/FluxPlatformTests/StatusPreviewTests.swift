@@ -70,8 +70,8 @@ import Testing
             for channel in 0..<3 { bytes[index * 4 + channel] = value }
             bytes[index * 4 + 3] = 255
         }
-        let provider = try #require(CGDataProvider(dataInfo: nil, data: bytes, size: count,
-            releaseData: { _, _, _ in }))
+        let storage = CGDataProvider(dataInfo: nil, data: bytes, size: count, releaseData: { _, _, _ in })
+        let provider = try #require(storage)
         let sourceImage = try #require(CGImage(width: width, height: height, bitsPerComponent: 8,
             bitsPerPixel: 32, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
