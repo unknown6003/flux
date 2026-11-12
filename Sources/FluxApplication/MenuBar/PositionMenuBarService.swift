@@ -45,20 +45,17 @@ extension MenuBarControls: PositionMenuBarControlOwner {}
 struct PositionMenuBarArrangeTools {
     var drag: @MainActor (CGPoint, CGPoint) async throws -> Void
     var inputIsQuiet: @MainActor () -> Bool
-    /// Screen Recording is already allowed, so images need no prompt.
-    var previewAllowed: @MainActor () -> Bool
     var sleep: @Sendable (TimeInterval) async throws -> Void
     /// Flux's own bundle. Its chevron and boundaries are not editor items.
     var ownApplication: ApplicationID?
 
     static let unavailable = PositionMenuBarArrangeTools(
         drag: { _, _ in throw MenuBarItemDragError.eventsUnavailable }, inputIsQuiet: { true },
-        previewAllowed: { false }, sleep: { _ in }, ownApplication: nil)
+        sleep: { _ in }, ownApplication: nil)
 
     @MainActor static func system() -> PositionMenuBarArrangeTools {
         .init(drag: { try await MenuBarItemDrag.perform(from: $0, to: $1) },
               inputIsQuiet: { MenuBarItemDrag.inputIsQuiet() },
-              previewAllowed: { PermissionAccess.status(.screenRecording) == .allowed },
               sleep: { try await Task.sleep(for: .seconds($0)) },
               ownApplication: Bundle.main.bundleIdentifier.flatMap(ApplicationID.init(rawValue:)))
     }
@@ -386,19 +383,19 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func showRealIcons() {
         guard started, editorVisible, previewTask == nil else { return }
         actionFailure = nil
-        capturePreviewImages(askFirst: true)
+        capturePreviewImages()
     }
 
     /// Reads each item's real image. Asks for Screen Recording only after the
     /// user's own click. Images whose item moved during capture are dropped.
-    private func capturePreviewImages(askFirst: Bool) {
+    private func capturePreviewImages() {
         guard started, editorVisible, previewTask == nil, moveTask == nil else { return }
         let id = UUID()
         previewID = id
         previewTask = Task { @MainActor [weak self] in
             guard !Task.isCancelled, let self, self.previewID == id,
                   self.editorVisible, self.started else { return }
-            let access = askFirst ? await self.requestPreviewPermission() : .allowed
+            let access = await self.requestPreviewPermission()
             guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
             var images: [MenuBarItemID: NSImage] = [:]
             if access == .allowed {
@@ -410,7 +407,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
                     images = images.filter { id, _ in before.first(where: { $0.id == id })?.frame == after[id] }
                 } catch {
                     guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
-                    if askFirst { self.actionFailure = "previewUnavailable" }
+                    self.actionFailure = "previewUnavailable"
                 }
             } else { self.actionFailure = "previewPermissionRequired" }
             guard !Task.isCancelled, self.previewID == id, self.editorVisible, self.started else { return }
@@ -420,7 +417,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
                 self.state.rows[index].preview = images[MenuBarItemID(application: self.state.rows[index].id, index: 0)]
             }
             self.state.showsRealIcons = !images.isEmpty
-            if askFirst, access == .allowed, self.actionFailure == nil, images.isEmpty { self.actionFailure = "previewNoEligibleItems" }
+            if access == .allowed, self.actionFailure == nil, images.isEmpty { self.actionFailure = "previewNoEligibleItems" }
             self.updateTiles()
             self.applyControls()
             self.changed()
@@ -755,6 +752,15 @@ private struct PositionMenuBarArrangementContext: Equatable {
             let initialPolicy = try? self.currentPolicy()
             let initialPins = try? self.currentIdentities()
             let snapshot = await self.readInventory()
+            guard !Task.isCancelled, self.scanID == id, self.started, self.needsInventory else { return }
+            if inventoryVersion == self.inventoryVersion, snapshot.accessibilityAllowed {
+                // App icons need no signing check or screenshot. Keep editing
+                // disabled until the rest of this scan has finished.
+                self.state.layoutAccessible = true
+                self.publish(snapshot)
+                self.applyControls()
+                self.changed()
+            }
             var identities: [ApplicationID: MenuBarIdentityEvidence] = [:]
             if snapshot.accessibilityAllowed, let initialPins {
                 let deadline = ContinuousClock.now.advanced(by: .seconds(3))
@@ -818,9 +824,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
                 self.updateObservations()
             }
             self.applyControls()
-            if self.editorVisible, snapshot.accessibilityAllowed, self.tools.previewAllowed() {
-                self.capturePreviewImages(askFirst: false)
-            }
+            // A grant used by another feature is not a request for real icon
+            // photos. Only Show Real Icons starts a capture.
             self.changed()
         }
     }

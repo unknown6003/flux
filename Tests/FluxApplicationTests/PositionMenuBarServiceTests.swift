@@ -118,7 +118,7 @@ import FluxUI
             }, tools: .init(drag: { [unowned self] from, to in
                 self.drags.append((from, to))
                 self.onDrag?(from, to)
-            }, inputIsQuiet: { true }, previewAllowed: { false }, sleep: { _ in }, ownApplication: nil))
+            }, inputIsQuiet: { true }, sleep: { _ in }, ownApplication: nil))
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -135,6 +135,20 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func permissionAloneNeverReplacesAppIconsWithScreenPhotos() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.previewImage = NSImage(size: .init(width: 24, height: 24))
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.refresh()
+        await fixture.settle()
+        #expect(fixture.previewCaptures == 0)
+        #expect(fixture.permissionRequests == 0)
+        #expect(!fixture.owner.state.showsRealIcons)
+        try await fixture.close()
+    }
+
     @Test @MainActor func inventoryIconsAppearBeforeSigningChecksFinish() async throws {
         let fixture = try PositionServiceFixture()
         fixture.blocksIdentityRead = true

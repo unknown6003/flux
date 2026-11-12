@@ -348,7 +348,7 @@ jobs:
         run: |
           mkdir -p build
           git rev-parse HEAD > build/checked-source.txt
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION=0.22.3; fi
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else VERSION=0.22.4; fi
           echo "FLUX_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "FLUX_RELEASE_BUILD=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
           printf 'Checked source: `%s`, version %s\n' "$(cat build/checked-source.txt)" "$VERSION" >> "$GITHUB_STEP_SUMMARY"

@@ -82,9 +82,9 @@ public enum StatusPreviewError: Error, Equatable, Sendable {
                 // one folded into the overflow, under the notch, or not yet
                 // redrawn. That photo is one flat colour. The caller shows the
                 // app icon instead.
-                if StatusPreviewContent.isBlank(image) { continue }
+                guard let ownedImage = StatusPreviewContent.copyVisibleImage(image) else { continue }
                 images.append(.init(id: plan.region.id,
-                                    image: NSImage(cgImage: image, size: plan.region.frame.size)))
+                                    image: NSImage(cgImage: ownedImage, size: plan.region.frame.size)))
             }
             return images
         } catch {
@@ -199,39 +199,47 @@ enum StatusPreviewContent {
     /// True when fewer than 2% of pixels differ visibly from the most common
     /// colour. Every real item has a glyph, so it differs in far more.
     static func isBlank(_ image: CGImage) -> Bool {
+        copyVisibleImage(image) == nil
+    }
+
+    /// Store an owned bitmap, never the screenshot provider's backing storage.
+    static func copyVisibleImage(_ image: CGImage) -> CGImage? {
         let width = image.width, height = image.height
-        guard width > 0, height > 0, width * height <= 1_048_576 else { return true }
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                                          bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        guard drawn else { return true }
-        return isBlank(rgba: pixels)
+        guard width > 0, height > 0, width * height <= 1_048_576,
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                  bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let data = context.data else { return nil }
+        context.setBlendMode(.copy)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let pixels = Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self),
+                                              count: width * height * 4))
+        guard !isBlank(rgba: pixels) else { return nil }
+        return context.makeImage()
     }
 
     /// `rgba` holds premultiplied RGBA8 pixels.
     static func isBlank(rgba pixels: [UInt8]) -> Bool {
         let count = pixels.count / 4
         guard count > 0 else { return true }
-        // The most common colour, quantised to 16 levels a channel, is the background.
+        // Transparency is not a glyph. A black patch with a clear fringe
+        // must not replace the app icon merely because its alpha varies.
         var counts: [UInt32: Int] = [:]
         for index in 0..<count {
             let base = index * 4
-            let key = UInt32(pixels[base] >> 4) << 12 | UInt32(pixels[base + 1] >> 4) << 8
-                | UInt32(pixels[base + 2] >> 4) << 4 | UInt32(pixels[base + 3] >> 4)
+            let key = UInt32(pixels[base] >> 4) << 8 | UInt32(pixels[base + 1] >> 4) << 4
+                | UInt32(pixels[base + 2] >> 4)
             counts[key, default: 0] += 1
         }
         guard let background = counts.max(by: { $0.value < $1.value })?.key else { return true }
-        let reference = [Int(background >> 12 & 15) * 17, Int(background >> 8 & 15) * 17,
-                         Int(background >> 4 & 15) * 17, Int(background & 15) * 17]
+        let reference = [Int(background >> 8 & 15) * 17, Int(background >> 4 & 15) * 17,
+                         Int(background & 15) * 17]
         var different = 0
         for index in 0..<count {
             let base = index * 4
-            let distance = (0..<4).map { abs(Int(pixels[base + $0]) - reference[$0]) }.max() ?? 0
+            let distance = max(abs(Int(pixels[base]) - reference[0]),
+                               abs(Int(pixels[base + 1]) - reference[1]),
+                               abs(Int(pixels[base + 2]) - reference[2]))
             if distance > 48 { different += 1 }
         }
         return different * 50 < count
