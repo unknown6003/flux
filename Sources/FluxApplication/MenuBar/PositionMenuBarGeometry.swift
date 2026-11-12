@@ -1,19 +1,20 @@
 import AppKit
 import FluxCore
+import FluxPlatform
 
 struct PositionMenuBarApplication {
     let id: ApplicationID
     let name: String
     let icon: NSImage?
     let frames: [CGRect?]
-    let itemNames: [String?]
+    let systemItems: [SystemMenuItem?]
 
-    init(id: ApplicationID, name: String, icon: NSImage?, frames: [CGRect?], itemNames: [String?] = []) {
+    init(id: ApplicationID, name: String, icon: NSImage?, frames: [CGRect?], systemItems: [SystemMenuItem?] = []) {
         self.id = id
         self.name = name
         self.icon = icon
         self.frames = frames
-        self.itemNames = itemNames
+        self.systemItems = systemItems
     }
 }
 

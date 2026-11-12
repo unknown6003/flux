@@ -536,6 +536,31 @@ import FluxUI
         try await fixture.close()
     }
 
+    @Test @MainActor func systemItemsKeepIdentifiableFallbacksWhenPreviewsFail() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let agent = try #require(ApplicationID(rawValue: "com.apple.MenuBarAgent"))
+        fixture.inventory = .init(applications: [
+            .init(id: agent, name: "MenuBarAgent", icon: nil,
+                  frames: [CGRect(x: 800, y: 4, width: 24, height: 24),
+                           CGRect(x: 830, y: 4, width: 90, height: 24)],
+                  systemItems: [.controlCenter, .clock])
+        ], accessibilityAllowed: true, complete: true)
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        for name in ["Control Center", "Clock"] {
+            let tile = try #require(fixture.owner.state.tiles.first { $0.name == name })
+            #expect(tile.image?.tiffRepresentation != nil)
+            #expect(!tile.isMovable)
+        }
+        fixture.owner.showRealIcons()
+        await fixture.settle()
+        #expect(fixture.owner.state.mode == .failed(code: "previewUnavailable"))
+        #expect(fixture.owner.state.tiles.allSatisfy { $0.image?.tiffRepresentation != nil })
+        #expect(fixture.owner.state.tiles.allSatisfy { !$0.isMovable })
+        try await fixture.close()
+    }
+
     @Test @MainActor func explicitUnsupportedActionsFailAndDoNotCaptureOrApprove() async throws {
         let fixture = try PositionServiceFixture()
         fixture.owner.start()

@@ -147,13 +147,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
                       return PositionMenuBarInventory(applications: snapshot.applications.map { app in
                           PositionMenuBarApplication(id: app.application.id, name: app.application.name,
                               icon: app.application.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) },
-                              frames: app.items.map(\.frame), itemNames: app.items.map { item in
-                                  switch item.systemItem {
-                                  case .clock: String(localized: "Clock")
-                                  case .controlCenter: String(localized: "Control Center")
-                                  case nil: nil
-                                  }
-                              })
+                              frames: app.items.map(\.frame), systemItems: app.items.map(\.systemItem))
                       }, accessibilityAllowed: snapshot.accessibilityAllowed, complete: snapshot.complete)
                   }, permissionStatus: { PermissionAccess.status(.accessibility) },
                   requestPreviewPermission: { await PermissionAccess.request(.screenRecording) },
@@ -516,16 +510,37 @@ private struct PositionMenuBarArrangementContext: Equatable {
         let apps = Dictionary((lastInventory?.applications ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         state.tiles = layout.items.map { item in
             MenuBarLayoutTile(id: item.id, name: tileName(item.id),
-                              image: itemImages[item.id] ?? apps[item.id.application]?.icon,
+                              image: itemImages[item.id] ?? systemImage(item.id) ?? apps[item.id.application]?.icon,
                               group: layout.group(of: item), isMovable: item.isMovable)
         }
+    }
+
+    private func systemItem(_ id: MenuBarItemID) -> SystemMenuItem? {
+        guard id.application.rawValue == "com.apple.MenuBarAgent",
+              let app = lastInventory?.applications.first(where: { $0.id == id.application }),
+              app.systemItems.indices.contains(id.index) else { return nil }
+        return app.systemItems[id.index]
+    }
+
+    private func systemImage(_ id: MenuBarItemID) -> NSImage? {
+        let symbol: String
+        switch systemItem(id) {
+        case .clock: symbol = "clock"
+        case .controlCenter: symbol = "switch.2"
+        case nil: return nil
+        }
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: tileName(id))
     }
 
     private func tileName(_ id: MenuBarItemID) -> String {
         guard let app = lastInventory?.applications.first(where: { $0.id == id.application }) else {
             return id.application.rawValue
         }
-        if app.itemNames.indices.contains(id.index), let name = app.itemNames[id.index] { return name }
+        switch systemItem(id) {
+        case .clock: return String(localized: "Clock")
+        case .controlCenter: return String(localized: "Control Center")
+        case nil: break
+        }
         let count = app.frames.compactMap { $0 }.count
         let name: String
         switch app.id.rawValue {

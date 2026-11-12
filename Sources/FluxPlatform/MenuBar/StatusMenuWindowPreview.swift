@@ -5,6 +5,19 @@ struct StatusPreviewMenuWindow {
     let application: String
     let displayID: CGDirectDisplayID
     let frame: CGRect
+
+    func matchesMetadata(_ records: [[String: Any]], ownerPID: pid_t) -> Bool {
+        let matches = records.filter {
+            ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == id
+        }
+        guard matches.count == 1, let current = matches.first,
+              (current[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == ownerPID,
+              (current[kCGWindowLayer as String] as? NSNumber)?.intValue == 24,
+              let sharing = current[kCGWindowSharingState as String] as? NSNumber, sharing.intValue != 0,
+              let bounds = current[kCGWindowBounds as String] as? NSDictionary,
+              CGRect(dictionaryRepresentation: bounds) == frame else { return false }
+        return true
+    }
 }
 
 /// Reads only validated narrow MenuBarAgent surfaces. The owner supplies

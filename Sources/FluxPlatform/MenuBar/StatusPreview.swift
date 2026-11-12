@@ -234,13 +234,8 @@ struct StatusPreviewPlan {
                   let display = displays.first(where: { $0.id == descriptor.displayID }),
                   CGDisplayBounds(display.id) == display.frame,
                   let window = windows[descriptor.id], window.frame == descriptor.frame,
-                  let fresh = CGWindowListCopyWindowInfo(.optionIncludingWindow, descriptor.id) as? [[String: Any]],
-                  fresh.count == 1, let current = fresh.first,
-                  (current[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == agent.processIdentifier,
-                  (current[kCGWindowLayer as String] as? NSNumber)?.intValue == 24,
-                  let sharing = current[kCGWindowSharingState as String] as? NSNumber, sharing.intValue != 0,
-                  let bounds = current[kCGWindowBounds as String] as? NSDictionary,
-                  CGRect(dictionaryRepresentation: bounds) == descriptor.frame else {
+                  let fresh = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]],
+                  descriptor.matchesMetadata(fresh, ownerPID: agent.processIdentifier) else {
                 throw StatusPreviewError.unavailable
             }
             // A window filter ignores sourceRect. Only validated narrow menu
