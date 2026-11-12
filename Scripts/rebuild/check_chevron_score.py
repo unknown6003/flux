@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 import check_menu_window_score as runner
 
+original_score_logs = runner.score_logs
+
 runner.OUTPUT = runner.ROOT / "build/chevron-score"
 runner.NEW_FILES.add("Scripts/rebuild/check_chevron_score.py")
 
@@ -29,6 +31,7 @@ def score_logs(directory, conclusion):
     runner.require(conclusion == ("failure" if score else "success"), "CI conclusion contradicts score")
     if not score:
         runner.passing(directory, "FluxApplicationTests", 76)
+        original_score_logs(directory, conclusion)
     return score
 
 runner.score_logs = score_logs

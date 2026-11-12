@@ -188,8 +188,34 @@ import FluxUI
             if fixture.controls.reveal != .collapsed { failures += 1 }
             try await fixture.close()
         }
+        for support in [PositionMenuBarHidingSupport.byPosition, .perApplication] {
+            let (fixture, second) = try await twoItemFixture(support: support)
+            if support == .perApplication { fixture.owner.assign(second, to: .hidden) }
+            fixture.controls.onToggle?(false)
+            fixture.onDrag = { _, _ in
+                if fixture.controls.reveal != .all { failures += 1 }
+                if support == .perApplication, fixture.hider.applied.last?.reveal != .all { failures += 1 }
+                fixture.inventory = .init(applications: [
+                    .init(id: fixture.app, name: "Example", icon: nil,
+                          frames: [CGRect(x: support == .perApplication ? 500 : 400, y: 0, width: 24, height: 24)]),
+                    .init(id: second, name: "Second", icon: nil,
+                          frames: [CGRect(x: support == .perApplication ? 450 : 700, y: 0, width: 24, height: 24)])
+                ], accessibilityAllowed: true, complete: true)
+            }
+            let move = support == .perApplication
+                ? MenuBarItemMove(item: .init(application: fixture.app, index: 0), group: .hidden,
+                                  left: .init(application: second, index: 0), right: nil)
+                : MenuBarItemMove(item: .init(application: second, index: 0), group: .shown, left: nil, right: nil)
+            fixture.owner.moveItem(move)
+            for _ in 0..<4 { await fixture.settle() }
+            if fixture.drags.count != 1 { failures += 1 }
+            if case .moved = fixture.owner.state.moveStatus {} else { failures += 1 }
+            if fixture.controls.reveal != .collapsed { failures += 1 }
+            if support == .perApplication, fixture.hider.applied.last?.reveal != .collapsed { failures += 1 }
+            try await fixture.close()
+        }
         print("CHEVRON_FAILURES=\(failures)")
-        if failures != 0 { Issue.record("Chevron requests are masked by the editor in \(failures) checks") }
+        if failures != 0 { Issue.record("Chevron or move reveal state failed in \(failures) checks") }
     }
 
     @Test @MainActor func permissionAloneNeverReplacesAppIconsWithScreenPhotos() async throws {
