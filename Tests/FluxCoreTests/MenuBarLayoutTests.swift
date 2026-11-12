@@ -142,6 +142,27 @@ private func perApp(_ items: [MenuBarLayoutItem], hidden: [String] = [], always:
             grouping: .perApplication(policy, alwaysHiddenEnabled: true), chevronBoundary: boundary)
         if MenuBarMovePlanner.isPlaced(.init(item: id("passwords"), group: .hidden,
             left: id("peer"), right: nil), in: wrong) { failures += 1 }
+        // Adjacent owner AX frames overlap the Flux button by two points on
+        // the owner Mac. The centres still give their unambiguous order.
+        let ownerBoundary = CGRect(x: 1487, y: 4.5, width: 28, height: 24)
+        for (name, x, width, group) in [
+            ("passwords", CGFloat(1513), CGFloat(39), MenuBarGroup.shown),
+            ("input", CGFloat(1415), CGFloat(74), MenuBarGroup.hidden)
+        ] {
+            var ownerPolicy = VisibilityPolicy()
+            try ownerPolicy.assign(app(name), to: group)
+            let ownerLayout = MenuBarLayout(items: [item(name, x, width: width)],
+                grouping: .perApplication(ownerPolicy, alwaysHiddenEnabled: true), chevronBoundary: ownerBoundary)
+            let ownerMove = MenuBarItemMove(item: id(name), group: group, left: nil, right: nil)
+            if !MenuBarMovePlanner.isPlaced(ownerMove, in: ownerLayout) { failures += 1 }
+            if try MenuBarMovePlanner.plan(ownerMove, in: ownerLayout) != nil { failures += 1 }
+            let wrongGroup: MenuBarGroup = group == .shown ? .hidden : .shown
+            try ownerPolicy.assign(app(name), to: wrongGroup)
+            let wrongSide = MenuBarLayout(items: ownerLayout.items,
+                grouping: .perApplication(ownerPolicy, alwaysHiddenEnabled: true), chevronBoundary: ownerBoundary)
+            if MenuBarMovePlanner.isPlaced(.init(item: id(name), group: wrongGroup, left: nil, right: nil),
+                                           in: wrongSide) { failures += 1 }
+        }
         print("PLACEMENT_FAILURES=\(failures)")
         #expect(failures == 0)
     }
