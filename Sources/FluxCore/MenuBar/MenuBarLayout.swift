@@ -82,17 +82,25 @@ public struct MenuBarLayout: Equatable, Sendable {
 
 /// A request from the layout editor: put `item` in `group`, between `left`
 /// and `right`. Nil neighbours mean the strip end, or an empty strip.
+public enum MenuBarMoveIntent: Equatable, Sendable {
+    case slot
+    case group
+}
+
 public struct MenuBarItemMove: Equatable, Sendable {
     public let item: MenuBarItemID
     public let group: MenuBarGroup
     public let left: MenuBarItemID?
     public let right: MenuBarItemID?
+    public let intent: MenuBarMoveIntent
 
-    public init(item: MenuBarItemID, group: MenuBarGroup, left: MenuBarItemID?, right: MenuBarItemID?) {
+    public init(item: MenuBarItemID, group: MenuBarGroup, left: MenuBarItemID?, right: MenuBarItemID?,
+                intent: MenuBarMoveIntent = .slot) {
         self.item = item
         self.group = group
         self.left = left
         self.right = right
+        self.intent = intent
     }
 }
 
