@@ -106,6 +106,7 @@ public enum MenuBarMoveFailure: Error, Equatable, Sendable {
     case hidingUnavailable
     case inputBusy
     case boundaryUnavailable
+    case eventsUnavailable
     case groupNotSaved(code: String)
     case notAccepted
 }

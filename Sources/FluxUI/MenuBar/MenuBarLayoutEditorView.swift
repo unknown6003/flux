@@ -56,7 +56,7 @@ final class MenuBarLayoutEditorView: NSView {
         onMove?(move)
     }
 
-    /// The right-click menu: Move to each other group, then Move Left/Right.
+    /// The checked group can be reapplied to repair a saved but unplaced icon.
     func menu(for id: MenuBarItemID) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -67,11 +67,14 @@ final class MenuBarLayoutEditorView: NSView {
             return menu
         }
         let current = model.displayGroup(tile.group)
-        for group in model.groups where group != current && (group == .shown || tile.canHide) {
+        for group in model.groups where group == .shown || tile.canHide {
             let title = String(format: L("menuBar.layout.moveTo", "Move to %@"), group.title)
-            menu.addItem(MenuAction(title: title, enabled: !isBusy) { [weak self] in
-                self?.request(self?.model.move(id, to: group))
-            })
+            let action = MenuAction(title: title, enabled: !isBusy) { [weak self] in
+                guard let self else { return }
+                self.request(group == current ? self.model.reapply(id) : self.model.move(id, to: group))
+            }
+            action.state = group == current ? .on : .off
+            menu.addItem(action)
         }
         menu.addItem(.separator())
         let left = model.nudge(id, by: -1), right = model.nudge(id, by: 1)

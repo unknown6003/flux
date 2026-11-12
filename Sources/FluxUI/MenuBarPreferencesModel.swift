@@ -321,6 +321,7 @@ enum MenuBarText {
         case .alwaysHiddenOff: L("menuBar.move.alwaysOff", "Turn on the Always Hidden group first.")
         case .hidingUnavailable: L("menuBar.move.noHiding", "Flux can't hide icons right now, so they all stay visible.")
         case .boundaryUnavailable: L("menuBar.move.boundary", "Flux could not read these icons beside its chevron. Try again.")
+        case .eventsUnavailable: L("menuBar.move.events", "Flux could not prepare the move. Try again.")
         case .inputBusy: L("menuBar.move.input", "Let go of the mouse and keys, then try again.")
         case .groupNotSaved("identityReviewRequired"):
             String(format: L("menuBar.move.review", "Review %@ first. Its signing identity changed."), name)

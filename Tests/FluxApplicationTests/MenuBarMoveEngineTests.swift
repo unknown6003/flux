@@ -1,6 +1,7 @@
 import CoreGraphics
 import Testing
 import FluxCore
+import FluxPlatform
 @testable import FluxApplication
 
 private func id(_ name: String) -> MenuBarItemID {
@@ -104,6 +105,16 @@ private func id(_ name: String) -> MenuBarItemID {
             try await gone.engine.run(.init(item: id("b"), group: .shown, left: nil, right: id("x"))) { _ in }
         }
         #expect(busy.drags.isEmpty && locked.drags.isEmpty && gone.drags.isEmpty)
+    }
+
+    @Test @MainActor func eventPreparationFailureDoesNotBlameTheUsersKeys() async throws {
+        let bar = SimulatedMenuBar(["a", "b"])
+        let engine = MenuBarMoveEngine(read: { bar.layout },
+            drag: { _, _ in throw MenuBarItemDragError.eventsUnavailable }, inputIsQuiet: { true }, sleep: { _ in })
+        await #expect(throws: MenuBarMoveFailure.eventsUnavailable) {
+            try await engine.run(.init(item: id("b"), group: .shown, left: nil, right: id("a"))) { _ in }
+        }
+        #expect(bar.order == ["a", "b"].map(id))
     }
 
     @Test @MainActor func aPerAppGroupChangeIntoAnEmptyStripNeedsNoDrag() async throws {

@@ -18,12 +18,11 @@ public struct ApplicationID: RawRepresentable, Hashable, Sendable, Codable {
     /// input menu or Passwords, can move. Hiding has a separate capability.
     public var isManagedBySystem: Bool { Self.pinnedBySystem.contains(rawValue) }
 
-    /// False for pinned owners and for items macOS draws even under a hiding
-    /// restriction. On macOS 27 the keyboard input menu and Search stay drawn
-    /// whatever the allow list says (CI probe), so they move but do not hide.
+    /// Search remains protected. Input Sources uses the same per-app hiding
+    /// route as other app-owned items, independently of numbered system items.
     public var canBeHidden: Bool { !isManagedBySystem && !Self.alwaysDrawnBySystem.contains(rawValue) }
 
-    public static let alwaysDrawnBySystem: Set<String> = ["com.apple.TextInputMenuAgent", "com.apple.campo"]
+    public static let alwaysDrawnBySystem: Set<String> = ["com.apple.campo"]
 
     public static let pinnedBySystem: Set<String> = [
         "com.flux.menubar", "com.apple.MenuBarAgent", "com.apple.controlcenter",

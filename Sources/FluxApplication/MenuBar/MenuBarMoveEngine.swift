@@ -1,5 +1,6 @@
 import Foundation
 import FluxCore
+import FluxPlatform
 
 /// Runs one editor move against the real menu bar: read, plan, Cmd-drag,
 /// then read again until the item sits between its requested neighbours.
@@ -24,7 +25,10 @@ import FluxCore
             }
             try await waitForQuietInput()
             progress(attempt + 1)
-            do { try await drag(points.from, points.to) } catch { throw .inputBusy }
+            do { try await drag(points.from, points.to) }
+            catch MenuBarItemDragError.inputBusy { throw .inputBusy }
+            catch MenuBarItemDragError.eventsUnavailable { throw .eventsUnavailable }
+            catch { throw .notAccepted }
             // MenuBarAgent settles a moved item in about half a second.
             for _ in 0..<6 {
                 do { try await sleep(0.25) } catch { throw .notAccepted }

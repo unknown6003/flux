@@ -58,6 +58,19 @@ struct MenuBarLayoutEditorModel {
         return move(id, to: group, at: towardRight ? 0 : strip(group).count)
     }
 
+    /// Reapply a saved group without changing its peer slot. The service must
+    /// still check its physical side of the chevron, even when policy matches.
+    func reapply(_ id: MenuBarItemID) -> MenuBarItemMove? {
+        guard let tile = tiles.first(where: { $0.id == id }), tile.isMovable else { return nil }
+        let group = displayGroup(tile.group)
+        guard group == .shown || tile.canHide else { return nil }
+        let current = strip(group)
+        guard let index = current.firstIndex(where: { $0.id == id }) else { return nil }
+        return .init(item: id, group: group,
+                     left: index > 0 ? current[index - 1].id : nil,
+                     right: index + 1 < current.count ? current[index + 1].id : nil)
+    }
+
     /// Move Left or Move Right by one place in the same strip.
     func nudge(_ id: MenuBarItemID, by step: Int) -> MenuBarItemMove? {
         guard let tile = tiles.first(where: { $0.id == id }) else { return nil }

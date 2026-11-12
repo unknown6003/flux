@@ -84,6 +84,7 @@ import FluxUI
                 return service.state.moveStatus != nil && !service.state.isRefreshing
             }
             guard case .moved = service.state.moveStatus else { fail("\(title) failed: \(describe())") }
+            guard MenuBarItemDrag.inputIsQuiet() else { fail("\(title) left synthetic input held") }
         }
 
         await wait(30, "inventory") {

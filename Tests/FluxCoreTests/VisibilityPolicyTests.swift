@@ -44,7 +44,7 @@ import Testing
 
 @Test func appleAppsOutsideTheSystemPinsCanBeHidden() throws {
     var policy = VisibilityPolicy()
-    for raw in ["com.apple.Passwords.MenuBarExtra", "com.apple.Spotlight", "com.apple.AirPlayUIAgent"] {
+    for raw in ["com.apple.Passwords.MenuBarExtra", "com.apple.TextInputMenuAgent", "com.apple.Spotlight", "com.apple.AirPlayUIAgent"] {
         let application = try #require(ApplicationID(rawValue: raw))
         #expect(!application.isManagedBySystem)
         try policy.assign(application, to: .alwaysHidden)
@@ -56,7 +56,7 @@ import Testing
 
 @Test func itemsMacOSAlwaysDrawsMoveButDoNotHide() throws {
     var policy = VisibilityPolicy()
-    for raw in ["com.apple.TextInputMenuAgent", "com.apple.campo"] {
+    for raw in ["com.apple.campo"] {
         let application = try #require(ApplicationID(rawValue: raw))
         #expect(!application.isManagedBySystem)
         #expect(!application.canBeHidden)
@@ -73,4 +73,18 @@ import Testing
     for raw in ["", "com..example", "../file", "name@example.com", ".com.example", "com.example."] {
         #expect(ApplicationID(rawValue: raw) == nil)
     }
+}
+
+@Test func inputSourcesHonorsHiddenAlwaysHiddenAndRevealWithoutChangingPeers() throws {
+    let input = try #require(ApplicationID(rawValue: "com.apple.TextInputMenuAgent"))
+    let peer = try #require(ApplicationID(rawValue: "com.example.peer"))
+    var policy = VisibilityPolicy()
+    try policy.assign(input, to: .hidden)
+    #expect(policy.concealedApplications(running: [input, peer], reveal: .collapsed, alwaysHiddenEnabled: true) == [input])
+    #expect(policy.concealedApplications(running: [input, peer], reveal: .hidden, alwaysHiddenEnabled: true).isEmpty)
+    try policy.assign(input, to: .alwaysHidden)
+    #expect(policy.concealedApplications(running: [input, peer], reveal: .hidden, alwaysHiddenEnabled: true) == [input])
+    #expect(policy.concealedApplications(running: [input, peer], reveal: .all, alwaysHiddenEnabled: true).isEmpty)
+    try policy.assign(input, to: .shown)
+    #expect(policy.concealedApplications(running: [input, peer], reveal: .collapsed, alwaysHiddenEnabled: true).isEmpty)
 }
