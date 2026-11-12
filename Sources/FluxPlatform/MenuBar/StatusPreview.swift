@@ -71,8 +71,9 @@ public enum StatusPreviewError: Error, Equatable, Sendable {
                 try check(generation)
                 guard await validate(plan.region) else { throw StatusPreviewError.invalidRegion }
                 try check(generation)
-                let image = try await source.capture(plan)
+                let captured = try await source.capture(plan, checking: { try self.check(generation) })
                 try check(generation)
+                guard let image = captured else { continue }
                 guard await validate(plan.region) else { throw StatusPreviewError.invalidRegion }
                 try check(generation)
                 guard image.width == plan.pixelWidth, image.height == plan.pixelHeight else {
@@ -158,8 +159,30 @@ struct StatusPreviewPlan {
 }
 
 @MainActor struct StatusPreviewSource {
+    typealias Check = @MainActor () throws -> Void
     let displays: [StatusPreviewDisplay]
-    let capture: @MainActor (StatusPreviewPlan) async throws -> CGImage
+    private let takeImage: @MainActor (StatusPreviewPlan, Check) async throws -> CGImage?
+
+    init(displays: [StatusPreviewDisplay],
+         capture: @escaping @MainActor (StatusPreviewPlan) async throws -> CGImage?) {
+        self.displays = displays
+        takeImage = { plan, check in
+            try check()
+            let image = try await capture(plan)
+            try check()
+            return image
+        }
+    }
+
+    init(displays: [StatusPreviewDisplay],
+         checkingCapture: @escaping @MainActor (StatusPreviewPlan, Check) async throws -> CGImage?) {
+        self.displays = displays
+        takeImage = checkingCapture
+    }
+
+    func capture(_ plan: StatusPreviewPlan, checking check: @escaping Check) async throws -> CGImage? {
+        try await takeImage(plan, check)
+    }
 
     static func system() async throws -> StatusPreviewSource {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)

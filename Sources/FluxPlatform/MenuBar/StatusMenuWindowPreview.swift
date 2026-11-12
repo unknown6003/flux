@@ -21,7 +21,8 @@ struct StatusPreviewMenuWindow {
         self.takeImage = capture
     }
 
-    func capture(_ plan: StatusPreviewPlan) async throws -> CGImage? {
+    func capture(_ plan: StatusPreviewPlan,
+                 checking check: @escaping StatusPreviewSource.Check = { try Task.checkCancellation() }) async throws -> CGImage? {
         nil
     }
 }
