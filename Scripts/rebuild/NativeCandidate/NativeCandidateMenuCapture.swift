@@ -80,6 +80,36 @@ import Darwin
                     "displayID": display.displayID,
                     "globalRect": [display.frame.minX, display.frame.minY, width, height],
                     "pixelSize": [image.width, image.height]])
+                // Compare the newer global-region API without changing the
+                // production preview path or expanding the captured region.
+                if #available(macOS 26.0, *) {
+                    try Task.checkCancellation()
+                    guard self.active else { return }
+                    let screenshot = SCScreenshotConfiguration()
+                    screenshot.width = configuration.width
+                    screenshot.height = configuration.height
+                    screenshot.showsCursor = false
+                    screenshot.dynamicRange = .sdr
+                    screenshot.displayIntent = .local
+                    let region = CGRect(x: display.frame.minX, y: display.frame.minY, width: width, height: height)
+                    do {
+                        let result = try await SCScreenshotManager.captureScreenshot(rect: region, configuration: screenshot)
+                        try Task.checkCancellation()
+                        guard self.active, let modern = result.sdrImage,
+                              modern.width == configuration.width, modern.height == configuration.height,
+                              let data = NSBitmapImageRep(cgImage: modern).representation(using: .png, properties: [:]),
+                              data.count <= 8 * 1024 * 1024 else { throw CaptureError.pixels }
+                        let modernName = String(format: "menu-%03d-region-sdr.png", number)
+                        try data.write(to: self.output.appendingPathComponent(modernName), options: .withoutOverwriting)
+                        try self.comparisonReceipt(number, phase: "captured", additional: ["image": modernName,
+                            "globalRect": [region.minX, region.minY, region.width, region.height],
+                            "pixelSize": [modern.width, modern.height]])
+                    } catch {
+                        guard self.active, !Task.isCancelled else { return }
+                        try? self.comparisonReceipt(number, phase: "captureFailed", additional: [
+                            "failure": (error as? CaptureError)?.rawValue ?? "system"])
+                    }
+                }
             } catch {
                 guard self.active, !Task.isCancelled else { return }
                 let phase = (error as? CaptureError) == .permission ? "screenCaptureNotAllowed" : "captureFailed"
@@ -87,6 +117,17 @@ import Darwin
                 try? self.receipt(number, phase: phase, additional: diagnostic)
             }
         }
+    }
+
+    private func comparisonReceipt(_ number: Int, phase: String, additional: [String: Any]) throws {
+        var value = additional
+        value["phase"] = phase
+        value["method"] = "captureScreenshot-region-sdr-local"
+        value["at"] = Date().ISO8601Format()
+        value["processID"] = getpid()
+        value["source"] = Bundle.main.object(forInfoDictionaryKey: "FluxNativeSourceRevision")
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        try data.write(to: output.appendingPathComponent(String(format: "receipt-%03d-region-sdr.json", number)), options: .withoutOverwriting)
     }
 
     private func receipt(_ number: Int, phase: String, additional: [String: Any]) throws {
