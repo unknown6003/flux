@@ -87,7 +87,7 @@ public actor StatusInventory {
                 // macOS 27 hosts Clock and Control Center one group below the
                 // agent's extras bar. Do not descend into app menus or windows.
                 if application.id.rawValue == "com.apple.MenuBarAgent" {
-                    for child in descendants.prefix(8) {
+                    for child in descendants.prefix(128) {
                         guard ContinuousClock.now < deadline, visited < 512 else {
                             ownerComplete = false
                             break
