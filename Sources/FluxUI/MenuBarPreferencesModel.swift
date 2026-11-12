@@ -285,6 +285,9 @@ enum MenuBarText {
         case .paused: L("menuBar.mode.paused", "Hiding is paused. macOS did not confirm the change.")
         case .failed("hidingUnavailable"): L("menuBar.mode.hidingUnavailable", "This macOS version has no menu bar hiding Flux can use. All icons stay visible.")
         case .failed("hidingRefused"): L("menuBar.mode.hidingRefused", "macOS did not confirm hiding. All icons stay visible. Flux tries again when you change a group.")
+        case .failed("previewNoEligibleItems"): L("menuBar.mode.previewEmpty", "Real menu icons could not be captured. App icons are shown instead.")
+        case .failed("previewUnavailable"): L("menuBar.mode.previewUnavailable", "Real menu icons are unavailable. App icons are shown instead.")
+        case .failed("previewPermissionRequired"): L("menuBar.mode.previewPermission", "Allow Screen Recording to show real menu icons. App icons are shown instead.")
         case .failed(let code): String(format: L("menuBar.mode.failed", "Flux can't read the menu bar (%@)."), code)
         }
     }

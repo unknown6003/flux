@@ -46,8 +46,11 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         let help = FluxUIStyle.label(L("menuBar.layout.help",
             "Drag icons to change their order or group. Right-click an icon to move it without dragging."),
             style: .callout, secondary: true)
-        [title, help, editor].forEach(editorSection.addArrangedSubview)
-        editorSection.setCustomSpacing(12, after: help)
+        let revealHelp = FluxUIStyle.label(L("menuBar.layout.revealHelp",
+            "These lanes show your saved groups. While you edit, Flux reveals hidden icons, including Always Hidden. Leave this page to apply hiding again."),
+            style: .callout, secondary: true)
+        [title, help, revealHelp, editor].forEach(editorSection.addArrangedSubview)
+        editorSection.setCustomSpacing(12, after: revealHelp)
 
         let preview = FluxUIStyle.button(L("menuBar.realIcons", "Show Real Icons…"), target: self, action: #selector(showRealIcons))
         preview.toolTip = L("menuBar.realIcons.help", "Uses Screen Recording to show each icon as it looks in your menu bar.")

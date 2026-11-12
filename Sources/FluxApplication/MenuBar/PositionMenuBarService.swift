@@ -520,7 +520,13 @@ private struct PositionMenuBarArrangementContext: Equatable {
             return id.application.rawValue
         }
         let count = app.frames.compactMap { $0 }.count
-        return count > 1 ? "\(app.name) \(id.index + 1)" : app.name
+        let name: String
+        switch app.id.rawValue {
+        case "com.apple.TextInputMenuAgent": name = String(localized: "Input Sources")
+        case "com.apple.Passwords.MenuBarExtra": name = String(localized: "Passwords")
+        default: name = app.name
+        }
+        return count > 1 ? "\(name) \(id.index + 1)" : name
     }
 
     public func checkAccessibility() {
