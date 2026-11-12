@@ -397,7 +397,7 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).addClip()
             image.draw(in: rect, from: .zero, operation: .sourceOver,
-                       fraction: movable && !busy ? 1 : 0.45, respectFlipped: true, hints: nil)
+                       fraction: busy ? 0.45 : 1, respectFlipped: true, hints: nil)
             NSGraphicsContext.restoreGraphicsState()
         }
         if window?.firstResponder === self {

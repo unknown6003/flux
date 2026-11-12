@@ -529,7 +529,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
         case .controlCenter: symbol = "switch.2"
         case nil: return nil
         }
-        return NSImage(systemSymbolName: symbol, accessibilityDescription: tileName(id))
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: tileName(id))?
+            .withSymbolConfiguration(.init(paletteColors: [.secondaryLabelColor]))
     }
 
     private func tileName(_ id: MenuBarItemID) -> String {

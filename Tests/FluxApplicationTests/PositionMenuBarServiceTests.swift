@@ -5,6 +5,35 @@ import FluxPlatform
 import FluxUI
 @testable import FluxApplication
 
+@MainActor private func contrastingSymbolPixels(_ image: NSImage, appearance name: NSAppearance.Name) throws -> Int {
+    let appearance = try #require(NSAppearance(named: name))
+    let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 48, pixelsHigh: 48,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 192, bitsPerPixel: 32))
+    let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+    let dark = name == .darkAqua
+    var count = 0
+    appearance.performAsCurrentDrawingAppearance {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = context
+        (dark ? NSColor.black : NSColor.white).setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: 48, height: 48)).fill()
+        image.draw(in: NSRect(x: 8, y: 8, width: 32, height: 32), from: .zero,
+                   operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        context.flushGraphics()
+        for y in 8..<40 {
+            for x in 8..<40 {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                let contrast = dark ? max(color.redComponent, color.greenComponent, color.blueComponent)
+                    : 1 - min(color.redComponent, color.greenComponent, color.blueComponent)
+                if contrast > 0.2 { count += 1 }
+            }
+        }
+    }
+    return count
+}
+
 @MainActor private final class PositionControlsFixture: PositionMenuBarControlOwner {
     var onToggle: (@MainActor (Bool) -> Void)?
     var onFinishArrange: (@MainActor () -> Void)?
@@ -550,13 +579,16 @@ import FluxUI
         await fixture.settle()
         for name in ["Control Center", "Clock"] {
             let tile = try #require(fixture.owner.state.tiles.first { $0.name == name })
-            #expect(tile.image?.tiffRepresentation != nil)
+            let image = try #require(tile.image)
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                #expect(try contrastingSymbolPixels(image, appearance: appearance) > 12)
+            }
             #expect(!tile.isMovable)
         }
         fixture.owner.showRealIcons()
         await fixture.settle()
         #expect(fixture.owner.state.mode == .failed(code: "previewUnavailable"))
-        #expect(fixture.owner.state.tiles.allSatisfy { $0.image?.tiffRepresentation != nil })
+        #expect(fixture.owner.state.tiles.allSatisfy { $0.image != nil })
         #expect(fixture.owner.state.tiles.allSatisfy { !$0.isMovable })
         try await fixture.close()
     }
