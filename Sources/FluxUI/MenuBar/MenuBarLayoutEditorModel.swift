@@ -77,7 +77,7 @@ struct MenuBarLayoutEditorModel {
 
     /// The insertion index for a drop point among tiles laid out in rows
     /// (top-left origin). Frames are in strip order and exclude the dragged tile.
-    static func insertionIndex(at point: CGPoint, frames: [CGRect]) -> Int {
+    static func insertionIndex(at point: CGPoint, frames: [CGRect], sourceIndex: Int? = nil) -> Int {
         for (index, frame) in frames.enumerated() {
             if point.y < frame.minY { return index }
             if point.y <= frame.maxY, point.x < frame.midX { return index }
