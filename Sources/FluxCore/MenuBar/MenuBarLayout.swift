@@ -105,6 +105,7 @@ public enum MenuBarMoveFailure: Error, Equatable, Sendable {
     case alwaysHiddenOff
     case hidingUnavailable
     case inputBusy
+    case boundaryUnavailable
     case groupNotSaved(code: String)
     case notAccepted
 }
@@ -115,7 +116,7 @@ public enum MenuBarMoveTarget: Equatable, Sendable {
     case rightOf(MenuBarItemID)
     /// An empty strip in by-position mode: next to Flux's boundary item.
     case boundary(MenuBarGroup)
-    /// An empty strip in per-app mode: the group change is the whole move.
+    /// A policy-only layout without a physical anchor.
     case none
 }
 
@@ -143,8 +144,9 @@ public enum MenuBarMovePlanner {
         }
         if isPlaced(move, in: layout) { return nil }
         let target: MenuBarMoveTarget
-        if let right = move.right { target = .leftOf(right) }
-        else if let left = move.left { target = .rightOf(left) }
+        if let right = move.right, anchorIsOnRequestedSide(right, move: move, layout: layout) { target = .leftOf(right) }
+        else if let left = move.left, anchorIsOnRequestedSide(left, move: move, layout: layout) { target = .rightOf(left) }
+        else if case .perApplication = layout.grouping, layout.chevronBoundary != nil { target = .boundary(move.group) }
         else if case .byPosition = layout.grouping { target = .boundary(move.group) }
         else { target = .none }
         return MenuBarMovePlan(move: move, target: target)
@@ -155,6 +157,8 @@ public enum MenuBarMovePlanner {
     /// they are the named neighbours, because per-app groups move them too.
     public static func isPlaced(_ move: MenuBarItemMove, in layout: MenuBarLayout) -> Bool {
         guard let item = layout.item(move.item), layout.group(of: item) == move.group else { return false }
+        if case .perApplication = layout.grouping, let boundary = layout.chevronBoundary,
+           !isOnSide(item.frame, of: boundary, group: move.group) { return false }
         let named: Set<MenuBarItemID> = Set([move.left, move.right].compactMap { $0 })
         let strip = layout.strip(move.group).filter {
             $0.id == move.item || $0.id.application != move.item.application || named.contains($0.id)
@@ -165,6 +169,18 @@ public enum MenuBarMovePlanner {
         // An empty-strip request is met once the item is in the group.
         if move.left == nil, move.right == nil, case .perApplication = layout.grouping { return true }
         return left == move.left && right == move.right
+    }
+
+    private static func isOnSide(_ frame: CGRect, of boundary: CGRect, group: MenuBarGroup) -> Bool {
+        guard !boundary.isNull, !boundary.isInfinite, boundary.width > 0, boundary.height > 0 else { return false }
+        return group == .shown ? frame.minX >= boundary.maxX : frame.maxX <= boundary.minX
+    }
+
+    private static func anchorIsOnRequestedSide(_ id: MenuBarItemID, move: MenuBarItemMove,
+                                               layout: MenuBarLayout) -> Bool {
+        guard case .perApplication = layout.grouping, let boundary = layout.chevronBoundary else { return true }
+        guard let anchor = layout.item(id) else { return false }
+        return isOnSide(anchor.frame, of: boundary, group: move.group)
     }
 
     /// Start and end points of the Cmd-drag, in Quartz points. Attempts use
@@ -183,13 +199,19 @@ public enum MenuBarMovePlanner {
             guard let frame = layout.item(id)?.frame else { return nil }
             anchor = frame; leftSide = false
         case .boundary(let group):
-            guard case .byPosition(let hidden, let always) = layout.grouping else { return nil }
-            switch group {
-            case .shown: anchor = hidden; leftSide = false
-            case .hidden: anchor = hidden; leftSide = true
-            case .alwaysHidden:
-                guard let always else { return nil }
-                anchor = always; leftSide = true
+            switch layout.grouping {
+            case .byPosition(let hidden, let always):
+                switch group {
+                case .shown: anchor = hidden; leftSide = false
+                case .hidden: anchor = hidden; leftSide = true
+                case .alwaysHidden:
+                    guard let always else { return nil }
+                    anchor = always; leftSide = true
+                }
+            case .perApplication:
+                guard let boundary = layout.chevronBoundary else { return nil }
+                anchor = boundary; leftSide = group != .shown
+            case .none: return nil
             }
         }
         let offsets: [CGFloat] = [4, anchor.width * 0.35, 1]

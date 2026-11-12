@@ -66,6 +66,10 @@ import FluxCore
 
     /// AppKit frames of Flux's own controls. These are not an inventory or
     /// evidence of another app's physical visibility.
+    public var chevronBoundary: CGRect? {
+        guard let button = toggle?.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
     public var hiddenBoundary: CGRect? { hidden?.button?.window?.frame }
     public var alwaysHiddenBoundary: CGRect? { always?.button?.window?.frame }
 

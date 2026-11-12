@@ -8,7 +8,7 @@ import FluxCore
     static let attempts = 3
 
     /// A fresh layout, or nil when Accessibility is missing.
-    var read: @MainActor () async -> MenuBarLayout?
+    var read: @MainActor () async throws(MenuBarMoveFailure) -> MenuBarLayout?
     var drag: @MainActor (CGPoint, CGPoint) async throws -> Void
     var inputIsQuiet: @MainActor () -> Bool
     var sleep: @Sendable (TimeInterval) async throws -> Void
@@ -16,7 +16,7 @@ import FluxCore
     /// `progress` gets the attempt number, starting at 1, before each drag.
     func run(_ move: MenuBarItemMove, progress: @MainActor (Int) -> Void) async throws(MenuBarMoveFailure) {
         for attempt in 0..<Self.attempts {
-            guard let layout = await read() else { throw .accessibilityRequired }
+            guard let layout = try await read() else { throw .accessibilityRequired }
             guard let plan = try MenuBarMovePlanner.plan(move, in: layout) else { return }
             if plan.target == .none { return }
             guard let points = MenuBarMovePlanner.dragPoints(for: plan, in: layout, attempt: attempt) else {
@@ -28,11 +28,11 @@ import FluxCore
             // MenuBarAgent settles a moved item in about half a second.
             for _ in 0..<6 {
                 do { try await sleep(0.25) } catch { throw .notAccepted }
-                guard let fresh = await read() else { throw .accessibilityRequired }
+                guard let fresh = try await read() else { throw .accessibilityRequired }
                 if MenuBarMovePlanner.isPlaced(move, in: fresh) { return }
             }
         }
-        guard let last = await read() else { throw .accessibilityRequired }
+        guard let last = try await read() else { throw .accessibilityRequired }
         if MenuBarMovePlanner.isPlaced(move, in: last) { return }
         throw .notAccepted
     }

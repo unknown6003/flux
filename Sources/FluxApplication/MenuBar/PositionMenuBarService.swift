@@ -30,6 +30,7 @@ extension PerApplicationHider: PerApplicationHidingOwner {}
     var onToggle: (@MainActor (Bool) -> Void)? { get set }
     var onFinishArrange: (@MainActor () -> Void)? { get set }
     var contextMenu: NSMenu? { get set }
+    var chevronBoundary: CGRect? { get }
     var hiddenBoundary: CGRect? { get }
     var alwaysHiddenBoundary: CGRect? { get }
     func start()
@@ -454,7 +455,9 @@ private struct PositionMenuBarArrangementContext: Equatable {
             var failure: MenuBarMoveFailure?
             do throws(MenuBarMoveFailure) {
                 try self.saveGroup(for: move)
-                let engine = MenuBarMoveEngine(read: { [weak self] in await self?.readLayout() },
+                let engine = MenuBarMoveEngine(read: { [weak self] () async throws(MenuBarMoveFailure) -> MenuBarLayout? in
+                    try await self?.readLayout(for: move)
+                },
                                                drag: tools.drag, inputIsQuiet: tools.inputIsQuiet, sleep: tools.sleep)
                 try await engine.run(move) { [weak self] attempt in
                     guard let self, self.moveID == id else { return }
@@ -491,10 +494,26 @@ private struct PositionMenuBarArrangementContext: Equatable {
         guard policy.group(for: application) == move.group else { throw .groupNotSaved(code: "notSaved") }
     }
 
-    private func readLayout() async -> MenuBarLayout? {
+    private func readLayout(for move: MenuBarItemMove) async throws(MenuBarMoveFailure) -> MenuBarLayout? {
         let snapshot = await readInventory()
         guard snapshot.accessibilityAllowed else { return nil }
-        return MenuBarLayout(items: layoutItems(snapshot), grouping: layoutGrouping())
+        var boundary: CGRect?
+        if support == .perApplication {
+            guard let frame = controls.chevronBoundary.map(quartzFrame),
+                  frame.width > 0, frame.width <= 128, frame.height > 0, frame.height <= 64,
+                  [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite),
+                  screens().filter({ screen in
+                      screen.frame.contains(frame) && frame.maxY <= screen.frame.minY + screen.menuBarHeight
+                  }).count == 1,
+                  let screen = screens().first(where: { $0.frame.contains(frame) }) else { throw .boundaryUnavailable }
+            let required = Set([move.item, move.left, move.right].compactMap { $0 })
+            for item in layoutItems(snapshot) where required.contains(item.id) {
+                guard screen.frame.contains(item.frame),
+                      item.frame.maxY <= screen.frame.minY + screen.menuBarHeight else { throw .boundaryUnavailable }
+            }
+            boundary = frame
+        }
+        return MenuBarLayout(items: layoutItems(snapshot), grouping: layoutGrouping(), chevronBoundary: boundary)
     }
 
     /// Every item with a frame, except Flux's own. An app that runs twice is

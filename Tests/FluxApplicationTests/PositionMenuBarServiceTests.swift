@@ -45,6 +45,7 @@ import FluxUI
     var onToggle: (@MainActor (Bool) -> Void)?
     var onFinishArrange: (@MainActor () -> Void)?
     var contextMenu: NSMenu?
+    var chevronBoundary: CGRect? = CGRect(x: 350, y: 0, width: 24, height: 24)
     var hiddenBoundary: CGRect? = CGRect(x: 600, y: 0, width: 40, height: 24)
     var alwaysHiddenBoundary: CGRect? = CGRect(x: 300, y: 0, width: 40, height: 24)
     var capability: MenuBarCapability = .unavailable
@@ -190,7 +191,10 @@ import FluxUI
         }
         for support in [PositionMenuBarHidingSupport.byPosition, .perApplication] {
             let (fixture, second) = try await twoItemFixture(support: support)
-            if support == .perApplication { fixture.owner.assign(second, to: .hidden) }
+            if support == .perApplication {
+                fixture.controls.chevronBoundary = CGRect(x: 600, y: 0, width: 24, height: 24)
+                fixture.owner.assign(second, to: .hidden)
+            }
             fixture.controls.onToggle?(false)
             fixture.onDrag = { _, _ in
                 if fixture.controls.reveal != .all { failures += 1 }
@@ -713,18 +717,44 @@ import FluxUI
         try await fixture.close()
     }
 
-    @Test @MainActor func perAppMoveIntoAnEmptyStripSavesTheGroupWithoutDragging() async throws {
+    @Test @MainActor func perAppMoveIntoAnEmptyStripCrossesTheChevronBeforeReportingSuccess() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         let item = MenuBarItemID(application: fixture.app, index: 0)
+        fixture.onDrag = { _, _ in
+            fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+                frames: [CGRect(x: 300, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
+        }
         fixture.owner.moveItem(.init(item: item, group: .hidden, left: nil, right: nil))
         await fixture.settle(); await fixture.settle()
         let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
         #expect(saved.group(for: fixture.app) == .hidden)
-        #expect(fixture.drags.isEmpty)
+        #expect(fixture.drags.count == 1)
+        #expect(fixture.drags.first?.1.x == 358)
         #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
         #expect(fixture.owner.state.tiles.first { $0.id == item }?.group == .hidden)
         // The editor keeps every item visible while it is open.
         #expect(fixture.hider.applied.last?.reveal == .all)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func missingChevronGeometryStopsAPerAppMove() async throws {
+        let (fixture, _) = try await twoItemFixture(support: .perApplication)
+        fixture.controls.chevronBoundary = nil
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden, left: nil, right: nil))
+        await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == .failed(name: "Example", .boundaryUnavailable))
+        try await fixture.close()
+    }
+
+    @Test @MainActor func aSourceOutsideTheChevronDisplayNeverDrags() async throws {
+        let (fixture, _) = try await twoItemFixture(support: .perApplication)
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: [CGRect(x: -400, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden, left: nil, right: nil))
+        await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == .failed(name: "Example", .boundaryUnavailable))
         try await fixture.close()
     }
 
