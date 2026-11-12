@@ -135,6 +135,18 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func inventoryIconsAppearBeforeSigningChecksFinish() async throws {
+        let fixture = try PositionServiceFixture()
+        fixture.blocksIdentityRead = true
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        #expect(fixture.blockedIdentityRead != nil)
+        #expect(fixture.owner.state.tiles.count == 1)
+        #expect(fixture.owner.state.isRefreshing)
+        try await fixture.close()
+    }
+
     @Test @MainActor func perApplicationHidingAppliesSavedGroupsWithoutBackgroundReads() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication)
         fixture.defaults.set(["hidden": [fixture.app.rawValue], "alwaysHidden": []], forKey: "flux.macOS27IconLayout")

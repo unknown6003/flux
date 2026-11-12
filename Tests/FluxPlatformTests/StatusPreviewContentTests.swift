@@ -29,4 +29,9 @@ struct StatusPreviewContentTests {
         #expect(!StatusPreviewContent.isBlank(rgba: image(width: 40, height: 24, background: [236, 236, 236, 255],
                                                           glyph: [30, 30, 30, 255], glyphPixels: 60)))
     }
+
+    @Test func transparencyAloneDoesNotTurnABlackPatchIntoAGlyph() {
+        #expect(StatusPreviewContent.isBlank(rgba: image(width: 40, height: 24,
+            background: [0, 0, 0, 255], glyph: [0, 0, 0, 0], glyphPixels: 144)))
+    }
 }
