@@ -304,6 +304,9 @@ private struct PositionMenuBarArrangementContext: Equatable {
         } else {
             arranging = false
             controls.setArranging(false)
+            moveID = nil
+            moveTask?.cancel(); moveTask = nil
+            state.moveStatus = nil
             cancelScan()
             cancelIdentityReview()
             discardPreviews()
@@ -460,12 +463,18 @@ private struct PositionMenuBarArrangementContext: Equatable {
                 }
             } catch { failure = error }
             guard self.moveID == id, self.started else { return }
-            self.moveTask = nil; self.moveID = nil
             self.state.moveStatus = failure.map { .failed(name: name, $0) } ?? .moved(name: name)
-            // By position, the new place is the new group: save it from geometry.
+            // Keep the source and anchors revealed through the final geometry
+            // read. Saving a hidden group must not conceal the drag source.
             self.requestScan(arrangeResult: self.support == .byPosition && failure == nil, keepImages: true)
+            let finalScan = self.scanTask
+            await finalScan?.value
+            guard self.moveID == id, self.started else { return }
+            self.moveTask = nil; self.moveID = nil
+            self.applyControls()
             self.changed()
         }
+        applyControls()
         changed()
     }
 
@@ -706,7 +715,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         updateTiles()
         updateOutsideClickMonitor(reveal: editorVisible || arranging ? .collapsed : reveal)
         if support == .perApplication {
-            let effectiveReveal: MenuBarReveal = editorShowsAll || arranging ? .all : reveal
+            let effectiveReveal: MenuBarReveal = editorShowsAll || arranging || moveTask != nil ? .all : reveal
             controls.configure(capability: .perApplication, reveal: effectiveReveal,
                                alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
             if started, !policyFailure {
@@ -717,7 +726,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         }
         let capability: MenuBarCapability = started && support == .byPosition && !policyFailure
             && !identityFailure && identitiesValidated && permissionStatus() == .allowed ? .byPosition : .unavailable
-        let effectiveReveal: MenuBarReveal = editorShowsAll || arranging ? .all : reveal
+        let effectiveReveal: MenuBarReveal = editorShowsAll || arranging || moveTask != nil ? .all : reveal
         controls.configure(capability: capability, reveal: effectiveReveal,
                            alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
         state.savedLayoutStillApplies = false
