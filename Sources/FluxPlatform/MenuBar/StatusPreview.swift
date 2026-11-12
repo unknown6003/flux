@@ -184,7 +184,82 @@ struct StatusPreviewPlan {
         try await takeImage(plan, check)
     }
 
+    private static func menuWindows() async throws -> StatusPreviewSource {
+        let agents = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent")
+            .filter { !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath().path
+                == "/System/Library/CoreServices/MenuBarAgent.app" }
+        guard agents.count == 1, let agent = agents.first else { throw StatusPreviewError.unavailable }
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+        try Task.checkCancellation()
+        guard !agent.isTerminated, content.displays.count <= 32,
+              let list = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else {
+            throw StatusPreviewError.unavailable
+        }
+        var displays: [StatusPreviewDisplay] = []
+        for display in content.displays {
+            guard !displays.contains(where: { $0.id == display.displayID }) else {
+                throw StatusPreviewError.unavailable
+            }
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            displays.append(.init(id: display.displayID, frame: display.frame,
+                                  pixelScale: CGFloat(filter.pointPixelScale)))
+        }
+        var descriptors: [StatusPreviewMenuWindow] = []
+        var windows: [CGWindowID: SCWindow] = [:]
+        for metadata in list {
+            guard let owner = metadata[kCGWindowOwnerPID as String] as? NSNumber,
+                  owner.int32Value == agent.processIdentifier,
+                  (metadata[kCGWindowLayer as String] as? NSNumber)?.intValue == 24,
+                  let sharing = metadata[kCGWindowSharingState as String] as? NSNumber, sharing.intValue != 0,
+                  let number = metadata[kCGWindowNumber as String] as? NSNumber,
+                  let bounds = metadata[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: bounds),
+                  let window = content.windows.first(where: { $0.windowID == number.uint32Value }),
+                  window.owningApplication?.processID == agent.processIdentifier,
+                  window.owningApplication?.bundleIdentifier == "com.apple.MenuBarAgent",
+                  window.frame == frame else { continue }
+            let matches = displays.filter {
+                frame.minX == $0.frame.minX && frame.minY == $0.frame.minY
+                    && frame.width == $0.frame.width && (16...64).contains(frame.height)
+                    && $0.frame.contains(frame)
+            }
+            guard matches.count == 1, let display = matches.first else { continue }
+            guard windows[window.windowID] == nil else { throw StatusPreviewError.unavailable }
+            windows[window.windowID] = window
+            descriptors.append(.init(id: window.windowID, application: "com.apple.MenuBarAgent",
+                                     displayID: display.id, frame: frame))
+        }
+        let engine = StatusMenuWindowPreview(windows: descriptors, displays: displays, capture: { descriptor in
+            guard !agent.isTerminated, CGDisplayIsActive(descriptor.displayID) != 0,
+                  let display = displays.first(where: { $0.id == descriptor.displayID }),
+                  CGDisplayBounds(display.id) == display.frame,
+                  let window = windows[descriptor.id], window.frame == descriptor.frame,
+                  let fresh = CGWindowListCopyWindowInfo(.optionIncludingWindow, descriptor.id) as? [[String: Any]],
+                  fresh.count == 1, let current = fresh.first,
+                  (current[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == agent.processIdentifier,
+                  (current[kCGWindowLayer as String] as? NSNumber)?.intValue == 24,
+                  let sharing = current[kCGWindowSharingState as String] as? NSNumber, sharing.intValue != 0,
+                  let bounds = current[kCGWindowBounds as String] as? NSDictionary,
+                  CGRect(dictionaryRepresentation: bounds) == descriptor.frame else {
+                throw StatusPreviewError.unavailable
+            }
+            // A window filter ignores sourceRect. Only validated narrow menu
+            // windows reach this capture; the engine crops and owns each tile.
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(ceil(descriptor.frame.width * display.pixelScale))
+            configuration.height = Int(ceil(descriptor.frame.height * display.pixelScale))
+            configuration.showsCursor = false
+            configuration.capturesAudio = false
+            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        })
+        return .init(displays: displays, checkingCapture: { plan, check in
+            try await engine.capture(plan, checking: check)
+        })
+    }
+
     static func system() async throws -> StatusPreviewSource {
+        if #available(macOS 27, *) { return try await menuWindows() }
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard content.displays.count <= 32 else { throw StatusPreviewError.unavailable }
         var filters: [CGDirectDisplayID: SCContentFilter] = [:]
