@@ -163,6 +163,25 @@ private func perApp(_ items: [MenuBarLayoutItem], hidden: [String] = [], always:
             if MenuBarMovePlanner.isPlaced(.init(item: id(name), group: wrongGroup, left: nil, right: nil),
                                            in: wrongSide) { failures += 1 }
         }
+        // The editor showed Input Sources and Passwords. A fresh scan also
+        // found system peers after Passwords before the request was checked.
+        let refreshed = MenuBarLayout(items: [item("input", 1415, width: 74),
+            item("passwords", 1513, width: 39), item("control", 1559, width: 26), item("clock", 1598, width: 107)],
+            grouping: .perApplication(VisibilityPolicy(), alwaysHiddenEnabled: true), chevronBoundary: ownerBoundary)
+        let groupRequest = MenuBarItemMove(item: id("passwords"), group: .shown,
+            left: id("input"), right: nil, intent: .group)
+        if !MenuBarMovePlanner.isPlaced(groupRequest, in: refreshed) { failures += 1 }
+        if try MenuBarMovePlanner.plan(groupRequest, in: refreshed) != nil { failures += 1 }
+        let exactSlot = MenuBarItemMove(item: id("passwords"), group: .shown, left: id("input"), right: nil)
+        if MenuBarMovePlanner.isPlaced(exactSlot, in: refreshed) { failures += 1 }
+        let inputRequest = MenuBarItemMove(item: id("input"), group: .shown,
+            left: nil, right: nil, intent: .group)
+        if let inputPlan = try MenuBarMovePlanner.plan(inputRequest, in: refreshed) {
+            if inputPlan.target != .leftOf(id("passwords")) { failures += 1 }
+            if let target = MenuBarMovePlanner.dragPoints(for: inputPlan, in: refreshed, attempt: 0)?.to {
+                if target.x <= ownerBoundary.maxX { failures += 1 }
+            } else { failures += 1 }
+        } else { failures += 1 }
         print("PLACEMENT_FAILURES=\(failures)")
         #expect(failures == 0)
     }
