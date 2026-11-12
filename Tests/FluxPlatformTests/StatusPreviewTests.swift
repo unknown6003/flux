@@ -60,6 +60,35 @@ import Testing
         #expect(try await preview.capture([region()], validating: { _ in true }).isEmpty)
     }
 
+    @Test func deliveredPreviewOwnsItsPixelsAfterCaptureReturns() async throws {
+        let width = 48, height = 48, count = width * height * 4
+        let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+        bytes.initialize(repeating: 0, count: count)
+        defer { bytes.deinitialize(count: count); bytes.deallocate() }
+        for index in 0..<(width * height) {
+            let value: UInt8 = (index % width > 12 && index % width < 36) ? 240 : 20
+            for channel in 0..<3 { bytes[index * 4 + channel] = value }
+            bytes[index * 4 + 3] = 255
+        }
+        let provider = try #require(CGDataProvider(dataInfo: nil, data: bytes, size: count,
+            releaseData: { _, _, _ in }))
+        let sourceImage = try #require(CGImage(width: width, height: height, bitsPerComponent: 8,
+            bitsPerPixel: 32, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let preview = StatusPreview(permission: { true }, source: {
+            .init(displays: [display], capture: { _ in sourceImage })
+        })
+        preview.open()
+        let result = try #require(try await preview.capture([region()], validating: { _ in true }).first)
+        // Simulate capture-owned storage being cleared after delivery.
+        for index in 0..<(width * height) {
+            for channel in 0..<3 { bytes[index * 4 + channel] = 0 }
+        }
+        let delivered = try #require(result.image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        #expect(!StatusPreviewContent.isBlank(delivered))
+    }
+
     @Test func mapsSecondaryDisplayWithoutExpandingFractionalCrop() throws {
         let request = region(CGRect(x: -100.25, y: -99.5, width: 24.25, height: 23.5))
         let plan = try #require(StatusPreviewPlan.make([request], displays: [display]).first)
