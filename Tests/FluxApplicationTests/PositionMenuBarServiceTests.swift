@@ -170,6 +170,10 @@ import FluxUI
         #expect(fixture.owner.state.isRefreshing)
         #expect(fixture.drags.isEmpty)
         #expect(fixture.defaults.persistentDomain(forName: fixture.domain) as NSDictionary? == saved)
+        fixture.blocksIdentityRead = false
+        fixture.blockedIdentityRead?.resume(); fixture.blockedIdentityRead = nil
+        await fixture.settle()
+        #expect(!fixture.owner.state.isRefreshing)
         try await fixture.close()
     }
 
