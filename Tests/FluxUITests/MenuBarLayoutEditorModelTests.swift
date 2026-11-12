@@ -40,14 +40,11 @@ private func model(alwaysHidden: Bool = true) -> MenuBarLayoutEditorModel {
         #expect(editor.move(id("s"), to: .hidden, at: 0) == nil)
     }
 
-    @Test func menuMovesToTheNearEndOfTheTargetStrip() {
+    @Test func menuRequestsAGroupWithoutFreezingTheEditorsPeers() {
         let editor = model()
-        // Visible to Hidden: the right end of Hidden, next to Visible.
-        #expect(editor.move(id("b"), to: .hidden) == .init(item: id("b"), group: .hidden, left: id("e"), right: nil))
-        // Hidden to Visible: the left end of Visible.
-        #expect(editor.move(id("d"), to: .shown) == .init(item: id("d"), group: .shown, left: nil, right: id("a")))
-        // Always Hidden to Hidden: the left end of Hidden.
-        #expect(editor.move(id("f"), to: .hidden) == .init(item: id("f"), group: .hidden, left: nil, right: id("d")))
+        #expect(editor.move(id("b"), to: .hidden) == .init(item: id("b"), group: .hidden, left: nil, right: nil, intent: .group))
+        #expect(editor.move(id("d"), to: .shown) == .init(item: id("d"), group: .shown, left: nil, right: nil, intent: .group))
+        #expect(editor.move(id("f"), to: .hidden) == .init(item: id("f"), group: .hidden, left: nil, right: nil, intent: .group))
         #expect(editor.move(id("a"), to: .shown) == nil)
     }
 
@@ -104,7 +101,7 @@ private func model(alwaysHidden: Bool = true) -> MenuBarLayoutEditorModel {
         #expect(menu.items.map(\.title) == ["Move to Visible", "Move to Hidden", "Move to Always Hidden", "", "Move Left", "Move Right"])
         #expect(menu.items[4].isEnabled == false)
         menu.performActionForItem(at: 1)
-        #expect(moves == [.init(item: id("a"), group: .hidden, left: id("d"), right: nil)])
+        #expect(moves == [.init(item: id("a"), group: .hidden, left: nil, right: nil, intent: .group)])
         editor.update(tiles: tiles, alwaysHiddenEnabled: true, busy: true)
         let busy = editor.menu(for: id("a"))
         #expect(busy.items.filter { !$0.isSeparatorItem }.allSatisfy { !$0.isEnabled })
@@ -114,7 +111,7 @@ private func model(alwaysHidden: Bool = true) -> MenuBarLayoutEditorModel {
         let retry = editor.menu(for: id("d"))
         #expect(retry.items[1].state == .on)
         retry.performActionForItem(at: 1)
-        #expect(moves.last == .init(item: id("d"), group: .hidden, left: nil, right: nil))
+        #expect(moves.last == .init(item: id("d"), group: .hidden, left: nil, right: nil, intent: .group))
         #expect(moves.count == 2)
     }
 }

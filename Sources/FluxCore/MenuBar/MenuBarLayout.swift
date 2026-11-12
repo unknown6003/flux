@@ -80,8 +80,8 @@ public struct MenuBarLayout: Equatable, Sendable {
     }
 }
 
-/// A request from the layout editor: put `item` in `group`, between `left`
-/// and `right`. Nil neighbours mean the strip end, or an empty strip.
+/// A slot request keeps its named neighbours. A group request uses a fresh
+/// anchor and checks the group and physical side without imposing a slot.
 public enum MenuBarMoveIntent: Equatable, Sendable {
     case slot
     case group
@@ -140,7 +140,8 @@ public enum MenuBarMovePlanner {
     public static func plan(_ move: MenuBarItemMove, in layout: MenuBarLayout) throws(MenuBarMoveFailure) -> MenuBarMovePlan? {
         guard let item = layout.item(move.item) else { throw .itemGone }
         guard item.isMovable else { throw .itemLocked }
-        for neighbour in [move.left, move.right].compactMap({ $0 }) {
+        let neighbours = move.intent == .slot ? [move.left, move.right].compactMap({ $0 }) : []
+        for neighbour in neighbours {
             guard neighbour != move.item, layout.item(neighbour) != nil else { throw .neighbourGone }
         }
         switch layout.grouping {
@@ -153,8 +154,14 @@ public enum MenuBarMovePlanner {
         }
         if isPlaced(move, in: layout) { return nil }
         let target: MenuBarMoveTarget
-        if let right = move.right, anchorIsOnRequestedSide(right, move: move, layout: layout) { target = .leftOf(right) }
-        else if let left = move.left, anchorIsOnRequestedSide(left, move: move, layout: layout) { target = .rightOf(left) }
+        if move.intent == .group,
+           let anchor = layout.strip(move.group).filter({
+               $0.id != move.item && anchorIsOnRequestedSide($0.id, move: move, layout: layout)
+           }).min(by: { abs($0.frame.midX - item.frame.midX) < abs($1.frame.midX - item.frame.midX) }) {
+            target = item.frame.midX < anchor.frame.midX ? .leftOf(anchor.id) : .rightOf(anchor.id)
+        }
+        else if move.intent == .slot, let right = move.right, anchorIsOnRequestedSide(right, move: move, layout: layout) { target = .leftOf(right) }
+        else if move.intent == .slot, let left = move.left, anchorIsOnRequestedSide(left, move: move, layout: layout) { target = .rightOf(left) }
         else if case .perApplication = layout.grouping, layout.chevronBoundary != nil { target = .boundary(move.group) }
         else if case .byPosition = layout.grouping { target = .boundary(move.group) }
         else { target = .none }
@@ -168,6 +175,7 @@ public enum MenuBarMovePlanner {
         guard let item = layout.item(move.item), layout.group(of: item) == move.group else { return false }
         if case .perApplication = layout.grouping, let boundary = layout.chevronBoundary,
            !isOnSide(item.frame, of: boundary, group: move.group) { return false }
+        if move.intent == .group { return true }
         let named: Set<MenuBarItemID> = Set([move.left, move.right].compactMap { $0 })
         let strip = layout.strip(move.group).filter {
             $0.id == move.item || $0.id.application != move.item.application || named.contains($0.id)

@@ -737,6 +737,36 @@ import FluxUI
         try await fixture.close()
     }
 
+    @Test @MainActor func reapplyingAGroupIgnoresAnOlderPeerSlotWithoutDragging() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication)
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .shown,
+            left: .init(application: second, index: 0), right: nil, intent: .group))
+        await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
+        try await fixture.close()
+    }
+
+    @Test @MainActor func groupPlacementNeverUsesAnAnchorOnAnotherDisplay() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication)
+        fixture.owner.assign(second, to: .hidden)
+        func inventory(_ x: CGFloat) -> PositionMenuBarInventory {
+            .init(applications: [
+                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: x, y: 0, width: 24, height: 24)]),
+                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: -50, y: 0, width: 24, height: 24)])
+            ], accessibilityAllowed: true, complete: true)
+        }
+        fixture.inventory = inventory(450)
+        fixture.onDrag = { _, _ in fixture.inventory = inventory(300) }
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden,
+            left: nil, right: nil, intent: .group))
+        await fixture.settle(); await fixture.settle()
+        #expect(fixture.drags.count == 1)
+        #expect(fixture.drags.first?.1.x == 358)
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
+        try await fixture.close()
+    }
+
     @Test @MainActor func missingChevronGeometryStopsAPerAppMove() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         fixture.controls.chevronBoundary = nil

@@ -497,6 +497,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private func readLayout(for move: MenuBarItemMove) async throws(MenuBarMoveFailure) -> MenuBarLayout? {
         let snapshot = await readInventory()
         guard snapshot.accessibilityAllowed else { return nil }
+        var items = layoutItems(snapshot)
         var boundary: CGRect?
         if support == .perApplication {
             guard let frame = controls.chevronBoundary.map(quartzFrame),
@@ -506,14 +507,18 @@ private struct PositionMenuBarArrangementContext: Equatable {
                       screen.frame.contains(frame) && frame.maxY <= screen.frame.minY + screen.menuBarHeight
                   }).count == 1,
                   let screen = screens().first(where: { $0.frame.contains(frame) }) else { throw .boundaryUnavailable }
-            let required = Set([move.item, move.left, move.right].compactMap { $0 })
-            for item in layoutItems(snapshot) where required.contains(item.id) {
+            let neighbours = move.intent == .slot ? [move.left, move.right].compactMap { $0 } : []
+            let required = Set([move.item] + neighbours)
+            for item in items where required.contains(item.id) {
                 guard screen.frame.contains(item.frame),
                       item.frame.maxY <= screen.frame.minY + screen.menuBarHeight else { throw .boundaryUnavailable }
             }
+            // Fresh group anchors must belong to this chevron's display too.
+            items = items.filter { screen.frame.contains($0.frame)
+                && $0.frame.maxY <= screen.frame.minY + screen.menuBarHeight }
             boundary = frame
         }
-        return MenuBarLayout(items: layoutItems(snapshot), grouping: layoutGrouping(), chevronBoundary: boundary)
+        return MenuBarLayout(items: items, grouping: layoutGrouping(), chevronBoundary: boundary)
     }
 
     /// Every item with a frame, except Flux's own. An app that runs twice is
