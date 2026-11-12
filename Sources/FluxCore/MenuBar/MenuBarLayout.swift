@@ -51,10 +51,12 @@ public enum MenuBarGrouping: Equatable, Sendable {
 public struct MenuBarLayout: Equatable, Sendable {
     public let items: [MenuBarLayoutItem]
     public let grouping: MenuBarGrouping
+    public let chevronBoundary: CGRect?
 
-    public init(items: [MenuBarLayoutItem], grouping: MenuBarGrouping) {
+    public init(items: [MenuBarLayoutItem], grouping: MenuBarGrouping, chevronBoundary: CGRect? = nil) {
         self.items = items.sorted { ($0.frame.minX, $0.id.index) < ($1.frame.minX, $1.id.index) }
         self.grouping = grouping
+        self.chevronBoundary = chevronBoundary
     }
 
     public func item(_ id: MenuBarItemID) -> MenuBarLayoutItem? { items.first { $0.id == id } }
