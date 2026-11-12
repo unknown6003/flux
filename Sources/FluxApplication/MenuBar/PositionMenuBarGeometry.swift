@@ -6,6 +6,15 @@ struct PositionMenuBarApplication {
     let name: String
     let icon: NSImage?
     let frames: [CGRect?]
+    let itemNames: [String?]
+
+    init(id: ApplicationID, name: String, icon: NSImage?, frames: [CGRect?], itemNames: [String?] = []) {
+        self.id = id
+        self.name = name
+        self.icon = icon
+        self.frames = frames
+        self.itemNames = itemNames
+    }
 }
 
 struct PositionMenuBarInventory {

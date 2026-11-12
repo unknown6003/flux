@@ -189,7 +189,7 @@ struct StatusPreviewPlan {
             .filter { !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath().path
                 == "/System/Library/CoreServices/MenuBarAgent.app" }
         guard agents.count == 1, let agent = agents.first else { throw StatusPreviewError.unavailable }
-        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         try Task.checkCancellation()
         guard !agent.isTerminated, content.displays.count <= 32,
               let list = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else {

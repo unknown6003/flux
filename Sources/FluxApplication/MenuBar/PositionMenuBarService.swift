@@ -147,7 +147,13 @@ private struct PositionMenuBarArrangementContext: Equatable {
                       return PositionMenuBarInventory(applications: snapshot.applications.map { app in
                           PositionMenuBarApplication(id: app.application.id, name: app.application.name,
                               icon: app.application.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) },
-                              frames: app.items.map(\.frame))
+                              frames: app.items.map(\.frame), itemNames: app.items.map { item in
+                                  switch item.systemItem {
+                                  case .clock: String(localized: "Clock")
+                                  case .controlCenter: String(localized: "Control Center")
+                                  case nil: nil
+                                  }
+                              })
                       }, accessibilityAllowed: snapshot.accessibilityAllowed, complete: snapshot.complete)
                   }, permissionStatus: { PermissionAccess.status(.accessibility) },
                   requestPreviewPermission: { await PermissionAccess.request(.screenRecording) },
@@ -519,6 +525,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         guard let app = lastInventory?.applications.first(where: { $0.id == id.application }) else {
             return id.application.rawValue
         }
+        if app.itemNames.indices.contains(id.index), let name = app.itemNames[id.index] { return name }
         let count = app.frames.compactMap { $0 }.count
         let name: String
         switch app.id.rawValue {

@@ -20,8 +20,14 @@ public struct RunningApplication: Sendable {
 
 /// Owner-reported geometry is useful for a guided arrange result. It is not
 /// proof that an item is currently visible, hit-testable or unobstructed.
+public enum SystemMenuItem: String, Sendable {
+    case clock = "com.apple.menuextra.clock"
+    case controlCenter = "com.apple.menuextra.controlcenter"
+}
+
 public struct StatusItemGeometry: Sendable {
     public let frame: CGRect?
+    public let systemItem: SystemMenuItem?
 }
 
 public struct StatusApplication: Sendable {
@@ -77,7 +83,23 @@ public actor StatusInventory {
             var ownerComplete = true
             for attribute in [kAXExtrasMenuBarAttribute, kAXMenuBarAttribute] {
                 guard let bar = element(owner, attribute, deadline: deadline, complete: &ownerComplete) else { continue }
-                let descendants = children(bar, deadline: deadline, complete: &ownerComplete)
+                var descendants = children(bar, deadline: deadline, complete: &ownerComplete)
+                // macOS 27 hosts Clock and Control Center one group below the
+                // agent's extras bar. Do not descend into app menus or windows.
+                if application.id.rawValue == "com.apple.MenuBarAgent" {
+                    for child in descendants.prefix(8) {
+                        guard ContinuousClock.now < deadline, visited < 512 else {
+                            ownerComplete = false
+                            break
+                        }
+                        visited += 1
+                        let role = value(child, kAXRoleAttribute, deadline: deadline, complete: &ownerComplete) as? String
+                        let subrole = value(child, kAXSubroleAttribute, deadline: deadline, complete: &ownerComplete) as? String
+                        if role == kAXGroupRole, subrole == "AXHostingView" {
+                            descendants.append(contentsOf: children(child, deadline: deadline, complete: &ownerComplete))
+                        }
+                    }
+                }
                 for child in descendants.prefix(128) {
                     guard ContinuousClock.now < deadline, visited < 512 else {
                         ownerComplete = false
@@ -93,7 +115,10 @@ public actor StatusInventory {
             }
             if !items.isEmpty {
                 let frames = items.map { item in
-                    StatusItemGeometry(frame: frame(item, deadline: deadline, complete: &ownerComplete))
+                    let identifier = application.id.rawValue == "com.apple.MenuBarAgent"
+                        ? value(item, kAXIdentifierAttribute, deadline: deadline, complete: &ownerComplete) as? String : nil
+                    return StatusItemGeometry(frame: frame(item, deadline: deadline, complete: &ownerComplete),
+                                              systemItem: identifier.flatMap(SystemMenuItem.init(rawValue:)))
                 }
                 results.append(.init(application: application, items: frames))
             }
