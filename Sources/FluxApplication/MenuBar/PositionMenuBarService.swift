@@ -116,6 +116,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private var results: [ApplicationID: MenuBarApplyResult] = [:]
     private var started = false
     private var editorVisible = false
+    private var editorShowsAll = false
     private var arranging = false
     private var reveal: MenuBarReveal = .collapsed
     private var policyFailure = false
@@ -247,7 +248,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     public func stop() async throws {
-        started = false; editorVisible = false; arranging = false
+        started = false; editorVisible = false; editorShowsAll = false; arranging = false
         identitiesValidated = false
         identityVersion = nil
         observations.removeAll()
@@ -295,6 +296,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func setEditorVisible(_ visible: Bool) {
         guard editorVisible != visible else { return }
         editorVisible = visible
+        editorShowsAll = visible
         cancelRehide()
         if visible {
             updateObservations()
@@ -315,14 +317,22 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     public func toggle() {
         guard started else { return }
-        if reveal == .collapsed { reveal = .hidden; scheduleRehide() }
-        else { reveal = .collapsed; cancelRehide() }
+        let wasShowingAllForEditor = editorShowsAll
+        editorShowsAll = false
+        if wasShowingAllForEditor || reveal != .collapsed {
+            reveal = .collapsed
+            cancelRehide()
+        } else {
+            reveal = .hidden
+            scheduleRehide()
+        }
         applyControls()
         changed()
     }
 
     public func showAll() {
         guard started else { return }
+        editorShowsAll = false
         reveal = .all
         scheduleRehide()
         applyControls()
@@ -696,7 +706,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         updateTiles()
         updateOutsideClickMonitor(reveal: editorVisible || arranging ? .collapsed : reveal)
         if support == .perApplication {
-            let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal
+            let effectiveReveal: MenuBarReveal = editorShowsAll || arranging ? .all : reveal
             controls.configure(capability: .perApplication, reveal: effectiveReveal,
                                alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
             if started, !policyFailure {
@@ -707,7 +717,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         }
         let capability: MenuBarCapability = started && support == .byPosition && !policyFailure
             && !identityFailure && identitiesValidated && permissionStatus() == .allowed ? .byPosition : .unavailable
-        let effectiveReveal: MenuBarReveal = editorVisible || arranging ? .all : reveal
+        let effectiveReveal: MenuBarReveal = editorShowsAll || arranging ? .all : reveal
         controls.configure(capability: capability, reveal: effectiveReveal,
                            alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
         state.savedLayoutStillApplies = false

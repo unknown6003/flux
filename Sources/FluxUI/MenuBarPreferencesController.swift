@@ -19,6 +19,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     private let editorSection = FluxUIStyle.vstack([], spacing: 6)
     private let toolsStack = FluxUIStyle.hstack([])
     private var realIconsButton: NSButton?
+    private let previewModeLabel = FluxUIStyle.label("", style: .callout, secondary: true)
     private let optionsStack = FluxUIStyle.vstack([], spacing: 20)
     private let optionControls = FormControls()
     private var shownOptions: (MenuBarOptions, Bool)?
@@ -47,7 +48,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
             "Drag icons to change their order or group. Right-click an icon to move it without dragging."),
             style: .callout, secondary: true)
         let revealHelp = FluxUIStyle.label(L("menuBar.layout.revealHelp",
-            "These lanes show your saved groups. While you edit, Flux reveals hidden icons, including Always Hidden. Leave this page to apply hiding again."),
+            "These lanes show saved groups. Opening this page shows all icons temporarily. Use the chevron to show or hide them. Option-click it to show all icons before moving a hidden icon."),
             style: .callout, secondary: true)
         [title, help, revealHelp, editor].forEach(editorSection.addArrangedSubview)
         editorSection.setCustomSpacing(12, after: revealHelp)
@@ -58,7 +59,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         [preview, refresh, FluxUIStyle.spacer()].forEach(toolsStack.addArrangedSubview)
         realIconsButton = preview
 
-        let content = FluxUIStyle.vstack([modeLabel, reviewStack, editorSection, statusLabel, toolsStack, optionsStack], spacing: 14)
+        let content = FluxUIStyle.vstack([modeLabel, reviewStack, editorSection, statusLabel, previewModeLabel, toolsStack, optionsStack], spacing: 14)
         contentStack = content
         view = FluxUIStyle.page(content)
         render()
@@ -87,6 +88,10 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         renderAccessCard(visible: needsAccess)
         editorSection.isHidden = needsAccess
         toolsStack.isHidden = needsAccess
+        previewModeLabel.isHidden = needsAccess
+        previewModeLabel.stringValue = state.showsRealIcons
+            ? L("menuBar.preview.captured", "Captured previews. Icons without a capture use app icons.")
+            : L("menuBar.preview.apps", "App icons are shown. Choose Show Real Icons for menu-bar previews.")
         realIconsButton?.isHidden = state.showsRealIcons
         editor.update(tiles: state.tiles, alwaysHiddenEnabled: state.alwaysHiddenEnabled,
                       busy: moving || state.isRefreshing)
