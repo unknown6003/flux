@@ -530,7 +530,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         case nil: return nil
         }
         return NSImage(systemSymbolName: symbol, accessibilityDescription: tileName(id))?
-            .withSymbolConfiguration(.init(paletteColors: [.secondaryLabelColor]))
+            .withSymbolConfiguration(.init(paletteColors: [.labelColor]))
     }
 
     private func tileName(_ id: MenuBarItemID) -> String {

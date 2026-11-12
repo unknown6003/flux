@@ -12,12 +12,17 @@ import FluxUI
         colorSpaceName: .deviceRGB, bytesPerRow: 192, bitsPerPixel: 32))
     let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
     let dark = name == .darkAqua
+    let background: CGFloat = dark ? 0.18 : 0.95
+    func linear(_ value: CGFloat) -> CGFloat {
+        value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+    let backgroundLuminance = linear(background)
     var count = 0
     appearance.performAsCurrentDrawingAppearance {
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = context
-        (dark ? NSColor.black : NSColor.white).setFill()
+        NSColor(deviceWhite: background, alpha: 1).setFill()
         NSBezierPath(rect: NSRect(x: 0, y: 0, width: 48, height: 48)).fill()
         image.draw(in: NSRect(x: 8, y: 8, width: 32, height: 32), from: .zero,
                    operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
@@ -25,9 +30,11 @@ import FluxUI
         for y in 8..<40 {
             for x in 8..<40 {
                 guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                let contrast = dark ? max(color.redComponent, color.greenComponent, color.blueComponent)
-                    : 1 - min(color.redComponent, color.greenComponent, color.blueComponent)
-                if contrast > 0.2 { count += 1 }
+                let luminance = 0.2126 * linear(color.redComponent)
+                    + 0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
+                let contrast = (max(luminance, backgroundLuminance) + 0.05)
+                    / (min(luminance, backgroundLuminance) + 0.05)
+                if contrast >= 4.5 { count += 1 }
             }
         }
     }
