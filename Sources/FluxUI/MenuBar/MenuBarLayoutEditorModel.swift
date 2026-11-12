@@ -80,6 +80,11 @@ struct MenuBarLayoutEditorModel {
     static func insertionIndex(at point: CGPoint, frames: [CGRect], sourceIndex: Int? = nil) -> Int {
         for (index, frame) in frames.enumerated() {
             if point.y < frame.minY { return index }
+            // A same-strip body drop crosses the target rather than landing
+            // back in the source's old slot on one half of that target.
+            if let sourceIndex, frame.contains(point) {
+                return index < sourceIndex ? index : index + 1
+            }
             if point.y <= frame.maxY, point.x < frame.midX { return index }
         }
         return frames.count

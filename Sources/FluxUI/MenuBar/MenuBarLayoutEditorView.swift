@@ -157,6 +157,7 @@ private final class MenuBarFlowView: NSView {
         layer?.cornerRadius = 8
         addSubview(empty)
         registerForDraggedTypes([MenuBarLayoutEditorView.pasteboardType])
+        setAccessibilityIdentifier("flux.menuBar.drop." + group.rawValue)
         setContentHuggingPriority(.defaultHigh, for: .vertical)
     }
 
@@ -253,7 +254,8 @@ private final class MenuBarFlowView: NSView {
     private func drop(at point: CGPoint, excluding id: MenuBarItemID) -> (index: Int, marker: CGRect) {
         let others = tileViews.filter { $0.id != id }
         let frames = others.map(\.frame)
-        let index = MenuBarLayoutEditorModel.insertionIndex(at: point, frames: frames)
+        let sourceIndex = tileViews.firstIndex { $0.id == id }
+        let index = MenuBarLayoutEditorModel.insertionIndex(at: point, frames: frames, sourceIndex: sourceIndex)
         let x: CGFloat, y: CGFloat
         if index < frames.count { x = frames[index].minX - Self.gap / 2; y = frames[index].minY }
         else if let last = frames.last { x = last.maxX + Self.gap / 2; y = last.minY }
@@ -300,6 +302,7 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
         super.init(frame: .zero)
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
+        setAccessibilityIdentifier("flux.menuBar.item." + id.token)
     }
 
     @available(*, unavailable)

@@ -3,10 +3,10 @@
 
 Three disposable fixtures draw solid magenta, cyan and yellow status items.
 FluxMenuBarArrangeProbe runs the real PositionMenuBarService and the Menu Bar
-page, and picks the editor's right-click commands: "Move Left" until magenta
-and cyan swap places, then "Move to Hidden" for yellow. After each step this
-script captures the screen and reads the order from fixture pixels. CI only:
-it writes a temporary Accessibility grant.
+page, then posts plain mouse drags onto the exact tile centres in both
+same-lane directions and across groups with an inverse. Each drop must send
+exactly one slot request. After each step this script captures fixture pixels
+and checks physical order/visibility. CI only: temporary Accessibility grant.
 """
 import argparse
 import json
@@ -68,7 +68,7 @@ NSColor(srgbRed: values[0], green: values[1], blue: values[2], alpha: 1).setFill
 NSRect(x: 0, y: 0, width: 18, height: 18).fill()
 marker.unlockFocus()
 item.button?.image = marker
-DispatchQueue.main.asyncAfter(deadline: .now() + 420) { exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + 600) { exit(1) }
 app.run()
 '''
 REGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
@@ -198,9 +198,10 @@ def main():
                 if step == "before":
                     order["magenta_left"] = magenta_left
                 swapped = magenta_left != order.get("magenta_left")
-                passed = seen == expect and (step == "before" or swapped)
+                expected_swapped = step == "reordered"
+                passed = seen == expect and swapped == expected_swapped
                 results.append(dict(step=step, expect=expect, seen=seen, counts=counts, magenta_left=magenta_left,
-                                    swapped=swapped, passed=passed, image=path.name, probe=line))
+                                    swapped=swapped, expected_swapped=expected_swapped, passed=passed, image=path.name, probe=line))
                 print(f"{step}: seen={seen} magenta_left={magenta_left} swapped={swapped} {'PASS' if passed else 'FAIL'}",
                       flush=True)
                 (output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
@@ -216,7 +217,7 @@ def main():
                                  daemon=True).start()
                 log = (output / "probe.log").open("w")
                 finished = None
-                deadline = time.monotonic() + 300
+                deadline = time.monotonic() + 420
                 while finished is None:
                     try:
                         line = lines.get(timeout=max(1, deadline - time.monotonic()))
@@ -254,7 +255,8 @@ def main():
             for action in reversed(cleanup):
                 action()
             run(["defaults", "delete", PROBE_ID], 10, check=False)
-    steps = ["before", "reordered", "grouped-editor-open", "grouped-collapsed", "grouped-revealed"]
+    steps = ["before", "reordered", "restored", "grouped-editor-open", "group-restored",
+             "grouped-again-editor-open", "grouped-collapsed", "grouped-revealed"]
     failed = [r["step"] for r in results if not r["passed"]]
     missing = [step for step in steps if step not in {r["step"] for r in results}]
     summary = dict(result="pass" if not failed and not missing else "fail", failed=failed, missing=missing,
