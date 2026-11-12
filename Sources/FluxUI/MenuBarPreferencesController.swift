@@ -86,7 +86,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         toolsStack.isHidden = needsAccess
         realIconsButton?.isHidden = state.showsRealIcons
         editor.update(tiles: state.tiles, alwaysHiddenEnabled: state.alwaysHiddenEnabled,
-                      busy: moving || state.isRefreshing && state.tiles.isEmpty)
+                      busy: moving || state.isRefreshing)
 
         let reviewRows = state.rows.filter(\.needsIdentityReview).map(makeReviewRow)
         reviewStack.setViews(reviewRows, in: .top)

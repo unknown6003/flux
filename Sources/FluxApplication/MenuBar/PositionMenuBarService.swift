@@ -428,7 +428,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     /// is saved first, because MenuBarAgent hides whole apps. Then a paced
     /// Cmd-drag puts the item between its new neighbours, checked by a fresh read.
     public func moveItem(_ move: MenuBarItemMove) {
-        guard started, editorVisible, moveTask == nil else { return }
+        guard started, editorVisible, scanTask == nil, moveTask == nil else { return }
         let name = tileName(move.item)
         cancelScan(); discardPreviewTask()
         actionFailure = nil

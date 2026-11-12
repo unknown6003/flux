@@ -151,13 +151,25 @@ import FluxUI
 
     @Test @MainActor func inventoryIconsAppearBeforeSigningChecksFinish() async throws {
         let fixture = try PositionServiceFixture()
+        let icon = NSImage(size: .init(width: 24, height: 24))
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: icon,
+            frames: [CGRect(x: 400, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
         fixture.blocksIdentityRead = true
         fixture.owner.start()
         fixture.owner.setEditorVisible(true)
         await fixture.settle()
         #expect(fixture.blockedIdentityRead != nil)
         #expect(fixture.owner.state.tiles.count == 1)
+        #expect(fixture.owner.state.tiles.first?.image === icon)
         #expect(fixture.owner.state.isRefreshing)
+        let saved = fixture.defaults.persistentDomain(forName: fixture.domain) as NSDictionary?
+        let status = fixture.owner.state.moveStatus
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0),
+                                     group: .hidden, left: nil, right: nil))
+        #expect(fixture.owner.state.moveStatus == status)
+        #expect(fixture.owner.state.isRefreshing)
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.defaults.persistentDomain(forName: fixture.domain) as NSDictionary? == saved)
         try await fixture.close()
     }
 
