@@ -110,6 +110,10 @@ import Darwin
                             "failure": (error as? CaptureError)?.rawValue ?? "system"])
                     }
                 }
+                try Task.checkCancellation()
+                guard self.active else { return }
+                await self.captureWithSystemTool(number, region: CGRect(x: display.frame.minX,
+                    y: display.frame.minY, width: width, height: height))
             } catch {
                 guard self.active, !Task.isCancelled else { return }
                 let phase = (error as? CaptureError) == .permission ? "screenCaptureNotAllowed" : "captureFailed"
@@ -119,24 +123,56 @@ import Darwin
         }
     }
 
-    private func comparisonReceipt(_ number: Int, phase: String, additional: [String: Any]) throws {
-        var value = additional
-        value["phase"] = phase
-        value["method"] = "captureScreenshot-region-sdr-local"
-        value["at"] = Date().ISO8601Format()
-        value["processID"] = getpid()
-        value["source"] = Bundle.main.object(forInfoDictionaryKey: "FluxNativeSourceRevision")
-        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
-        try data.write(to: output.appendingPathComponent(String(format: "receipt-%03d-region-sdr.json", number)), options: .withoutOverwriting)
+    private func captureWithSystemTool(_ number: Int, region: CGRect) async {
+        let imageURL = output.appendingPathComponent(String(format: "menu-%03d-system.png", number))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        process.arguments = ["-x", "-t", "png", "-R\(Int(region.minX)),\(Int(region.minY)),\(Int(region.width)),\(Int(region.height))", imageURL.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        defer {
+            if process.isRunning {
+                process.terminate()
+                // This is only the subprocess this invocation created.
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+        }
+        do {
+            try process.run()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+            while process.isRunning, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            try Task.checkCancellation()
+            guard active else { return }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: imageURL.path)
+            let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+            let succeeded = !process.isRunning && process.terminationStatus == 0 && size > 0 && size <= 8 * 1024 * 1024
+            var value: [String: Any] = ["method": "screencapture-region", "image": imageURL.lastPathComponent,
+                "globalRect": [region.minX, region.minY, region.width, region.height],
+                "sizeBytes": size, "timedOut": process.isRunning]
+            if !process.isRunning { value["exitCode"] = process.terminationStatus }
+            try receipt(number, phase: succeeded ? "captured" : "captureFailed", additional: value, suffix: "-system")
+        } catch {
+            guard active, !Task.isCancelled else { return }
+            try? receipt(number, phase: "systemToolFailed", additional: ["method": "screencapture-region"], suffix: "-system")
+        }
     }
 
-    private func receipt(_ number: Int, phase: String, additional: [String: Any]) throws {
+    private func comparisonReceipt(_ number: Int, phase: String, additional: [String: Any]) throws {
+        var value = additional
+        value["method"] = "captureScreenshot-region-sdr-local"
+        try receipt(number, phase: phase, additional: value, suffix: "-region-sdr")
+    }
+
+    private func receipt(_ number: Int, phase: String, additional: [String: Any], suffix: String = "") throws {
         var value = additional
         value["phase"] = phase
         value["at"] = Date().ISO8601Format()
         value["processID"] = getpid()
         value["source"] = Bundle.main.object(forInfoDictionaryKey: "FluxNativeSourceRevision")
         let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
-        try data.write(to: output.appendingPathComponent(String(format: "receipt-%03d.json", number)), options: .withoutOverwriting)
+        try data.write(to: output.appendingPathComponent(String(format: "receipt-%03d%@.json", number, suffix)), options: .withoutOverwriting)
     }
 }
