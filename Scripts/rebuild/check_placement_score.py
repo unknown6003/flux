@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Score physical chevron-side placement with the unchanged native suites."""
 import re
+import signal
 import check_menu_window_score as runner
 runner.OUTPUT = runner.ROOT / "build/placement-score"
 runner.NEW_FILES.add("Scripts/rebuild/check_placement_score.py")
@@ -24,4 +25,5 @@ def score_logs(directory, conclusion):
     return score
 runner.score_logs = score_logs
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, runner.interrupted)
     runner.main()
