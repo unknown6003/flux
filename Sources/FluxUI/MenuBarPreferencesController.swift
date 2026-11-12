@@ -41,6 +41,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     override public func loadView() {
         statusLabel.setAccessibilityRole(.staticText)
         editor.onMove = { [weak self] in self?.actions.moveItem($0) }
+        editor.onInteractionChanged = { [weak self] in self?.actions.editorInteractionChanged($0) }
 
         let title = FluxUIStyle.label(L("menuBar.layout.title", "Menu Bar Layout"), style: .headline)
         title.setAccessibilityRole(.staticText)

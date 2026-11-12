@@ -65,6 +65,7 @@ private actor HostUsageTransport: UsageTransport {
     func toggle() { unexpected() }
     func showAll() { unexpected() }
     func assign(_ application: ApplicationID, to group: MenuBarGroup) { unexpected() }
+    func setEditorInteraction(_ active: Bool) { unexpected() }
     func beginArrange() { unexpected() }
     func endArrange() { unexpected() }
     func showRealIcons() { unexpected() }

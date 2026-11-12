@@ -21,6 +21,7 @@ public enum MenuBarAction: Sendable {
     func refresh()
     func configure()
     func setEditorVisible(_ visible: Bool)
+    func setEditorInteraction(_ active: Bool)
     func toggle()
     func showAll()
     func assign(_ application: ApplicationID, to group: MenuBarGroup)

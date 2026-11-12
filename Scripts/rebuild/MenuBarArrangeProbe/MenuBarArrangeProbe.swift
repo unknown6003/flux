@@ -40,7 +40,8 @@ import FluxUI
         var requests: [MenuBarItemMove] = []
         let actions = MenuBarPageActions(assign: { service.assign($0, to: $1) }, beginArrange: {}, endArrange: {},
             showRealIcons: {}, refresh: { service.refresh() }, openAccessibilitySettings: {}, checkAccessibility: {},
-            reviewIdentity: { _ in }, setOption: { _ in }, moveItem: { requests.append($0); service.moveItem($0) })
+            reviewIdentity: { _ in }, setOption: { _ in }, moveItem: { requests.append($0); service.moveItem($0) },
+            editorInteractionChanged: { service.setEditorInteraction($0) })
         let page = MenuBarPreferencesController(state: service.state, actions: actions)
         let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 680, height: 700),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -113,7 +114,7 @@ import FluxUI
             let view = tileView(application)
             return screenPoint(view, at: CGPoint(x: view.bounds.midX, y: view.bounds.midY))
         }
-        func endOfStrip(_ group: MenuBarGroup) -> CGPoint {
+        func edgeOfStrip(_ group: MenuBarGroup, leading: Bool = false) -> CGPoint {
             guard let flow = view(named: "flux.menuBar.drop." + group.rawValue, in: page.view) else {
                 fail("missing drop strip \(group.rawValue)")
             }
@@ -121,7 +122,10 @@ import FluxUI
             window.contentView?.layoutSubtreeIfNeeded()
             let tiles = flow.subviews.filter { $0.accessibilityIdentifier().hasPrefix("flux.menuBar.item.") }
             let point: CGPoint
-            if let last = tiles.max(by: { ($0.frame.minY, $0.frame.minX) < ($1.frame.minY, $1.frame.minX) }) {
+            let ordered = tiles.sorted { ($0.frame.minY, $0.frame.minX) < ($1.frame.minY, $1.frame.minX) }
+            if leading, let first = ordered.first {
+                point = CGPoint(x: first.frame.minX + 3, y: first.frame.midY)
+            } else if let last = ordered.last {
                 point = CGPoint(x: min(flow.bounds.maxX - 4, last.frame.maxX + 3), y: last.frame.midY)
             } else {
                 point = CGPoint(x: flow.bounds.midX, y: flow.bounds.midY)
@@ -185,11 +189,11 @@ import FluxUI
               restoredRight > restoredLeft else { fail("the inverse centre drop did not restore order") }
         await step("restored")
 
-        await drag("cross-hidden", source: grouped, to: { endOfStrip(.hidden) }, group: .hidden)
+        await drag("cross-hidden", source: grouped, to: { edgeOfStrip(.hidden) }, group: .hidden)
         await step("grouped-editor-open")
-        await drag("cross-shown", source: grouped, to: { endOfStrip(.shown) }, group: .shown)
+        await drag("cross-shown", source: grouped, to: { edgeOfStrip(.shown, leading: true) }, group: .shown)
         await step("group-restored")
-        await drag("cross-hidden-again", source: grouped, to: { endOfStrip(.hidden) }, group: .hidden)
+        await drag("cross-hidden-again", source: grouped, to: { edgeOfStrip(.hidden) }, group: .hidden)
         await step("grouped-again-editor-open")
 
         // Closing the editor collapses the menu bar, so Hidden items go away.

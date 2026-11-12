@@ -40,6 +40,7 @@ import FluxUI
     func openMediaRemoteAdapterLicense() { unexpected() }
     func openSourceRepository() { unexpected() }
     func assign(_ application: ApplicationID, to group: MenuBarGroup) { unexpected() }
+    func setMenuBarInteraction(_ active: Bool) { unexpected() }
     func beginArrange() { unexpected() }
     func endArrange() { unexpected() }
     func showRealIcons() { unexpected() }

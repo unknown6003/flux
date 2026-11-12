@@ -118,6 +118,7 @@ public protocol SettingsEffects: AnyObject, Sendable {
     // MARK: Menu Bar. Each result arrives as a later `refresh()`.
 
     func assign(_ application: ApplicationID, to group: MenuBarGroup)
+    func setMenuBarInteraction(_ active: Bool)
     func beginArrange()
     func endArrange()
     /// The user asked for real icons. The app owns Screen Recording.

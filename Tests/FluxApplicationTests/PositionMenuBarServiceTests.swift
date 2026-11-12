@@ -118,7 +118,7 @@ import FluxUI
     var drags: [(CGPoint, CGPoint)] = []
     var onDrag: ((CGPoint, CGPoint) -> Void)?
 
-    init(support: PositionMenuBarHidingSupport = .unverified) throws {
+    init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false) throws {
         defaults = try #require(UserDefaults(suiteName: domain))
         preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
         inventory = .init(applications: [.init(id: app, name: "Example", icon: nil,
@@ -139,7 +139,7 @@ import FluxUI
                 return [MenuBarItemID(application: self.app, index: 0): image]
             }, stopPreviews: { [unowned self] in self.previewCloses += 1 },
             screens: { [.init(frame: CGRect(x: 0, y: 0, width: 1000, height: 800), menuBarHeight: 24)] },
-            quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: false,
+            quartzFrame: { $0 }, sleep: { [delay] seconds in try await delay.sleep(seconds) }, observesSystem: observesSystem,
             readIdentity: { [unowned self] _, saved in
                 let requirement = self.identityRequirement
                 let matches = self.identityMatch ?? (saved == nil || saved == requirement)
@@ -172,6 +172,41 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func activationRefreshWaitsForThePointerInteractionButInventoryChangesDoNot() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication, observesSystem: true)
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        let initial = fixture.reads
+        fixture.owner.setEditorInteraction(true)
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        await fixture.settle()
+        #expect(fixture.reads == initial)
+        #expect(!fixture.owner.state.isRefreshing)
+        fixture.owner.setEditorInteraction(false)
+        await fixture.settle()
+        #expect(fixture.reads == initial + 1)
+        fixture.owner.setEditorInteraction(false)
+        await fixture.settle()
+        #expect(fixture.reads == initial + 1)
+
+        fixture.owner.setEditorInteraction(true)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+        await fixture.settle()
+        #expect(fixture.reads == initial + 2)
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        await fixture.settle()
+        try await fixture.owner.stop()
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        #expect(fixture.reads == initial + 3)
+        fixture.owner.setEditorInteraction(false)
+        await fixture.settle()
+        #expect(fixture.reads == initial + 3)
+        try await fixture.close()
+    }
+
     @Test @MainActor func chevronEditorClickScenarios() async throws {
         var failures = 0
         for support in [PositionMenuBarHidingSupport.byPosition, .perApplication] {
@@ -688,8 +723,8 @@ import FluxUI
         try await fixture.close()
     }
 
-    @MainActor private func twoItemFixture(support: PositionMenuBarHidingSupport) async throws -> (PositionServiceFixture, ApplicationID) {
-        let fixture = try PositionServiceFixture(support: support)
+    @MainActor private func twoItemFixture(support: PositionMenuBarHidingSupport, observesSystem: Bool = false) async throws -> (PositionServiceFixture, ApplicationID) {
+        let fixture = try PositionServiceFixture(support: support, observesSystem: observesSystem)
         let second = try #require(ApplicationID(rawValue: "org.fluxfixture.second"))
         fixture.inventory = .init(applications: [
             .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
@@ -785,6 +820,39 @@ import FluxUI
         await fixture.settle(); await fixture.settle()
         #expect(fixture.drags.isEmpty)
         #expect(fixture.owner.state.moveStatus == .failed(name: "Example", .boundaryUnavailable))
+        try await fixture.close()
+    }
+
+    @Test @MainActor func activationDuringTheFinalReadGetsAFreshScanAfterTheMove() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication, observesSystem: true)
+        let original = fixture.inventory
+        fixture.onDrag = { _, _ in
+            fixture.inventory = .init(applications: [
+                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 450, y: 0, width: 24, height: 24)]),
+                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
+            ], accessibilityAllowed: true, complete: true)
+            fixture.blocksIdentityRead = true
+        }
+        fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown,
+                                     left: nil, right: .init(application: fixture.app, index: 0)))
+        await fixture.settle(); await fixture.settle()
+        guard let blocked = fixture.blockedIdentityRead else {
+            try await fixture.close()
+            Issue.record("The final identity read did not suspend")
+            return
+        }
+        let before = fixture.reads
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        await fixture.settle()
+        #expect(fixture.reads == before)
+        fixture.inventory = original
+        fixture.blocksIdentityRead = false
+        fixture.blockedIdentityRead = nil
+        blocked.resume()
+        await fixture.settle(); await fixture.settle()
+        #expect(fixture.reads == before + 1)
+        #expect(fixture.owner.state.tiles.map(\.id.application) == [fixture.app, second])
+        #expect(fixture.drags.count == 1)
         try await fixture.close()
     }
 

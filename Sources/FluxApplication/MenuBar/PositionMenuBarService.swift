@@ -105,6 +105,8 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let confirmIdentity: @MainActor (String) async -> Bool
     private var observations: [PositionMenuBarObservation] = []
     private var scanTask: Task<Void, Never>?
+    private var editorInteracting = false
+    private var activationRefreshPending = false
     private var rehideTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var identityTask: Task<Void, Never>?
@@ -250,6 +252,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
 
     public func stop() async throws {
         started = false; editorVisible = false; editorShowsAll = false; arranging = false
+        editorInteracting = false; activationRefreshPending = false
         identitiesValidated = false
         identityVersion = nil
         observations.removeAll()
@@ -297,6 +300,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     public func setEditorVisible(_ visible: Bool) {
         guard editorVisible != visible else { return }
         editorVisible = visible
+        if !visible { editorInteracting = false; activationRefreshPending = false }
         editorShowsAll = visible
         cancelRehide()
         if visible {
@@ -317,6 +321,23 @@ private struct PositionMenuBarArrangementContext: Equatable {
         }
         applyControls()
         changed()
+    }
+
+    public func setEditorInteraction(_ active: Bool) {
+        guard started, editorVisible, active != editorInteracting else { return }
+        editorInteracting = active
+        drainActivationRefresh()
+    }
+
+    private func drainActivationRefresh() {
+        guard activationRefreshPending, !editorInteracting, moveTask == nil else { return }
+        activationRefreshPending = false
+        refresh()
+    }
+
+    private func refreshAfterActivation() {
+        if editorInteracting || moveTask != nil { activationRefreshPending = true }
+        else { refresh() }
     }
 
     public func toggle() {
@@ -469,6 +490,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
             self.state.moveStatus = failure.map { .failed(name: name, $0) } ?? .moved(name: name)
             // Keep the source and anchors revealed through the final geometry
             // read. Saving a hidden group must not conceal the drag source.
+            self.activationRefreshPending = false
             self.requestScan(arrangeResult: self.support == .byPosition && failure == nil, keepImages: true)
             let finalScan = self.scanTask
             await finalScan?.value
@@ -476,6 +498,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
             self.moveTask = nil; self.moveID = nil
             self.applyControls()
             self.changed()
+            self.drainActivationRefresh()
         }
         applyControls()
         changed()
@@ -943,8 +966,12 @@ private struct PositionMenuBarArrangementContext: Equatable {
             observations.removeAll(); return
         }
         guard observations.isEmpty else { return }
-        let receive: @Sendable (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refresh() }
+        let receive: @Sendable (Notification) -> Void = { [weak self] notification in
+            let name = notification.name
+            Task { @MainActor [weak self] in
+                if name == NSApplication.didBecomeActiveNotification { self?.refreshAfterActivation() }
+                else { self?.refresh() }
+            }
         }
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             observations.append(PositionMenuBarObservation(center: NSWorkspace.shared.notificationCenter,

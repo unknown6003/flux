@@ -220,6 +220,7 @@ import FluxUI
     }
     public func openSourceRepository() { open(URL(string: "https://github.com/unknown6003/flux")!) }
     public func assign(_ application: ApplicationID, to group: MenuBarGroup) { menuBar.assign(application, to: group) }
+    public func setMenuBarInteraction(_ active: Bool) { menuBar.setEditorInteraction(active) }
     public func beginArrange() { menuBar.beginArrange() }
     public func endArrange() { menuBar.endArrange() }
     public func showRealIcons() { menuBar.showRealIcons() }

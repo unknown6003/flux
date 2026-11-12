@@ -56,6 +56,7 @@ private func requireTrue(_ value: Bool, file: StaticString = #fileID, line: UInt
     func openMediaRemoteAdapterLicense() { unexpected() }
     func openSourceRepository() { unexpected() }
     func assign(_ application: ApplicationID, to group: MenuBarGroup) { unexpected() }
+    func setMenuBarInteraction(_ active: Bool) { unexpected() }
     func beginArrange() { unexpected() }
     func endArrange() { unexpected() }
     func showRealIcons() { unexpected() }

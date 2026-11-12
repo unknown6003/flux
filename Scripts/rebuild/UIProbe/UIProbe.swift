@@ -284,7 +284,7 @@ import FluxUI
                               image: menuBarImage(symbol, width: width, text: text), group: group)
         }
         let actions = MenuBarPageActions(assign: { _, _ in }, beginArrange: {}, endArrange: {},
-            showRealIcons: {}, refresh: {}, openAccessibilitySettings: {}, checkAccessibility: {}, reviewIdentity: { _ in }, setOption: { _ in })
+            showRealIcons: {}, refresh: {}, openAccessibilitySettings: {}, checkAccessibility: {}, reviewIdentity: { _ in }, setOption: { _ in }, editorInteractionChanged: { _ in })
         var state = MenuBarPageState(mode: .perApplication, rows: rows, showsRealIcons: true, tiles: tiles)
         switch variant {
         case .moving: state.moveStatus = .moving(name: "Example Notes", attempt: 2)

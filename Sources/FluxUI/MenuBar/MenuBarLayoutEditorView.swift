@@ -9,6 +9,8 @@ final class MenuBarLayoutEditorView: NSView {
     static let pasteboardType = NSPasteboard.PasteboardType("com.flux.menubar.layout-item")
 
     var onMove: ((MenuBarItemMove) -> Void)?
+    var onInteractionChanged: ((Bool) -> Void)?
+    private var interaction: UUID?
     private(set) var model = MenuBarLayoutEditorModel(tiles: [], alwaysHiddenEnabled: true)
     private var tiles: [MenuBarItemID: MenuBarLayoutTile] = [:]
     private var strips: [MenuBarGroup: MenuBarStripView] = [:]
@@ -50,6 +52,25 @@ final class MenuBarLayoutEditorView: NSView {
     }
 
     func tile(_ id: MenuBarItemID) -> MenuBarLayoutTile? { tiles[id] }
+
+    fileprivate func beginInteraction() -> UUID? {
+        guard !isBusy, interaction == nil else { return nil }
+        let token = UUID()
+        interaction = token
+        onInteractionChanged?(true)
+        return token
+    }
+
+    fileprivate func endInteraction(_ token: UUID) {
+        guard interaction == token else { return }
+        interaction = nil
+        onInteractionChanged?(false)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, let interaction { endInteraction(interaction) }
+        super.viewWillMove(toWindow: newWindow)
+    }
 
     fileprivate func request(_ move: MenuBarItemMove?) {
         guard !isBusy, let move else { return }
@@ -295,6 +316,8 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
     private var movable = false
     private var busy = false
     private var down: NSEvent?
+    private var pressToken: UUID?
+    private var sessions: [ObjectIdentifier: UUID] = [:]
 
     init(id: MenuBarItemID, flow: MenuBarFlowView) {
         self.id = id
@@ -335,23 +358,47 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
     override func becomeFirstResponder() -> Bool { needsDisplay = true; return super.becomeFirstResponder() }
     override func resignFirstResponder() -> Bool { needsDisplay = true; return super.resignFirstResponder() }
 
-    override func mouseDown(with event: NSEvent) { down = event }
+    override func mouseDown(with event: NSEvent) {
+        guard movable, !busy, let token = flow?.editorView?.beginInteraction() else { return }
+        pressToken = token
+        down = event
+    }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let start = down, movable, !busy else { return }
+        guard let start = down, let token = pressToken, movable, !busy else { return }
         let dx = event.locationInWindow.x - start.locationInWindow.x
         let dy = event.locationInWindow.y - start.locationInWindow.y
         guard hypot(dx, dy) >= 3 else { return }
         down = nil
+        pressToken = nil
         let item = NSPasteboardItem()
         item.setString(id.token, forType: MenuBarLayoutEditorView.pasteboardType)
         let dragging = NSDraggingItem(pasteboardWriter: item)
         dragging.setDraggingFrame(bounds, contents: snapshot())
         let session = beginDraggingSession(with: [dragging], event: start, source: self)
+        sessions[ObjectIdentifier(session)] = token
         session.animatesToStartingPositionsOnCancelOrFail = true
     }
 
-    override func mouseUp(with event: NSEvent) { down = nil }
+    override func mouseUp(with event: NSEvent) {
+        down = nil
+        if let token = pressToken {
+            pressToken = nil
+            flow?.editorView?.endInteraction(token)
+        }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            if let token = pressToken {
+                pressToken = nil
+                down = nil
+                flow?.editorView?.endInteraction(token)
+            }
+            for token in sessions.values { flow?.editorView?.endInteraction(token) }
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? { flow?.editorView?.menu(for: id) }
 
@@ -375,6 +422,12 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        if let token = sessions.removeValue(forKey: ObjectIdentifier(session)) {
+            flow?.editorView?.endInteraction(token)
+        }
     }
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }

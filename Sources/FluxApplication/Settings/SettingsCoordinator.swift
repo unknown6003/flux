@@ -259,7 +259,8 @@ public final class SettingsCoordinator {
             checkAccessibility: { [weak self] in self?.effects.checkAccessibility() },
             reviewIdentity: { [weak self] id in self?.effects.reviewIdentity(id) },
             setOption: { [weak self] in self?.handle($0) },
-            moveItem: { [weak self] in self?.effects.moveMenuBarItem($0) }
+            moveItem: { [weak self] in self?.effects.moveMenuBarItem($0) },
+            editorInteractionChanged: { [weak self] in self?.effects.setMenuBarInteraction($0) }
         )
     }
 

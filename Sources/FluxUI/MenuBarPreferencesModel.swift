@@ -219,6 +219,8 @@ public struct MenuBarPageActions {
     public var setOption: (MenuBarOptionAction) -> Void
     /// Move one item in the real menu bar. The parent reports progress in `moveStatus`.
     public var moveItem: (MenuBarItemMove) -> Void
+    /// True from an eligible press through release, cancellation, or native session end.
+    public var editorInteractionChanged: (Bool) -> Void
 
     public init(
         assign: @escaping (ApplicationID, MenuBarGroup) -> Void,
@@ -230,7 +232,8 @@ public struct MenuBarPageActions {
         checkAccessibility: @escaping () -> Void,
         reviewIdentity: @escaping (ApplicationID) -> Void,
         setOption: @escaping (MenuBarOptionAction) -> Void,
-        moveItem: @escaping (MenuBarItemMove) -> Void = { _ in }
+        moveItem: @escaping (MenuBarItemMove) -> Void = { _ in },
+        editorInteractionChanged: @escaping (Bool) -> Void
     ) {
         self.assign = assign
         self.beginArrange = beginArrange
@@ -242,6 +245,7 @@ public struct MenuBarPageActions {
         self.reviewIdentity = reviewIdentity
         self.setOption = setOption
         self.moveItem = moveItem
+        self.editorInteractionChanged = editorInteractionChanged
     }
 }
 
