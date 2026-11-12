@@ -171,6 +171,27 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func chevronEditorClickScenarios() async throws {
+        var failures = 0
+        for support in [PositionMenuBarHidingSupport.byPosition, .perApplication] {
+            let fixture = try PositionServiceFixture(support: support)
+            fixture.owner.start()
+            fixture.owner.setEditorVisible(true)
+            await fixture.settle()
+            for (showAll, expected) in [(false, MenuBarReveal.collapsed), (false, .hidden),
+                                        (false, .collapsed), (true, .all), (false, .collapsed)] {
+                fixture.controls.onToggle?(showAll)
+                if fixture.controls.reveal != expected { failures += 1 }
+                if support == .perApplication, fixture.hider.applied.last?.reveal != expected { failures += 1 }
+            }
+            fixture.owner.setEditorVisible(false)
+            if fixture.controls.reveal != .collapsed { failures += 1 }
+            try await fixture.close()
+        }
+        print("CHEVRON_FAILURES=\(failures)")
+        if failures != 0 { Issue.record("Chevron requests are masked by the editor in \(failures) checks") }
+    }
+
     @Test @MainActor func permissionAloneNeverReplacesAppIconsWithScreenPhotos() async throws {
         let fixture = try PositionServiceFixture()
         fixture.previewImage = NSImage(size: .init(width: 24, height: 24))
