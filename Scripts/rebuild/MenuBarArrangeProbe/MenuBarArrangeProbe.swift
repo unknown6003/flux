@@ -100,8 +100,9 @@ import FluxUI
                       ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == CGMainDisplayID()
                   }), window.screen === primary else { fail("gesture point is not visible on the primary display") }
             let inWindow = view.convert(local, to: nil)
-            guard let content = window.contentView,
-                  let hit = content.hitTest(content.convert(inWindow, from: nil)),
+            // NSView.hitTest takes a point in its superview's coordinates.
+            guard let content = window.contentView, let parent = content.superview,
+                  let hit = content.hitTest(parent.convert(inWindow, from: nil)),
                   hit === view || hit.isDescendant(of: view) else { fail("gesture point is covered") }
             let point = window.convertPoint(toScreen: inWindow)
             let display = CGDisplayBounds(CGMainDisplayID())
