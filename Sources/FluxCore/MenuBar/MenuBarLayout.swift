@@ -174,7 +174,9 @@ public enum MenuBarMovePlanner {
 
     private static func isOnSide(_ frame: CGRect, of boundary: CGRect, group: MenuBarGroup) -> Bool {
         guard !boundary.isNull, !boundary.isInfinite, boundary.width > 0, boundary.height > 0 else { return false }
-        return group == .shown ? frame.minX >= boundary.maxX : frame.maxX <= boundary.minX
+        // Adjacent owner AX rectangles can overlap the Flux button. Require
+        // the item's centre to clear the button, rather than its whole frame.
+        return group == .shown ? frame.midX >= boundary.maxX : frame.midX <= boundary.minX
     }
 
     private static func anchorIsOnRequestedSide(_ id: MenuBarItemID, move: MenuBarItemMove,
