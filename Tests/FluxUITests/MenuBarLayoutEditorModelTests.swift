@@ -89,6 +89,29 @@ private func model(alwaysHidden: Bool = true) -> MenuBarLayoutEditorModel {
         #expect(MenuBarLayoutEditorModel.insertionIndex(at: CGPoint(x: 5, y: 5), frames: []) == 0)
     }
 
+    @Test func centredDropsReorderInEitherDirection() {
+        let editor = model()
+        let a = CGRect(x: 8, y: 8, width: 30, height: 30)
+        let b = CGRect(x: 44, y: 8, width: 30, height: 30)
+        let c = CGRect(x: 80, y: 8, width: 30, height: 30)
+        var failures = 0
+        // Dropping on the central body of the neighbouring tile crosses it.
+        for fraction: CGFloat in [0.35, 0.5, 0.65] {
+            let leftward = MenuBarLayoutEditorModel.insertionIndex(
+                at: CGPoint(x: a.minX + a.width * fraction, y: a.midY),
+                frames: [a, c], sourceIndex: 1)
+            if editor.move(id("b"), to: .shown, at: leftward)
+                != .init(item: id("b"), group: .shown, left: nil, right: id("a")) { failures += 1 }
+            let rightward = MenuBarLayoutEditorModel.insertionIndex(
+                at: CGPoint(x: b.minX + b.width * fraction, y: b.midY),
+                frames: [b, c], sourceIndex: 0)
+            if editor.move(id("a"), to: .shown, at: rightward)
+                != .init(item: id("a"), group: .shown, left: id("b"), right: id("c")) { failures += 1 }
+        }
+        print("DRAG_DROP_FAILURES=\(failures)")
+        #expect(failures == 0)
+    }
+
     @Test @MainActor func editorSendsTheMoveFromItsMenuAndRefusesWhileBusy() throws {
         _ = NSApplication.shared
         let editor = MenuBarLayoutEditorView()
