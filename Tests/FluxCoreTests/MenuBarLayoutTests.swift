@@ -115,6 +115,37 @@ private func perApp(_ items: [MenuBarLayoutItem], hidden: [String] = [], always:
         #expect(!MenuBarMovePlanner.isPlaced(.init(item: id("a"), group: .hidden, left: nil, right: id("b")), in: layout))
     }
 
+    @Test func perAppPlacementRequiresTheRequestedSideOfTheChevron() throws {
+        let boundary = CGRect(x: 500, y: 0, width: 24, height: 24)
+        var failures = 0
+        for group in [MenuBarGroup.shown, .hidden, .alwaysHidden] {
+            var policy = VisibilityPolicy()
+            try policy.assign(app("passwords"), to: group)
+            let move = MenuBarItemMove(item: id("passwords"), group: group, left: nil, right: nil)
+            let wrongX: CGFloat = group == .shown ? 300 : 700
+            let wrong = MenuBarLayout(items: [item("passwords", wrongX)],
+                grouping: .perApplication(policy, alwaysHiddenEnabled: true), chevronBoundary: boundary)
+            if MenuBarMovePlanner.isPlaced(move, in: wrong) { failures += 1 }
+            if let plan = try MenuBarMovePlanner.plan(move, in: wrong),
+               let points = MenuBarMovePlanner.dragPoints(for: plan, in: wrong, attempt: 0) {
+                if group == .shown ? points.to.x <= boundary.midX : points.to.x >= boundary.midX { failures += 1 }
+            } else { failures += 1 }
+            let correct = MenuBarLayout(items: [item("passwords", group == .shown ? 700 : 300)],
+                grouping: wrong.grouping, chevronBoundary: boundary)
+            if !MenuBarMovePlanner.isPlaced(move, in: correct) { failures += 1 }
+        }
+        // Matching lane neighbours still cannot verify an item on the wrong side.
+        var policy = VisibilityPolicy()
+        try policy.assign(app("passwords"), to: .hidden)
+        try policy.assign(app("peer"), to: .hidden)
+        let wrong = MenuBarLayout(items: [item("peer", 600), item("passwords", 700)],
+            grouping: .perApplication(policy, alwaysHiddenEnabled: true), chevronBoundary: boundary)
+        if MenuBarMovePlanner.isPlaced(.init(item: id("passwords"), group: .hidden,
+            left: id("peer"), right: nil), in: wrong) { failures += 1 }
+        print("PLACEMENT_FAILURES=\(failures)")
+        #expect(failures == 0)
+    }
+
     @Test func itemTokensRoundTripAndRejectJunk() {
         let original = id("calendar", 3)
         #expect(MenuBarItemID(token: original.token) == original)
