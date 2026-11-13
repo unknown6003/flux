@@ -231,30 +231,21 @@ import FluxUI
                 fixture.owner.assign(second, to: .hidden)
             }
             fixture.controls.onToggle?(false)
-            fixture.onDrag = { _, _ in
-                if fixture.controls.reveal != .all { failures += 1 }
-                if support == .perApplication, fixture.hider.applied.last?.reveal != .all { failures += 1 }
-                fixture.inventory = .init(applications: [
-                    .init(id: fixture.app, name: "Example", icon: nil,
-                          frames: [CGRect(x: support == .perApplication ? 500 : 400, y: 0, width: 24, height: 24)]),
-                    .init(id: second, name: "Second", icon: nil,
-                          frames: [CGRect(x: support == .perApplication ? 450 : 700, y: 0, width: 24, height: 24)])
-                ], accessibilityAllowed: true, complete: true)
-            }
             let move = support == .perApplication
                 ? MenuBarItemMove(item: .init(application: fixture.app, index: 0), group: .hidden,
                                   left: .init(application: second, index: 0), right: nil)
                 : MenuBarItemMove(item: .init(application: second, index: 0), group: .shown, left: nil, right: nil)
             fixture.owner.moveItem(move)
             for _ in 0..<4 { await fixture.settle() }
-            if fixture.drags.count != 1 { failures += 1 }
-            if case .moved = fixture.owner.state.moveStatus {} else { failures += 1 }
-            if fixture.controls.reveal != .collapsed { failures += 1 }
+            if !fixture.drags.isEmpty { failures += 1 }
+            if fixture.owner.state.moveStatus != nil { failures += 1 }
+            let expectedReveal: MenuBarReveal = support == .perApplication ? .collapsed : .all
+            if fixture.controls.reveal != expectedReveal { failures += 1 }
             if support == .perApplication, fixture.hider.applied.last?.reveal != .collapsed { failures += 1 }
             try await fixture.close()
         }
         print("CHEVRON_FAILURES=\(failures)")
-        if failures != 0 { Issue.record("Chevron or move reveal state failed in \(failures) checks") }
+        if failures != 0 { Issue.record("Chevron or group reveal state failed in \(failures) checks") }
     }
 
     @Test @MainActor func permissionAloneNeverReplacesAppIconsWithScreenPhotos() async throws {
@@ -773,22 +764,37 @@ import FluxUI
         try await fixture.close()
     }
 
-    @Test @MainActor func perAppMoveIntoAnEmptyStripCrossesTheChevronBeforeReportingSuccess() async throws {
+    @Test @MainActor func groupDropsApplyImmediatelyWithoutCursorOrMovingState() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         let item = MenuBarItemID(application: fixture.app, index: 0)
-        fixture.onDrag = { _, _ in
-            fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
-                frames: [CGRect(x: 300, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
+        let reads = fixture.reads
+        var movingUpdates = 0
+        fixture.owner.onChange = {
+            if case .moving = fixture.owner.state.moveStatus { movingUpdates += 1 }
         }
+        for group in [MenuBarGroup.hidden, .alwaysHidden, .shown] {
+            fixture.owner.moveItem(.init(item: item, group: group, left: nil, right: nil))
+            #expect(fixture.owner.state.tiles.first { $0.id == item }?.group == group)
+            #expect(fixture.owner.state.moveStatus == nil)
+            #expect(!fixture.owner.state.isRefreshing)
+            await fixture.settle(); await fixture.settle()
+        }
+        #expect(movingUpdates == 0)
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.reads == reads)
+        #expect(fixture.hider.applied.last?.policy.group(for: fixture.app) == .shown)
+        fixture.owner.onChange = nil
+        try await fixture.close()
+    }
+
+    @Test @MainActor func perAppGroupChangesNeedNoPhysicalPlacement() async throws {
+        let (fixture, _) = try await twoItemFixture(support: .perApplication)
+        let item = MenuBarItemID(application: fixture.app, index: 0)
         fixture.owner.moveItem(.init(item: item, group: .hidden, left: nil, right: nil))
-        await fixture.settle(); await fixture.settle()
-        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
-        #expect(saved.group(for: fixture.app) == .hidden)
-        #expect(fixture.drags.count == 1)
-        #expect(fixture.drags.first?.1.x == 358)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
         #expect(fixture.owner.state.tiles.first { $0.id == item }?.group == .hidden)
-        // The editor keeps every item visible while it is open.
+        #expect(fixture.owner.state.moveStatus == nil)
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.hider.applied.last?.policy.group(for: fixture.app) == .hidden)
         #expect(fixture.hider.applied.last?.reveal == .all)
         try await fixture.close()
     }
@@ -799,135 +805,64 @@ import FluxUI
             left: .init(application: second, index: 0), right: nil, intent: .group))
         await fixture.settle(); await fixture.settle()
         #expect(fixture.drags.isEmpty)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
+        #expect(fixture.owner.state.moveStatus == nil)
         try await fixture.close()
     }
 
-    @Test @MainActor func groupPlacementNeverUsesAnAnchorOnAnotherDisplay() async throws {
+    @Test @MainActor func groupChoicesIgnorePhysicalPeerAnchors() async throws {
         let (fixture, second) = try await twoItemFixture(support: .perApplication)
         fixture.owner.assign(second, to: .hidden)
-        func inventory(_ x: CGFloat) -> PositionMenuBarInventory {
-            .init(applications: [
-                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: x, y: 0, width: 24, height: 24)]),
-                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: -50, y: 0, width: 24, height: 24)])
-            ], accessibilityAllowed: true, complete: true)
-        }
-        fixture.inventory = inventory(450)
-        fixture.onDrag = { _, _ in fixture.inventory = inventory(300) }
+        fixture.inventory = .init(applications: [
+            .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 450, y: 0, width: 24, height: 24)]),
+            .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: -50, y: 0, width: 24, height: 24)])
+        ], accessibilityAllowed: true, complete: true)
         fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden,
-            left: nil, right: nil, intent: .group))
-        await fixture.settle(); await fixture.settle()
-        #expect(fixture.drags.count == 1)
-        #expect(fixture.drags.first?.1.x == 358)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example"))
+            left: .init(application: second, index: 0), right: nil, intent: .group))
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == nil)
+        #expect(fixture.hider.applied.last?.policy.group(for: fixture.app) == .hidden)
         try await fixture.close()
     }
 
-    @Test @MainActor func missingChevronGeometryStopsAPerAppMove() async throws {
+    @Test @MainActor func missingChevronGeometryDoesNotBlockGroupChoices() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         fixture.controls.chevronBoundary = nil
         fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden, left: nil, right: nil))
-        await fixture.settle(); await fixture.settle()
         #expect(fixture.drags.isEmpty)
-        #expect(fixture.owner.state.moveStatus == .failed(name: "Example", .boundaryUnavailable))
+        #expect(fixture.owner.state.moveStatus == nil)
+        #expect(fixture.hider.applied.last?.policy.group(for: fixture.app) == .hidden)
         try await fixture.close()
     }
 
-    @Test @MainActor func aSourceOutsideTheChevronDisplayNeverDrags() async throws {
+    @Test @MainActor func groupChoicesDoNotNeedTheIconsPhysicalDisplay() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
             frames: [CGRect(x: -400, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
         fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden, left: nil, right: nil))
-        await fixture.settle(); await fixture.settle()
         #expect(fixture.drags.isEmpty)
-        #expect(fixture.owner.state.moveStatus == .failed(name: "Example", .boundaryUnavailable))
+        #expect(fixture.owner.state.moveStatus == nil)
+        #expect(fixture.hider.applied.last?.policy.group(for: fixture.app) == .hidden)
         try await fixture.close()
     }
 
-    @Test @MainActor func activationDuringTheFinalReadGetsAFreshScanAfterTheMove() async throws {
-        let (fixture, second) = try await twoItemFixture(support: .perApplication, observesSystem: true)
-        let original = fixture.inventory
-        fixture.onDrag = { _, _ in
-            fixture.inventory = .init(applications: [
-                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 450, y: 0, width: 24, height: 24)]),
-                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
-            ], accessibilityAllowed: true, complete: true)
-            fixture.blocksIdentityRead = true
-        }
+    @Test @MainActor func sameGroupSlotCannotPostInputOrClaimPhysicalReordering() async throws {
+        let (fixture, second) = try await twoItemFixture(support: .perApplication)
         fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown,
-                                     left: nil, right: .init(application: fixture.app, index: 0)))
-        await fixture.settle(); await fixture.settle()
-        guard let blocked = fixture.blockedIdentityRead else {
-            try await fixture.close()
-            Issue.record("The final identity read did not suspend")
-            return
-        }
-        let before = fixture.reads
-        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await fixture.settle()
-        #expect(fixture.reads == before)
-        fixture.inventory = original
-        fixture.blocksIdentityRead = false
-        fixture.blockedIdentityRead = nil
-        blocked.resume()
-        await fixture.settle(); await fixture.settle()
-        #expect(fixture.reads == before + 1)
+            left: nil, right: .init(application: fixture.app, index: 0)))
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == nil)
         #expect(fixture.owner.state.tiles.map(\.id.application) == [fixture.app, second])
-        #expect(fixture.drags.count == 1)
         try await fixture.close()
     }
 
-    @Test @MainActor func reorderDragsAndVerifiesAgainstAFreshRead() async throws {
-        let (fixture, second) = try await twoItemFixture(support: .perApplication)
-        fixture.onDrag = { _, _ in
-            fixture.inventory = .init(applications: [
-                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 450, y: 0, width: 24, height: 24)]),
-                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
-            ], accessibilityAllowed: true, complete: true)
-        }
-        fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown,
-                                     left: nil, right: .init(application: fixture.app, index: 0)))
-        await fixture.settle(); await fixture.settle()
-        #expect(fixture.drags.count == 1)
-        #expect(fixture.drags.first?.0 == CGPoint(x: 462, y: 12))
-        #expect(fixture.drags.first?.1 == CGPoint(x: 408, y: 12))
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Second"))
-        #expect(fixture.owner.state.tiles.map(\.id.application) == [second, fixture.app])
-        try await fixture.close()
-    }
-
-    @Test @MainActor func aRefusedReorderReportsOneClearFailure() async throws {
-        let (fixture, second) = try await twoItemFixture(support: .perApplication)
-        fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown,
-                                     left: nil, right: .init(application: fixture.app, index: 0)))
-        // A second request while the first runs is ignored.
-        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .hidden, left: nil, right: nil))
-        await fixture.settle(); await fixture.settle(); await fixture.settle()
-        #expect(fixture.drags.count == MenuBarMoveEngine.attempts)
-        #expect(fixture.owner.state.moveStatus == .failed(name: "Second", .notAccepted))
-        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
-        #expect(saved.group(for: fixture.app) == .shown)
-        try await fixture.close()
-    }
-
-    @Test @MainActor func byPositionGroupChangeDragsAcrossTheBoundaryAndSavesTheResult() async throws {
+    @Test @MainActor func positionBasedGroupChangesUseTheNativeGuideWithoutPostingInput() async throws {
         let (fixture, second) = try await twoItemFixture(support: .byPosition)
-        #expect(fixture.owner.state.mode == .byPosition)
-        // Boundaries: Always Hidden at 300, Hidden at 600. Both items are left of 600, so Hidden.
-        #expect(fixture.owner.state.tiles.allSatisfy { $0.group == .hidden })
-        fixture.onDrag = { _, _ in
-            fixture.inventory = .init(applications: [
-                .init(id: fixture.app, name: "Example", icon: nil, frames: [CGRect(x: 400, y: 0, width: 24, height: 24)]),
-                .init(id: second, name: "Second", icon: nil, frames: [CGRect(x: 700, y: 0, width: 24, height: 24)]),
-            ], accessibilityAllowed: true, complete: true)
-        }
         fixture.owner.moveItem(.init(item: .init(application: second, index: 0), group: .shown, left: nil, right: nil))
-        await fixture.settle(); await fixture.settle(); await fixture.settle()
-        #expect(fixture.drags.first?.1.x == 624)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Second"))
-        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
-        #expect(saved.group(for: second) == .shown)
-        #expect(saved.group(for: fixture.app) == .hidden)
+        await fixture.settle()
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.isArranging)
+        #expect(fixture.owner.state.moveStatus == nil)
+        #expect(fixture.owner.state.tiles.allSatisfy { $0.group == .hidden })
         try await fixture.close()
     }
 

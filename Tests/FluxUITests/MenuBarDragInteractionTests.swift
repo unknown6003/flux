@@ -4,6 +4,27 @@ import FluxCore
 @testable import FluxUI
 
 @Suite @MainActor struct MenuBarDragInteractionTests {
+    @Test func perAppGroupActionsStayUsableDuringInventoryRead() {
+        _ = NSApplication.shared
+        let id = MenuBarItemID(application: ApplicationID(rawValue: "org.fluxfixture.first")!, index: 0)
+        var moves: [MenuBarItemMove] = []
+        var state = MenuBarPageState(mode: .perApplication, isRefreshing: true,
+            tiles: [.init(id: id, name: "First", group: .hidden)])
+        let page = MenuBarPreferencesController(state: state, actions: .init(
+            assign: { _, _ in }, beginArrange: {}, endArrange: {}, showRealIcons: {}, refresh: {},
+            openAccessibilitySettings: {}, checkAccessibility: {}, reviewIdentity: { _ in }, setOption: { _ in },
+            moveItem: { moves.append($0) }, editorInteractionChanged: { _ in }))
+        #expect(page.performTileCommand("Move to Visible", for: id))
+        #expect(moves == [.init(item: id, group: .shown, left: nil, right: nil, intent: .group)])
+        state.mode = .byPosition
+        page.update(state)
+        #expect(!page.performTileCommand("Move to Visible", for: id))
+        state.mode = .perApplication
+        state.isArranging = true
+        page.update(state)
+        #expect(!page.performTileCommand("Move to Visible", for: id))
+    }
+
     @Test func tileOrderRequestOpensNativeGuideWithoutPostingAMove() {
         let editor = MenuBarLayoutEditorView()
         let id = MenuBarItemID(application: ApplicationID(rawValue: "org.fluxfixture.first")!, index: 0)

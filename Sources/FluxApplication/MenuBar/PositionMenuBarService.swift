@@ -55,8 +55,8 @@ struct PositionMenuBarArrangeTools {
         sleep: { _ in }, ownApplication: nil)
 
     @MainActor static func system() -> PositionMenuBarArrangeTools {
-        .init(drag: { try await MenuBarItemDrag.perform(from: $0, to: $1) },
-              inputIsQuiet: { MenuBarItemDrag.inputIsQuiet() },
+        .init(drag: { _, _ in throw MenuBarItemDragError.eventsUnavailable },
+              inputIsQuiet: { true },
               sleep: { try await Task.sleep(for: .seconds($0)) },
               ownApplication: Bundle.main.bundleIdentifier.flatMap(ApplicationID.init(rawValue:)))
     }
@@ -94,8 +94,6 @@ private struct PositionMenuBarArrangementContext: Equatable {
     private let tools: PositionMenuBarArrangeTools
     private var lastInventory: PositionMenuBarInventory?
     private var itemImages: [MenuBarItemID: NSImage] = [:]
-    private var moveTask: Task<Void, Never>?
-    private var moveID: UUID?
     private let stopPreviews: @MainActor () -> Void
     private let screens: @MainActor () -> [PositionMenuBarScreen]
     private let quartzFrame: @MainActor (CGRect) -> CGRect
@@ -257,8 +255,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         identityVersion = nil
         observations.removeAll()
         let rehide = rehideTask
-        let move = moveTask
-        moveID = nil; moveTask?.cancel(); moveTask = nil; state.moveStatus = nil
+        state.moveStatus = nil
         cancelScan(); cancelRehide(); discardPreviews()
         cancelIdentityReview()
         controls.setArranging(false)
@@ -274,8 +271,6 @@ private struct PositionMenuBarArrangementContext: Equatable {
         state.mode = .paused
         changed()
         await rehide?.value
-        // A drag in flight finishes its few posted events, then stops.
-        await move?.value
     }
 
     public func configure() {
@@ -309,8 +304,6 @@ private struct PositionMenuBarArrangementContext: Equatable {
         } else {
             arranging = false
             controls.setArranging(false)
-            moveID = nil
-            moveTask?.cancel(); moveTask = nil
             state.moveStatus = nil
             cancelScan()
             cancelIdentityReview()
@@ -330,13 +323,13 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     private func drainActivationRefresh() {
-        guard activationRefreshPending, !editorInteracting, moveTask == nil else { return }
+        guard activationRefreshPending, !editorInteracting else { return }
         activationRefreshPending = false
         refresh()
     }
 
     private func refreshAfterActivation() {
-        if editorInteracting || moveTask != nil { activationRefreshPending = true }
+        if editorInteracting { activationRefreshPending = true }
         else { refresh() }
     }
 
@@ -396,7 +389,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     public func beginArrange() {
-        guard started, moveTask == nil, !arranging else { return }
+        guard started, !arranging else { return }
         cancelScan(); cancelRehide(); discardPreviews()
         actionFailure = nil
         arranging = true
@@ -424,7 +417,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     /// Reads each item's real image. Asks for Screen Recording only after the
     /// user's own click. Images whose item moved during capture are dropped.
     private func capturePreviewImages() {
-        guard started, editorVisible, previewTask == nil, moveTask == nil else { return }
+        guard started, editorVisible, previewTask == nil else { return }
         let id = UUID()
         previewID = id
         previewTask = Task { @MainActor [weak self] in
@@ -459,89 +452,35 @@ private struct PositionMenuBarArrangementContext: Equatable {
         }
     }
 
-    /// Moves one real item, as the layout editor asked. On macOS 27 the group
-    /// is saved first, because MenuBarAgent hides whole apps. Then a paced
-    /// Cmd-drag puts the item between its new neighbours, checked by a fresh read.
+    /// Group choices use the per-app hiding policy. Settings never posts
+    /// mouse events. Position-based hiding needs the user's native gesture.
     public func moveItem(_ move: MenuBarItemMove) {
-        guard started, editorVisible, scanTask == nil, moveTask == nil else { return }
+        guard started, editorVisible, !arranging else { return }
+        guard scanTask == nil || support == .perApplication else { return }
         let name = tileName(move.item)
-        cancelScan(); discardPreviewTask()
-        actionFailure = nil
-        state.moveStatus = .moving(name: name, attempt: 1)
-        let id = UUID()
-        moveID = id
-        let tools = tools
-        moveTask = Task { @MainActor [weak self] in
-            guard let self, self.moveID == id else { return }
-            var failure: MenuBarMoveFailure?
-            do throws(MenuBarMoveFailure) {
-                try self.saveGroup(for: move)
-                let engine = MenuBarMoveEngine(read: { [weak self] () async throws(MenuBarMoveFailure) -> MenuBarLayout? in
-                    try await self?.readLayout(for: move)
-                },
-                                               drag: tools.drag, inputIsQuiet: tools.inputIsQuiet, sleep: tools.sleep)
-                try await engine.run(move) { [weak self] attempt in
-                    guard let self, self.moveID == id else { return }
-                    self.state.moveStatus = .moving(name: name, attempt: attempt)
-                    self.changed()
-                }
-            } catch { failure = error }
-            guard self.moveID == id, self.started else { return }
-            self.state.moveStatus = failure.map { .failed(name: name, $0) } ?? .moved(name: name)
-            // Keep the source and anchors revealed through the final geometry
-            // read. Saving a hidden group must not conceal the drag source.
-            self.activationRefreshPending = false
-            self.requestScan(arrangeResult: self.support == .byPosition && failure == nil, keepImages: true)
-            let finalScan = self.scanTask
-            await finalScan?.value
-            guard self.moveID == id, self.started else { return }
-            self.moveTask = nil; self.moveID = nil
-            self.applyControls()
-            self.changed()
-            self.drainActivationRefresh()
+        guard let tile = state.tiles.first(where: { $0.id == move.item }) else {
+            state.moveStatus = .failed(name: name, .itemGone); changed(); return
         }
-        applyControls()
-        changed()
-    }
-
-    private func saveGroup(for move: MenuBarItemMove) throws(MenuBarMoveFailure) {
-        guard support == .perApplication else { return }
-        let application = move.item.application
-        let current = policy.group(for: application)
-        let shown = current == .alwaysHidden && !state.alwaysHiddenEnabled ? .hidden : current
-        guard shown != move.group else { return }
-        if move.group == .alwaysHidden, !state.alwaysHiddenEnabled { throw .alwaysHiddenOff }
-        guard state.rows.contains(where: { $0.id == application }) else { throw .itemGone }
-        assign(application, to: move.group)
-        if case .failed(let code)? = results[application] { throw .groupNotSaved(code: code) }
-        guard policy.group(for: application) == move.group else { throw .groupNotSaved(code: "notSaved") }
-    }
-
-    private func readLayout(for move: MenuBarItemMove) async throws(MenuBarMoveFailure) -> MenuBarLayout? {
-        let snapshot = await readInventory()
-        guard snapshot.accessibilityAllowed else { return nil }
-        var items = layoutItems(snapshot)
-        var boundary: CGRect?
-        if support == .perApplication {
-            guard let frame = controls.chevronBoundary.map(quartzFrame),
-                  frame.width > 0, frame.width <= 128, frame.height > 0, frame.height <= 64,
-                  [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite),
-                  screens().filter({ screen in
-                      screen.frame.contains(frame) && frame.maxY <= screen.frame.minY + screen.menuBarHeight
-                  }).count == 1,
-                  let screen = screens().first(where: { $0.frame.contains(frame) }) else { throw .boundaryUnavailable }
-            let neighbours = move.intent == .slot ? [move.left, move.right].compactMap { $0 } : []
-            let required = Set([move.item] + neighbours)
-            for item in items where required.contains(item.id) {
-                guard screen.frame.contains(item.frame),
-                      item.frame.maxY <= screen.frame.minY + screen.menuBarHeight else { throw .boundaryUnavailable }
+        guard tile.isMovable else {
+            state.moveStatus = .failed(name: name, .itemLocked); changed(); return
+        }
+        guard move.group != .alwaysHidden || state.alwaysHiddenEnabled else {
+            state.moveStatus = .failed(name: name, .alwaysHiddenOff); changed(); return
+        }
+        state.moveStatus = nil
+        switch support {
+        case .perApplication:
+            assign(move.item.application, to: move.group)
+            if case .failed(let code)? = results[move.item.application] {
+                state.moveStatus = .failed(name: name, .groupNotSaved(code: code))
+                changed()
             }
-            // Fresh group anchors must belong to this chevron's display too.
-            items = items.filter { screen.frame.contains($0.frame)
-                && $0.frame.maxY <= screen.frame.minY + screen.menuBarHeight }
-            boundary = frame
+        case .byPosition:
+            beginArrange()
+        case .unverified:
+            state.moveStatus = .failed(name: name, .hidingUnavailable)
+            changed()
         }
-        return MenuBarLayout(items: items, grouping: layoutGrouping(), chevronBoundary: boundary)
     }
 
     /// Every item with a frame, except Flux's own. An app that runs twice is
@@ -762,7 +701,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         updateTiles()
         updateOutsideClickMonitor(reveal: editorVisible || arranging ? .collapsed : reveal)
         if support == .perApplication {
-            let effectiveReveal: MenuBarReveal = editorShowsAll || arranging || moveTask != nil ? .all : reveal
+            let effectiveReveal: MenuBarReveal = editorShowsAll || arranging ? .all : reveal
             controls.configure(capability: .perApplication, reveal: effectiveReveal,
                                alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
             if started, !policyFailure {
@@ -773,7 +712,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
         }
         let capability: MenuBarCapability = started && support == .byPosition && !policyFailure
             && !identityFailure && identitiesValidated && permissionStatus() == .allowed ? .byPosition : .unavailable
-        let effectiveReveal: MenuBarReveal = editorShowsAll || arranging || moveTask != nil ? .all : reveal
+        let effectiveReveal: MenuBarReveal = editorShowsAll || arranging ? .all : reveal
         controls.configure(capability: capability, reveal: effectiveReveal,
                            alwaysHiddenEnabled: state.alwaysHiddenEnabled, style: state.options.iconStyle)
         state.savedLayoutStillApplies = false

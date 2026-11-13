@@ -105,7 +105,7 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         arrangeHelp.isHidden = !state.isArranging
         arrangeHelp.stringValue = L("menuBar.arrange.help", "Hold Command and drag the actual icons left or right in the menu bar at the top of your screen. Keep them in the bar. Click Done Arranging or the Flux checkmark when finished. Group choices below stay saved.")
         editor.update(tiles: state.tiles, alwaysHiddenEnabled: state.alwaysHiddenEnabled,
-                      busy: moving || state.isRefreshing || state.isArranging)
+                      busy: moving || state.isArranging || (state.isRefreshing && state.mode != .perApplication))
 
         let reviewRows = state.rows.filter(\.needsIdentityReview).map(makeReviewRow)
         reviewStack.setViews(reviewRows, in: .top)

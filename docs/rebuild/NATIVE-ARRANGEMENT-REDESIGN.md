@@ -15,9 +15,15 @@ This is a limit of the inspected public contracts, not proof that no private tec
 
 Use direct native arrangement for order. Settings has Arrange in Menu Bar and Done Arranging. Arrange reveals all icons and keeps them revealed while the user holds Command and drags actual status icons. Flux does not post a reorder or reposition the pointer. The Flux checkmark also finishes the guide. Closing Settings ends the mode.
 
-A same-group tile order request opens the guide. Its menu offers the same action instead of Move Left/Right. Cross-group drops and explicit group commands retain their existing move path. Those group operations can still invoke the existing mover; this change does not claim they are cursor-free.
+A same-group tile order request opens the guide. Its menu offers the same action instead of Move Left/Right. Cross-group drops and explicit group commands now use the per-app hiding policy alone on macOS 27. The Settings service no longer has a physical move task, retry loop or synthetic mouse driver. Position-based systems start the explicit native guide instead of posting input.
 
 On macOS 27, Done reads fresh inventory but does not infer saved groups from geometry. Groups are per-app choices. Physical boundary labels stay absent in that mode. Older position-based systems retain their native group-boundary behavior.
+
+## Owner correction after build 901
+
+The owner rejects the native guide as a solution for ordering inside Settings. That requirement remains unresolved. This follow-up removes cursor borrowing and the moving-state delay from group assignment; it must not be reported as completion of in-app icon ordering.
+
+The old service fixture confirmed that an empty-group assignment posted one physical drag. The new service contract checks immediate policy/tile updates, no moving state, no extra inventory read and zero drag calls across Hidden, Always Hidden and Visible. Per-app group controls also stay usable during inventory refresh; the service queues a choice until fresh identity checks finish. A controller-level regression reproduced the former global disable rule before that rule changed. Live installed checks must observe the actual group gestures and input stream.
 
 ## Proof and limits
 
