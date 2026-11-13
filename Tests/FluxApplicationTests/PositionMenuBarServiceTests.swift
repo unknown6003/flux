@@ -498,6 +498,27 @@ import FluxUI
         try await fixture.close()
     }
 
+    @Test @MainActor func nativeOrderDoneKeepsPerApplicationGroupsAndNeverDrags() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        fixture.owner.assign(fixture.app, to: .alwaysHidden)
+        await fixture.settle()
+        fixture.owner.beginArrange()
+        await fixture.settle()
+        #expect(fixture.owner.state.isArranging)
+        #expect(fixture.controls.reveal == .all)
+        // The fixture's physical frame is in Hidden, but order is not a group choice.
+        fixture.owner.endArrange()
+        await fixture.settle()
+        let saved = try VisibilityPolicy(legacyPropertyList: fixture.defaults.persistentDomain(forName: fixture.domain)?["flux.macOS27IconLayout"])
+        #expect(saved.group(for: fixture.app) == .alwaysHidden)
+        #expect(!fixture.owner.state.isArranging)
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
     @Test @MainActor func aChoiceMadeDuringDoneWinsEvenWhenItRepeatsTheOriginalGroup() async throws {
         let fixture = try PositionServiceFixture()
         fixture.owner.start()
@@ -635,7 +656,7 @@ import FluxUI
     }
 
     @Test @MainActor func geometrySaveNeedsFreshCompleteReadAndPreservesUnknownAssignments() async throws {
-        let fixture = try PositionServiceFixture()
+        let fixture = try PositionServiceFixture(support: .byPosition)
         let unknown = ApplicationID(rawValue: "org.fluxfixture.unknown")!
         fixture.defaults.set(["hidden": [fixture.app.rawValue, unknown.rawValue],
                               "alwaysHidden": [unknown.rawValue], "future": true], forKey: "flux.macOS27IconLayout")

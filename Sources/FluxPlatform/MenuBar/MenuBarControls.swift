@@ -106,8 +106,8 @@ import FluxCore
             modern: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27)
         boundary(hidden, title: "Hidden", length: lengths.hidden)
         boundary(always, title: "Always", length: lengths.always)
-        always?.isVisible = alwaysEnabled && (isArranging || capability == .byPosition)
-        hidden?.isVisible = isArranging || capability == .byPosition
+        always?.isVisible = alwaysEnabled && capability == .byPosition
+        hidden?.isVisible = capability == .byPosition
     }
 
     private func boundary(_ item: NSStatusItem?, title: String, length: CGFloat) {

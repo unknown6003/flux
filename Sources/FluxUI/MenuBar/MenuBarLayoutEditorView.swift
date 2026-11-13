@@ -2,12 +2,12 @@ import AppKit
 import FluxCore
 
 /// Three strips of real menu bar items: Visible, Hidden and Always Hidden.
-/// Drag a tile to reorder it or to change its group. Right-click a tile to
-/// move it without dragging. The parent applies each move to the real menu bar.
+/// Tiles change groups. Icon order uses direct Command-drag in the menu bar.
 @MainActor
 final class MenuBarLayoutEditorView: NSView {
     static let pasteboardType = NSPasteboard.PasteboardType("com.flux.menubar.layout-item")
 
+    var onArrangeRequested: (() -> Void)?
     var onMove: ((MenuBarItemMove) -> Void)?
     var onInteractionChanged: ((Bool) -> Void)?
     private var interaction: UUID?
@@ -72,9 +72,14 @@ final class MenuBarLayoutEditorView: NSView {
         super.viewWillMove(toWindow: newWindow)
     }
 
-    fileprivate func request(_ move: MenuBarItemMove?) {
+    func request(_ move: MenuBarItemMove?) {
         guard !isBusy, let move else { return }
-        onMove?(move)
+        if move.intent == .slot, let tile = model.tiles.first(where: { $0.id == move.item }),
+           model.displayGroup(tile.group) == move.group {
+            onArrangeRequested?()
+        } else {
+            onMove?(move)
+        }
     }
 
     /// The checked group can be reapplied to repair a saved but unplaced icon.
@@ -98,12 +103,8 @@ final class MenuBarLayoutEditorView: NSView {
             menu.addItem(action)
         }
         menu.addItem(.separator())
-        let left = model.nudge(id, by: -1), right = model.nudge(id, by: 1)
-        menu.addItem(MenuAction(title: L("menuBar.layout.left", "Move Left"), enabled: !isBusy && left != nil) { [weak self] in
-            self?.request(left)
-        })
-        menu.addItem(MenuAction(title: L("menuBar.layout.right", "Move Right"), enabled: !isBusy && right != nil) { [weak self] in
-            self?.request(right)
+        menu.addItem(MenuAction(title: L("menuBar.layout.arrange", "Arrange in Menu Bar…"), enabled: !isBusy) { [weak self] in
+            self?.onArrangeRequested?()
         })
         return menu
     }
@@ -344,7 +345,7 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
         name = tile.name
         movable = tile.isMovable
         self.busy = busy
-        toolTip = movable ? String(format: L("menuBar.tile.help", "%@. Drag to move, or right-click for more."), name)
+        toolTip = movable ? String(format: L("menuBar.tile.help", "%@. Drag to another group. Use Arrange in Menu Bar to change order."), name)
             : String(format: L("menuBar.tile.locked", "%@. macOS keeps this icon in place."), name)
         setAccessibilityLabel(String(format: L("menuBar.tile.ax", "%@, %@"), name, tile.group.title))
         setAccessibilityHelp(toolTip)

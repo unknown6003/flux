@@ -12,6 +12,8 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     public private(set) var state: MenuBarPageState
     private let actions: MenuBarPageActions
 
+    private let arrangeButton = NSButton(title: "", target: nil, action: nil)
+    private let arrangeHelp = FluxUIStyle.label("", style: .callout, secondary: true)
     private let modeLabel = FluxUIStyle.label("", secondary: true)
     private let statusLabel = FluxUIStyle.label("", style: .callout, secondary: true)
     private let reviewStack = FluxUIStyle.vstack([])
@@ -41,17 +43,21 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     override public func loadView() {
         statusLabel.setAccessibilityRole(.staticText)
         editor.onMove = { [weak self] in self?.actions.moveItem($0) }
+        editor.onArrangeRequested = { [weak self] in self?.actions.beginArrange() }
         editor.onInteractionChanged = { [weak self] in self?.actions.editorInteractionChanged($0) }
 
         let title = FluxUIStyle.label(L("menuBar.layout.title", "Menu Bar Layout"), style: .headline)
         title.setAccessibilityRole(.staticText)
         let help = FluxUIStyle.label(L("menuBar.layout.help",
-            "Drag icons to change their order or group. Right-click an icon to move it without dragging."),
+            "Drag icons between groups, or right-click to choose a group. To change icon order, choose Arrange in Menu Bar."),
             style: .callout, secondary: true)
         let revealHelp = FluxUIStyle.label(L("menuBar.layout.revealHelp",
             "These lanes show saved groups. Opening this page shows all icons temporarily. Use the chevron to show or hide them. Option-click it to show all icons before moving a hidden icon."),
             style: .callout, secondary: true)
-        [title, help, revealHelp, editor].forEach(editorSection.addArrangedSubview)
+        arrangeButton.target = self
+        arrangeButton.action = #selector(toggleArrange)
+        arrangeButton.setAccessibilityIdentifier("menuBar.arrange")
+        [title, help, arrangeButton, arrangeHelp, revealHelp, editor].forEach(editorSection.addArrangedSubview)
         editorSection.setCustomSpacing(12, after: revealHelp)
 
         let preview = FluxUIStyle.button(L("menuBar.realIcons", "Show Real Icons…"), target: self, action: #selector(showRealIcons))
@@ -94,8 +100,12 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
             ? L("menuBar.preview.captured", "Captured previews. Icons without a capture use app icons.")
             : L("menuBar.preview.apps", "App icons are shown. Choose Show Real Icons for menu-bar previews.")
         realIconsButton?.isHidden = state.showsRealIcons
+        arrangeButton.title = state.isArranging ? L("menuBar.arrange.done", "Done Arranging") : L("menuBar.layout.arrange", "Arrange in Menu Bar…")
+        arrangeButton.isEnabled = !moving && !state.isRefreshing
+        arrangeHelp.isHidden = !state.isArranging
+        arrangeHelp.stringValue = L("menuBar.arrange.help", "Hold Command and drag the actual icons left or right in the menu bar at the top of your screen. Keep them in the bar. Click Done Arranging or the Flux checkmark when finished. Group choices below stay saved.")
         editor.update(tiles: state.tiles, alwaysHiddenEnabled: state.alwaysHiddenEnabled,
-                      busy: moving || state.isRefreshing)
+                      busy: moving || state.isRefreshing || state.isArranging)
 
         let reviewRows = state.rows.filter(\.needsIdentityReview).map(makeReviewRow)
         reviewStack.setViews(reviewRows, in: .top)
@@ -218,6 +228,9 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
 
     // MARK: Actions
 
+    @objc private func toggleArrange() {
+        if state.isArranging { actions.endArrange() } else { actions.beginArrange() }
+    }
     @objc private func showRealIcons() { actions.showRealIcons() }
     @objc private func refresh() { actions.refresh() }
     @objc private func review(_ sender: ReviewButton) {

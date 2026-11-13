@@ -396,7 +396,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     public func beginArrange() {
-        guard started else { return }
+        guard started, moveTask == nil, !arranging else { return }
         cancelScan(); cancelRehide(); discardPreviews()
         actionFailure = nil
         arranging = true
@@ -944,7 +944,7 @@ private struct PositionMenuBarArrangementContext: Equatable {
     }
 
     private func saveArrangedPositions(_ snapshot: PositionMenuBarInventory, context: PositionMenuBarArrangementContext) {
-        guard snapshot.complete else { return }
+        guard snapshot.complete, support == .byPosition else { return }
         let assignments = PositionMenuBarGeometry.assignments(applications: snapshot.applications,
             hidden: context.hidden, always: context.always,
             screens: context.screens, alwaysEnabled: context.alwaysEnabled)
