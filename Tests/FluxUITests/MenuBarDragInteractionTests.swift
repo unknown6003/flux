@@ -25,20 +25,16 @@ import FluxCore
         #expect(!page.performTileCommand("Move to Visible", for: id))
     }
 
-    @Test func tileOrderRequestOpensNativeGuideWithoutPostingAMove() {
+    @Test func tileOrderRequestReachesTheOrderingService() {
         let editor = MenuBarLayoutEditorView()
         let id = MenuBarItemID(application: ApplicationID(rawValue: "org.fluxfixture.first")!, index: 0)
         editor.update(tiles: [.init(id: id, name: "First", group: .hidden)], alwaysHiddenEnabled: true, busy: false)
         var moves: [MenuBarItemMove] = []
-        var guides = 0
         editor.onMove = { moves.append($0) }
-        editor.onArrangeRequested = { guides += 1 }
         editor.request(.init(item: id, group: .hidden, left: nil, right: nil))
-        #expect(moves.isEmpty)
-        #expect(guides == 1)
+        #expect(moves == [.init(item: id, group: .hidden, left: nil, right: nil)])
         editor.request(.init(item: id, group: .hidden, left: nil, right: nil, intent: .group))
-        #expect(moves.count == 1)
-        #expect(guides == 1)
+        #expect(moves.count == 2)
     }
 
     @Test func removedSourceAndLateReleaseCannotEndTheNextInteraction() throws {

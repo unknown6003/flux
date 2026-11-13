@@ -2,12 +2,11 @@ import AppKit
 import FluxCore
 
 /// Three strips of real menu bar items: Visible, Hidden and Always Hidden.
-/// Tiles change groups. Icon order uses direct Command-drag in the menu bar.
+/// Tiles request group changes or a named slot in the live menu bar.
 @MainActor
 final class MenuBarLayoutEditorView: NSView {
     static let pasteboardType = NSPasteboard.PasteboardType("com.flux.menubar.layout-item")
 
-    var onArrangeRequested: (() -> Void)?
     var onMove: ((MenuBarItemMove) -> Void)?
     var onInteractionChanged: ((Bool) -> Void)?
     private var interaction: UUID?
@@ -74,12 +73,7 @@ final class MenuBarLayoutEditorView: NSView {
 
     func request(_ move: MenuBarItemMove?) {
         guard !isBusy, let move else { return }
-        if move.intent == .slot, let tile = model.tiles.first(where: { $0.id == move.item }),
-           model.displayGroup(tile.group) == move.group {
-            onArrangeRequested?()
-        } else {
-            onMove?(move)
-        }
+        onMove?(move)
     }
 
     /// The checked group can be reapplied to repair a saved but unplaced icon.
@@ -103,9 +97,10 @@ final class MenuBarLayoutEditorView: NSView {
             menu.addItem(action)
         }
         menu.addItem(.separator())
-        menu.addItem(MenuAction(title: L("menuBar.layout.arrange", "Arrange in Menu Bar…"), enabled: !isBusy) { [weak self] in
-            self?.onArrangeRequested?()
-        })
+        for (step, title) in [(-1, "Move Left"), (1, "Move Right")] {
+            let move = model.nudge(id, by: step)
+            menu.addItem(MenuAction(title: title, enabled: !isBusy && move != nil) { [weak self] in self?.request(move) })
+        }
         return menu
     }
 }
@@ -345,7 +340,7 @@ private final class MenuBarTileView: NSView, NSDraggingSource {
         name = tile.name
         movable = tile.isMovable
         self.busy = busy
-        toolTip = movable ? String(format: L("menuBar.tile.help", "%@. Drag to another group. Use Arrange in Menu Bar to change order."), name)
+        toolTip = movable ? String(format: L("menuBar.tile.orderHelp", "%@. Drag to change its order or group."), name)
             : String(format: L("menuBar.tile.locked", "%@. macOS keeps this icon in place."), name)
         setAccessibilityLabel(String(format: L("menuBar.tile.ax", "%@, %@"), name, tile.group.title))
         setAccessibilityHelp(toolTip)

@@ -172,6 +172,7 @@ public struct MenuBarPageState {
     /// False when the last read found no Accessibility grant.
     public var layoutAccessible: Bool
     public var moveStatus: MenuBarMoveStatus?
+    public var orderAccessRequired = false
 
     public init(
         mode: MenuBarPageMode,
@@ -326,6 +327,9 @@ enum MenuBarText {
         case .hidingUnavailable: L("menuBar.move.noHiding", "Flux can't hide icons right now, so they all stay visible.")
         case .boundaryUnavailable: L("menuBar.move.boundary", "Flux could not read these icons beside its chevron. Try again.")
         case .eventsUnavailable: L("menuBar.move.events", "Flux could not prepare the move. Try again.")
+        case .positionAccessRequired: L("menuBar.move.layoutAccess", "Choose Allow Ordering to let Flux save icon order in the menu bar layout file.")
+        case .positionIdentityUnavailable: L("menuBar.move.layoutIdentity", "Flux could not match this icon to its saved position. No order was changed.")
+        case .positionRestoreFailed: L("menuBar.move.layoutRestore", "macOS did not confirm the order, and Flux could not restore the saved position. Refresh to check the current order.")
         case .inputBusy: L("menuBar.move.input", "Let go of the mouse and keys, then try again.")
         case .groupNotSaved("identityReviewRequired"):
             String(format: L("menuBar.move.review", "Review %@ first. Its signing identity changed."), name)

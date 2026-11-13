@@ -1,34 +1,55 @@
-# Native arrangement on the owner Mac
+# Menu-bar ordering without cursor movement
 
-2026-11-13. The owner's correction overrides prior drag acceptance reports.
+2026-11-13. The owner requires ordering by dragging tiles inside Settings. A native Command-drag guide does not satisfy that request. Group changes must remain usable and must never borrow the pointer.
 
-Settings tiles previously requested slot moves through MenuBarItemMove, the application move engine and MenuBarItemDrag. The latter posts global Command-drag events, hides the cursor and warps it back. This is the cursor borrowing the owner rejects. An AppKit dragging session inside Settings does not become a native status-item dragging session.
+## Mechanism
 
-Apple documents direct human Command-drag for status menus:
-https://support.apple.com/en-mn/guide/mac-help/-mchlp1446/mac
-The public NSStatusItem and NSStatusBar contracts do not establish a supported arbitrary-position setter for other applications' items:
-https://developer.apple.com/documentation/appkit/nsstatusitem
-https://developer.apple.com/documentation/appkit/nsstatusbar
-This is a limit of the inspected public contracts, not proof that no private technique exists. The pinned Ice source in MENU-BAR-DRAG-RESEARCH.md uses synthetic events and cursor restoration too. No cursor-free programmatic reorder is claimed.
+On this Mac, MenuBarAgent observes TrailingItemPreferredPositions in its com.apple.MenuBar group-container preference domain. A targeted preferred-position write changes live order without posting mouse events. Values are distances from the right, so larger weights sort to the left.
 
-## Decision
+The first disposable tests wrote the wrong keys. The actual keys were status:probe::FluxOrderA and status:probe::FluxOrderB, using the executable name rather than the test bundle identifier or display name. Those earlier negative tests did not establish an API limitation.
 
-Use direct native arrangement for order. Settings has Arrange in Menu Bar and Done Arranging. Arrange reveals all icons and keeps them revealed while the user holds Command and drags actual status icons. Flux does not post a reorder or reposition the pointer. The Flux checkmark also finishes the guide. Closing Settings ends the mode.
+A corrected test placed A at x=1296 and B at x=1252, then reversed them to A=1252 and B=1296. The pointer stayed at the same coordinates and the passive input tap remained enabled. A second test with no visibility assertion also reversed the live frames. No hide/reveal cycle, native allowance change, input suppression or cursor operation is required.
 
-A same-group tile order request opens the guide. Its menu offers the same action instead of Move Left/Right. Cross-group drops and explicit group commands now use the per-app hiding policy alone on macOS 27. The Settings service no longer has a physical move task, retry loop or synthetic mouse driver. Position-based systems start the explicit native guide instead of posting input.
+These are Mac-local fixture results. They establish the backend operation, not acceptance of the installed Settings gesture.
 
-On macOS 27, Done reads fresh inventory but does not infer saved groups from geometry. Groups are per-app choices. Physical boundary labels stay absent in that mode. Older position-based systems retain their native group-boundary behavior.
+## Design
 
-## Owner correction after build 901
+The existing UI to MenuBarPageActions to SettingsEffects to ApplicationHost to MenuBarService path carries a named slot request. Same-group tile drops now reach that service, rather than starting the native guide. Move Left and Move Right use the same request.
 
-The owner rejects the native guide as a solution for ordering inside Settings. That requirement remains unresolved. This follow-up removes cursor borrowing and the moving-state delay from group assignment; it must not be reported as completion of in-app icon ordering.
+The service saves per-app group changes through the existing policy. A slot with named peers also requests ordering. It validates current signing evidence, fresh inventory, the saved group revision and each source or peer. Order checks run without setting the editor's global moving state, so group controls remain usable.
 
-The old service fixture confirmed that an empty-group assignment posted one physical drag. The new service contract checks immediate policy/tile updates, no moving state, no extra inventory read and zero drag calls across Hidden, Always Hidden and Visible. Per-app group controls also stay usable during inventory refresh; the service queues a choice until fresh identity checks finish. A controller-level regression reproduced the former global disable rule before that rule changed. Live installed checks must observe the actual group gestures and input stream.
+MenuBarPositionIdentity resolves a key from the bundle namespace first. Executable and display-name namespaces require unique ownership. Multiple icons require an exact stable AX identifier. The code refuses ambiguous sibling keys; it does not guess from the item's current array index. Clock and the unique Control Center module can be anchors, while system-owned source items remain locked.
+
+MenuBarPositionOrder chooses one weight between the named peers. At a strip end it also accounts for unlisted native keys. It refuses exhausted numeric space instead of renumbering other icons.
+
+MenuBarPositionStore serializes writes on an actor. It synchronizes and reads current values, merges only the requested item's weight and preserves unknown entries. The application checks fresh, non-overlapping, on-screen source and peer frames before reporting success. It stops verification after its bounded budget. A failed or canceled move restores only its own value, and only while that value still equals the value Flux wrote. Failed restoration is reported.
+
+There is no event-posting, pointer warp, cursor hiding or input-blocking fallback in this path.
+
+## File access
+
+The tool session can read the protected position domain. A separately launched test app could not. That distinction must not be hidden by fixture success.
+
+If the installed app lacks access, the drop reports that ordering needs file access and shows Allow Ordering. The user's action opens an NSOpenPanel limited to the one expected file:
+
+~/Library/Group Containers/com.apple.MenuBar/Library/Preferences/com.apple.MenuBar.plist
+
+Flux keeps a security-scoped bookmark for that file. It requests no Full Disk Access, resets no permission and does not accept its own access prompt. After the owner selects the file, the original request is checked again against fresh state. Canceling the panel preserves group editing.
 
 ## Proof and limits
 
-The real editor request seam was tested before the fix. A same-group slot request emitted one physical move and no guide request, so the new assertion failed. After the fix, it emits one guide request and zero moves. This proves dispatch, not the owner's natural gesture.
+The editor dispatch regression failed on the prior implementation, which started the native guide and sent no slot request. Corrected fixture tests proved live preferred-position ordering with no generated mouse input. Core tests cover native weight direction, unlisted peers, ambiguous aliases and sibling identity. An isolated native preferences test covers unknown data preservation and conditional restoration. Service checks cover fresh placement and keeping group controls available when ordering access is missing.
 
-The initial pointer capture missed the live gesture. CUA later returned windowNotFoundAtPosition for fresh tile attempts despite reading Settings. Neither result is physical reorder proof. Owner desktop pixels and direct Command-drag acceptance must be reported separately from local tests and signing.
+Installed Settings gesture, signing identity and permission behavior are separate checks. They remain required before owner acceptance. No public release follows from unit tests or the old build900 gesture report.
 
-No public release is authorized by this note.
+## Source and API evidence
+
+Apple's public status-item API does not establish arbitrary external item placement:
+https://developer.apple.com/documentation/appkit/nsstatusitem
+
+The implementation uses CoreFoundation's runtime-resolved container preference entry points already present on this Mac. They are private and may change. Unavailable access or unresolved identities fail without mouse fallback.
+
+Current Thaw source supplied a research lead about preferred-position writes, not implementation code:
+https://github.com/thaw-app/Thaw/blob/f4bc831e821264fe2b52e4ea432ad8f2c5551606/Thaw/Items/Manager/MenuBarItemManager+Moving.swift
+
+Bartender 7.1.0 was inspected only for shipped imports and strings, without running or installing it. Its imports do not establish which operation it uses for ordering. No competitor implementation was copied.

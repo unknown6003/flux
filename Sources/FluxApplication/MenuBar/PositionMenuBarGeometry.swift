@@ -8,13 +8,18 @@ struct PositionMenuBarApplication {
     let icon: NSImage?
     let frames: [CGRect?]
     let systemItems: [SystemMenuItem?]
+    let identifiers: [String?]
+    let positionOwners: [String]
 
-    init(id: ApplicationID, name: String, icon: NSImage?, frames: [CGRect?], systemItems: [SystemMenuItem?] = []) {
+    init(id: ApplicationID, name: String, icon: NSImage?, frames: [CGRect?], systemItems: [SystemMenuItem?] = [],
+         identifiers: [String?] = [], positionOwners: [String] = []) {
         self.id = id
         self.name = name
         self.icon = icon
         self.frames = frames
         self.systemItems = systemItems
+        self.identifiers = identifiers
+        self.positionOwners = positionOwners
     }
 }
 

@@ -117,6 +117,10 @@ import FluxUI
     var owner: PositionMenuBarService!
     var drags: [(CGPoint, CGPoint)] = []
     var onDrag: ((CGPoint, CGPoint) -> Void)?
+    var orders: [MenuBarItemMove] = []
+    var onOrder: ((MenuBarItemMove) -> Void)?
+    var orderFailure: MenuBarMoveFailure?
+    var orderAccessGranted = false
 
     init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false) throws {
         defaults = try #require(UserDefaults(suiteName: domain))
@@ -155,7 +159,13 @@ import FluxUI
             }, tools: .init(drag: { [unowned self] from, to in
                 self.drags.append((from, to))
                 self.onDrag?(from, to)
-            }, inputIsQuiet: { true }, sleep: { _ in }, ownApplication: nil))
+            }, inputIsQuiet: { true }, sleep: { _ in }, ownApplication: nil),
+            placeOrder: { [unowned self] move, _ in
+                self.orders.append(move)
+                if let failure = self.orderFailure { throw failure }
+                self.onOrder?(move)
+                return nil
+            }, requestOrderAccess: { [unowned self] in self.orderAccessGranted })
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -172,6 +182,65 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func sameGroupSlotUsesPreferencesAndVerifiesFreshOrderWithoutDragging() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: [CGRect(x: 400, y: 0, width: 24, height: 24), CGRect(x: 500, y: 0, width: 24, height: 24)], identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        try await fixture.owner.start()
+        fixture.owner.setEditorVisible(true)
+        await fixture.settle()
+        let groupBefore = fixture.defaults.data(forKey: "flux.macOS27IconLayout")
+        fixture.onOrder = { _ in
+            fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+                frames: [CGRect(x: 600, y: 0, width: 24, height: 24), CGRect(x: 500, y: 0, width: 24, height: 24)], identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        }
+        let move = MenuBarItemMove(item: a, group: .shown, left: b, right: nil)
+        fixture.owner.moveItem(move)
+        await fixture.settle()
+        #expect(fixture.orders == [move])
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.tiles.map(\.id) == [b, a])
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.defaults.data(forKey: "flux.macOS27IconLayout") == groupBefore)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func changedSiblingIdentityRefusesTheOrderBeforeWriting() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        let frames = [CGRect(x: 400, y: 0, width: 24, height: 24), CGRect(x: 500, y: 0, width: 24, height: 24)]
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: frames, identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        try await fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: frames, identifiers: ["replacement", "B"])], accessibilityAllowed: true, complete: true)
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil)); await fixture.settle()
+        #expect(fixture.orders.isEmpty)
+        #expect(fixture.drags.isEmpty)
+        #expect(fixture.owner.state.moveStatus == .failed(name: "Example 1", .positionIdentityUnavailable))
+        try await fixture.close()
+    }
+
+    @Test @MainActor func orderingAccessFailureLeavesGroupsUsableAndDoesNotOpenNativeGuide() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: [CGRect(x: 400, y: 0, width: 24, height: 24), CGRect(x: 500, y: 0, width: 24, height: 24)], identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        fixture.orderFailure = .positionAccessRequired
+        try await fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil)); await fixture.settle()
+        #expect(fixture.owner.state.orderAccessRequired)
+        #expect(!fixture.owner.state.isArranging)
+        #expect(fixture.drags.isEmpty)
+        fixture.owner.moveItem(.init(item: a, group: .hidden, left: nil, right: nil, intent: .group))
+        #expect(fixture.owner.state.tiles.allSatisfy { $0.group == .hidden })
+        try await fixture.close()
+    }
+
     @Test @MainActor func activationRefreshWaitsForThePointerInteractionButInventoryChangesDoNot() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication, observesSystem: true)
         fixture.owner.start()

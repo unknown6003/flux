@@ -43,13 +43,12 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
     override public func loadView() {
         statusLabel.setAccessibilityRole(.staticText)
         editor.onMove = { [weak self] in self?.actions.moveItem($0) }
-        editor.onArrangeRequested = { [weak self] in self?.actions.beginArrange() }
         editor.onInteractionChanged = { [weak self] in self?.actions.editorInteractionChanged($0) }
 
         let title = FluxUIStyle.label(L("menuBar.layout.title", "Menu Bar Layout"), style: .headline)
         title.setAccessibilityRole(.staticText)
-        let help = FluxUIStyle.label(L("menuBar.layout.help",
-            "Drag icons between groups, or right-click to choose a group. To change icon order, choose Arrange in Menu Bar."),
+        let help = FluxUIStyle.label(L("menuBar.layout.orderHelp",
+            "Drag icons to change their order or group. Right-click for more actions."),
             style: .callout, secondary: true)
         let revealHelp = FluxUIStyle.label(L("menuBar.layout.revealHelp",
             "These lanes show saved groups. Opening this page shows all icons temporarily. Use the chevron to show or hide them. Option-click it to show all icons before moving a hidden icon."),
@@ -101,6 +100,8 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
             : L("menuBar.preview.apps", "App icons are shown. Choose Show Real Icons for menu-bar previews.")
         realIconsButton?.isHidden = state.showsRealIcons
         arrangeButton.title = state.isArranging ? L("menuBar.arrange.done", "Done Arranging") : L("menuBar.layout.arrange", "Arrange in Menu Bar…")
+        if state.mode == .perApplication { arrangeButton.title = L("menuBar.ordering.allow", "Allow Ordering…") }
+        arrangeButton.isHidden = state.mode == .perApplication && !state.orderAccessRequired
         arrangeButton.isEnabled = !moving && !state.isRefreshing
         arrangeHelp.isHidden = !state.isArranging
         arrangeHelp.stringValue = L("menuBar.arrange.help", "Hold Command and drag the actual icons left or right in the menu bar at the top of your screen. Keep them in the bar. Click Done Arranging or the Flux checkmark when finished. Group choices below stay saved.")

@@ -7,13 +7,15 @@ public struct RunningApplication: Sendable {
     public let processID: pid_t
     public let name: String
     public let bundleURL: URL?
+    public var executableName: String? = nil
 
     @MainActor public static func snapshot() -> [RunningApplication] {
         NSWorkspace.shared.runningApplications.compactMap { app in
             guard !app.isTerminated, let raw = app.bundleIdentifier,
                   let id = ApplicationID(rawValue: raw) else { return nil }
             return RunningApplication(id: id, processID: app.processIdentifier,
-                                      name: app.localizedName ?? raw, bundleURL: app.bundleURL)
+                                      name: app.localizedName ?? raw, bundleURL: app.bundleURL,
+                                      executableName: app.executableURL?.lastPathComponent)
         }
     }
 }
@@ -28,6 +30,7 @@ public enum SystemMenuItem: String, Sendable {
 public struct StatusItemGeometry: Sendable {
     public let frame: CGRect?
     public let systemItem: SystemMenuItem?
+    public var identifier: String? = nil
 }
 
 public struct StatusApplication: Sendable {
@@ -115,10 +118,9 @@ public actor StatusInventory {
             }
             if !items.isEmpty {
                 let frames = items.map { item in
-                    let identifier = application.id.rawValue == "com.apple.MenuBarAgent"
-                        ? value(item, kAXIdentifierAttribute, deadline: deadline, complete: &ownerComplete) as? String : nil
+                    let identifier = value(item, kAXIdentifierAttribute, deadline: deadline, complete: &ownerComplete) as? String
                     return StatusItemGeometry(frame: frame(item, deadline: deadline, complete: &ownerComplete),
-                                              systemItem: identifier.flatMap(SystemMenuItem.init(rawValue:)))
+                                              systemItem: identifier.flatMap(SystemMenuItem.init(rawValue:)), identifier: identifier)
                 }
                 results.append(.init(application: application, items: frames))
             }
