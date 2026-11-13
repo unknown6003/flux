@@ -24,6 +24,8 @@ MenuBarPositionOrder chooses one weight between the named peers. At a strip end 
 
 MenuBarPositionStore serializes writes on an actor. It synchronizes and reads current values, merges only the requested item's weight and preserves unknown entries. The application checks fresh, non-overlapping, on-screen source and peer frames before reporting success. It stops verification after its bounded budget. A failed or canceled move restores only its own value, and only while that value still equals the value Flux wrote. Failed restoration is reported.
 
+Ordering reads only the source and named neighbour owners. On the owner Mac, the broad snapshot saw 138 running owners and was incomplete, while a fresh two-owner snapshot completed in 0.244 seconds. A complete broad desktop scan is not a precondition for a targeted preference write. The scoped read still requires complete source and neighbour geometry, stable sibling identity and fresh signing checks. Successful order publication replaces only those owners in the existing Settings inventory.
+
 There is no event-posting, pointer warp, cursor hiding or input-blocking fallback in this path.
 
 ## File access

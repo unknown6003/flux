@@ -121,12 +121,22 @@ import FluxUI
     var onOrder: ((MenuBarItemMove) -> Void)?
     var orderFailure: MenuBarMoveFailure?
     var orderAccessGranted = false
+    var orderScopes: [Set<ApplicationID>] = []
 
-    init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false) throws {
+    init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false,
+         scopedOrderReads: Bool = false) throws {
         defaults = try #require(UserDefaults(suiteName: domain))
         preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
         inventory = .init(applications: [.init(id: app, name: "Example", icon: nil,
             frames: [CGRect(x: 400, y: 0, width: 24, height: 24)])], accessibilityAllowed: true, complete: true)
+        let scopedRead: (@MainActor @Sendable (Set<ApplicationID>) async -> PositionMenuBarInventory)?
+        if scopedOrderReads {
+            scopedRead = { [unowned self] requested in
+                self.orderScopes.append(requested)
+                return .init(applications: self.inventory.applications.filter { requested.contains($0.id) },
+                             accessibilityAllowed: true, complete: true)
+            }
+        } else { scopedRead = nil }
         owner = PositionMenuBarService(defaults: defaults, domain: domain, preferences: preferences,
             hidingSupport: support, controls: controls,
             hider: support == .perApplication ? hider : nil, readInventory: { [unowned self] in
@@ -165,7 +175,8 @@ import FluxUI
                 if let failure = self.orderFailure { throw failure }
                 self.onOrder?(move)
                 return nil
-            }, requestOrderAccess: { [unowned self] in self.orderAccessGranted })
+            }, requestOrderAccess: { [unowned self] in self.orderAccessGranted },
+            readOrderInventory: scopedRead)
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -182,6 +193,40 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func anIncompleteUnrelatedOwnerDoesNotBlockOrderingOrRemoveOtherTiles() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication, scopedOrderReads: true)
+        let unrelated = ApplicationID(rawValue: "org.fluxfixture.unrelated")!
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        func snapshot(_ moved: Bool) -> PositionMenuBarInventory {
+            .init(applications: [
+                .init(id: fixture.app, name: "Example", icon: nil,
+                      frames: [CGRect(x: moved ? 600 : 400, y: 0, width: 24, height: 24),
+                               CGRect(x: 500, y: 0, width: 24, height: 24)], identifiers: ["A", "B"]),
+                .init(id: unrelated, name: "Unrelated", icon: nil,
+                      frames: [CGRect(x: 700, y: 0, width: 24, height: 24)])
+            ], accessibilityAllowed: true, complete: false)
+        }
+        fixture.inventory = snapshot(false)
+        fixture.owner.start(); fixture.owner.setEditorVisible(true)
+        let scanDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.owner.state.isRefreshing, ContinuousClock.now < scanDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        fixture.onOrder = { _ in fixture.inventory = snapshot(true) }
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
+        let orderDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.owner.state.moveStatus == nil, ContinuousClock.now < orderDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(fixture.orderScopes == [[fixture.app], [fixture.app]])
+        #expect(fixture.orders.count == 1)
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.owner.state.tiles.map(\.id) == [b, a, .init(application: unrelated, index: 0)])
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
     @Test @MainActor func sameGroupSlotUsesPreferencesAndVerifiesFreshOrderWithoutDragging() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication)
         let a = MenuBarItemID(application: fixture.app, index: 0)
@@ -493,7 +538,11 @@ import FluxUI
         #expect(fixture.owner.state.rows.first?.needsIdentityReview == true)
         fixture.identityAccepted = true
         fixture.owner.reviewIdentity(fixture.app)
-        await fixture.settle()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.owner.state.rows.first?.needsIdentityReview != false,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         let pins = try MenuBarIdentityPins(propertyList: fixture.defaults.object(forKey: "flux.menuBar.identities.v1"))
         let policy = try VisibilityPolicy(legacyPropertyList: fixture.defaults.object(forKey: "flux.macOS27IconLayout"))
         #expect(pins.requirement(for: fixture.app) == Data([2]))
