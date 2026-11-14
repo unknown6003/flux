@@ -127,7 +127,7 @@ import FluxUI
     var savedWeights: [MenuBarItemID: Double] = [:]
 
     init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false,
-         scopedOrderReads: Bool = false) throws {
+         scopedOrderReads: Bool = false, rejectsNativeOrder: Bool = false) throws {
         defaults = try #require(UserDefaults(suiteName: domain))
         preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
         inventory = .init(applications: [.init(id: app, name: "Example", icon: nil,
@@ -141,6 +141,8 @@ import FluxUI
                              accessibilityAllowed: true, complete: true)
             }
         } else { scopedRead = nil }
+        let nativeVerifier: (@MainActor (MenuBarItemMove, PositionMenuBarInventory) async throws -> Bool)?
+        if rejectsNativeOrder { nativeVerifier = { _, _ in false } } else { nativeVerifier = nil }
         owner = PositionMenuBarService(defaults: defaults, domain: domain, preferences: preferences,
             hidingSupport: support, controls: controls,
             hider: support == .perApplication ? hider : nil, readInventory: { [unowned self] in
@@ -193,7 +195,7 @@ import FluxUI
                 self.legacyAccessRequests.append(application)
                 self.orderFailure = nil
                 return true
-            })
+            }, verifyOrder: nativeVerifier)
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -210,6 +212,35 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func emptyVisibleDropsAndGroupMenusRequestNativePlacementWithoutPeers() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.assign(fixture.app, to: .hidden)
+        let item = MenuBarItemID(application: fixture.app, index: 0)
+        fixture.owner.moveItem(.init(item: item, group: .shown, left: nil, right: nil))
+        await fixture.settle()
+        #expect(fixture.orders.count == 1)
+        #expect(fixture.orders.first?.group == .shown)
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example"))
+        fixture.owner.moveItem(.init(item: item, group: .hidden, left: nil, right: nil, intent: .group))
+        await fixture.settle()
+        #expect(fixture.orders.count == 2)
+        #expect(fixture.orders.last?.intent == .group)
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func nativeBoundaryVerificationCanRefuseAnOtherwiseValidSavedSlot() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication, rejectsNativeOrder: true)
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: .init(application: fixture.app, index: 0), group: .shown, left: nil, right: nil))
+        await fixture.settle()
+        #expect(fixture.orders.count == 1)
+        #expect(fixture.owner.state.moveStatus == .failed(name: "Example", .notAccepted))
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
     @Test @MainActor func concealedOverlappingFramesDoNotBlockAVerifiedNativeSave() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication)
         let a = MenuBarItemID(application: fixture.app, index: 0)
@@ -1023,7 +1054,6 @@ import FluxUI
     @Test @MainActor func groupDropsApplyImmediatelyWithoutCursorOrMovingState() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         let item = MenuBarItemID(application: fixture.app, index: 0)
-        let reads = fixture.reads
         var movingUpdates = 0
         fixture.owner.onChange = {
             if case .moving = fixture.owner.state.moveStatus { movingUpdates += 1 }
@@ -1037,13 +1067,15 @@ import FluxUI
         }
         #expect(movingUpdates == 0)
         #expect(fixture.drags.isEmpty)
-        #expect(fixture.reads == reads)
+        #expect(fixture.orders.map(\.group) == [.hidden, .alwaysHidden, .shown])
+        #expect(fixture.orders.allSatisfy { $0.left == nil && $0.right == nil })
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example"))
         #expect(fixture.hider.applied.last?.policy.group(for: fixture.app) == .shown)
         fixture.owner.onChange = nil
         try await fixture.close()
     }
 
-    @Test @MainActor func perAppGroupChangesNeedNoPhysicalPlacement() async throws {
+    @Test @MainActor func groupChoiceAppliesBeforeItsNativePlacementFinishes() async throws {
         let (fixture, _) = try await twoItemFixture(support: .perApplication)
         let item = MenuBarItemID(application: fixture.app, index: 0)
         fixture.owner.moveItem(.init(item: item, group: .hidden, left: nil, right: nil))
@@ -1061,7 +1093,9 @@ import FluxUI
             left: .init(application: second, index: 0), right: nil, intent: .group))
         await fixture.settle(); await fixture.settle()
         #expect(fixture.drags.isEmpty)
-        #expect(fixture.owner.state.moveStatus == nil)
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example"))
+        #expect(fixture.orders.count == 1)
+        #expect(fixture.orders.first?.left == nil && fixture.orders.first?.right == nil)
         try await fixture.close()
     }
 

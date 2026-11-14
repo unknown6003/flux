@@ -74,8 +74,8 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
     let identifier: String?
 }
 
-/// Owns only Flux's status items. Saving a group never moves another app's icon
-/// or changes another app's allowance. Inventory exists only while demanded.
+/// Owns Flux's controls and saves native order for requested items.
+/// Groups use the per-app hiding policy. Inventory exists only while demanded.
 @MainActor public final class PositionMenuBarService: NSObject, MenuBarService {
     public var onAction: (@MainActor (MenuBarAction) -> Void)?
     public var onChange: (@MainActor () -> Void)?
@@ -110,6 +110,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
     private let placeOrder: @MainActor (MenuBarItemMove, PositionMenuBarInventory) async throws -> MenuBarPositionEdit?
     private let restoreOrder: @MainActor (MenuBarPositionEdit) async throws -> Void
     private let requestOrderAccess: @MainActor () -> Bool
+    private let verifyOrder: (@MainActor (MenuBarItemMove, PositionMenuBarInventory) async throws -> Bool)?
     private let readPreferredOrder: @MainActor (PositionMenuBarInventory) async -> [MenuBarItemID: Double]
     private var preferredOrder: [MenuBarItemID: Double] = [:]
     private var needsLegacyAccess: ApplicationID?
@@ -158,7 +159,8 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         let preview = StatusPreview()
         let identityReader = MenuBarIdentityReader()
         let prompt = MenuBarIdentityPrompt()
-        let positions = MenuBarPositionStore()
+        let arrangeTools = PositionMenuBarArrangeTools.system()
+        let positions = MenuBarPositionStore(chevronKey: arrangeTools.ownApplication.map { MenuBarControls.chevronPositionKey(application: $0) })
         let orderAccess = MenuBarOrderAccess(defaults: defaults)
         let legacyAccess = MenuBarLegacyOrderAccess(defaults: defaults)
         self.init(defaults: defaults, domain: domain, preferences: preferences,
@@ -217,7 +219,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                           application: application, savedRequirement: saved)
                       guard !app.isTerminated else { return nil }
                       return result
-                  }, confirmIdentity: { await prompt.confirm(name: $0) }, tools: .system(),
+                  }, confirmIdentity: { await prompt.confirm(name: $0) }, tools: arrangeTools,
                   placeOrder: { move, snapshot in
                       let counts = Dictionary(grouping: snapshot.applications, by: \.id).mapValues(\.count)
                       let identities = snapshot.applications.filter { counts[$0.id] == 1 }.flatMap { app in
@@ -245,7 +247,8 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                       }, accessibilityAllowed: snapshot.accessibilityAllowed, complete: snapshot.complete)
                   },
                   readPreferredOrder: { (try? await positions.preferredOrder(identities: Self.positionIdentities($0))) ?? [:] },
-                  requestLegacyAccess: { legacyAccess.request($0) })
+                  requestLegacyAccess: { legacyAccess.request($0) },
+                  verifyOrder: { try await positions.isPlaced($0, identities: Self.positionIdentities($1)) })
     }
 
     init(defaults: UserDefaults, domain: String, preferences: PreferenceStore,
@@ -267,7 +270,8 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
          requestOrderAccess: @escaping @MainActor () -> Bool = { false },
          readOrderInventory: (@MainActor (Set<ApplicationID>) async -> PositionMenuBarInventory)? = nil,
          readPreferredOrder: @escaping @MainActor (PositionMenuBarInventory) async -> [MenuBarItemID: Double] = { _ in [:] },
-         requestLegacyAccess: @escaping @MainActor (ApplicationID) -> Bool = { _ in false }) {
+         requestLegacyAccess: @escaping @MainActor (ApplicationID) -> Bool = { _ in false },
+         verifyOrder: (@MainActor (MenuBarItemMove, PositionMenuBarInventory) async throws -> Bool)? = nil) {
         self.tools = tools
         self.defaults = defaults; self.domain = domain; self.preferences = preferences
         support = hidingSupport; self.controls = controls; self.hider = hider; self.readInventory = readInventory
@@ -278,7 +282,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         self.readIdentity = readIdentity; self.confirmIdentity = confirmIdentity
         self.readOrderInventory = readOrderInventory ?? { _ in await readInventory() }
         self.placeOrder = placeOrder; self.restoreOrder = restoreOrder; self.requestOrderAccess = requestOrderAccess
-        self.readPreferredOrder = readPreferredOrder
+        self.readPreferredOrder = readPreferredOrder; self.verifyOrder = verifyOrder
         self.requestLegacyAccess = requestLegacyAccess
         state = MenuBarPageState(mode: .paused)
         super.init()
@@ -553,7 +557,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                 changed()
                 return
             }
-            if move.intent == .slot, move.left != nil || move.right != nil { order(move) }
+            order(move)
         case .byPosition:
             beginArrange()
         case .unverified:
@@ -562,7 +566,10 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         }
     }
 
-    private func order(_ move: MenuBarItemMove) {
+    private func order(_ requestedMove: MenuBarItemMove) {
+        let move = requestedMove.intent == .group
+            ? MenuBarItemMove(item: requestedMove.item, group: requestedMove.group, left: nil, right: nil, intent: .group)
+            : requestedMove
         guard started, editorVisible else { return }
         guard orderTask == nil, scanTask == nil else { pendingOrder = move; return }
         let id = UUID()
@@ -614,8 +621,13 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                           zip(requested, bindings).allSatisfy({ item, binding in
                               self.orderingIdentity(item, in: fresh) == binding
                           }) else { throw MenuBarMoveFailure.positionIdentityUnavailable }
-                    let saved = await self.readPreferredOrder(fresh)
-                    guard MenuBarPositionOrder.isPlaced(item: move.item, left: move.left, right: move.right, positions: saved) else {
+                    let placed: Bool
+                    if let verifyOrder = self.verifyOrder { placed = try await verifyOrder(move, fresh) }
+                    else {
+                        let saved = await self.readPreferredOrder(fresh)
+                        placed = MenuBarPositionOrder.isPlaced(item: move.item, left: move.left, right: move.right, positions: saved)
+                    }
+                    guard placed else {
                         throw MenuBarMoveFailure.notAccepted
                     }
                     self.publishOrder(fresh, replacing: requestedApplications)

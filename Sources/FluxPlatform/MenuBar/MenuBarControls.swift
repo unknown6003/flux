@@ -73,10 +73,17 @@ import FluxCore
     public var hiddenBoundary: CGRect? { hidden?.button?.window?.frame }
     public var alwaysHiddenBoundary: CGRect? { always?.button?.window?.frame }
 
+    public static func chevronPositionKey(application: ApplicationID) -> String {
+        "status:\(application.rawValue)::\(autosaveName("flux.chevron"))"
+    }
+
+    private static func autosaveName(_ name: String) -> String {
+        name + (ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? ".v27" : "")
+    }
+
     private func make(_ name: String) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let suffix = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? ".v27" : ""
-        item.autosaveName = name + suffix
+        item.autosaveName = Self.autosaveName(name)
         item.behavior = []
         item.isVisible = true
         return item

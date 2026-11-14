@@ -16,7 +16,7 @@ These are Mac-local fixture results. They establish the backend operation, not a
 
 The existing UI to MenuBarPageActions to SettingsEffects to ApplicationHost to MenuBarService path carries a named slot request. Same-group tile drops now reach that service, rather than starting the native guide. Move Left and Move Right use the same request.
 
-The service saves per-app group changes through the existing policy. A slot with named peers also requests ordering. It validates current signing evidence, fresh inventory, the saved group revision and each source or peer. Order checks run without setting the editor's global moving state, so group controls remain usable.
+The service saves per-app group changes through the existing policy. Every editor move also requests native placement, including an empty-lane drop and a group-menu reapply. It validates current signing evidence, fresh inventory, the saved group revision and each source or peer. Order checks run without setting the editor's global moving state, so group controls remain usable.
 
 MenuBarPositionIdentity resolves a key from the bundle namespace first. Executable and display-name namespaces require unique ownership. Multiple icons require an exact stable AX identifier. The code refuses ambiguous sibling keys; it does not guess from the item's current array index. Clock and the unique Control Center module can be anchors, while system-owned source items remain locked.
 
@@ -67,3 +67,12 @@ Protected legacy names use an exact-file scope for the named app. Shottr stores 
 
 
 Private907 passed concealed Rocket order/inverse, Wispr order, Shottr's three-group cycle and a TG Pro physical move ahead of Tailscale. One TG Pro inverse reported an identity failure, while a fresh repeat and the native store probe both succeeded. The precise rejection stage was not captured. Scoped inventory now allows two bounded100ms rereads when a requested owner is temporarily absent. Existing but changed or ambiguous identities still fail immediately. A regression drops a peer from the first post-save snapshot, then restores its original identity, and requires one native save only. Private908 still needs the real inverse path repeated.
+
+
+### Owner correction: Visible must be right of the chevron
+
+The owner accepted908's normal in-app dragging as almost perfect, then reported that a move to Visible could leave the icon left of the chevron. A real908 drop of TG Pro into an empty Visible lane reproduced it. The group changed, but its native weight stayed272 while the chevron was174. The owner AX origins stayed1336 and1483 respectively. No native ordering request ran because the slot had no neighbours.
+
+All editor requests now enter the native ordering path. The store uses the same autosave name as the owned chevron control, with a shared key factory. Visible weights must be smaller than the chevron's current weight; Hidden and Always Hidden weights must be larger. Named peers on the wrong side cannot pull a source across the chevron. A group-only reapply preserves the weight when it is already on the right side. Missing or invalid chevron identity refuses writes. Neither the chevron nor any peer is written.
+
+Production verification now rereads the native chevron and the normalized placement bounds. It does not accept the group label alone. Existing signing, sibling, inventory revision and conditional restore checks remain. No cursor or native allowance operation was added. Tests exercise empty Visible drops, menu reapply, all three group sides, invalid-side peers and a chevron moved before verification. Private909 still needs the real empty-lane transition and native frame comparison.

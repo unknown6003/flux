@@ -96,14 +96,16 @@ public struct MenuBarPositionEdit: Sendable {
 public actor MenuBarPositionStore {
     private let preferences: MenuBarContainerPreferences
     private let requiresSystemAnchor: Bool
+    private let chevronKey: String?
 
-    public init() {
-        self.init(domain: "com.apple.MenuBar", container: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Group Containers/com.apple.MenuBar"))
+    public init(chevronKey: String? = nil) {
+        self.init(domain: "com.apple.MenuBar", container: URL(fileURLWithPath: NSHomeDirectory() + "/Library/Group Containers/com.apple.MenuBar"), chevronKey: chevronKey)
     }
 
-    init(domain: String, container: URL) {
+    init(domain: String, container: URL, chevronKey: String? = nil) {
         preferences = MenuBarContainerPreferences(domain: domain, key: "TrailingItemPreferredPositions", container: container)
         requiresSystemAnchor = domain == "com.apple.MenuBar"
+        self.chevronKey = chevronKey
     }
 
     private func read() throws(MenuBarMoveFailure) -> [String: Any] {
@@ -173,6 +175,22 @@ public actor MenuBarPositionStore {
         // Merge with a second current read; never write a saved whole-domain snapshot.
         let fresh = try read()
         if !(raw as NSDictionary).isEqual(to: fresh) { raw = fresh }
+        let order = try placement(move, raw: raw, identities: identities)
+        let weight = try MenuBarPositionOrder.weight(item: order.item, left: order.left, right: order.right, positions: order.positions)
+        try Task.checkCancellation()
+        try write(weight, for: order.item, merging: raw)
+        return MenuBarPositionEdit(key: order.item, before: weights(raw)[order.item], after: weight)
+    }
+
+    public func isPlaced(_ move: MenuBarItemMove, identities: [MenuBarPositionIdentity]) throws -> Bool {
+        let raw = try read()
+        let order = try placement(move, raw: raw, identities: identities)
+        guard weights(raw)[order.item] != nil else { return false }
+        return MenuBarPositionOrder.isPlaced(item: order.item, left: order.left, right: order.right, positions: order.positions)
+    }
+
+    private func placement(_ move: MenuBarItemMove, raw: [String: Any], identities: [MenuBarPositionIdentity]) throws
+        -> (item: String, left: String?, right: String?, positions: [String: Double]) {
         var positions = weights(raw)
         let identities = resolvedIdentities(identities)
         let keys = Set(positions.keys)
@@ -187,13 +205,14 @@ public actor MenuBarPositionStore {
             }
         }
         let item = try key(for: move.item)
-        let left = try move.left.map { try key(for: $0) }
-        let right = try move.right.map { try key(for: $0) }
+        let leftID = move.intent == .group ? nil : move.left
+        let rightID = move.intent == .group ? nil : move.right
+        var left = try leftID.map { try key(for: $0) }
+        var right = try rightID.map { try key(for: $0) }
         guard item != left, item != right, left == nil || left != right else { throw MenuBarMoveFailure.positionIdentityUnavailable }
-        let before = positions[item]
         var requested = [(move.item, item)]
-        if let id = move.left, let key = left { requested.append((id, key)) }
-        if let id = move.right, let key = right { requested.append((id, key)) }
+        if let id = leftID, let key = left { requested.append((id, key)) }
+        if let id = rightID, let key = right { requested.append((id, key)) }
         for (id, key) in requested {
             if positions[key] == nil {
                 guard raw[key] == nil, let identity = identities.first(where: { $0.item == id }),
@@ -202,10 +221,28 @@ public actor MenuBarPositionStore {
                 positions[key] = weight
             }
         }
-        let weight = try MenuBarPositionOrder.weight(item: item, left: left, right: right, positions: positions)
-        try Task.checkCancellation()
-        try write(weight, for: item, merging: raw)
-        return MenuBarPositionEdit(key: item, before: before, after: weight)
+        if let chevronKey {
+            guard let boundary = positions[chevronKey], boundary > 0, item != chevronKey else {
+                throw MenuBarMoveFailure.positionIdentityUnavailable
+            }
+            let shown = move.group == .shown
+            let onSide = Set(positions.compactMap { key, value -> String? in
+                guard value >= 0 else { return nil }
+                return (shown ? value < boundary : value > boundary) ? key : nil
+            })
+            if move.intent == .group || (move.left == nil && move.right == nil) {
+                left = nil; right = nil
+                if !onSide.contains(item) {
+                    if move.group == .shown { left = chevronKey } else { right = chevronKey }
+                }
+            } else {
+                if let key = left, !onSide.contains(key) { left = nil }
+                if let key = right, !onSide.contains(key) { right = nil }
+                if move.group == .shown, left == nil { left = chevronKey }
+                if move.group != .shown, right == nil { right = chevronKey }
+            }
+        }
+        return (item, left, right, positions)
     }
 
     public func restore(_ edit: MenuBarPositionEdit) throws {
