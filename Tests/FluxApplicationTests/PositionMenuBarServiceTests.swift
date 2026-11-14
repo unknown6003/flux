@@ -121,6 +121,7 @@ import FluxUI
     var onOrder: ((MenuBarItemMove) -> Void)?
     var orderFailure: MenuBarMoveFailure?
     var orderAccessGranted = false
+    var legacyAccessRequests: [ApplicationID] = []
     var orderScopes: [Set<ApplicationID>] = []
     var visibilityEvents: [String] = []
     var onVisibilityPrepare: ((Set<ApplicationID>) -> Void)?
@@ -187,7 +188,12 @@ import FluxUI
                 self.onVisibilityPrepare?(applications)
                 return MenuBarOrderVisibilityEdit(id: UUID(), applications: applications)
             }, restoreOrderVisibility: { [unowned self] _ in self.visibilityEvents.append("restore") },
-            readPreferredOrder: { [unowned self] _ in self.savedWeights })
+            readPreferredOrder: { [unowned self] _ in self.savedWeights },
+            requestLegacyAccess: { [unowned self] application in
+                self.legacyAccessRequests.append(application)
+                self.orderFailure = nil
+                return true
+            })
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -226,6 +232,58 @@ import FluxUI
             try await Task.sleep(for: .milliseconds(1))
         }
         #expect(fixture.visibilityEvents == ["reveal", "place", "restore"])
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func staleOverlappingFramesDoNotBlockANativePositionWrite() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        func snapshot(_ ax: Double, _ bx: Double) -> PositionMenuBarInventory {
+            .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+                frames: [CGRect(x: ax, y: 0, width: 34, height: 24), CGRect(x: bx, y: 0, width: 34, height: 24)],
+                identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        }
+        fixture.inventory = snapshot(400, 402)
+        fixture.onOrder = { _ in fixture.inventory = snapshot(500, 400) }
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.owner.state.moveStatus == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(fixture.orders.count == 1)
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.visibilityEvents == ["reveal", "restore"])
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func grantingTheNamedLegacyFileRetriesAfterAFreshScan() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: [CGRect(x: 400, y: 0, width: 24, height: 24), CGRect(x: 500, y: 0, width: 24, height: 24)],
+            identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        fixture.orderFailure = .legacyPositionAccessRequired(fixture.app)
+        fixture.onOrder = { _ in
+            fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+                frames: [CGRect(x: 600, y: 0, width: 24, height: 24), CGRect(x: 500, y: 0, width: 24, height: 24)],
+                identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        }
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
+        await fixture.settle()
+        #expect(fixture.owner.state.orderAccessRequired)
+        let reads = fixture.reads
+        fixture.owner.beginArrange()
+        await fixture.settle()
+        #expect(fixture.legacyAccessRequests == [fixture.app])
+        #expect(fixture.reads > reads)
+        #expect(!fixture.owner.state.orderAccessRequired)
         #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
         #expect(fixture.drags.isEmpty)
         try await fixture.close()
@@ -292,7 +350,8 @@ import FluxUI
         while fixture.owner.state.moveStatus == nil, ContinuousClock.now < orderDeadline {
             try await Task.sleep(for: .milliseconds(1))
         }
-        #expect(fixture.orderScopes == [[fixture.app], [fixture.app]])
+        #expect(fixture.orderScopes.count == 3)
+        #expect(fixture.orderScopes.allSatisfy { $0 == [fixture.app] })
         #expect(fixture.orders.count == 1)
         #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
         #expect(fixture.owner.state.tiles.map(\.id) == [b, a, .init(application: unrelated, index: 0)])

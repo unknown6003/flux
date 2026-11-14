@@ -327,6 +327,7 @@ enum MenuBarText {
         case .hidingUnavailable: L("menuBar.move.noHiding", "Flux can't hide icons right now, so they all stay visible.")
         case .boundaryUnavailable: L("menuBar.move.boundary", "Flux could not read these icons beside its chevron. Try again.")
         case .eventsUnavailable: L("menuBar.move.events", "Flux could not prepare the move. Try again.")
+        case .legacyPositionAccessRequired: L("menuBar.move.legacyAccess", "Choose Allow Ordering to read this app's saved menu bar item name. Its settings will not change.")
         case .positionAccessRequired: L("menuBar.move.layoutAccess", "Choose Allow Ordering to let Flux save icon order in the menu bar layout file.")
         case .orderVisibilityAccessRequired: L("menuBar.move.orderRevealAccess", "Choose Allow Ordering to let Flux temporarily reveal hidden icons during a move.")
         case .orderVisibilityRestoreFailed: L("menuBar.move.orderRevealRestore", "Flux could not restore an icon's macOS visibility after the move. Its saved group is unchanged.")

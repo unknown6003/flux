@@ -61,3 +61,12 @@ Current Thaw source supplied a research lead about preferred-position writes, no
 https://github.com/thaw-app/Thaw/blob/f4bc831e821264fe2b52e4ea432ad8f2c5551606/Thaw/Items/Manager/MenuBarItemManager+Moving.swift
 
 Bartender 7.1.0 was inspected only for shipped imports and strings, without running or installing it. Its imports do not establish which operation it uses for ordering. No competitor implementation was copied.
+
+
+### Concealed frame reproduction on private905
+
+Actual owner Settings drags reproduced a pre-write failure with concealed peers. The source and peer AX frames remained stale and overlapping after the temporary native allowance changed. A read-only capture recorded both flags reverting and no native order write. A guarded Mac probe then revealed Rocket and Raycast, wrote Rocket's verified native key to554.5, and measured Fathom982 < Rocket1018 < Raycast1052. It restored only its key and flags. Revealing Rocket alone did not prove peer order.
+
+The service now saves by native identity before judging placement. It refreshes identities after the reveal and retains the existing post-save on-screen, non-overlap and ordering checks. A regression keeps overlapping frames until the native write, then supplies the verified placement. No cursor/input API was added.
+
+Shottr's real app path separately reported a missing native identity. Exact-file legacy access now lets the user select its protected AppKit preferences, then rescans before replaying the named request. Only native position keys are read. The app's own file is never written. The granted file scope is retained and reopened on launch. These source checks still require private906 live acceptance.

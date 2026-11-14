@@ -7,6 +7,7 @@ import FluxCore
     private let key: String
     private let fileURL: URL
     private var scoped: URL?
+    private let message: String?
     public static var file: URL {
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Group Containers/com.apple.MenuBar/Library/Preferences/com.apple.MenuBar.plist")
     }
@@ -16,8 +17,8 @@ import FluxCore
     }
 
     public init(defaults: UserDefaults, file: URL = MenuBarOrderAccess.file,
-                bookmarkKey: String = "flux.menuBar.orderingBookmark.v1") {
-        self.defaults = defaults; self.fileURL = file; self.key = bookmarkKey
+                bookmarkKey: String = "flux.menuBar.orderingBookmark.v1", message: String? = nil) {
+        self.defaults = defaults; self.fileURL = file; self.key = bookmarkKey; self.message = message
         if let data = defaults.data(forKey: key) {
             var stale = false
             if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope],
@@ -37,9 +38,9 @@ import FluxCore
         panel.directoryURL = fileURL.deletingLastPathComponent()
         panel.nameFieldStringValue = fileURL.lastPathComponent
         panel.title = "Allow Menu Bar Ordering"
-        panel.message = fileURL == Self.visibilityFile
+        panel.message = message ?? (fileURL == Self.visibilityFile
             ? "Select group.com.apple.controlcenter.plist to let Flux reveal hidden icons during ordering. Their visibility is restored after the move. This grants access to this file only."
-            : "Select com.apple.MenuBar.plist to let Flux save icon order. This grants access to this file only."
+            : "Select com.apple.MenuBar.plist to let Flux save icon order. This grants access to this file only.")
         panel.prompt = "Allow Ordering"
         guard panel.runModal() == .OK, let url = panel.url,
               url.standardizedFileURL == fileURL.standardizedFileURL else { return false }
@@ -54,6 +55,40 @@ import FluxCore
     private func save(_ url: URL) {
         if let data = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil,
                                             relativeTo: nil) { defaults.set(data, forKey: key) }
+    }
+}
+
+@MainActor public final class MenuBarLegacyOrderAccess {
+    private static let prefix = "flux.menuBar.legacyOrderingBookmark.v1."
+    private let defaults: UserDefaults
+    private var files: [ApplicationID: MenuBarOrderAccess] = [:]
+
+    public init(defaults: UserDefaults) {
+        self.defaults = defaults
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(Self.prefix) {
+            if let app = ApplicationID(rawValue: String(key.dropFirst(Self.prefix.count))) { _ = access(app) }
+        }
+    }
+
+    public func request(_ app: ApplicationID) -> Bool { access(app)?.request() == true }
+
+    private func access(_ app: ApplicationID) -> MenuBarOrderAccess? {
+        if let existing = files[app] { return existing }
+        guard let file = Self.file(for: app) else { return nil }
+        let name = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == app.rawValue }?.localizedName ?? "this app"
+        let access = MenuBarOrderAccess(defaults: defaults, file: file, bookmarkKey: Self.prefix + app.rawValue,
+            message: "Select \(file.lastPathComponent) to read \(name)'s saved menu bar item name. Flux will not change this file.")
+        files[app] = access
+        return access
+    }
+
+    nonisolated static func file(for application: ApplicationID) -> URL? {
+        guard application.rawValue.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$", options: .regularExpression) != nil else { return nil }
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        let container = home.appendingPathComponent("Library/Containers").appendingPathComponent(application.rawValue)
+        let directory = FileManager.default.fileExists(atPath: container.path)
+            ? container.appendingPathComponent("Data/Library/Preferences") : home.appendingPathComponent("Library/Preferences")
+        return directory.appendingPathComponent(application.rawValue + ".plist")
     }
 }
 
@@ -112,10 +147,7 @@ public actor MenuBarPositionStore {
                 raw[key] = CFPreferencesCopyValue(key as CFString, domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
             }
         }
-        if application.rawValue.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$", options: .regularExpression) != nil {
-            let file = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Containers")
-                .appendingPathComponent(application.rawValue).appendingPathComponent("Data/Library/Preferences")
-                .appendingPathComponent(application.rawValue + ".plist")
+        if let file = MenuBarLegacyOrderAccess.file(for: application) {
             if let info = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
                info.isRegularFile == true, info.isSymbolicLink != true, let size = info.fileSize, size <= 1_048_576,
                let data = try? Data(contentsOf: file),
@@ -150,9 +182,19 @@ public actor MenuBarPositionStore {
         var positions = weights(raw)
         let identities = resolvedIdentities(identities)
         let keys = Set(positions.keys)
-        let item = try MenuBarPositionIdentity.key(for: move.item, in: identities, keys: keys)
-        let left = try move.left.map { try MenuBarPositionIdentity.key(for: $0, in: identities, keys: keys) }
-        let right = try move.right.map { try MenuBarPositionIdentity.key(for: $0, in: identities, keys: keys) }
+        func key(for id: MenuBarItemID) throws -> String {
+            do { return try MenuBarPositionIdentity.key(for: id, in: identities, keys: keys) }
+            catch MenuBarMoveFailure.positionIdentityUnavailable {
+                if identities.first(where: { $0.item == id })?.legacyPositions.isEmpty == true,
+                   MenuBarLegacyOrderAccess.file(for: id.application) != nil {
+                    throw MenuBarMoveFailure.legacyPositionAccessRequired(id.application)
+                }
+                throw MenuBarMoveFailure.positionIdentityUnavailable
+            }
+        }
+        let item = try key(for: move.item)
+        let left = try move.left.map { try key(for: $0) }
+        let right = try move.right.map { try key(for: $0) }
         guard item != left, item != right, left == nil || left != right else { throw MenuBarMoveFailure.positionIdentityUnavailable }
         let before = positions[item]
         var requested = [(move.item, item)]
