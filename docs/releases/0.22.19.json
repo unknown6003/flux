@@ -1,0 +1,19 @@
+{
+  "version": "0.22.19",
+  "build": 909,
+  "source": "61edd9a31ba6a172d11ce59e0232d64920df2bc2",
+  "executableSHA256": "67342fc2ce36275094dc83e7b4837f442303b0426bbbf2058e526ae0e724f378",
+  "certificateSHA256": "2ef555c296ef2b38a6969595bbecfc0ba287968c60b9e110ad8a3d69506fcb66",
+  "dmgSHA256": "b6d67b1a33815386299c68e61e8834adce783819c2f1bfab4fbbac40b4034e97",
+  "size": 2695927,
+  "bundleFiles": 13,
+  "matchesAcceptedApp": true,
+  "strictSignatureVerified": true,
+  "ownerAccepted": true,
+  "tests": {
+    "serial": 289,
+    "passed": true,
+    "parallelTimingFailures": "Unrelated widget/update tests; ordering tests passed"
+  },
+  "artifactRebuiltForPublication": false
+}
