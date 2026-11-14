@@ -55,6 +55,14 @@ public struct MenuBarPositionIdentity: Sendable {
 
 /// macOS stores distance from the right edge, so larger values sort left.
 public enum MenuBarPositionOrder {
+    public static func isPlaced<Item: Hashable>(item: Item, left: Item?, right: Item?, positions: [Item: Double]) -> Bool {
+        guard let value = positions[item], value.isFinite, value >= 0,
+              left != item, right != item, left == nil || left != right else { return false }
+        if let left { guard let bound = positions[left], bound.isFinite, bound > value else { return false } }
+        if let right { guard let bound = positions[right], bound.isFinite, bound >= 0, bound < value else { return false } }
+        return true
+    }
+
     public static func weight(item: String, left: String?, right: String?, positions: [String: Double]) throws(MenuBarMoveFailure) -> Double {
         guard let current = positions[item], current.isFinite, current >= 0 else { throw .positionIdentityUnavailable }
         guard left != item, right != item, left == nil || left != right else { throw .neighbourGone }

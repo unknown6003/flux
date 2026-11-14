@@ -3,6 +3,13 @@ import Testing
 @testable import FluxCore
 
 @Suite struct MenuBarPositionOrderTests {
+    @Test func savedOrderRejectsMissingChangedAndNonfiniteBounds() {
+        #expect(MenuBarPositionOrder.isPlaced(item: "B", left: "A", right: "C", positions: ["A": 30, "B": 20, "C": 10]))
+        #expect(!MenuBarPositionOrder.isPlaced(item: "B", left: "A", right: "C", positions: ["A": 15, "B": 20, "C": 10]))
+        #expect(!MenuBarPositionOrder.isPlaced(item: "B", left: "A", right: "C", positions: ["A": 30, "B": 20]))
+        #expect(!MenuBarPositionOrder.isPlaced(item: "B", left: "A", right: nil, positions: ["A": .infinity, "B": 20]))
+    }
+
     @Test func insertsBetweenNamedPeersWithoutRewritingOtherWeights() throws {
         let positions = ["source": 120.0, "left": 100.5, "right": 60.5, "unknown": 999.25]
         #expect(try MenuBarPositionOrder.weight(item: "source", left: "left", right: "right", positions: positions) == 80.5)

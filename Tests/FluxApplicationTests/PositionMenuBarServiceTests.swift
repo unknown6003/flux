@@ -123,9 +123,6 @@ import FluxUI
     var orderAccessGranted = false
     var legacyAccessRequests: [ApplicationID] = []
     var orderScopes: [Set<ApplicationID>] = []
-    var visibilityEvents: [String] = []
-    var onVisibilityPrepare: ((Set<ApplicationID>) -> Void)?
-    var visibilityFailure: MenuBarMoveFailure?
     var savedWeights: [MenuBarItemID: Double] = [:]
 
     init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false,
@@ -182,13 +179,14 @@ import FluxUI
                 return nil
             }, requestOrderAccess: { [unowned self] in self.orderAccessGranted },
             readOrderInventory: scopedRead,
-            prepareOrderVisibility: { [unowned self] applications in
-                self.visibilityEvents.append("reveal")
-                if let failure = self.visibilityFailure { throw failure }
-                self.onVisibilityPrepare?(applications)
-                return MenuBarOrderVisibilityEdit(id: UUID(), applications: applications)
-            }, restoreOrderVisibility: { [unowned self] _ in self.visibilityEvents.append("restore") },
-            readPreferredOrder: { [unowned self] _ in self.savedWeights },
+            readPreferredOrder: { [unowned self] snapshot in
+                if !self.savedWeights.isEmpty { return self.savedWeights }
+                return Dictionary(uniqueKeysWithValues: snapshot.applications.flatMap { app in
+                    app.frames.enumerated().compactMap { index, frame in
+                        frame.map { (MenuBarItemID(application: app.id, index: index), 10000 - Double($0.minX)) }
+                    }
+                })
+            },
             requestLegacyAccess: { [unowned self] application in
                 self.legacyAccessRequests.append(application)
                 self.orderFailure = nil
@@ -210,34 +208,7 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
-    @Test @MainActor func aConcealedIconIsRevealedVerifiedAndRestoredDuringOrdering() async throws {
-        let fixture = try PositionServiceFixture(support: .perApplication)
-        let a = MenuBarItemID(application: fixture.app, index: 0)
-        let b = MenuBarItemID(application: fixture.app, index: 1)
-        func snapshot(_ ax: Double, _ bx: Double, y: Double) -> PositionMenuBarInventory {
-            .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
-                frames: [CGRect(x: ax, y: y, width: 24, height: 24), CGRect(x: bx, y: y, width: 24, height: 24)],
-                identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
-        }
-        fixture.inventory = snapshot(-1, -1, y: 1105)
-        fixture.onVisibilityPrepare = { _ in fixture.inventory = snapshot(400, 500, y: 0) }
-        fixture.onOrder = { _ in
-            fixture.visibilityEvents.append("place")
-            fixture.inventory = snapshot(600, 500, y: 0)
-        }
-        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
-        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while fixture.owner.state.moveStatus == nil, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        #expect(fixture.visibilityEvents == ["reveal", "place", "restore"])
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
-        #expect(fixture.drags.isEmpty)
-        try await fixture.close()
-    }
-
-    @Test @MainActor func staleOverlappingFramesDoNotBlockANativePositionWrite() async throws {
+    @Test @MainActor func concealedOverlappingFramesDoNotBlockAVerifiedNativeSave() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication)
         let a = MenuBarItemID(application: fixture.app, index: 0)
         let b = MenuBarItemID(application: fixture.app, index: 1)
@@ -247,7 +218,7 @@ import FluxUI
                 identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
         }
         fixture.inventory = snapshot(400, 402)
-        fixture.onOrder = { _ in fixture.inventory = snapshot(500, 400) }
+        fixture.onOrder = { _ in fixture.savedWeights = [a: 400, b: 500] }
         fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
         fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
@@ -255,8 +226,7 @@ import FluxUI
             try await Task.sleep(for: .milliseconds(1))
         }
         #expect(fixture.orders.count == 1)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
-        #expect(fixture.visibilityEvents == ["reveal", "restore"])
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example 1"))
         #expect(fixture.drags.isEmpty)
         try await fixture.close()
     }
@@ -284,30 +254,29 @@ import FluxUI
         #expect(fixture.legacyAccessRequests == [fixture.app])
         #expect(fixture.reads > reads)
         #expect(!fixture.owner.state.orderAccessRequired)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example 1"))
         #expect(fixture.drags.isEmpty)
         try await fixture.close()
     }
 
-    @Test @MainActor func cancelingAnOrderRestoresItsTemporaryVisibilityLease() async throws {
+    @Test @MainActor func cancelingAnOrderDuringIdentityValidationNeverWrites() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication)
         let a = MenuBarItemID(application: fixture.app, index: 0)
         let b = MenuBarItemID(application: fixture.app, index: 1)
         fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
             frames: [CGRect(x: -1, y: 1105, width: 24, height: 24), CGRect(x: -1, y: 1105, width: 24, height: 24)],
             identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
-        fixture.onVisibilityPrepare = { _ in fixture.blocksRead = true }
         fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.blocksIdentityRead = true
         fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while fixture.blockedRead == nil, ContinuousClock.now < deadline {
+        while fixture.blockedIdentityRead == nil, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(1))
         }
-        #expect(fixture.blockedRead != nil)
+        #expect(fixture.blockedIdentityRead != nil)
         fixture.owner.setEditorVisible(false)
-        fixture.blocksRead = false; fixture.blockedRead?.resume(); fixture.blockedRead = nil
+        fixture.blocksIdentityRead = false; fixture.blockedIdentityRead?.resume(); fixture.blockedIdentityRead = nil
         try await fixture.close()
-        #expect(fixture.visibilityEvents == ["reveal", "restore"])
         #expect(fixture.orders.isEmpty)
         #expect(fixture.drags.isEmpty)
     }
@@ -350,10 +319,10 @@ import FluxUI
         while fixture.owner.state.moveStatus == nil, ContinuousClock.now < orderDeadline {
             try await Task.sleep(for: .milliseconds(1))
         }
-        #expect(fixture.orderScopes.count == 3)
+        #expect(fixture.orderScopes.count == 2)
         #expect(fixture.orderScopes.allSatisfy { $0 == [fixture.app] })
         #expect(fixture.orders.count == 1)
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example 1"))
         #expect(fixture.owner.state.tiles.map(\.id) == [b, a, .init(application: unrelated, index: 0)])
         #expect(fixture.drags.isEmpty)
         try await fixture.close()
@@ -379,7 +348,7 @@ import FluxUI
         #expect(fixture.orders == [move])
         #expect(fixture.drags.isEmpty)
         #expect(fixture.owner.state.tiles.map(\.id) == [b, a])
-        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example 1"))
         #expect(fixture.defaults.data(forKey: "flux.macOS27IconLayout") == groupBefore)
         try await fixture.close()
     }
@@ -475,6 +444,11 @@ import FluxUI
             if support == .perApplication {
                 fixture.controls.chevronBoundary = CGRect(x: 600, y: 0, width: 24, height: 24)
                 fixture.owner.assign(second, to: .hidden)
+                fixture.onOrder = { move in
+                    fixture.savedWeights = [move.item: 100]
+                    if let left = move.left { fixture.savedWeights[left] = 200 }
+                    if let right = move.right { fixture.savedWeights[right] = 50 }
+                }
             }
             fixture.controls.onToggle?(false)
             let move = support == .perApplication
@@ -484,7 +458,9 @@ import FluxUI
             fixture.owner.moveItem(move)
             for _ in 0..<4 { await fixture.settle() }
             if !fixture.drags.isEmpty { failures += 1 }
-            if fixture.owner.state.moveStatus != nil { failures += 1 }
+            if support == .perApplication {
+                if case .orderSaved = fixture.owner.state.moveStatus {} else { failures += 1 }
+            } else if fixture.owner.state.moveStatus != nil { failures += 1 }
             let expectedReveal: MenuBarReveal = support == .perApplication ? .collapsed : .all
             if fixture.controls.reveal != expectedReveal { failures += 1 }
             if support == .perApplication, fixture.hider.applied.last?.reveal != .collapsed { failures += 1 }

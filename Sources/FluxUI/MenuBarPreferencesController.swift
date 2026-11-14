@@ -50,8 +50,8 @@ public final class MenuBarPreferencesController: NSViewController, SettingsPageF
         let help = FluxUIStyle.label(L("menuBar.layout.orderHelp",
             "Drag icons to change their order or group. Right-click for more actions."),
             style: .callout, secondary: true)
-        let revealHelp = FluxUIStyle.label(L("menuBar.layout.revealHelp",
-            "These lanes show saved groups. Opening this page shows all icons temporarily. Use the chevron to show or hide them. Option-click it to show all icons before moving a hidden icon."),
+        let revealHelp = FluxUIStyle.label(L("menuBar.layout.savedGroupsHelp",
+            "These lanes show saved groups and order. Use the chevron to show or hide Hidden icons. Option-click it to show Always Hidden icons."),
             style: .callout, secondary: true)
         arrangeButton.target = self
         arrangeButton.action = #selector(toggleArrange)

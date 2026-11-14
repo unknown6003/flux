@@ -117,8 +117,6 @@ public enum MenuBarMoveFailure: Error, Equatable, Sendable {
     case eventsUnavailable
     case positionAccessRequired
     case legacyPositionAccessRequired(ApplicationID)
-    case orderVisibilityAccessRequired
-    case orderVisibilityRestoreFailed
     case positionIdentityUnavailable
     case positionRestoreFailed
     case groupNotSaved(code: String)

@@ -106,7 +106,7 @@ public struct MenuBarLayoutTile {
 /// The state of the last move the editor asked for.
 public enum MenuBarMoveStatus: Equatable, Sendable {
     case moving(name: String, attempt: Int)
-    case moved(name: String)
+    case orderSaved(name: String)
     case failed(name: String, MenuBarMoveFailure)
 }
 
@@ -312,7 +312,7 @@ enum MenuBarText {
         case .moving(let name, let attempt):
             attempt <= 1 ? String(format: L("menuBar.move.moving", "Moving %@…"), name)
                 : String(format: L("menuBar.move.retry", "Moving %@, try %ld of 3…"), name, attempt)
-        case .moved(let name): String(format: L("menuBar.move.done", "Moved %@."), name)
+        case .orderSaved(let name): String(format: L("menuBar.move.savedOrder", "Saved order for %@."), name)
         case .failed(let name, let failure): moveFailure(failure, name: name)
         }
     }
@@ -329,8 +329,6 @@ enum MenuBarText {
         case .eventsUnavailable: L("menuBar.move.events", "Flux could not prepare the move. Try again.")
         case .legacyPositionAccessRequired: L("menuBar.move.legacyAccess", "Choose Allow Ordering to read this app's saved menu bar item name. Its settings will not change.")
         case .positionAccessRequired: L("menuBar.move.layoutAccess", "Choose Allow Ordering to let Flux save icon order in the menu bar layout file.")
-        case .orderVisibilityAccessRequired: L("menuBar.move.orderRevealAccess", "Choose Allow Ordering to let Flux temporarily reveal hidden icons during a move.")
-        case .orderVisibilityRestoreFailed: L("menuBar.move.orderRevealRestore", "Flux could not restore an icon's macOS visibility after the move. Its saved group is unchanged.")
         case .positionIdentityUnavailable: L("menuBar.move.layoutIdentity", "Flux could not match this icon to its saved position. No order was changed.")
         case .positionRestoreFailed: L("menuBar.move.layoutRestore", "macOS did not confirm the order, and Flux could not restore the saved position. Refresh to check the current order.")
         case .inputBusy: L("menuBar.move.input", "Let go of the mouse and keys, then try again.")
@@ -341,7 +339,7 @@ enum MenuBarText {
         case .groupNotSaved:
             String(format: L("menuBar.move.notSaved", "Flux could not save the group for %@."), name)
         case .notAccepted:
-            String(format: L("menuBar.move.refused", "macOS did not move %@ after 3 tries. Try again."), name)
+            String(format: L("menuBar.order.unconfirmed", "macOS did not confirm the saved order for %@. Try again."), name)
         }
     }
 

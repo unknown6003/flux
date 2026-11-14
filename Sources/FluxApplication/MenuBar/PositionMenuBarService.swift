@@ -110,16 +110,10 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
     private let placeOrder: @MainActor (MenuBarItemMove, PositionMenuBarInventory) async throws -> MenuBarPositionEdit?
     private let restoreOrder: @MainActor (MenuBarPositionEdit) async throws -> Void
     private let requestOrderAccess: @MainActor () -> Bool
-    private let requestVisibilityAccess: @MainActor () -> Bool
-    private let prepareOrderVisibility: @MainActor (Set<ApplicationID>) async throws -> MenuBarOrderVisibilityEdit?
-    private let restoreOrderVisibility: @MainActor (MenuBarOrderVisibilityEdit) async throws -> Void
-    private let recoverOrderVisibility: @MainActor () async throws -> Void
     private let readPreferredOrder: @MainActor (PositionMenuBarInventory) async -> [MenuBarItemID: Double]
     private var preferredOrder: [MenuBarItemID: Double] = [:]
-    private var needsVisibilityAccess = false
     private var needsLegacyAccess: ApplicationID?
     private let requestLegacyAccess: @MainActor (ApplicationID) -> Bool
-    private var visibilityRecoveryTask: Task<Void, Never>?
     private var orderTask: Task<Void, Never>?
     private var orderID: UUID?
     private var pendingOrder: MenuBarItemMove?
@@ -167,9 +161,6 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         let positions = MenuBarPositionStore()
         let orderAccess = MenuBarOrderAccess(defaults: defaults)
         let legacyAccess = MenuBarLegacyOrderAccess(defaults: defaults)
-        let visibility = MenuBarOrderVisibilityStore(journalDomain: domain)
-        let visibilityAccess = MenuBarOrderAccess(defaults: defaults, file: MenuBarOrderAccess.visibilityFile,
-            bookmarkKey: "flux.menuBar.orderVisibilityBookmark.v1")
         self.init(defaults: defaults, domain: domain, preferences: preferences,
                   hidingSupport: hidingSupport, controls: MenuBarControls(),
                   hider: hidingSupport == .perApplication ? (perApplicationHider ?? PerApplicationHider()) : nil,
@@ -252,10 +243,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                               positionOwners: [app.application.name, app.application.executableName].compactMap { $0 }
                                   .filter { aliases[$0] == [app.application.id] })
                       }, accessibilityAllowed: snapshot.accessibilityAllowed, complete: snapshot.complete)
-                  }, requestVisibilityAccess: { visibilityAccess.request() },
-                  prepareOrderVisibility: { try await visibility.begin($0) },
-                  restoreOrderVisibility: { try await visibility.finish($0) },
-                  recoverOrderVisibility: { try await visibility.recover() },
+                  },
                   readPreferredOrder: { (try? await positions.preferredOrder(identities: Self.positionIdentities($0))) ?? [:] },
                   requestLegacyAccess: { legacyAccess.request($0) })
     }
@@ -278,10 +266,6 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
          restoreOrder: @escaping @MainActor (MenuBarPositionEdit) async throws -> Void = { _ in },
          requestOrderAccess: @escaping @MainActor () -> Bool = { false },
          readOrderInventory: (@MainActor (Set<ApplicationID>) async -> PositionMenuBarInventory)? = nil,
-         requestVisibilityAccess: @escaping @MainActor () -> Bool = { false },
-         prepareOrderVisibility: @escaping @MainActor (Set<ApplicationID>) async throws -> MenuBarOrderVisibilityEdit? = { _ in nil },
-         restoreOrderVisibility: @escaping @MainActor (MenuBarOrderVisibilityEdit) async throws -> Void = { _ in },
-         recoverOrderVisibility: @escaping @MainActor () async throws -> Void = { },
          readPreferredOrder: @escaping @MainActor (PositionMenuBarInventory) async -> [MenuBarItemID: Double] = { _ in [:] },
          requestLegacyAccess: @escaping @MainActor (ApplicationID) -> Bool = { _ in false }) {
         self.tools = tools
@@ -294,9 +278,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         self.readIdentity = readIdentity; self.confirmIdentity = confirmIdentity
         self.readOrderInventory = readOrderInventory ?? { _ in await readInventory() }
         self.placeOrder = placeOrder; self.restoreOrder = restoreOrder; self.requestOrderAccess = requestOrderAccess
-        self.requestVisibilityAccess = requestVisibilityAccess
-        self.prepareOrderVisibility = prepareOrderVisibility; self.restoreOrderVisibility = restoreOrderVisibility
-        self.recoverOrderVisibility = recoverOrderVisibility; self.readPreferredOrder = readPreferredOrder
+        self.readPreferredOrder = readPreferredOrder
         self.requestLegacyAccess = requestLegacyAccess
         state = MenuBarPageState(mode: .paused)
         super.init()
@@ -309,18 +291,6 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
     public func start() {
         guard !started else { return }
         started = true
-        if support == .perApplication {
-            visibilityRecoveryTask = Task { @MainActor [weak self] in
-                guard let self else { return }
-                do { try await self.recoverOrderVisibility() }
-                catch {
-                    guard self.started else { return }
-                    self.state.moveStatus = .failed(name: "Menu bar", .orderVisibilityRestoreFailed)
-                    self.needsVisibilityAccess = true; self.state.orderAccessRequired = true
-                    self.changed()
-                }
-            }
-        }
         controls.onToggle = { [weak self] all in
             if all { self?.showAll() } else { self?.toggle() }
         }
@@ -364,9 +334,6 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         changed()
         await rehide?.value
         await order?.value
-        await visibilityRecoveryTask?.value
-        visibilityRecoveryTask = nil
-        try await recoverOrderVisibility()
     }
 
     public func configure() {
@@ -490,11 +457,10 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         if support == .perApplication, state.orderAccessRequired {
             let granted: Bool
             if let application = needsLegacyAccess { granted = requestLegacyAccess(application) }
-            else { granted = needsVisibilityAccess ? requestVisibilityAccess() : requestOrderAccess() }
+            else { granted = requestOrderAccess() }
             guard granted else { return }
             needsLegacyAccess = nil
             state.orderAccessRequired = false
-            needsVisibilityAccess = false
             state.moveStatus = nil
             if let move = accessBlockedOrder { accessBlockedOrder = nil; pendingOrder = move }
             refresh()
@@ -610,7 +576,6 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         orderTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var edit: MenuBarPositionEdit?
-            var visibilityEdit: MenuBarOrderVisibilityEdit?
             defer {
                 if self.orderID == id {
                     self.orderTask = nil; self.orderID = nil
@@ -620,7 +585,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                 }
             }
             do {
-                var snapshot = await self.readOrderInventory(requestedApplications)
+                let snapshot = await self.readOrderInventory(requestedApplications)
                 try Task.checkCancellation()
                 guard self.started, self.editorVisible, snapshot.complete, snapshot.accessibilityAllowed,
                       self.inventoryVersion == version, self.identityVersion == version,
@@ -639,48 +604,31 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                 try Task.checkCancellation()
                 guard self.inventoryVersion == version, self.identityVersion == version,
                       self.policyRevision == revision else { throw CancellationError() }
-                visibilityEdit = try await self.prepareOrderVisibility(requestedApplications)
-                snapshot = await self.readOrderInventory(requestedApplications)
-                try Task.checkCancellation()
-                guard self.inventoryVersion == version, self.identityVersion == version,
-                      self.policyRevision == revision else { throw CancellationError() }
-                guard snapshot.complete, snapshot.accessibilityAllowed,
-                      zip(requested, bindings).allSatisfy({ item, binding in
-                          self.orderingIdentity(item, in: snapshot) == binding
-                      }) else { throw MenuBarMoveFailure.positionIdentityUnavailable }
-                let layout = MenuBarLayout(items: self.layoutItems(snapshot), grouping: self.layoutGrouping())
-                guard let source = layout.item(move.item), source.isMovable,
-                      layout.group(of: source) == move.group else { throw MenuBarMoveFailure.itemGone }
                 do {
                     edit = try await self.placeOrder(move, snapshot)
-                    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-                    var placed = false
-                    for _ in 0..<8 {
-                        try Task.checkCancellation()
-                        let fresh = await self.readOrderInventory(requestedApplications)
-                        try Task.checkCancellation()
-                        guard self.policyRevision == revision, self.inventoryVersion == version,
-                              self.identityVersion == version, (try? self.currentIdentities()) == self.identityPins else { throw CancellationError() }
-                        guard zip(requested, bindings).allSatisfy({ item, binding in
-                            self.orderingIdentity(item, in: fresh) == binding
-                        }) else { throw MenuBarMoveFailure.positionIdentityUnavailable }
-                        if self.orderIsPlaced(move, snapshot: fresh) {
-                            self.publishOrder(fresh, replacing: requestedApplications); placed = true; edit = nil; break
-                        }
-                        guard ContinuousClock.now < deadline else { break }
-                        try await Task.sleep(for: .milliseconds(150))
+                    let fresh = await self.readOrderInventory(requestedApplications)
+                    try Task.checkCancellation()
+                    guard self.policyRevision == revision, self.inventoryVersion == version,
+                          self.identityVersion == version, (try? self.currentIdentities()) == self.identityPins else { throw CancellationError() }
+                    guard fresh.complete, fresh.accessibilityAllowed,
+                          zip(requested, bindings).allSatisfy({ item, binding in
+                              self.orderingIdentity(item, in: fresh) == binding
+                          }) else { throw MenuBarMoveFailure.positionIdentityUnavailable }
+                    let saved = await self.readPreferredOrder(fresh)
+                    guard MenuBarPositionOrder.isPlaced(item: move.item, left: move.left, right: move.right, positions: saved) else {
+                        throw MenuBarMoveFailure.notAccepted
                     }
-                    guard placed else { throw MenuBarMoveFailure.notAccepted }
+                    self.publishOrder(fresh, replacing: requestedApplications)
                 }
                 if let inventory = self.lastInventory {
                     self.preferredOrder = await self.readPreferredOrder(inventory)
                 }
-                if let lease = visibilityEdit {
-                    try await self.restoreOrderVisibility(lease); visibilityEdit = nil
-                }
-                guard self.started, self.editorVisible else { throw CancellationError() }
+                try Task.checkCancellation()
+                guard self.started, self.editorVisible, self.policyRevision == revision,
+                      self.inventoryVersion == version, self.identityVersion == version else { throw CancellationError() }
+                edit = nil
                 self.state.orderAccessRequired = false
-                self.state.moveStatus = .moved(name: name)
+                self.state.moveStatus = .orderSaved(name: name)
                 self.applyControls(); self.changed()
             } catch {
                 var failure = error as? MenuBarMoveFailure ?? .notAccepted
@@ -688,18 +636,13 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                     do { try await self.restoreOrder(edit) }
                     catch { failure = .positionRestoreFailed }
                 }
-                if let lease = visibilityEdit {
-                    do { try await self.restoreOrderVisibility(lease) }
-                    catch { failure = .orderVisibilityRestoreFailed }
-                }
                 guard !Task.isCancelled, self.started, self.editorVisible else { return }
-                if error is CancellationError, failure != .positionRestoreFailed, failure != .orderVisibilityRestoreFailed { return }
+                if error is CancellationError, failure != .positionRestoreFailed { return }
                 if case .legacyPositionAccessRequired(let application) = failure {
                     self.needsLegacyAccess = application
                     self.state.orderAccessRequired = true; self.accessBlockedOrder = move
-                } else if failure == .positionAccessRequired || failure == .orderVisibilityAccessRequired {
+                } else if failure == .positionAccessRequired {
                     self.needsLegacyAccess = nil
-                    self.needsVisibilityAccess = failure == .orderVisibilityAccessRequired
                     self.state.orderAccessRequired = true; self.accessBlockedOrder = move
                 }
                 self.state.moveStatus = .failed(name: name, failure)
@@ -713,27 +656,6 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
         publish(.init(applications: previous.applications.filter { !applications.contains($0.id) }
                           + snapshot.applications.filter { applications.contains($0.id) },
                       accessibilityAllowed: previous.accessibilityAllowed, complete: previous.complete))
-    }
-
-    private func orderIsPlaced(_ move: MenuBarItemMove, snapshot: PositionMenuBarInventory) -> Bool {
-        guard orderFramesAreUsable(move, snapshot: snapshot) else { return false }
-        return MenuBarMovePlanner.isPlaced(move, in: MenuBarLayout(items: layoutItems(snapshot), grouping: layoutGrouping()))
-    }
-
-    private func orderFramesAreUsable(_ move: MenuBarItemMove, snapshot: PositionMenuBarInventory) -> Bool {
-        guard snapshot.complete, snapshot.accessibilityAllowed else { return false }
-        let layout = MenuBarLayout(items: layoutItems(snapshot), grouping: layoutGrouping())
-        let requested = [move.item, move.left, move.right].compactMap { $0 }
-        let frames = requested.compactMap { layout.item($0)?.frame }
-        guard frames.count == requested.count, frames.allSatisfy({ frame in
-            screens().contains { screen in
-                CGRect(x: screen.frame.minX, y: screen.frame.minY,
-                       width: screen.frame.width, height: screen.menuBarHeight).contains(frame)
-            }
-        }), !frames.enumerated().contains(where: { i, frame in
-            frames.dropFirst(i + 1).contains { $0.intersects(frame) }
-        }) else { return false }
-        return true
     }
 
     private static func positionIdentities(_ snapshot: PositionMenuBarInventory) -> [MenuBarPositionIdentity] {

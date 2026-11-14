@@ -1,6 +1,6 @@
 # Menu-bar ordering without cursor movement
 
-2026-11-13. The owner requires ordering by dragging tiles inside Settings. A native Command-drag guide does not satisfy that request. Group changes must remain usable and must never borrow the pointer.
+2026-11-14. The owner requires ordering by dragging tiles inside Settings. A native Command-drag guide does not satisfy that request. Group changes must remain usable and must never borrow the pointer.
 
 ## Mechanism
 
@@ -22,15 +22,15 @@ MenuBarPositionIdentity resolves a key from the bundle namespace first. Executab
 
 Older AppKit items can have no entry in the central table. Their existing NSStatusItem Preferred Position keys supply the real autosave name. Rocket uses rocket_status_item, not Item-0. A Mac-local probe using that name moved Rocket between Tailscale and TG Pro without mouse events. Guessed Item-0 names did not move it. The resolver now accepts an unambiguous legacy name, including a native preference in a sandbox container, and refuses ambiguous siblings. A new central entry has an absent-before edit token so failed moves can remove only their own new entry.
 
-The Control Center trackedApplications table can also disable an icon independently of Flux's group. The ordering transaction temporarily enables only its requested source and neighbour apps, then restores only flags it changed. It preserves unknown rows and fields. A small bundle-ID journal recovers an interrupted visibility lease at the next launch. This needs separate one-file access to group.com.apple.controlcenter.plist. Group choices and the chevron continue to use the existing hiding policy.
+Settings reads native preferred weights, with legacy autosave values as the fallback. Offscreen placeholder frames do not determine the displayed order. Permission-grant retries refresh inventory and identities before resuming the named request.
 
-Settings reads native preferred weights, with legacy autosave values as the fallback. Offscreen placeholder frames no longer determine the displayed order. Native geometry still verifies each move after the requested icons are revealed. Permission-grant retries refresh inventory and identities before resuming the named request.
+A native preference save is verified by rereading the exact source and named peer weights. The UI says "Saved order", rather than claiming physical visibility. An icon can be concealed by macOS independently of Flux. Private905/906 owner drags and a separate probe reproduced owner AX frames only two points apart even after a temporary reveal. Those frames cannot establish current physical placement. The temporary Control Center visibility lease was removed. Ordering no longer changes native allowance flags or needs access to the Control Center file.
 
 MenuBarPositionOrder chooses one weight between the named peers. At a strip end it also accounts for unlisted native keys. It refuses exhausted numeric space instead of renumbering other icons.
 
-MenuBarPositionStore serializes writes on an actor. It synchronizes and reads current values, merges only the requested item's weight and preserves unknown entries. The application checks fresh, non-overlapping, on-screen source and peer frames before reporting success. It stops verification after its bounded budget. A failed or canceled move restores only its own value, and only while that value still equals the value Flux wrote. Failed restoration is reported.
+MenuBarPositionStore serializes writes on an actor. It synchronizes and reads current values, merges only the requested item's weight and preserves unknown entries. The application checks fresh signing and stable source/peer identities before and after the save. It verifies the persisted relative order before reporting a saved order. A failed or canceled move restores only its own value, and only while that value still equals the value Flux wrote. Failed restoration is reported.
 
-Ordering reads only the source and named neighbour owners. On the owner Mac, the broad snapshot saw 138 running owners and was incomplete, while a fresh two-owner snapshot completed in 0.244 seconds. A complete broad desktop scan is not a precondition for a targeted preference write. The scoped read still requires complete source and neighbour geometry, stable sibling identity and fresh signing checks. Successful order publication replaces only those owners in the existing Settings inventory.
+Ordering reads only the source and named neighbour owners. On the owner Mac, the broad snapshot saw 138 running owners and was incomplete, while a fresh two-owner snapshot completed in 0.244 seconds. A complete broad desktop scan is not a precondition for a targeted preference write. The scoped read still requires complete source and neighbour identity inventory, stable siblings and fresh signing checks. Successful order publication replaces only those owners in the existing Settings inventory.
 
 There is no event-posting, pointer warp, cursor hiding or input-blocking fallback in this path.
 
@@ -46,9 +46,9 @@ Flux keeps a security-scoped bookmark for that file. It requests no Full Disk Ac
 
 ## Proof and limits
 
-The editor dispatch regression failed on the prior implementation, which started the native guide and sent no slot request. Corrected fixture tests proved live preferred-position ordering with no generated mouse input. Core tests cover native weight direction, unlisted peers, legacy names, ambiguous aliases and sibling identity. Isolated native preference tests cover unknown data preservation, removing a newly created key, conditional visibility restoration and recovery of an interrupted lease. Service checks cover fresh placement and keeping group controls available when ordering access is missing.
+The editor dispatch regression failed on the prior implementation, which started the native guide and sent no slot request. Corrected fixture tests proved live preferred-position ordering with no generated mouse input. Core tests cover native weight direction, unlisted peers, legacy names, ambiguous aliases and sibling identity. Isolated native preference tests cover unknown data preservation, removing a newly created key, conditional removal and restore of the requested source key. Service checks cover verified native order and keeping group controls available when ordering access is missing.
 
-Installed Settings gesture, signing identity and permission behavior are separate checks. They remain required before owner acceptance. No public release follows from unit tests or the old build900 gesture report.
+Installed Settings gesture, signing identity and permission behavior are separate checks. Private906 passed the exact-file Shottr grant and queued native reorder. Private907 must qualify the final native-save path and owner experience. No public release follows from unit tests or the old build900 gesture report.
 
 ## Source and API evidence
 
@@ -63,10 +63,4 @@ https://github.com/thaw-app/Thaw/blob/f4bc831e821264fe2b52e4ea432ad8f2c5551606/T
 Bartender 7.1.0 was inspected only for shipped imports and strings, without running or installing it. Its imports do not establish which operation it uses for ordering. No competitor implementation was copied.
 
 
-### Concealed frame reproduction on private905
-
-Actual owner Settings drags reproduced a pre-write failure with concealed peers. The source and peer AX frames remained stale and overlapping after the temporary native allowance changed. A read-only capture recorded both flags reverting and no native order write. A guarded Mac probe then revealed Rocket and Raycast, wrote Rocket's verified native key to554.5, and measured Fathom982 < Rocket1018 < Raycast1052. It restored only its key and flags. Revealing Rocket alone did not prove peer order.
-
-The service now saves by native identity before judging placement. It refreshes identities after the reveal and retains the existing post-save on-screen, non-overlap and ordering checks. A regression keeps overlapping frames until the native write, then supplies the verified placement. No cursor/input API was added.
-
-Shottr's real app path separately reported a missing native identity. Exact-file legacy access now lets the user select its protected AppKit preferences, then rescans before replaying the named request. Only native position keys are read. The app's own file is never written. The granted file scope is retained and reopened on launch. These source checks still require private906 live acceptance.
+Protected legacy names use an exact-file scope for the named app. Shottr stores its AppKit autosave name in its sandbox preferences. Flux reads only NSStatusItem Preferred Position keys and does not write the app's file. The grant is retained across relaunch. Source identity checks precede any native order save.

@@ -12,10 +12,6 @@ import FluxCore
         URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Group Containers/com.apple.MenuBar/Library/Preferences/com.apple.MenuBar.plist")
     }
 
-    public static var visibilityFile: URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist")
-    }
-
     public init(defaults: UserDefaults, file: URL = MenuBarOrderAccess.file,
                 bookmarkKey: String = "flux.menuBar.orderingBookmark.v1", message: String? = nil) {
         self.defaults = defaults; self.fileURL = file; self.key = bookmarkKey; self.message = message
@@ -38,9 +34,7 @@ import FluxCore
         panel.directoryURL = fileURL.deletingLastPathComponent()
         panel.nameFieldStringValue = fileURL.lastPathComponent
         panel.title = "Allow Menu Bar Ordering"
-        panel.message = message ?? (fileURL == Self.visibilityFile
-            ? "Select group.com.apple.controlcenter.plist to let Flux reveal hidden icons during ordering. Their visibility is restored after the move. This grants access to this file only."
-            : "Select com.apple.MenuBar.plist to let Flux save icon order. This grants access to this file only.")
+        panel.message = message ?? "Select com.apple.MenuBar.plist to let Flux save icon order. This grants access to this file only."
         panel.prompt = "Allow Ordering"
         guard panel.runModal() == .OK, let url = panel.url,
               url.standardizedFileURL == fileURL.standardizedFileURL else { return false }

@@ -6,7 +6,7 @@ import FluxUI
 
 /// CI only. Drives the Menu Bar layout editor against the real menu bar:
 /// plain mouse gestures enter the tile's native dragging session, then the
-/// real page action, service, planner and physical status-item Cmd-drag.
+/// real page action, service and native preferred-position save.
 ///
 /// Usage: FluxMenuBarArrangeProbe <left fixture id> <right fixture id> <group fixture id>
 /// It prints `STEP <name> <json>` lines and waits for one stdin line after
@@ -153,7 +153,7 @@ import FluxUI
                 if case .moving = service.state.moveStatus { return false }
                 return service.state.moveStatus != nil && !service.state.isRefreshing
             }
-            guard case .moved = service.state.moveStatus, tile(source)?.group == group else {
+            guard case .orderSaved = service.state.moveStatus, tile(source)?.group == group else {
                 fail("\(name) failed: \(describe())")
             }
             guard quietInput() else { fail("\(name) left synthetic input held") }
