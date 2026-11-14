@@ -1,7 +1,7 @@
 import AppKit
 import Testing
 import FluxCore
-import FluxPlatform
+@testable import FluxPlatform
 import FluxUI
 @testable import FluxApplication
 
@@ -122,6 +122,10 @@ import FluxUI
     var orderFailure: MenuBarMoveFailure?
     var orderAccessGranted = false
     var orderScopes: [Set<ApplicationID>] = []
+    var visibilityEvents: [String] = []
+    var onVisibilityPrepare: ((Set<ApplicationID>) -> Void)?
+    var visibilityFailure: MenuBarMoveFailure?
+    var savedWeights: [MenuBarItemID: Double] = [:]
 
     init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false,
          scopedOrderReads: Bool = false) throws {
@@ -176,7 +180,14 @@ import FluxUI
                 self.onOrder?(move)
                 return nil
             }, requestOrderAccess: { [unowned self] in self.orderAccessGranted },
-            readOrderInventory: scopedRead)
+            readOrderInventory: scopedRead,
+            prepareOrderVisibility: { [unowned self] applications in
+                self.visibilityEvents.append("reveal")
+                if let failure = self.visibilityFailure { throw failure }
+                self.onVisibilityPrepare?(applications)
+                return MenuBarOrderVisibilityEdit(id: UUID(), applications: applications)
+            }, restoreOrderVisibility: { [unowned self] _ in self.visibilityEvents.append("restore") },
+            readPreferredOrder: { [unowned self] _ in self.savedWeights })
     }
 
     func settle() async { for _ in 0..<25 { await Task.yield() } }
@@ -193,6 +204,68 @@ import FluxUI
 }
 
 @Suite(.serialized) struct PositionMenuBarServiceTests {
+    @Test @MainActor func aConcealedIconIsRevealedVerifiedAndRestoredDuringOrdering() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        func snapshot(_ ax: Double, _ bx: Double, y: Double) -> PositionMenuBarInventory {
+            .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+                frames: [CGRect(x: ax, y: y, width: 24, height: 24), CGRect(x: bx, y: y, width: 24, height: 24)],
+                identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        }
+        fixture.inventory = snapshot(-1, -1, y: 1105)
+        fixture.onVisibilityPrepare = { _ in fixture.inventory = snapshot(400, 500, y: 0) }
+        fixture.onOrder = { _ in
+            fixture.visibilityEvents.append("place")
+            fixture.inventory = snapshot(600, 500, y: 0)
+        }
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.owner.state.moveStatus == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(fixture.visibilityEvents == ["reveal", "place", "restore"])
+        #expect(fixture.owner.state.moveStatus == .moved(name: "Example 1"))
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func cancelingAnOrderRestoresItsTemporaryVisibilityLease() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: fixture.app, index: 1)
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: [CGRect(x: -1, y: 1105, width: 24, height: 24), CGRect(x: -1, y: 1105, width: 24, height: 24)],
+            identifiers: ["A", "B"])], accessibilityAllowed: true, complete: true)
+        fixture.onVisibilityPrepare = { _ in fixture.blocksRead = true }
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.blockedRead == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(fixture.blockedRead != nil)
+        fixture.owner.setEditorVisible(false)
+        fixture.blocksRead = false; fixture.blockedRead?.resume(); fixture.blockedRead = nil
+        try await fixture.close()
+        #expect(fixture.visibilityEvents == ["reveal", "restore"])
+        #expect(fixture.orders.isEmpty)
+        #expect(fixture.drags.isEmpty)
+    }
+
+    @Test @MainActor func savedNativeOrderReplacesPlaceholderGeometryInTheEditor() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication)
+        let ids = (0..<3).map { MenuBarItemID(application: fixture.app, index: $0) }
+        fixture.inventory = .init(applications: [.init(id: fixture.app, name: "Example", icon: nil,
+            frames: Array(repeating: CGRect(x: -1, y: 1105, width: 24, height: 24), count: 3))],
+            accessibilityAllowed: true, complete: true)
+        fixture.savedWeights = [ids[0]: 10, ids[1]: 30, ids[2]: 20]
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        #expect(fixture.owner.state.tiles.map(\.id) == [ids[1], ids[2], ids[0]])
+        try await fixture.close()
+    }
+
     @Test @MainActor func anIncompleteUnrelatedOwnerDoesNotBlockOrderingOrRemoveOtherTiles() async throws {
         let fixture = try PositionServiceFixture(support: .perApplication, scopedOrderReads: true)
         let unrelated = ApplicationID(rawValue: "org.fluxfixture.unrelated")!

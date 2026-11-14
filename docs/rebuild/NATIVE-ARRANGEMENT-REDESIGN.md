@@ -20,6 +20,12 @@ The service saves per-app group changes through the existing policy. A slot with
 
 MenuBarPositionIdentity resolves a key from the bundle namespace first. Executable and display-name namespaces require unique ownership. Multiple icons require an exact stable AX identifier. The code refuses ambiguous sibling keys; it does not guess from the item's current array index. Clock and the unique Control Center module can be anchors, while system-owned source items remain locked.
 
+Older AppKit items can have no entry in the central table. Their existing NSStatusItem Preferred Position keys supply the real autosave name. Rocket uses rocket_status_item, not Item-0. A Mac-local probe using that name moved Rocket between Tailscale and TG Pro without mouse events. Guessed Item-0 names did not move it. The resolver now accepts an unambiguous legacy name, including a native preference in a sandbox container, and refuses ambiguous siblings. A new central entry has an absent-before edit token so failed moves can remove only their own new entry.
+
+The Control Center trackedApplications table can also disable an icon independently of Flux's group. The ordering transaction temporarily enables only its requested source and neighbour apps, then restores only flags it changed. It preserves unknown rows and fields. A small bundle-ID journal recovers an interrupted visibility lease at the next launch. This needs separate one-file access to group.com.apple.controlcenter.plist. Group choices and the chevron continue to use the existing hiding policy.
+
+Settings reads native preferred weights, with legacy autosave values as the fallback. Offscreen placeholder frames no longer determine the displayed order. Native geometry still verifies each move after the requested icons are revealed. Permission-grant retries refresh inventory and identities before resuming the named request.
+
 MenuBarPositionOrder chooses one weight between the named peers. At a strip end it also accounts for unlisted native keys. It refuses exhausted numeric space instead of renumbering other icons.
 
 MenuBarPositionStore serializes writes on an actor. It synchronizes and reads current values, merges only the requested item's weight and preserves unknown entries. The application checks fresh, non-overlapping, on-screen source and peer frames before reporting success. It stops verification after its bounded budget. A failed or canceled move restores only its own value, and only while that value still equals the value Flux wrote. Failed restoration is reported.
@@ -40,7 +46,7 @@ Flux keeps a security-scoped bookmark for that file. It requests no Full Disk Ac
 
 ## Proof and limits
 
-The editor dispatch regression failed on the prior implementation, which started the native guide and sent no slot request. Corrected fixture tests proved live preferred-position ordering with no generated mouse input. Core tests cover native weight direction, unlisted peers, ambiguous aliases and sibling identity. An isolated native preferences test covers unknown data preservation and conditional restoration. Service checks cover fresh placement and keeping group controls available when ordering access is missing.
+The editor dispatch regression failed on the prior implementation, which started the native guide and sent no slot request. Corrected fixture tests proved live preferred-position ordering with no generated mouse input. Core tests cover native weight direction, unlisted peers, legacy names, ambiguous aliases and sibling identity. Isolated native preference tests cover unknown data preservation, removing a newly created key, conditional visibility restoration and recovery of an interrupted lease. Service checks cover fresh placement and keeping group controls available when ordering access is missing.
 
 Installed Settings gesture, signing identity and permission behavior are separate checks. They remain required before owner acceptance. No public release follows from unit tests or the old build900 gesture report.
 

@@ -62,4 +62,18 @@ import Testing
         #expect(try MenuBarPositionIdentity.key(for: item, in: [.init(item: item, owners: ["probe"], identifier: nil, siblingCount: 1)],
             keys: [key, "status:probe::unrelated"]) == key)
     }
+
+    @Test func legacyAutosaveNameIdentifiesAnItemWithoutAnExistingNativeKey() throws {
+        let app = ApplicationID(rawValue: "org.fluxfixture.legacy")!
+        let item = MenuBarItemID(application: app, index: 0)
+        let identity = MenuBarPositionIdentity(item: item, owners: [], identifier: nil, siblingCount: 1,
+            legacyPositions: ["rocket_status_item": 485])
+        #expect(try MenuBarPositionIdentity.key(for: item, in: [identity], keys: [])
+            == "status:org.fluxfixture.legacy::rocket_status_item")
+        let ambiguous = MenuBarPositionIdentity(item: item, owners: [], identifier: nil, siblingCount: 2,
+            legacyPositions: ["first": 485, "second": 300])
+        #expect(throws: MenuBarMoveFailure.positionIdentityUnavailable) {
+            try MenuBarPositionIdentity.key(for: item, in: [ambiguous], keys: [])
+        }
+    }
 }

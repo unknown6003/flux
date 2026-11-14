@@ -55,5 +55,15 @@ import FluxCore
         changed = try read()
         #expect(changed[source] as? Double == 175.5)
         #expect(changed["futureField"] as? Data == opaque)
+        let legacyKey = "status:org.fluxfixture.first::legacy_item"
+        save([peer: 100.5, "futureField": opaque])
+        let legacy = MenuBarPositionIdentity(item: a, owners: [], identifier: nil, siblingCount: 1,
+            legacyPositions: ["legacy_item": 40.5])
+        let created = try await store.place(move, identities: [legacy, identities[1]])
+        #expect(created.before == nil)
+        #expect(try read()[legacyKey] as? Double == 132.5)
+        try await store.restore(created)
+        #expect(try read()[legacyKey] == nil)
+        #expect(try read()["futureField"] as? Data == opaque)
     }
 }

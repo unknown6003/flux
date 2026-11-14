@@ -6,9 +6,12 @@ public struct MenuBarPositionIdentity: Sendable {
     public let owners: [String]
     public let identifier: String?
     public let siblingCount: Int
+    public let legacyPositions: [String: Double]
 
-    public init(item: MenuBarItemID, owners: [String], identifier: String?, siblingCount: Int) {
+    public init(item: MenuBarItemID, owners: [String], identifier: String?, siblingCount: Int,
+                legacyPositions: [String: Double] = [:]) {
         self.item = item; self.owners = owners; self.identifier = identifier; self.siblingCount = siblingCount
+        self.legacyPositions = legacyPositions
     }
 
     public static func key(for item: MenuBarItemID, in items: [Self], keys: Set<String>) throws(MenuBarMoveFailure) -> String {
@@ -33,6 +36,17 @@ public struct MenuBarPositionIdentity: Sendable {
         if let identifier = identity.identifier, !identifier.isEmpty {
             let exact = candidates.filter { $0.hasSuffix("::" + identifier) }
             if exact.count == 1, let key = exact.first { return key }
+        }
+        let legacy = identity.legacyPositions.filter {
+            !$0.key.isEmpty && $0.key.utf8.count <= 256 && !$0.key.contains("::")
+                && $0.value.isFinite && $0.value >= 0
+        }
+        let names = identity.identifier.flatMap { legacy[$0] != nil ? [$0] : nil }
+            ?? (identity.siblingCount == 1 && legacy.count == 1 ? Array(legacy.keys) : [])
+        if names.count == 1, let name = names.first {
+            let exact = candidates.filter { $0.hasSuffix("::" + name) }
+            if exact.count == 1, let key = exact.first { return key }
+            if exact.isEmpty { return primary + name }
         }
         guard identity.siblingCount == 1, candidates.count == 1, let key = candidates.first else { throw .positionIdentityUnavailable }
         return key
