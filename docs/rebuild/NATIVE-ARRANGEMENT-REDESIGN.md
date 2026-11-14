@@ -64,3 +64,6 @@ Bartender 7.1.0 was inspected only for shipped imports and strings, without runn
 
 
 Protected legacy names use an exact-file scope for the named app. Shottr stores its AppKit autosave name in its sandbox preferences. Flux reads only NSStatusItem Preferred Position keys and does not write the app's file. The grant is retained across relaunch. Source identity checks precede any native order save.
+
+
+Private907 passed concealed Rocket order/inverse, Wispr order, Shottr's three-group cycle and a TG Pro physical move ahead of Tailscale. One TG Pro inverse reported an identity failure, while a fresh repeat and the native store probe both succeeded. The precise rejection stage was not captured. Scoped inventory now allows two bounded100ms rereads when a requested owner is temporarily absent. Existing but changed or ambiguous identities still fail immediately. A regression drops a peer from the first post-save snapshot, then restores its original identity, and requires one native save only. Private908 still needs the real inverse path repeated.

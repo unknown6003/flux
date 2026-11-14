@@ -123,6 +123,7 @@ import FluxUI
     var orderAccessGranted = false
     var legacyAccessRequests: [ApplicationID] = []
     var orderScopes: [Set<ApplicationID>] = []
+    var onScopedRead: ((Int) -> Void)?
     var savedWeights: [MenuBarItemID: Double] = [:]
 
     init(support: PositionMenuBarHidingSupport = .unverified, observesSystem: Bool = false,
@@ -135,6 +136,7 @@ import FluxUI
         if scopedOrderReads {
             scopedRead = { [unowned self] requested in
                 self.orderScopes.append(requested)
+                self.onScopedRead?(self.orderScopes.count)
                 return .init(applications: self.inventory.applications.filter { requested.contains($0.id) },
                              accessibilityAllowed: true, complete: true)
             }
@@ -255,6 +257,34 @@ import FluxUI
         #expect(fixture.reads > reads)
         #expect(!fixture.owner.state.orderAccessRequired)
         #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example 1"))
+        #expect(fixture.drags.isEmpty)
+        try await fixture.close()
+    }
+
+    @Test @MainActor func aTemporarilyMissingPeerIsRereadWithoutRepeatingTheNativeSave() async throws {
+        let fixture = try PositionServiceFixture(support: .perApplication, scopedOrderReads: true)
+        let peer = ApplicationID(rawValue: "org.fluxfixture.peer")!
+        let a = MenuBarItemID(application: fixture.app, index: 0)
+        let b = MenuBarItemID(application: peer, index: 0)
+        let original = PositionMenuBarApplication(id: fixture.app, name: "Example", icon: nil,
+            frames: [CGRect(x: 400, y: 0, width: 24, height: 24)])
+        let neighbour = PositionMenuBarApplication(id: peer, name: "Peer", icon: nil,
+            frames: [CGRect(x: 500, y: 0, width: 24, height: 24)])
+        fixture.inventory = .init(applications: [original, neighbour], accessibilityAllowed: true, complete: true)
+        fixture.onOrder = { _ in fixture.savedWeights = [a: 400, b: 500] }
+        fixture.onScopedRead = { count in
+            fixture.inventory = .init(applications: count == 2 ? [original] : [original, neighbour],
+                accessibilityAllowed: true, complete: true)
+        }
+        fixture.owner.start(); fixture.owner.setEditorVisible(true); await fixture.settle()
+        fixture.owner.moveItem(.init(item: a, group: .shown, left: b, right: nil))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while fixture.owner.state.moveStatus == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(fixture.owner.state.moveStatus == .orderSaved(name: "Example"))
+        #expect(fixture.orderScopes.count == 3)
+        #expect(fixture.orders.count == 1)
         #expect(fixture.drags.isEmpty)
         try await fixture.close()
     }

@@ -585,7 +585,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                 }
             }
             do {
-                let snapshot = await self.readOrderInventory(requestedApplications)
+                let snapshot = try await self.readMatchingOrderInventory(applications: requestedApplications, items: requested, bindings: bindings)
                 try Task.checkCancellation()
                 guard self.started, self.editorVisible, snapshot.complete, snapshot.accessibilityAllowed,
                       self.inventoryVersion == version, self.identityVersion == version,
@@ -606,7 +606,7 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                       self.policyRevision == revision else { throw CancellationError() }
                 do {
                     edit = try await self.placeOrder(move, snapshot)
-                    let fresh = await self.readOrderInventory(requestedApplications)
+                    let fresh = try await self.readMatchingOrderInventory(applications: requestedApplications, items: requested, bindings: bindings)
                     try Task.checkCancellation()
                     guard self.policyRevision == revision, self.inventoryVersion == version,
                           self.identityVersion == version, (try? self.currentIdentities()) == self.identityPins else { throw CancellationError() }
@@ -649,6 +649,26 @@ private struct PositionMenuBarOrderingIdentity: Equatable {
                 self.changed()
             }
         }
+    }
+
+    private func readMatchingOrderInventory(applications: Set<ApplicationID>, items: [MenuBarItemID],
+                                           bindings: [PositionMenuBarOrderingIdentity?]) async throws -> PositionMenuBarInventory {
+        guard bindings.allSatisfy({ $0 != nil }) else { throw MenuBarMoveFailure.positionIdentityUnavailable }
+        for attempt in 0..<3 {
+            let snapshot = await readOrderInventory(applications)
+            try Task.checkCancellation()
+            guard snapshot.accessibilityAllowed else { throw MenuBarMoveFailure.accessibilityRequired }
+            let actual = items.map { orderingIdentity($0, in: snapshot) }
+            guard zip(items, actual).allSatisfy({ item, binding in
+                binding != nil || !snapshot.applications.contains(where: { $0.id == item.application })
+            }) else { throw MenuBarMoveFailure.positionIdentityUnavailable }
+            guard zip(actual, bindings).allSatisfy({ value, expected in value == nil || value == expected }) else {
+                throw MenuBarMoveFailure.positionIdentityUnavailable
+            }
+            if snapshot.complete, actual == bindings { return snapshot }
+            if attempt < 2 { try await Task.sleep(for: .milliseconds(100)) }
+        }
+        throw MenuBarMoveFailure.positionIdentityUnavailable
     }
 
     private func publishOrder(_ snapshot: PositionMenuBarInventory, replacing applications: Set<ApplicationID>) {
