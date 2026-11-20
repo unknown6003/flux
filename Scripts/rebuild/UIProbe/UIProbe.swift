@@ -175,7 +175,8 @@ import FluxUI
             ]
             for (name, state) in states {
                 let controller = LockScreenContentController(state: state, onAction: { _ in })
-                let size = state.isEmpty ? NSSize(width: 348, height: 164) : controller.preferredSize
+                controller.isFixtureRender = true
+                let size = state.isEmpty ? NSSize(width: 348, height: 148) : controller.preferredSize
                 let window = NSWindow(contentRect: .init(origin: .init(x: -10_000, y: -10_000), size: size),
                     styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
@@ -189,8 +190,13 @@ import FluxUI
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
                 host.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
-                try render(host, to: output.appendingPathComponent("lock-\(name)-\(theme).png"))
+                var failure: (any Error)?
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    do { try render(host, to: output.appendingPathComponent("lock-\(name)-\(theme).png")) }
+                    catch { failure = error }
+                }
                 window.close()
+                if let failure { throw failure }
             }
         }
     }

@@ -24,11 +24,13 @@ struct LockScreenMediaControlsView: View {
 
         Group {
             if hasMedia, let media = state.media {
-                VStack(spacing: 0) {
-                    mediaCard(for: media, audioOutput: state.audioOutput)
-                    if hasAuxiliaryContent {
-                        auxiliaryPill(state.activity)
-                            .padding(.top, LockScreenMetrics.captionGap)
+                lockScreenGlassGroup {
+                    VStack(spacing: 0) {
+                        mediaCard(for: media, audioOutput: state.audioOutput)
+                        if hasAuxiliaryContent {
+                            auxiliaryPill(state.activity)
+                                .padding(.top, LockScreenMetrics.captionGap)
+                        }
                     }
                 }
             } else if hasAuxiliaryContent {
@@ -41,6 +43,21 @@ struct LockScreenMediaControlsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(hasMedia ? "Lock Screen Now Playing" : "Lock Screen Activity")
         .environment(\.isSnapshotRender, model.isFixtureRender)
+    }
+
+    @ViewBuilder
+    private func lockScreenGlassGroup<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+#if compiler(>=6.2)
+        if #available(macOS 26.0, *), !model.isFixtureRender {
+            GlassEffectContainer(spacing: LockScreenMetrics.captionGap) {
+                content()
+            }
+        } else {
+            content()
+        }
+#else
+        content()
+#endif
     }
 
     // MARK: - Media Card
