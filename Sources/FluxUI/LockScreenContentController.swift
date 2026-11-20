@@ -31,7 +31,7 @@ public enum LockScreenMetrics {
         let pickerExtra: CGFloat = expandedOutputCount > 0
             ? CGFloat(min(expandedOutputCount, outputPickerMaxRows)) * outputPickerRowHeight + 22
             : 0
-        switch (hasMedia, hasActivity) {
+        return switch (hasMedia, hasActivity) {
         case (true, true): CGSize(width: mediaWidth, height: mediaCardHeight + pickerExtra + captionGap + captionHeight)
         case (true, false): CGSize(width: mediaWidth, height: mediaCardHeight + pickerExtra)
         case (false, true): CGSize(width: activityOnlyWidth, height: captionHeight)

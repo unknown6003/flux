@@ -115,10 +115,14 @@ import FluxPlatform
         #expect(LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 38, hasMedia: false)
                 == 982 * 0.21 - 19)
         // Minimal full-screen backdrop mode places the compact Liquid Glass
-        // player lower, cleanly above the bottom unlock hint.
-        let minimalY = LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 148,
-                                                        hasMedia: true, minimalBackdrop: true)
-        #expect(abs(minimalY - (982 * 0.198 - 74)) < 0.01)
+        // player lower (centered at 19.8%, never below 12.4%), cleanly above
+        // the bottom unlock hint.
+        let minimalFloorY = LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 148,
+                                                             hasMedia: true, minimalBackdrop: true)
+        #expect(abs(minimalFloorY - (982 * 0.124)) < 0.01)
+        let minimalCenteredY = LockScreenWidgetPosition.originY(screenFrame: tall, notchHeight: 32, widgetHeight: 148,
+                                                                hasMedia: true, minimalBackdrop: true)
+        #expect(abs(minimalCenteredY - (2000 * 0.198 - 74)) < 0.01)
     }
 
     /// Loads SkyLight's private symbols on this Mac without locking the
