@@ -3,41 +3,80 @@ import FluxCore
 import QuartzCore
 import SwiftUI
 
-// Lock-screen content views. Pure AppKit, parent driven.
+// Lock-screen content views. Pure AppKit/SwiftUI, parent driven.
 //
-// The parent owns both windows, the private presentation bridge, lock and
+// The parent owns the windows, the private presentation bridge, lock and
 // unlock events, media reads, the playback clock and every command. These
 // views own no window, timer, monitor, camera, network or permission code.
-// The saved `flux.notch.lockScreen.nowPlaying` and `.activities` switches
-// decide what the parent puts in `LockScreenContentState`. Nothing here claims
-// that a private lock-screen presentation works on a given macOS release.
 
-/// Sizes kept from the old lock-screen flow.
+/// Dimensions for the floating Liquid Glass lock-screen music player and pill.
 public enum LockScreenMetrics {
     public static let mediaWidth: CGFloat = 348
-    public static let mediaCardHeight: CGFloat = 164
+    /// Matches the compact, balanced Liquid Glass lock-screen player proportions.
+    public static let mediaCardHeight: CGFloat = 148
     public static let activityOnlyWidth: CGFloat = 240
     public static let captionHeight: CGFloat = 38
-    public static let cardCornerRadius: CGFloat = 24
+    public static let cardCornerRadius: CGFloat = 28
     public static let artworkSide: CGFloat = 64
     public static let artworkCornerRadius: CGFloat = 14
     /// Space between the media card and the caption under it.
     public static let captionGap: CGFloat = 8
+    /// Additional vertical room when the inline audio-output picker is open.
+    public static let outputPickerRowHeight: CGFloat = 30
+    public static let outputPickerMaxRows: Int = 4
 
     /// The card window size. `.zero` when there is nothing to show, so the
     /// parent can order the card window out and leave no mouse surface.
-    public static func size(hasMedia: Bool, hasActivity: Bool) -> CGSize {
+    public static func size(hasMedia: Bool, hasActivity: Bool, expandedOutputCount: Int = 0) -> CGSize {
+        let pickerExtra: CGFloat = expandedOutputCount > 0
+            ? CGFloat(min(expandedOutputCount, outputPickerMaxRows)) * outputPickerRowHeight + 22
+            : 0
         switch (hasMedia, hasActivity) {
-        case (true, true): CGSize(width: mediaWidth, height: mediaCardHeight + captionGap + captionHeight)
-        case (true, false): CGSize(width: mediaWidth, height: mediaCardHeight)
+        case (true, true): CGSize(width: mediaWidth, height: mediaCardHeight + pickerExtra + captionGap + captionHeight)
+        case (true, false): CGSize(width: mediaWidth, height: mediaCardHeight + pickerExtra)
         case (false, true): CGSize(width: activityOnlyWidth, height: captionHeight)
         case (false, false): .zero
         }
     }
 }
 
-/// One line under the media card, or alone. Battery notices stay out: the
-/// parent sends nil for them, as the old flow did.
+/// One selectable audio output route displayed in the lock-screen player.
+public struct LockScreenAudioDevice: Equatable, Sendable, Identifiable {
+    public var id: UInt32
+    public var name: String
+    public var symbolName: String
+    public var isSelected: Bool
+
+    public init(id: UInt32, name: String, symbolName: String, isSelected: Bool) {
+        self.id = id
+        self.name = name
+        self.symbolName = symbolName
+        self.isSelected = isSelected
+    }
+}
+
+/// Audio mute + route state surfaced by the lock-screen player's corner buttons.
+public struct LockScreenAudioOutputState: Equatable, Sendable {
+    public var isMuted: Bool
+    public var canMute: Bool
+    public var currentSymbolName: String
+    public var currentDeviceName: String
+    public var devices: [LockScreenAudioDevice]
+
+    public init(isMuted: Bool = false,
+                canMute: Bool = true,
+                currentSymbolName: String = "display",
+                currentDeviceName: String = "Speakers",
+                devices: [LockScreenAudioDevice] = []) {
+        self.isMuted = isMuted
+        self.canMute = canMute
+        self.currentSymbolName = currentSymbolName
+        self.currentDeviceName = currentDeviceName
+        self.devices = devices
+    }
+}
+
+/// One line under the media card, or alone. Battery notices stay out.
 public struct LockScreenActivityCaption: Equatable, Sendable {
     /// An SF Symbol name, or nil for text only.
     public var symbolName: String?
@@ -49,14 +88,18 @@ public struct LockScreenActivityCaption: Equatable, Sendable {
     }
 }
 
-/// Everything the card shows. Media shows only for `.playing` and `.paused`.
+/// Everything the floating card shows. Media shows only for `.playing` and `.paused`.
 public struct LockScreenContentState: Equatable {
     public var media: NowPlayingWidgetState?
     public var activity: LockScreenActivityCaption?
+    public var audioOutput: LockScreenAudioOutputState?
 
-    public init(media: NowPlayingWidgetState? = nil, activity: LockScreenActivityCaption? = nil) {
+    public init(media: NowPlayingWidgetState? = nil,
+                activity: LockScreenActivityCaption? = nil,
+                audioOutput: LockScreenAudioOutputState? = nil) {
         self.media = media
         self.activity = activity
+        self.audioOutput = audioOutput
     }
 
     public static var empty: LockScreenContentState { LockScreenContentState() }
@@ -75,20 +118,23 @@ public struct LockScreenContentState: Equatable {
     public var preferredSize: CGSize { LockScreenMetrics.size(hasMedia: showsMedia, hasActivity: showsActivity) }
 }
 
-/// The only lock-screen commands. No source picker and no app launch.
+/// Interactive lock-screen player commands.
 public enum LockScreenTransportAction: Equatable, Sendable {
     case previous
     case togglePlayPause
     case next
-    /// Sent once, when the user releases the slider. Seconds from the start.
+    /// Sent once, when the user releases the scrubber. Seconds from the start.
     case seek(TimeInterval)
+    /// Toggles default audio output mute state.
+    case toggleMute
+    /// Switches the CoreAudio default output device to the given `AudioObjectID`.
+    case selectAudioOutput(UInt32)
 }
 
 // MARK: Silhouette
 
-/// Black camera-housing shape at the physical notch size: the 0.21.35
-/// `LockScreenContentView` (`NotchShape.collapsed`, black, top aligned). It
-/// never takes a mouse event and VoiceOver skips it.
+/// Black camera-housing shape at the physical notch size. Used when the full-
+/// screen minimal backdrop is disabled. Never takes a mouse event.
 @MainActor
 public final class LockScreenSilhouetteView: NSView {
     public static let identifier = "flux.lockScreen.silhouette"
@@ -102,7 +148,7 @@ public final class LockScreenSilhouetteView: NSView {
         }
     }
 
-    /// At least 1 x 8 pt, as the old flow drew it.
+    /// At least 1 x 8 pt.
     public var preferredSize: CGSize {
         CGSize(width: max(notchSize.width, 1), height: max(notchSize.height, 8))
     }
@@ -140,16 +186,20 @@ public final class LockScreenSilhouetteView: NSView {
 
 // MARK: Card
 
-/// Card-sized lock-screen content: the 0.21.35 `LockScreenMediaControlsView`.
-/// Call `update(_:)` with new parent state. Read `preferredSize` after each
-/// update and size the card window to it. When `isEmpty` is true the root has
-/// no hit area and no VoiceOver element.
+/// Card-sized lock-screen content hosting the Liquid Glass music player and
+/// optional live activity pill.
 @MainActor
 public final class LockScreenContentController: NSViewController {
     public static let identifier = "flux.lockScreen.card"
 
     public private(set) var state: LockScreenContentState
-    public var preferredSize: CGSize { state.preferredSize }
+    public var onPreferredSizeChange: (@MainActor (CGSize) -> Void)?
+    public var preferredSize: CGSize {
+        let pickerRows = model.isOutputPickerExpanded ? (state.audioOutput?.devices.count ?? 0) : 0
+        return LockScreenMetrics.size(hasMedia: state.showsMedia,
+                                      hasActivity: state.showsActivity,
+                                      expandedOutputCount: pickerRows)
+    }
     public var isEmpty: Bool { state.isEmpty }
     public var showsMedia: Bool { isViewLoaded && state.showsMedia }
     public var showsActivity: Bool { isViewLoaded && state.showsActivity }
@@ -157,8 +207,13 @@ public final class LockScreenContentController: NSViewController {
 
     public init(state: LockScreenContentState = .empty, onAction: @escaping @MainActor (LockScreenTransportAction) -> Void) {
         self.state = state
-        model = LockScreenCardModel(state: state, onAction: onAction)
+        let cardModel = LockScreenCardModel(state: state, onAction: onAction)
+        model = cardModel
         super.init(nibName: nil, bundle: nil)
+        cardModel.onLayoutChange = { [weak self] in
+            guard let self else { return }
+            self.onPreferredSizeChange?(self.preferredSize)
+        }
     }
 
     @available(*, unavailable)
@@ -167,18 +222,19 @@ public final class LockScreenContentController: NSViewController {
     override public func loadView() {
         let host = LockScreenCardHostingView(model: model)
         host.setAccessibilityIdentifier(Self.identifier)
-        host.frame = NSRect(origin: .zero, size: state.preferredSize)
+        host.frame = NSRect(origin: .zero, size: preferredSize)
         view = host
     }
 
     public func update(_ newState: LockScreenContentState) {
         guard newState != state else { return }
         state = newState
+        if !newState.showsMedia { model.isOutputPickerExpanded = false }
         model.update(newState)
     }
 
-    /// Offscreen fixtures have no wallpaper behind them, so they draw the
-    /// material card instead of live glass, as the 0.21.35 snapshots did.
+    /// Offscreen fixtures have no live WindowServer backdrop behind them, so
+    /// they use the translucent material fallback instead of `.glassEffect`.
     public var isFixtureRender: Bool {
         get { model.isFixtureRender }
         set { model.isFixtureRender = newValue }
@@ -189,8 +245,14 @@ public final class LockScreenContentController: NSViewController {
 final class LockScreenCardModel: ObservableObject {
     @Published private(set) var state: LockScreenContentState
     @Published var isFixtureRender = false
+    @Published var isOutputPickerExpanded = false {
+        didSet {
+            if isOutputPickerExpanded != oldValue { onLayoutChange?() }
+        }
+    }
     private(set) var receivedAt = Date()
     let onAction: @MainActor (LockScreenTransportAction) -> Void
+    var onLayoutChange: (@MainActor () -> Void)?
 
     init(state: LockScreenContentState, onAction: @escaping @MainActor (LockScreenTransportAction) -> Void) {
         self.state = state

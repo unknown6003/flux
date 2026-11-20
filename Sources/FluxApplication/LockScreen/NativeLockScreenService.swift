@@ -5,9 +5,8 @@ import FluxUI
 
 public enum LockScreenServiceError: Error { case unavailable, busy, presentation }
 
-/// Local state and window lifetime for Flux on the lock screen. The default
-/// setup uses the 0.21.35 SkyLight space: the feature is available whenever
-/// that private bridge loads, and "not available" only when it does not.
+/// Local state, sound effects, backdrop/depth composition, and window lifetime
+/// for Flux on the lock screen.
 @MainActor public final class NativeLockScreenService: LockScreenService {
     public var onChange: (@MainActor () -> Void)?
     public var onTransport: (@MainActor (LockScreenTransportAction) -> Void)?
@@ -16,26 +15,36 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private let preferences: PreferenceStore
     private let availability: @MainActor () -> LockScreenCapability
     private let geometry: @MainActor () -> LockScreenGeometry?
+    private let lockSound: @MainActor () -> Void
     private let unlockSound: @MainActor () -> Void
     private let makeBridge: @MainActor () throws -> any LockScreenWindowBridge
+    private let readAudioOutput: @MainActor () -> AudioOutputSnapshot
+    private let toggleAudioMute: @MainActor () -> Bool
+    private let selectAudioOutputDevice: @MainActor (UInt32) -> Bool
+    private let loadWallpaperURL: @MainActor () -> URL?
     private var phase: SessionPhase = .sleeping
     private var handleID: UUID?
     private var media: MediaSnapshot?
     private var activity: ActivityItem?
     private var artwork: NSImage?
     private var artworkID: UUID?
+    private var composedBackdrop: LockScreenBackdropBundle?
+    private var requestedBackdropKey: String?
+    private var backdropTask: Task<Void, Never>?
+    private var backdropGeneration: UInt64 = 0
+
     private lazy var windows = LockScreenWindows(makeBridge: makeBridge, transport: { [weak self] action in
-        guard let self, self.presenting, self.preferences.value(for: Preferences.lockScreenNowPlaying), self.media != nil else { return }
-        if case .seek(let value) = action, !value.isFinite || value < 0 || value > (self.media?.duration ?? 0) { return }
-        self.onTransport?(action)
+        self?.handleTransport(action)
     })
+
     private lazy var images = ArtworkPipeline { [weak self] id, image in
         guard let self, self.presenting, self.artworkID == id else { return }
         self.artwork = image.map { NSImage(cgImage: $0.image, size: .zero) }
         self.render()
     }
 
-    /// The shipping setup: the SkyLight space and the built-in notch.
+    /// The shipping setup: the SkyLight space, minimal Liquid Glass backdrop,
+    /// CoreAudio output controls, and synthesized lock/unlock sounds.
     public convenience init(preferences: PreferenceStore) {
         self.init(preferences: preferences,
                   availability: { SkyLightLockScreenSpace.isLoadable ? .available : .unavailable },
@@ -45,21 +54,39 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public init(preferences: PreferenceStore,
                 availability: @escaping @MainActor () -> LockScreenCapability,
                 makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
+                lockSound: @escaping @MainActor () -> Void = NativeLockScreenService.playLockSound,
                 unlockSound: @escaping @MainActor () -> Void = NativeLockScreenService.playUnlockSound) {
-        self.preferences = preferences; self.availability = availability; self.makeBridge = makeBridge
+        self.preferences = preferences
+        self.availability = availability
+        self.makeBridge = makeBridge
+        self.lockSound = lockSound
         self.unlockSound = unlockSound
+        self.readAudioOutput = AudioOutputRoute.readSnapshot
+        self.toggleAudioMute = AudioOutputRoute.toggleMute
+        self.selectAudioOutputDevice = AudioOutputRoute.selectDevice
+        self.loadWallpaperURL = Self.currentDesktopWallpaperURL
         let cache = LockScreenGeometryCache()
         geometry = { cache.current() }
     }
 
-    /// For fixtures: a fixed screen whose notch is `notch`, or the screen's own.
+    /// For fixtures: fixed screen geometry and injectable audio/wallpaper hooks.
     init(preferences: PreferenceStore,
          availability: @escaping @MainActor () -> LockScreenCapability,
          makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
          geometry: @escaping @MainActor () -> LockScreenGeometry?,
-         unlockSound: @escaping @MainActor () -> Void) {
-        self.preferences = preferences; self.availability = availability; self.makeBridge = makeBridge
-        self.geometry = geometry; self.unlockSound = unlockSound
+         lockSound: @escaping @MainActor () -> Void = {},
+         unlockSound: @escaping @MainActor () -> Void = {},
+         loadWallpaperURL: @escaping @MainActor () -> URL? = { nil }) {
+        self.preferences = preferences
+        self.availability = availability
+        self.makeBridge = makeBridge
+        self.geometry = geometry
+        self.lockSound = lockSound
+        self.unlockSound = unlockSound
+        self.readAudioOutput = AudioOutputRoute.readSnapshot
+        self.toggleAudioMute = AudioOutputRoute.toggleMute
+        self.selectAudioOutputDevice = AudioOutputRoute.selectDevice
+        self.loadWallpaperURL = loadWallpaperURL
     }
 
     public func makeHandle() throws -> any FeatureServiceHandle {
@@ -94,8 +121,14 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         if phase == .sleeping { media = nil; activity = nil }
         let wasShowing = windows.isShowing
         render(animated: true)
+        if previous == .unlocked, phase == .locked, handleID != nil, enabled, failureCode == nil,
+           preferences.value(for: Preferences.lockScreenLockSound) {
+            lockSound()
+        }
         if previous == .locked, phase == .unlocked, wasShowing, handleID != nil, enabled,
-           preferences.value(for: Preferences.lockScreenUnlockSound) { unlockSound() }
+           preferences.value(for: Preferences.lockScreenUnlockSound) {
+            unlockSound()
+        }
     }
 
     public func receive(_ event: WidgetEvent) {
@@ -130,28 +163,152 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
     private var presenting: Bool { handleID != nil && enabled && phase == .locked && failureCode == nil }
 
+    private func handleTransport(_ action: LockScreenTransportAction) {
+        guard presenting else { return }
+        switch action {
+        case .toggleMute:
+            _ = toggleAudioMute()
+            render()
+        case .selectAudioOutput(let id):
+            _ = selectAudioOutputDevice(id)
+            render()
+        case .previous, .togglePlayPause, .next, .seek:
+            guard preferences.value(for: Preferences.lockScreenNowPlaying), media != nil else { return }
+            if case .seek(let value) = action, !value.isFinite || value < 0 || value > (media?.duration ?? 0) { return }
+            onTransport?(action)
+        }
+    }
+
     private func render(animated: Bool = false) {
         guard presenting, availability() == .available else { clearArtwork(); hide(animated: animated); return }
-        // 0.21.35 showed nothing, and reported nothing, without notch geometry.
         guard let geometry = geometry() else { hide(animated: false); return }
+
         let showMedia = preferences.value(for: Preferences.lockScreenNowPlaying)
+        let showBackdrop = preferences.value(for: Preferences.lockScreenBackdrop)
+        let showDepth = preferences.value(for: Preferences.lockScreenDepthEffect)
+
         if showMedia, let id = media?.artworkID, let bytes = media?.artwork {
             if id != artworkID { artworkID = id; artwork = nil; images.submit(id: id, bytes: bytes) }
-        } else if artworkID != nil { clearArtwork() }
+        } else if artworkID != nil {
+            images.clear(); artworkID = nil; artwork = nil
+        }
+
+        if showBackdrop {
+            syncBackdropPipeline(showMedia: showMedia, depthEffect: showDepth, screenSize: geometry.screenFrame.size)
+        } else {
+            clearBackdrop()
+        }
+
         let playing = showMedia ? media.map { snapshot in
             NowPlayingWidgetState(status: snapshot.playing ? .playing : .paused,
-                title: snapshot.title, artist: snapshot.artist, artwork: artwork,
-                elapsed: snapshot.elapsed(at: .now) ?? 0, duration: snapshot.duration,
-                canGoPrevious: snapshot.canSkip, canGoNext: snapshot.canSkip)
+                                  title: snapshot.title, artist: snapshot.artist, artwork: artwork,
+                                  elapsed: snapshot.elapsed(at: .now) ?? 0, duration: snapshot.duration,
+                                  canGoPrevious: snapshot.canSkip, canGoNext: snapshot.canSkip)
         } : nil
+        let audioState: LockScreenAudioOutputState? = playing != nil ? makeAudioOutputState() : nil
         let caption = preferences.value(for: Preferences.lockScreenActivities) ? activity.flatMap(Self.caption) : nil
+
+        let backdropState: LockScreenBackdropState
+        if showBackdrop, let bundle = composedBackdrop {
+            backdropState = LockScreenBackdropState(
+                sourceKey: bundle.sourceKey,
+                backdrop: bundle.backdrop,
+                foregroundCutout: showDepth ? bundle.foregroundCutout : nil,
+                showsDepthEffect: showDepth && bundle.foregroundCutout != nil
+            )
+        } else {
+            backdropState = .empty
+        }
+
         windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
-        do { try windows.show(.init(media: playing, activity: caption), geometry: geometry) }
-        catch { fail(windows.cleanupPending ? "lock.cleanup" : "lock.presentation") }
+        do {
+            try windows.show(.init(media: playing, activity: caption, audioOutput: audioState),
+                             backdrop: backdropState,
+                             geometry: geometry)
+        } catch {
+            fail(windows.cleanupPending ? "lock.cleanup" : "lock.presentation")
+        }
+    }
+
+    private func makeAudioOutputState() -> LockScreenAudioOutputState {
+        let snap = readAudioOutput()
+        let devices = snap.devices.map {
+            LockScreenAudioDevice(id: $0.id, name: $0.name, symbolName: $0.symbolName, isSelected: $0.isDefault)
+        }
+        return LockScreenAudioOutputState(
+            isMuted: snap.isMuted,
+            canMute: snap.canMute,
+            currentSymbolName: snap.currentDevice?.symbolName ?? "display",
+            currentDeviceName: snap.currentDevice?.name ?? "Speakers",
+            devices: devices
+        )
+    }
+
+    private func syncBackdropPipeline(showMedia: Bool, depthEffect: Bool, screenSize: CGSize) {
+        enum Source: Sendable {
+            case artwork(key: String, bytes: Data)
+            case wallpaper(key: String, url: URL)
+        }
+
+        let source: Source?
+        if showMedia, let id = media?.artworkID, let bytes = media?.artwork, !bytes.isEmpty {
+            source = .artwork(key: "media.\(id.uuidString).depth\(depthEffect ? 1 : 0)", bytes: bytes)
+        } else if let url = loadWallpaperURL() {
+            source = .wallpaper(key: "wallpaper.\(url.path).depth\(depthEffect ? 1 : 0)", url: url)
+        } else {
+            source = nil
+        }
+
+        guard let source else {
+            clearBackdrop()
+            return
+        }
+
+        let key: String
+        switch source {
+        case .artwork(let k, _), .wallpaper(let k, _): key = k
+        }
+
+        if requestedBackdropKey == key { return }
+        requestedBackdropKey = key
+        backdropGeneration &+= 1
+        let generation = backdropGeneration
+        backdropTask?.cancel()
+
+        backdropTask = Task { @MainActor [weak self] in
+            let bundle: LockScreenBackdropBundle? = await Task.detached(priority: .userInitiated) {
+                let decoded: CGImage?
+                switch source {
+                case .artwork(_, let bytes):
+                    decoded = LockScreenBackdropComposer.decodeImage(bytes, maxPixels: 2048)
+                case .wallpaper(_, let url):
+                    decoded = LockScreenBackdropComposer.decodeImage(at: url, maxPixels: 2048)
+                }
+                guard !Task.isCancelled, let decoded else { return nil }
+                return LockScreenBackdropComposer.compose(
+                    sourceKey: key,
+                    image: decoded,
+                    targetAspectSize: screenSize,
+                    includeDepthEffect: depthEffect
+                )
+            }.value
+            guard !Task.isCancelled, let self, self.presenting, self.backdropGeneration == generation else { return }
+            self.composedBackdrop = bundle
+            self.render()
+        }
+    }
+
+    private func clearBackdrop() {
+        backdropGeneration &+= 1
+        backdropTask?.cancel()
+        backdropTask = nil
+        requestedBackdropKey = nil
+        composedBackdrop = nil
     }
 
     private func clearArtwork() {
         images.clear(); artworkID = nil; artwork = nil
+        clearBackdrop()
     }
 
     private func hide(animated: Bool) {
@@ -176,8 +333,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         if changed { onChange?() }
     }
 
-    /// The 0.21.35 pill: battery stays out, the text is the trailing text or
-    /// else the leading text, and the symbol comes from the leading wing.
+    /// Pill caption: battery stays out, text is trailing or leading, symbol from leading wing.
     static func caption(_ item: ActivityItem) -> LockScreenActivityCaption? {
         guard item.kind != .battery else { return nil }
         func text(_ wing: ActivityWing) -> String? {
@@ -203,19 +359,22 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         }
     }
 
-    private static var unlockSoundPlayer: NSSound?
+    private static func currentDesktopWallpaperURL() -> URL? {
+        guard let screen = NSScreen.builtInNotchedScreen ?? NSScreen.main ?? NSScreen.screens.first else { return nil }
+        return LockScreenBackdropComposer.desktopWallpaperURL(for: screen)
+    }
 
-    /// The 0.21.35 unlock sound: Purr, or the first system sound that exists.
+    public static func playLockSound() {
+        LockScreenSoundPlayer.playLock()
+    }
+
     public static func playUnlockSound() {
-        let sound = NSSound(named: "Purr") ?? NSSound(named: "Pop") ?? NSSound(named: "Glass") ?? NSSound(named: "Tink")
-        unlockSoundPlayer = sound
-        sound?.stop()
-        sound?.play()
+        LockScreenSoundPlayer.playUnlock()
     }
 }
 
-/// The last good notch geometry. At lock time macOS can stop reporting the
-/// notch areas, so 0.21.35 kept the last rect in defaults under this key.
+/// The last good screen and notch geometry. At lock time macOS can stop
+/// reporting notch auxiliary areas, so we remember the last unlocked frame.
 @MainActor final class LockScreenGeometryCache {
     static let defaultsKey = "flux.lockScreen.notchGeometry.v2"
     private var cached: LockScreenGeometry?
@@ -235,7 +394,12 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
             }
             return live
         }
-        return cached
+        if let cached { return cached }
+        if let screen = NSScreen.main ?? NSScreen.screens.first,
+           screen.frame.width > 0, screen.frame.height > 0 {
+            return LockScreenGeometry(notch: .zero, screenFrame: screen.frame)
+        }
+        return nil
     }
 
     private func save(_ value: LockScreenGeometry) {

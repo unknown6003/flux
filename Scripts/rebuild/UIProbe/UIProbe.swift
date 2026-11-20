@@ -29,7 +29,9 @@ import FluxUI
                     }
                     if page == .lockScreen {
                         return LockScreenPreferencesController(state: .init(
-                            isEnabled: false, showsNowPlaying: true, showsActivities: true, playsUnlockSound: true,
+                            isEnabled: true, showsBackdrop: true, showsDepthEffect: true,
+                            showsNowPlaying: true, showsActivities: true,
+                            playsLockSound: true, playsUnlockSound: true,
                             capability: .available, failureCode: nil), onAction: { _ in })
                     }
                     if page == .about {

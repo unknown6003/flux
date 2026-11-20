@@ -165,8 +165,11 @@ public final class SettingsCoordinator {
     private func lockScreenState() -> LockScreenPreferencesState {
         LockScreenPreferencesState(
             isEnabled: value(Preferences.lockScreenEnabled),
+            showsBackdrop: value(Preferences.lockScreenBackdrop),
+            showsDepthEffect: value(Preferences.lockScreenDepthEffect),
             showsNowPlaying: value(Preferences.lockScreenNowPlaying),
             showsActivities: value(Preferences.lockScreenActivities),
+            playsLockSound: value(Preferences.lockScreenLockSound),
             playsUnlockSound: value(Preferences.lockScreenUnlockSound),
             capability: effects.lockScreenCapability(),
             failureCode: effects.lockScreenFailureCode()
@@ -360,8 +363,11 @@ public final class SettingsCoordinator {
     private func handle(_ action: LockScreenPreferencesAction) {
         switch action {
         case .setEnabled(let enabled): saveFeature(enabled, Preferences.lockScreenEnabled)
+        case .setBackdrop(let enabled): save(enabled, Preferences.lockScreenBackdrop, then: .presentation)
+        case .setDepthEffect(let enabled): save(enabled, Preferences.lockScreenDepthEffect, then: .presentation)
         case .setNowPlaying(let enabled): saveFeature(enabled, Preferences.lockScreenNowPlaying)
         case .setActivities(let enabled): saveFeature(enabled, Preferences.lockScreenActivities)
+        case .setLockSound(let enabled): save(enabled, Preferences.lockScreenLockSound, then: .presentation)
         case .setUnlockSound(let enabled): save(enabled, Preferences.lockScreenUnlockSound, then: .presentation)
         case .openSystemSettings: effects.openLockScreenSettings()
         case .checkAgain: effects.checkLockScreenAgain()

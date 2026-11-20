@@ -82,11 +82,13 @@ public final class NotchRuntime: WidgetEffects {
               preferences.value(for: Preferences.notchEnabled),
               preferences.value(for: Preferences.lockScreenEnabled),
               preferences.value(for: Preferences.lockScreenNowPlaying), let lockCommands else { return }
-        let control: MediaControl = switch action {
-        case .previous: .previous
-        case .togglePlayPause: .toggle
-        case .next: .next
-        case .seek(let seconds): .seek(seconds)
+        let control: MediaControl
+        switch action {
+        case .previous: control = .previous
+        case .togglePlayPause: control = .toggle
+        case .next: control = .next
+        case .seek(let seconds): control = .seek(seconds)
+        case .toggleMute, .selectAudioOutput: return
         }
         widgets.sendLockScreenControl(control, authorization: lockCommands)
     }

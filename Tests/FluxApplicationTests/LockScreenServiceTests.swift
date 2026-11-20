@@ -52,18 +52,24 @@ import FluxPlatform
         }
     }
 
-    @Test @MainActor func emptyLockCardCannotTakeInputAndUnlockReleasesItsWindowsOnce() async throws {
+    @Test @MainActor func emptyLockCardCannotTakeInputAndLockAndUnlockSoundsFireOnce() async throws {
         _ = NSApplication.shared
         var faded: [NSWindow] = []
         try profile { preferences in
             let screen = try #require(NSScreen.screens.first)
             let bridge = FixtureLockBridge()
-            var sounds = 0
+            var lockSounds = 0
+            var unlockSounds = 0
             let service = NativeLockScreenService(preferences: preferences, availability: { .available },
-                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) }, unlockSound: { sounds += 1 })
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+                lockSound: { lockSounds += 1 }, unlockSound: { unlockSounds += 1 })
             let handle = try service.makeHandle()
             defer { handle.stop() }
+            service.setPhase(.unlocked)
+            #expect(lockSounds == 0)
             service.setPhase(.locked)
+            service.setPhase(.locked)
+            #expect(lockSounds == 1)
             let ids = try #require(bridge.attached.first)
             let windows = NSApp.windows.filter { window in
                 CGWindowID(exactly: window.windowNumber).map { ids.contains($0) } ?? false
@@ -77,12 +83,12 @@ import FluxPlatform
             service.setPhase(.unlocked)
             service.setPhase(.unlocked)
             #expect(bridge.detaches == 1)
-            #expect(sounds == 1)
+            #expect(unlockSounds == 1)
             faded = windows
             handle.stop()
             #expect(bridge.detaches == 1)
         }
-        // The 0.21.35 fade out takes 0.25 s before the windows close.
+        // The fade out takes 0.25 s before the windows close.
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while faded.contains(where: \.isVisible), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
         #expect(faded.allSatisfy { !$0.isVisible })
@@ -108,6 +114,11 @@ import FluxPlatform
         #expect(abs(LockScreenWidgetPosition.originY(screenFrame: tall, notchHeight: 32, widgetHeight: 100, hasMedia: true) - 510) < 0.001)
         #expect(LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 38, hasMedia: false)
                 == 982 * 0.21 - 19)
+        // Minimal full-screen backdrop mode places the compact Liquid Glass
+        // player lower, cleanly above the bottom unlock hint.
+        let minimalY = LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 148,
+                                                        hasMedia: true, minimalBackdrop: true)
+        #expect(abs(minimalY - (982 * 0.198 - 74)) < 0.01)
     }
 
     /// Loads SkyLight's private symbols on this Mac without locking the

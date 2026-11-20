@@ -46,6 +46,9 @@ public enum Preferences {
     public static let lockScreenEnabled = Preference.boolean("flux.notch.lockScreenExperiment", true, new: false)
     public static let lockScreenNowPlaying = Preference.boolean("flux.notch.lockScreen.nowPlaying", true)
     public static let lockScreenActivities = Preference.boolean("flux.notch.lockScreen.activities", true)
+    public static let lockScreenBackdrop = Preference.boolean("flux.notch.lockScreen.backdrop", true)
+    public static let lockScreenDepthEffect = Preference.boolean("flux.notch.lockScreen.depthEffect", true)
+    public static let lockScreenLockSound = Preference.boolean("flux.notch.lockScreen.lockSound", true)
     public static let lockScreenUnlockSound = Preference.boolean("flux.notch.lockScreen.unlockSound", true)
     public static let notchHotkeyKeyCode = Preference.unsignedInteger("flux.notch.hotkey.keyCode", 45)
     public static let notchHotkeyModifiers = Preference.unsignedInteger("flux.notch.hotkey.modifiers", 6400)
@@ -82,6 +85,9 @@ public enum Preferences {
         lockScreenEnabled.registration,
         lockScreenNowPlaying.registration,
         lockScreenActivities.registration,
+        lockScreenBackdrop.registration,
+        lockScreenDepthEffect.registration,
+        lockScreenLockSound.registration,
         lockScreenUnlockSound.registration,
         notchHotkeyKeyCode.registration,
         notchHotkeyModifiers.registration
