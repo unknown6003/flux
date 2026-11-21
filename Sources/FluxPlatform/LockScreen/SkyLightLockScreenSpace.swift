@@ -2,9 +2,6 @@ import AppKit
 import CoreFoundation
 import Darwin
 
-// Ported from Flux 0.21.35: Sources/Flux/Notch/SkyLightLockScreenBridge.swift.
-// The symbols, the space level (400) and the add-window call are unchanged.
-
 /// The one special SkyLight space that keeps Flux windows above the lock
 /// screen shield. A window level alone is not enough on current macOS.
 ///
@@ -12,15 +9,21 @@ import Darwin
 /// or renames a symbol, `isLoadable` is false and the lock screen reports
 /// "not available". Loading reads symbols only: the space is created on the
 /// first `shared()` call, which happens when the screen first locks.
+///
+/// Verified against macOS 27 arm64e SkyLight disassembly:
+/// - `SLSSpaceCreate` takes `(Int32, Int32, UnsafeRawPointer?) -> UInt64`
+/// - `SLSSpaceSetAbsoluteLevel`, `SLSShowSpaces`, and
+///   `SLSSpaceAddWindowsAndRemoveFromSpaces` return `Void` (declaring them as
+///   returning `Int32` reads garbage from register `w0` and falsely fails).
 @MainActor
 public final class SkyLightLockScreenSpace {
     public enum BridgeError: Error { case unavailable, spaceRejected, windowRejected }
 
     private typealias MainConnection = @convention(c) () -> Int32
-    private typealias CreateSpace = @convention(c) (Int32, Int32, Int32) -> Int32
-    private typealias SetSpaceLevel = @convention(c) (Int32, Int32, Int32) -> Int32
-    private typealias ShowSpaces = @convention(c) (Int32, CFArray) -> Int32
-    private typealias AddWindowToSpace = @convention(c) (Int32, Int32, CFArray, Int32) -> Int32
+    private typealias CreateSpace = @convention(c) (Int32, Int32, UnsafeRawPointer?) -> UInt64
+    private typealias SetSpaceLevel = @convention(c) (Int32, UInt64, Int32) -> Void
+    private typealias ShowSpaces = @convention(c) (Int32, CFArray) -> Void
+    private typealias AddWindowToSpace = @convention(c) (Int32, UInt64, CFArray, UInt32) -> Void
 
     static let frameworkPath = "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight"
     /// The notification-center-at-lock-screen tier: above the ordinary lock
@@ -40,7 +43,7 @@ public final class SkyLightLockScreenSpace {
 
     private let symbols: Symbols
     private let connection: Int32
-    private let space: Int32
+    private let space: UInt64
 
     /// True when SkyLight and every required symbol load. No space is made.
     public static var isLoadable: Bool { loadSymbols() != nil }
@@ -51,16 +54,16 @@ public final class SkyLightLockScreenSpace {
         guard let symbols = loadSymbols() else { throw BridgeError.unavailable }
         let connection = symbols.mainConnection()
         guard connection != 0 else { throw BridgeError.unavailable }
-        let space = symbols.createSpace(connection, 1, 0)
+        let space = symbols.createSpace(connection, 1, nil)
         guard space != 0 else { throw BridgeError.spaceRejected }
-        _ = symbols.setSpaceLevel?(connection, space, spaceLevel)
-        _ = symbols.showSpaces?(connection, [NSNumber(value: space)] as CFArray)
+        symbols.setSpaceLevel?(connection, space, spaceLevel)
+        symbols.showSpaces?(connection, [NSNumber(value: space)] as CFArray)
         let made = SkyLightLockScreenSpace(symbols: symbols, connection: connection, space: space)
         instance = made
         return made
     }
 
-    private init(symbols: Symbols, connection: Int32, space: Int32) {
+    private init(symbols: Symbols, connection: Int32, space: UInt64) {
         self.symbols = symbols
         self.connection = connection
         self.space = space
@@ -71,7 +74,7 @@ public final class SkyLightLockScreenSpace {
         let ids = windowIDs.filter { $0 != 0 }
         guard !ids.isEmpty else { return }
         let windows = ids.map { NSNumber(value: $0) } as CFArray
-        guard symbols.addWindowToSpace(connection, space, windows, 7) == 0 else { throw BridgeError.windowRejected }
+        symbols.addWindowToSpace(connection, space, windows, 7)
     }
 
     private static func loadSymbols() -> Symbols? {
