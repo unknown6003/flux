@@ -166,16 +166,9 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
     private func observe(_ center: NotificationCenter, _ name: Notification.Name,
                          action: @escaping @MainActor (SessionMonitor) -> Void) {
         observations.append(NotificationObservation(center: center, name: name) { [weak self] _ in
-            if Thread.isMainThread {
-                MainActor.assumeIsolated {
-                    guard let self, self.active else { return }
-                    action(self)
-                }
-            } else {
-                Task { @MainActor in
-                    guard let self, self.active else { return }
-                    action(self)
-                }
+            Task { @MainActor in
+                guard let self, self.active else { return }
+                action(self)
             }
         })
     }
