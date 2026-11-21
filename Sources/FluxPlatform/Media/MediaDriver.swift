@@ -7,7 +7,7 @@ public enum MediaFeedState: Equatable, Sendable {
     case starting, ready(MediaSnapshot?), unavailable
 }
 
-public enum MediaControl: Sendable { case toggle, previous, next, seek(TimeInterval) }
+public enum MediaControl: Sendable { case play, pause, toggle, previous, next, seek(TimeInterval) }
 
 /// FileHandle's callback admits at most 8 MiB and schedules one actor drain.
 /// Lock ownership covers only bytes and queue state, never decoding or UI work.
@@ -156,6 +156,8 @@ public actor MediaDriver {
         guard active, process?.isRunning == true, commands.count < 4 else { return false }
         let arguments: [String]
         switch command {
+        case .play: arguments = ["send", "0"]
+        case .pause: arguments = ["send", "1"]
         case .toggle: arguments = ["send", "2"]
         case .previous: arguments = ["send", "5"]
         case .next: arguments = ["send", "4"]

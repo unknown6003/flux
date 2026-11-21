@@ -85,6 +85,8 @@ public final class NotchRuntime: WidgetEffects {
         let control: MediaControl
         switch action {
         case .previous: control = .previous
+        case .play: control = .play
+        case .pause: control = .pause
         case .togglePlayPause: control = .toggle
         case .next: control = .next
         case .seek(let seconds): control = .seek(seconds)

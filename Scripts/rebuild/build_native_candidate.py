@@ -71,6 +71,9 @@ def main():
     shutil.copytree(framework, contents / "Frameworks/MediaRemoteAdapter.framework", symlinks=True)
     shutil.copy2(vendor / "bin/mediaremote-adapter.pl", contents / "Resources/mediaremote-adapter.pl")
     shutil.copy2(vendor / "LICENSE", contents / "Resources/MediaRemoteAdapter-LICENSE.txt")
+    wallpapers = ROOT / "Resources/Wallpapers"
+    if wallpapers.is_dir():
+        shutil.copytree(wallpapers, contents / "Resources/Wallpapers")
     iconset = output / "AppIcon.iconset"
     run(["swift", str(ROOT / "Scripts/generate_icon.swift"), str(iconset)], 45)
     run(["iconutil", "-c", "icns", str(iconset), "-o", str(contents / "Resources/AppIcon.icns")])

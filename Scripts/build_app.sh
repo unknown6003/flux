@@ -62,6 +62,9 @@ cp "$BIN_PATH/$APP_NAME" "$CONTENTS/MacOS/$APP_NAME"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
 cp "$VENDOR_MRA/LICENSE" "$CONTENTS/Resources/MediaRemoteAdapter-LICENSE.txt"
 cp "$OUT_DIR/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
+if [ -d "$ROOT/Resources/Wallpapers" ]; then
+  cp -R "$ROOT/Resources/Wallpapers" "$CONTENTS/Resources/Wallpapers"
+fi
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 
 if [ -n "$MRA_FRAMEWORK" ]; then

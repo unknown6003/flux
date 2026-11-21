@@ -1,17 +1,33 @@
 import AppKit
 import FluxCore
 
-private final class DistributedObservation: @unchecked Sendable {
+private final class DistributedObservation: NSObject, @unchecked Sendable {
     private let center: DistributedNotificationCenter
-    private let token: any NSObjectProtocol
+    private let receive: @Sendable (Notification) -> Void
 
     init(center: DistributedNotificationCenter, name: Notification.Name,
          receive: @escaping @Sendable (Notification) -> Void) {
         self.center = center
-        token = center.addObserver(forName: name, object: nil, queue: .main, using: receive)
+        self.receive = receive
+        super.init()
+        center.addObserver(self,
+                           selector: #selector(handle(_:)),
+                           name: name,
+                           object: nil,
+                           suspensionBehavior: .deliverImmediately)
     }
 
-    deinit { center.removeObserver(token) }
+    @objc private func handle(_ notification: Notification) {
+        if Thread.isMainThread {
+            receive(notification)
+        } else {
+            DispatchQueue.main.async { [receive] in
+                receive(notification)
+            }
+        }
+    }
+
+    deinit { center.removeObserver(self) }
 }
 
 /// One owner routes session transitions. Unavailable or malformed session data
@@ -99,7 +115,8 @@ private final class DistributedObservation: @unchecked Sendable {
         if let center {
             distributed = [
                 DistributedObservation(center: center, name: .init("com.apple.screenIsLocked")) { [weak self] _ in
-                    Task { @MainActor in
+                    // Delivered on OperationQueue.main; run synchronously to avoid a run-loop frame delay.
+                    MainActor.assumeIsolated {
 #if FLUX_PERFORMANCE_TRACE
                         PerformanceTrace.record(.sessionLock)
 #endif
@@ -107,7 +124,7 @@ private final class DistributedObservation: @unchecked Sendable {
                     }
                 },
                 DistributedObservation(center: center, name: .init("com.apple.screenIsUnlocked")) { [weak self] _ in
-                    Task { @MainActor in
+                    MainActor.assumeIsolated {
                         guard let self else { return }
 #if FLUX_PERFORMANCE_TRACE
                         PerformanceTrace.record(.sessionUnlock)
@@ -148,9 +165,16 @@ private final class DistributedObservation: @unchecked Sendable {
     private func observe(_ center: NotificationCenter, _ name: Notification.Name,
                          action: @escaping @MainActor (SessionMonitor) -> Void) {
         observations.append(NotificationObservation(center: center, name: name) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.active else { return }
-                action(self)
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    guard let self, self.active else { return }
+                    action(self)
+                }
+            } else {
+                Task { @MainActor in
+                    guard let self, self.active else { return }
+                    action(self)
+                }
             }
         })
     }

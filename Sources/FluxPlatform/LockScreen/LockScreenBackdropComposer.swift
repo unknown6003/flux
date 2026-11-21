@@ -5,8 +5,8 @@ import Foundation
 import ImageIO
 import Vision
 
-/// Composed full-screen lock-screen imagery: the edge-blurred widescreen photo
-/// backdrop and an optional Vision foreground cutout for the depth effect.
+/// Composed full-screen lock-screen imagery: the wallpaper backdrop (with
+/// optional blurred edges) and an optional Vision foreground cutout for the depth effect.
 public struct LockScreenBackdropBundle: @unchecked Sendable {
     public let sourceKey: String
     public let backdrop: CGImage
@@ -19,22 +19,15 @@ public struct LockScreenBackdropBundle: @unchecked Sendable {
     }
 }
 
-/// Composes widescreen edge-blurred lock-screen photography and optional
-/// Vision foreground-instance depth cutouts off the main actor.
+/// Composes lock-screen wallpapers (optionally with mirrored/feathered edge blur)
+/// and Vision foreground-instance depth cutouts off the main actor.
 public enum LockScreenBackdropComposer {
     /// Maximum rendered canvas width in pixels. Crisp on Retina while fast on GPU.
     public static let maximumCanvasWidth = 2560
-    /// Minimum short-edge pixels for album art to replace the desktop wallpaper.
-    /// Tiny thumbnails (e.g. 150x84 from browsers) fall back to the full-res wallpaper.
-    public static let minimumBackdropArtworkDimension = 480
     /// Minimum and maximum clock-band occlusion for the depth effect so the time
     /// always remains legible while allowing subjects to step cleanly in front.
     public static let minimumClockOverlap: Double = 0.025
     public static let maximumClockOverlap: Double = 0.62
-
-    public static func isSuitableForFullScreenBackdrop(_ image: CGImage) -> Bool {
-        min(image.width, image.height) >= minimumBackdropArtworkDimension
-    }
 
     /// Normalized clock band (top-left origin) where depth overlap is evaluated.
     public static let clockBandNormalized = CGRect(x: 0.30, y: 0.12, width: 0.40, height: 0.20)
@@ -48,8 +41,7 @@ public enum LockScreenBackdropComposer {
     private static let sharedContextBox = SendableCIContext()
     private static var sharedContext: CIContext { sharedContextBox.value }
 
-    /// Decodes raw image bytes up to `maxPixels` on the long edge without
-    /// caching the compressed source. Safe off the main actor.
+    /// Decodes raw image bytes up to `maxPixels` on the long edge without caching.
     public static func decodeImage(_ data: Data, maxPixels: Int = 2560) -> CGImage? {
         guard !data.isEmpty,
               let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
@@ -57,8 +49,7 @@ public enum LockScreenBackdropComposer {
         return decodeFromSource(source, maxPixels: maxPixels)
     }
 
-    /// Reads a static image file (e.g., macOS desktop wallpaper) safely off the
-    /// main actor. Returns `nil` for videos (`.mov` aerials) or unreadable files.
+    /// Reads a static image file safely off the main actor. Returns `nil` for videos or unreadable files.
     public static func decodeImage(at url: URL, maxPixels: Int = 2560) -> CGImage? {
         guard url.isFileURL,
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
@@ -88,11 +79,47 @@ public enum LockScreenBackdropComposer {
         return url
     }
 
-    /// Composes the mirrored edge-blurred widescreen backdrop and (optionally)
-    /// the Vision foreground cutout aligned to the exact same canvas rectangle.
+    /// Resolves a bundled Flux bonus wallpaper inside `Contents/Resources/Wallpapers/`.
+    public static func bundledWallpaperURL(named resourceName: String, bundle: Bundle = .main) -> URL? {
+        guard let root = bundle.resourceURL?.appendingPathComponent("Wallpapers", isDirectory: true) else { return nil }
+        for ext in ["jpg", "jpeg", "png", "heic"] {
+            let candidate = root.appendingPathComponent("\(resourceName).\(ext)")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
+
+    /// Extracts the exact pixel-aligned crop of `backdrop` directly behind `cardFrame`
+    /// in screen coordinates so the music player's `.glassEffect(.clear)` can refract
+    /// real wallpaper pixels inside its own SwiftUI render tree.
+    public static func cropForCard(backdrop: CGImage, screenFrame: CGRect, cardFrame: CGRect) -> CGImage? {
+        guard screenFrame.width > 0, screenFrame.height > 0,
+              cardFrame.width > 0, cardFrame.height > 0 else { return nil }
+        let imgW = CGFloat(backdrop.width)
+        let imgH = CGFloat(backdrop.height)
+        // AppKit screen coordinates have origin at bottom-left; CGImage.cropping uses top-left origin.
+        let normX = (cardFrame.minX - screenFrame.minX) / screenFrame.width
+        let normW = cardFrame.width / screenFrame.width
+        let normTopY = (screenFrame.maxY - cardFrame.maxY) / screenFrame.height
+        let normH = cardFrame.height / screenFrame.height
+
+        let cropRect = CGRect(
+            x: max(0, (normX * imgW).rounded(.down)),
+            y: max(0, (normTopY * imgH).rounded(.down)),
+            width: min(imgW, (normW * imgW).rounded(.up)),
+            height: min(imgH, (normH * imgH).rounded(.up))
+        ).intersection(CGRect(x: 0, y: 0, width: imgW, height: imgH))
+
+        guard cropRect.width >= 2, cropRect.height >= 2 else { return nil }
+        return backdrop.cropping(to: cropRect)
+    }
+
+    /// Composes the full-screen wallpaper backdrop (with optional mirrored/feathered
+    /// edge blur) and an optional Vision foreground cutout aligned to the exact same canvas.
     public static func compose(sourceKey: String,
                                image: CGImage,
                                targetAspectSize: CGSize,
+                               blurEdges: Bool = true,
                                includeDepthEffect: Bool) -> LockScreenBackdropBundle? {
         let canvasSize = resolvedCanvasSize(for: targetAspectSize)
         guard canvasSize.width >= 64, canvasSize.height >= 64 else { return nil }
@@ -103,15 +130,21 @@ public enum LockScreenBackdropComposer {
         let srcH = CGFloat(image.height)
         guard srcW > 0, srcH > 0 else { return nil }
 
-        // Place the photo centered at full canvas height using high-quality
-        // Lanczos resampling so even moderate-resolution album art stays crisp.
-        // Snap fitted dimensions to exact integer pixels and crop away fractional
-        // Lanczos edge fringes so mirrored flanks join with zero dark seam.
-        let rawScale = (canvasSize.height + 2) / srcH
+        let rawScale: CGFloat
+        if blurEdges {
+            // Height-fit so portrait/square photos get mirrored blurred flanks,
+            // while widescreen photos fill height and get soft blurred left/right edges.
+            rawScale = (canvasSize.height + 2) / srcH
+        } else {
+            // Clean aspectFill with no edge blur.
+            rawScale = max((canvasSize.width + 2) / srcW, (canvasSize.height + 2) / srcH)
+        }
+
         let fittedW = max(2, floor(srcW * rawScale) - 2)
-        let fittedH = canvasSize.height
+        let fittedH = max(2, floor(srcH * rawScale) - 2)
         let centerOriginX = floor((canvasSize.width - fittedW) / 2)
-        let centerRect = CGRect(x: centerOriginX, y: 0, width: fittedW, height: fittedH)
+        let centerOriginY = floor((canvasSize.height - fittedH) / 2)
+        let centerRect = CGRect(x: centerOriginX, y: centerOriginY, width: fittedW, height: fittedH)
 
         var scaledSharp = sourceCI
             .clampedToExtent()
@@ -124,39 +157,41 @@ public enum LockScreenBackdropComposer {
                 kCIInputSharpnessKey: min(0.45, (rawScale - 1.0) * 0.22),
             ])
         }
-        let opaqueCenterCrop = scaledSharp
+        let centeredSharp = scaledSharp
             .cropped(to: CGRect(x: 1, y: 1, width: fittedW, height: fittedH))
-            .transformed(by: CGAffineTransform(translationX: centerOriginX - 1, y: -1))
-        let centeredSharp = opaqueCenterCrop
+            .transformed(by: CGAffineTransform(translationX: centerOriginX - 1, y: centerOriginY - 1))
 
-        // Build horizontally mirrored edge extensions seamlessly abutting left & right.
-        let extended = buildMirroredExtension(centered: centeredSharp, centerRect: centerRect, canvasRect: canvasRect)
+        var composed: CIImage
+        let sharpLuminanceMask: CIImage?
 
-        // Dreamy atmospheric Gaussian blur on the mirrored side extensions so
-        // shapes remain softly recognizable while framing the crisp center photo.
-        let blurRadius = max(18.0, canvasSize.width * 0.016)
-        let blurredFlanks = extended
-            .clampedToExtent()
-            .applyingGaussianBlur(sigma: blurRadius)
-            .applyingFilter("CIColorControls", parameters: [
-                kCIInputSaturationKey: 1.06,
-                kCIInputBrightnessKey: -0.04,
-                kCIInputContrastKey: 1.02,
-            ])
-            .cropped(to: canvasRect)
+        if blurEdges {
+            let extended = buildMirroredExtension(centered: centeredSharp, centerRect: centerRect, canvasRect: canvasRect)
+            let blurRadius = max(20.0, canvasSize.width * 0.017)
+            let blurredFlanks = extended
+                .clampedToExtent()
+                .applyingGaussianBlur(sigma: blurRadius)
+                .applyingFilter("CIColorControls", parameters: [
+                    kCIInputSaturationKey: 1.06,
+                    kCIInputBrightnessKey: -0.04,
+                    kCIInputContrastKey: 1.02,
+                ])
+                .cropped(to: canvasRect)
 
-        // Vertically-clamped horizontal feather mask: 100% sharp from top to
-        // bottom across the center photo, melting seamlessly into blurred flanks.
-        let sharpAlphaMask = makeHorizontalFeatherMask(canvasSize: canvasSize, centerRect: centerRect, opaqueAlpha: false)
-        let sharpLuminanceMask = makeHorizontalFeatherMask(canvasSize: canvasSize, centerRect: centerRect, opaqueAlpha: true)
+            let sharpAlphaMask = makeHorizontalFeatherMask(canvasSize: canvasSize, centerRect: centerRect, opaqueAlpha: false)
+            sharpLuminanceMask = makeHorizontalFeatherMask(canvasSize: canvasSize, centerRect: centerRect, opaqueAlpha: true)
 
-        guard let blendFilter = CIFilter(name: "CIBlendWithAlphaMask") else { return nil }
-        blendFilter.setValue(centeredSharp.cropped(to: canvasRect), forKey: kCIInputImageKey)
-        blendFilter.setValue(blurredFlanks, forKey: kCIInputBackgroundImageKey)
-        blendFilter.setValue(sharpAlphaMask, forKey: kCIInputMaskImageKey)
-        guard var composed = blendFilter.outputImage?.cropped(to: canvasRect) else { return nil }
+            guard let blendFilter = CIFilter(name: "CIBlendWithAlphaMask") else { return nil }
+            blendFilter.setValue(centeredSharp.cropped(to: canvasRect), forKey: kCIInputImageKey)
+            blendFilter.setValue(blurredFlanks, forKey: kCIInputBackgroundImageKey)
+            blendFilter.setValue(sharpAlphaMask, forKey: kCIInputMaskImageKey)
+            guard let blended = blendFilter.outputImage?.cropped(to: canvasRect) else { return nil }
+            composed = blended
+        } else {
+            composed = centeredSharp.cropped(to: canvasRect)
+            sharpLuminanceMask = nil
+        }
 
-        // Subtle atmospheric outer vignette so date/clock & bottom prompt stay crisp.
+        // Subtle outer vignette so date/clock & bottom prompt stay crisp.
         if let vignette = makeSubtleVignette(canvasSize: canvasSize) {
             composed = vignette.composited(over: composed).cropped(to: canvasRect)
         }
@@ -180,14 +215,11 @@ public enum LockScreenBackdropComposer {
     public static func resolvedCanvasSize(for screenSize: CGSize) -> CGSize {
         let w = max(screenSize.width, 1)
         let h = max(screenSize.height, 1)
-        // Target 2x Retina backing pixels capped cleanly at maximumCanvasWidth.
         let targetW = min(CGFloat(maximumCanvasWidth), max(1280, w * 2))
         let targetH = (targetW * (h / w)).rounded()
         return CGSize(width: targetW.rounded(), height: max(720, targetH))
     }
 
-    /// Evaluates whether the subject mask covers an aesthetically balanced
-    /// fraction of the clock region (enough to create depth, not enough to hide the time).
     public static func acceptsClockOverlap(_ coverage: Double) -> Bool {
         coverage >= minimumClockOverlap && coverage <= maximumClockOverlap
     }
@@ -219,7 +251,6 @@ public enum LockScreenBackdropComposer {
                 } else {
                     tile = centered.transformed(by: CGAffineTransform(translationX: targetMinX - centerRect.minX, y: 0))
                 }
-                // Place extensions behind `result` so the sharp center edge always stays intact.
                 result = result.composited(over: tile)
                 leftEdge = targetMinX
             }
@@ -244,10 +275,6 @@ public enum LockScreenBackdropComposer {
         return result.cropped(to: canvasRect)
     }
 
-    /// Generates a vertically-uniform horizontal smoothstep mask (white = sharp
-    /// center photo from top to bottom, transparent = blurred mirrored flanks).
-    /// Using `.clampedToExtent()` replicates the 1-pixel row identically across
-    /// every scanline without bilinear vertical fade-out.
     private static func makeHorizontalFeatherMask(canvasSize: CGSize, centerRect: CGRect, opaqueAlpha: Bool) -> CIImage {
         let width = Int(canvasSize.width)
         var pixels = [UInt8](repeating: 0, count: width * 4)
@@ -255,8 +282,8 @@ public enum LockScreenBackdropComposer {
         let visibleMinX = max(0, centerRect.minX)
         let visibleMaxX = min(canvasSize.width, centerRect.maxX)
         let visibleWidth = max(1, visibleMaxX - visibleMinX)
-        // Smooth ~11% horizontal feather on each side melts the photo edge into the blurred flanks.
-        let feather = min(visibleWidth * 0.12, canvasSize.width * 0.095)
+        // Soft horizontal edge feather melts the left and right edges into blurred flanks.
+        let feather = min(visibleWidth * 0.14, canvasSize.width * 0.12)
         let innerMinX = visibleMinX + feather
         let innerMaxX = visibleMaxX - feather
 
@@ -292,24 +319,22 @@ public enum LockScreenBackdropComposer {
             .cropped(to: CGRect(origin: .zero, size: canvasSize))
     }
 
-    /// Subtle dark vignette near extreme edges for legibility without muting the sharp center.
     private static func makeSubtleVignette(canvasSize: CGSize) -> CIImage? {
         let width = 64
         let height = 64
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         for y in 0..<height {
-            // CoreImage origin is bottom-left.
             let ny = (Double(y) + 0.5) / Double(height)
-            let topEdge = max(0, (ny - 0.82) / 0.18)
-            let bottomEdge = max(0, (0.20 - ny) / 0.20)
-            let vDark = topEdge * topEdge * 0.14 + bottomEdge * bottomEdge * 0.22
+            let topEdge = max(0, (ny - 0.84) / 0.16)
+            let bottomEdge = max(0, (0.18 - ny) / 0.18)
+            let vDark = topEdge * topEdge * 0.12 + bottomEdge * bottomEdge * 0.20
 
             for x in 0..<width {
                 let nx = (Double(x) + 0.5) / Double(width)
                 let sideDist = abs(nx - 0.5) * 2.0
-                let sideEdge = max(0, (sideDist - 0.68) / 0.32)
-                let hDark = sideEdge * sideEdge * 0.24
-                let alpha = min(0.40, vDark + hDark)
+                let sideEdge = max(0, (sideDist - 0.72) / 0.28)
+                let hDark = sideEdge * sideEdge * 0.20
+                let alpha = min(0.36, vDark + hDark)
                 let byte = UInt8((alpha * 255).rounded())
                 let offset = (y * width + x) * 4
                 pixels[offset] = 0
@@ -334,7 +359,7 @@ public enum LockScreenBackdropComposer {
 
     private static func extractDepthCutout(from sourceImage: CGImage,
                                            centeredSharp: CIImage,
-                                           sharpLuminanceMask: CIImage,
+                                           sharpLuminanceMask: CIImage?,
                                            centerRect: CGRect,
                                            canvasRect: CGRect) -> CGImage? {
         let request = VNGenerateForegroundInstanceMaskRequest()
@@ -361,10 +386,14 @@ public enum LockScreenBackdropComposer {
             .applyingGaussianBlur(sigma: 0.75)
             .cropped(to: canvasRect)
 
-        // Multiply by sharpLuminanceMask (opaque RGB luminance) so the cutout softens at photo flanks.
-        let combinedMask = rawCanvasMask
-            .applyingFilter("CIMultiplyBlendMode", parameters: [kCIInputBackgroundImageKey: sharpLuminanceMask])
-            .cropped(to: canvasRect)
+        let combinedMask: CIImage
+        if let sharpLuminanceMask {
+            combinedMask = rawCanvasMask
+                .applyingFilter("CIMultiplyBlendMode", parameters: [kCIInputBackgroundImageKey: sharpLuminanceMask])
+                .cropped(to: canvasRect)
+        } else {
+            combinedMask = rawCanvasMask
+        }
 
         let coverage = clockBandCoverage(mask: combinedMask, canvasRect: canvasRect)
         guard acceptsClockOverlap(coverage) else { return nil }
@@ -378,7 +407,6 @@ public enum LockScreenBackdropComposer {
         return sharedContext.createCGImage(cutoutCI, from: canvasRect)
     }
 
-    /// Measures average foreground mask opacity inside the clock bounding box.
     private static func clockBandCoverage(mask: CIImage, canvasRect: CGRect) -> Double {
         let norm = clockBandNormalized
         let x = canvasRect.width * norm.minX

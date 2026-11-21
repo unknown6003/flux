@@ -166,6 +166,8 @@ public final class SettingsCoordinator {
         LockScreenPreferencesState(
             isEnabled: value(Preferences.lockScreenEnabled),
             showsBackdrop: value(Preferences.lockScreenBackdrop),
+            wallpaper: value(Preferences.lockScreenWallpaper),
+            blursEdges: value(Preferences.lockScreenEdgeBlur),
             showsDepthEffect: value(Preferences.lockScreenDepthEffect),
             showsNowPlaying: value(Preferences.lockScreenNowPlaying),
             showsActivities: value(Preferences.lockScreenActivities),
@@ -364,6 +366,8 @@ public final class SettingsCoordinator {
         switch action {
         case .setEnabled(let enabled): saveFeature(enabled, Preferences.lockScreenEnabled)
         case .setBackdrop(let enabled): save(enabled, Preferences.lockScreenBackdrop, then: .presentation)
+        case .setWallpaper(let choice): save(choice, Preferences.lockScreenWallpaper, then: .presentation)
+        case .setEdgeBlur(let enabled): save(enabled, Preferences.lockScreenEdgeBlur, then: .presentation)
         case .setDepthEffect(let enabled): save(enabled, Preferences.lockScreenDepthEffect, then: .presentation)
         case .setNowPlaying(let enabled): saveFeature(enabled, Preferences.lockScreenNowPlaying)
         case .setActivities(let enabled): saveFeature(enabled, Preferences.lockScreenActivities)

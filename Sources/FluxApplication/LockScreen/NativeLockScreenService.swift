@@ -22,16 +22,21 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private let toggleAudioMute: @MainActor () -> Bool
     private let selectAudioOutputDevice: @MainActor (UInt32) -> Bool
     private let loadWallpaperURL: @MainActor () -> URL?
+    private let playFallback: @MainActor () -> Void
+    private let mediaClearGracePeriod: Duration
+    private let playFallbackDelay: Duration
     private var phase: SessionPhase = .sleeping
     private var handleID: UUID?
     private var media: MediaSnapshot?
     private var activity: ActivityItem?
     private var artwork: NSImage?
     private var artworkID: UUID?
-    private var composedBackdrop: LockScreenBackdropBundle?
+    private(set) var composedBackdrop: LockScreenBackdropBundle?
     private var requestedBackdropKey: String?
     private var backdropTask: Task<Void, Never>?
     private var backdropGeneration: UInt64 = 0
+    private var mediaClearTask: Task<Void, Never>?
+    private var playFallbackTask: Task<Void, Never>?
 
     private lazy var windows = LockScreenWindows(makeBridge: makeBridge, transport: { [weak self] action in
         self?.handleTransport(action)
@@ -65,18 +70,24 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.toggleAudioMute = AudioOutputRoute.toggleMute
         self.selectAudioOutputDevice = AudioOutputRoute.selectDevice
         self.loadWallpaperURL = Self.currentDesktopWallpaperURL
+        self.playFallback = MediaKeyFallback.sendPlayPauseKey
+        self.mediaClearGracePeriod = .seconds(3.5)
+        self.playFallbackDelay = .milliseconds(700)
         let cache = LockScreenGeometryCache()
         geometry = { cache.current() }
     }
 
-    /// For fixtures: fixed screen geometry and injectable audio/wallpaper hooks.
+    /// For fixtures: fixed screen geometry and injectable audio/wallpaper/fallback hooks.
     init(preferences: PreferenceStore,
          availability: @escaping @MainActor () -> LockScreenCapability,
          makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
          geometry: @escaping @MainActor () -> LockScreenGeometry?,
          lockSound: @escaping @MainActor () -> Void = {},
          unlockSound: @escaping @MainActor () -> Void = {},
-         loadWallpaperURL: @escaping @MainActor () -> URL? = { nil }) {
+         loadWallpaperURL: @escaping @MainActor () -> URL? = { nil },
+         playFallback: @escaping @MainActor () -> Void = {},
+         mediaClearGracePeriod: Duration = .seconds(3.5),
+         playFallbackDelay: Duration = .milliseconds(700)) {
         self.preferences = preferences
         self.availability = availability
         self.makeBridge = makeBridge
@@ -87,6 +98,9 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.toggleAudioMute = AudioOutputRoute.toggleMute
         self.selectAudioOutputDevice = AudioOutputRoute.selectDevice
         self.loadWallpaperURL = loadWallpaperURL
+        self.playFallback = playFallback
+        self.mediaClearGracePeriod = mediaClearGracePeriod
+        self.playFallbackDelay = playFallbackDelay
     }
 
     public func makeHandle() throws -> any FeatureServiceHandle {
@@ -94,6 +108,8 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         guard handleID == nil else { throw LockScreenServiceError.busy }
         let id = UUID()
         handleID = id
+        windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
+        prewarmBackdropIfNeeded()
         render()
         guard failureCode == nil else { handleID = nil; throw LockScreenServiceError.presentation }
         return LockScreenLifetime { [weak self] in self?.stop(id) }
@@ -102,6 +118,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public func configure() {
         if !enabled { stop(); return }
         windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
+        prewarmBackdropIfNeeded()
         render()
     }
 
@@ -110,6 +127,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public func checkAgain() {
         do { try windows.hide(animated: false); failureCode = nil }
         catch { failureCode = "lock.cleanup" }
+        prewarmBackdropIfNeeded()
         render()
         onChange?()
     }
@@ -117,10 +135,21 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public func setPhase(_ phase: SessionPhase) {
         let previous = self.phase
         self.phase = phase
-        if phase != .locked { clearArtwork() }
+        if phase != .locked {
+            cancelPlayFallback()
+            if mediaClearTask != nil {
+                mediaClearTask?.cancel()
+                mediaClearTask = nil
+                media = nil
+            }
+            clearArtwork()
+        }
         if phase == .sleeping { media = nil; activity = nil }
         let wasShowing = windows.isShowing
         render(animated: true)
+        if phase == .unlocked {
+            prewarmBackdropIfNeeded()
+        }
         if previous == .unlocked, phase == .locked, handleID != nil, enabled, failureCode == nil,
            preferences.value(for: Preferences.lockScreenLockSound) {
             lockSound()
@@ -134,9 +163,32 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public func receive(_ event: WidgetEvent) {
         guard handleID != nil, enabled else { return }
         if case .media(let value) = event {
-            if case .ready(let snapshot) = value { media = snapshot }
-            else { media = nil }
-            render()
+            switch value {
+            case .ready(let snapshot?):
+                cancelMediaClear()
+                if snapshot.playing { cancelPlayFallback() }
+                media = snapshot
+                render()
+            case .ready(nil):
+                if presenting, media != nil {
+                    scheduleMediaClear()
+                } else {
+                    cancelMediaClear()
+                    cancelPlayFallback()
+                    media = nil
+                    render()
+                }
+            case .unavailable:
+                cancelMediaClear()
+                cancelPlayFallback()
+                media = nil
+                render()
+            case .starting:
+                if !presenting {
+                    cancelMediaClear()
+                    media = nil
+                }
+            }
         }
     }
 
@@ -148,7 +200,11 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     public func stop() {
         handleID = nil
+        cancelMediaClear()
+        cancelPlayFallback()
         clearArtwork()
+        clearBackdrop()
+        windows.discardPrewarmedBackdrop()
         media = nil; activity = nil
         hide(animated: false)
     }
@@ -163,7 +219,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
     private var presenting: Bool { handleID != nil && enabled && phase == .locked && failureCode == nil }
 
-    private func handleTransport(_ action: LockScreenTransportAction) {
+    func handleTransport(_ action: LockScreenTransportAction) {
         guard presenting else { return }
         switch action {
         case .toggleMute:
@@ -172,10 +228,66 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         case .selectAudioOutput(let id):
             _ = selectAudioOutputDevice(id)
             render()
-        case .previous, .togglePlayPause, .next, .seek:
+        case .previous, .play, .pause, .togglePlayPause, .next, .seek:
             guard preferences.value(for: Preferences.lockScreenNowPlaying), media != nil else { return }
             if case .seek(let value) = action, !value.isFinite || value < 0 || value > (media?.duration ?? 0) { return }
+            cancelPlayFallback()
             onTransport?(action)
+            let isResuming = action == .play || (action == .togglePlayPause && media?.playing == false)
+            if isResuming {
+                schedulePlayFallback()
+            }
+        }
+    }
+
+    private func scheduleMediaClear() {
+        guard mediaClearTask == nil else { return }
+        let delay = mediaClearGracePeriod
+        mediaClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.mediaClearTask = nil
+            self.cancelPlayFallback()
+            self.media = nil
+            self.render()
+        }
+    }
+
+    private func cancelMediaClear() {
+        mediaClearTask?.cancel()
+        mediaClearTask = nil
+    }
+
+    private func schedulePlayFallback() {
+        cancelPlayFallback()
+        let delay = playFallbackDelay
+        playFallbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.presenting, self.media?.playing != true else { return }
+            self.playFallbackTask = nil
+            self.playFallback()
+        }
+    }
+
+    private func cancelPlayFallback() {
+        playFallbackTask?.cancel()
+        playFallbackTask = nil
+    }
+
+    private func prewarmBackdropIfNeeded() {
+        guard handleID != nil, enabled, failureCode == nil, availability() == .available else { return }
+        let showBackdrop = preferences.value(for: Preferences.lockScreenBackdrop)
+        guard showBackdrop else {
+            clearBackdrop()
+            windows.discardPrewarmedBackdrop()
+            return
+        }
+        guard let geom = geometry() else { return }
+        let showDepth = preferences.value(for: Preferences.lockScreenDepthEffect)
+        let blurEdges = preferences.value(for: Preferences.lockScreenEdgeBlur)
+        syncBackdropPipeline(blurEdges: blurEdges, depthEffect: showDepth, screenSize: geom.screenFrame.size)
+        if !presenting, let bundle = composedBackdrop {
+            windows.prewarmBackdrop(makeBackdropState(bundle: bundle, showDepth: showDepth), geometry: geom)
         }
     }
 
@@ -186,17 +298,23 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let showMedia = preferences.value(for: Preferences.lockScreenNowPlaying)
         let showBackdrop = preferences.value(for: Preferences.lockScreenBackdrop)
         let showDepth = preferences.value(for: Preferences.lockScreenDepthEffect)
+        let blurEdges = preferences.value(for: Preferences.lockScreenEdgeBlur)
 
         if showMedia, let id = media?.artworkID, let bytes = media?.artwork {
-            if id != artworkID { artworkID = id; artwork = nil; images.submit(id: id, bytes: bytes) }
-        } else if artworkID != nil {
+            if id != artworkID {
+                artworkID = id
+                // Keep prior thumbnail until the new one decodes so track switches don't flash blank.
+                images.submit(id: id, bytes: bytes)
+            }
+        } else if artworkID != nil || artwork != nil {
             images.clear(); artworkID = nil; artwork = nil
         }
 
         if showBackdrop {
-            syncBackdropPipeline(showMedia: showMedia, depthEffect: showDepth, screenSize: geometry.screenFrame.size)
+            syncBackdropPipeline(blurEdges: blurEdges, depthEffect: showDepth, screenSize: geometry.screenFrame.size)
         } else {
             clearBackdrop()
+            windows.discardPrewarmedBackdrop()
         }
 
         let playing = showMedia ? media.map { snapshot in
@@ -210,12 +328,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
         let backdropState: LockScreenBackdropState
         if showBackdrop, let bundle = composedBackdrop {
-            backdropState = LockScreenBackdropState(
-                sourceKey: bundle.sourceKey,
-                backdrop: bundle.backdrop,
-                foregroundCutout: showDepth ? bundle.foregroundCutout : nil,
-                showsDepthEffect: showDepth && bundle.foregroundCutout != nil
-            )
+            backdropState = makeBackdropState(bundle: bundle, showDepth: showDepth)
         } else {
             backdropState = .empty
         }
@@ -228,6 +341,15 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         } catch {
             fail(windows.cleanupPending ? "lock.cleanup" : "lock.presentation")
         }
+    }
+
+    private func makeBackdropState(bundle: LockScreenBackdropBundle, showDepth: Bool) -> LockScreenBackdropState {
+        LockScreenBackdropState(
+            sourceKey: bundle.sourceKey,
+            backdrop: bundle.backdrop,
+            foregroundCutout: showDepth ? bundle.foregroundCutout : nil,
+            showsDepthEffect: showDepth && bundle.foregroundCutout != nil
+        )
     }
 
     private func makeAudioOutputState() -> LockScreenAudioOutputState {
@@ -244,17 +366,27 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         )
     }
 
-    private func syncBackdropPipeline(showMedia: Bool, depthEffect: Bool, screenSize: CGSize) {
-        let artworkBytes: Data? = (showMedia && !(media?.artwork?.isEmpty ?? true)) ? media?.artwork : nil
-        let artworkKey = artworkBytes != nil ? media?.artworkID?.uuidString : nil
-        let wallpaperURL = loadWallpaperURL()
+    private func resolvedWallpaperURL() -> (LockScreenWallpaper, URL)? {
+        let choice = preferences.value(for: Preferences.lockScreenWallpaper)
+        if let resource = choice.bundledResourceName,
+           let bundled = LockScreenBackdropComposer.bundledWallpaperURL(named: resource) {
+            return (choice, bundled)
+        }
+        if let desktop = loadWallpaperURL() {
+            return (.system, desktop)
+        }
+        return nil
+    }
 
-        guard artworkKey != nil || wallpaperURL != nil else {
+    private func syncBackdropPipeline(blurEdges: Bool, depthEffect: Bool, screenSize: CGSize) {
+        guard let (choice, wallpaperURL) = resolvedWallpaperURL() else {
             clearBackdrop()
             return
         }
 
-        let key = "\(artworkKey ?? "none")|\(wallpaperURL?.path ?? "none")|depth\(depthEffect ? 1 : 0)"
+        let mtime = (try? wallpaperURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate?.timeIntervalSince1970 ?? 0
+        let sizeKey = "\(Int(screenSize.width.rounded()))x\(Int(screenSize.height.rounded()))"
+        let key = "\(choice.rawValue)|\(wallpaperURL.path)|\(Int(mtime))|\(sizeKey)|blur\(blurEdges ? 1 : 0)|depth\(depthEffect ? 1 : 0)"
         if requestedBackdropKey == key { return }
         requestedBackdropKey = key
         backdropGeneration &+= 1
@@ -263,28 +395,25 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
         backdropTask = Task { @MainActor [weak self] in
             let bundle: LockScreenBackdropBundle? = await Task.detached(priority: .userInitiated) {
-                var chosen: CGImage?
-                if let artworkBytes,
-                   let decodedArt = LockScreenBackdropComposer.decodeImage(artworkBytes, maxPixels: 2560),
-                   LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(decodedArt) {
-                    chosen = decodedArt
-                }
-                // Fall back to the full-res desktop wallpaper when media artwork is absent
-                // or is a tiny low-res thumbnail (e.g. 150x84 from a browser).
-                if chosen == nil, let wallpaperURL {
-                    chosen = LockScreenBackdropComposer.decodeImage(at: wallpaperURL, maxPixels: 2560)
-                }
-                guard !Task.isCancelled, let chosen else { return nil }
+                guard let chosen = LockScreenBackdropComposer.decodeImage(at: wallpaperURL, maxPixels: 2560),
+                      !Task.isCancelled else { return nil }
                 return LockScreenBackdropComposer.compose(
                     sourceKey: key,
                     image: chosen,
                     targetAspectSize: screenSize,
+                    blurEdges: blurEdges,
                     includeDepthEffect: depthEffect
                 )
             }.value
-            guard !Task.isCancelled, let self, self.presenting, self.backdropGeneration == generation else { return }
+            guard !Task.isCancelled, let self, self.handleID != nil, self.enabled, self.backdropGeneration == generation else { return }
             self.composedBackdrop = bundle
-            self.render()
+            if self.presenting {
+                self.render()
+            } else if let bundle, let geom = self.geometry(),
+                      self.preferences.value(for: Preferences.lockScreenBackdrop) {
+                let showDepth = self.preferences.value(for: Preferences.lockScreenDepthEffect)
+                self.windows.prewarmBackdrop(self.makeBackdropState(bundle: bundle, showDepth: showDepth), geometry: geom)
+            }
         }
     }
 
@@ -298,7 +427,6 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     private func clearArtwork() {
         images.clear(); artworkID = nil; artwork = nil
-        clearBackdrop()
     }
 
     private func hide(animated: Bool) {
@@ -309,6 +437,8 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     private func fail(_ code: String) {
         clearArtwork()
+        clearBackdrop()
+        windows.discardPrewarmedBackdrop()
         var finalCode = code
         if !windows.cleanupPending {
             do { try windows.hide(animated: false) } catch { finalCode = "lock.cleanup" }

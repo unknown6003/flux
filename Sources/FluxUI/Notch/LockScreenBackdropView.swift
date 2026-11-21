@@ -220,9 +220,9 @@ struct LockScreenBackdropView: View {
     }
 }
 
-/// Renders clock digits with real macOS 26+ Liquid Glass refraction inside the
-/// vector glyph outline (`ClockGlyphShape`), paired with a crisp specular rim
-/// highlight and a refined frosted-glass fallback for macOS 14–15 and fixtures.
+/// Renders clock digits with pure macOS 26+ Liquid Glass refraction inside the
+/// vector glyph outline (`ClockGlyphShape`), letting background tones refract
+/// cleanly through crystal-clear glass without milky overlays.
 private struct LiquidGlassClockDigits: View {
     let text: String
     let fontSize: CGFloat
@@ -230,58 +230,60 @@ private struct LiquidGlassClockDigits: View {
 
     var body: some View {
         let shape = ClockGlyphShape(text: text, fontSize: fontSize)
-        ZStack {
-            glassBody(shape: shape)
+        glassDigits(shape: shape)
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 3)
+            .accessibilityHidden(true)
+    }
 
-            // Translucent optical luminance body so digits catch ambient light.
+    @ViewBuilder
+    private func glassDigits(shape: ClockGlyphShape) -> some View {
+#if compiler(>=6.2)
+        if #available(macOS 26.0, *), !isSnapshotRender {
+            // Pure macOS 26/27 Liquid Glass directly over the wallpaper layer:
+            // full hardware optical refraction and dynamic specular bevel rim.
+            Color.clear
+                .glassEffect(.clear, in: shape)
+        } else {
+            fallbackDigits(shape: shape)
+        }
+#else
+        fallbackDigits(shape: shape)
+#endif
+    }
+
+    private func fallbackDigits(shape: ClockGlyphShape) -> some View {
+        ZStack {
+            shape
+                .fill(.ultraThinMaterial)
+                .opacity(0.70)
+
             shape
                 .fill(
                     LinearGradient(
                         stops: [
-                            .init(color: .white.opacity(0.44), location: 0.0),
-                            .init(color: .white.opacity(0.16), location: 0.48),
-                            .init(color: .white.opacity(0.36), location: 1.0),
+                            .init(color: .white.opacity(0.24), location: 0.0),
+                            .init(color: .white.opacity(0.05), location: 0.50),
+                            .init(color: .white.opacity(0.18), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
 
-            // Specular glass edge rim (bright top-left & bottom-right catchlight).
             shape
                 .stroke(
                     LinearGradient(
                         stops: [
-                            .init(color: .white.opacity(0.92), location: 0.0),
-                            .init(color: .white.opacity(0.28), location: 0.45),
-                            .init(color: .white.opacity(0.72), location: 1.0),
+                            .init(color: .white.opacity(0.85), location: 0.0),
+                            .init(color: .white.opacity(0.18), location: 0.45),
+                            .init(color: .white.opacity(0.58), location: 1.0),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: max(1.6, fontSize * 0.012)
+                    lineWidth: max(1.3, fontSize * 0.0095)
                 )
                 .clipShape(shape)
         }
-        .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
-        .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private func glassBody(shape: ClockGlyphShape) -> some View {
-#if compiler(>=6.2)
-        if #available(macOS 26.0, *), !isSnapshotRender {
-            Color.clear
-                .glassEffect(.clear.tint(.white.opacity(0.12)), in: shape)
-        } else {
-            shape
-                .fill(.ultraThinMaterial)
-                .opacity(0.80)
-        }
-#else
-        shape
-            .fill(.ultraThinMaterial)
-            .opacity(0.80)
-#endif
     }
 }

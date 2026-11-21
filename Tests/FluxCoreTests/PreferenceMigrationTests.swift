@@ -36,6 +36,8 @@ import Testing
         "flux.notch.lockScreen.nowPlaying": false,
         "flux.notch.lockScreen.activities": false,
         "flux.notch.lockScreen.backdrop": false,
+        "flux.notch.lockScreen.edgeBlur": false,
+        "flux.notch.lockScreen.wallpaper": "goldenMeadow",
         "flux.notch.lockScreen.depthEffect": false,
         "flux.notch.lockScreen.lockSound": false,
         "flux.notch.lockScreen.unlockSound": false,
@@ -48,7 +50,7 @@ import Testing
     let plan = PreferenceMigration(persisted: fixture, evidence: InstallationEvidence())
     #expect(plan.origin == .upgrade)
     #expect(plan.missingValues.isEmpty)
-    #expect(Preferences.registrations.count == 37)
+    #expect(Preferences.registrations.count == 39)
     #expect(Preferences.widgetOrder.value(from: fixture["flux.notch.widgetOrder"]) == ["calendar", "future-widget", "shelf"])
     #expect(Preferences.hotkeyKeyCode.value(from: fixture["flux.hotkey.keyCode"]) == 8)
     #expect(Preferences.appearance.value(from: fixture["flux.appearance"]) == .light)

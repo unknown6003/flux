@@ -154,21 +154,77 @@ import Testing
         }
     }
 
-    @Test func fullScreenBackdropRejectsTinyThumbnailsAndAcceptsHighResArtwork() throws {
+    @Test func backdropComposerSupportsEdgeBlurOffAndCardBackdropCrop() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        func makeImage(width: Int, height: Int) throws -> CGImage {
-            var pixels = [UInt8](repeating: 180, count: width * height * 4)
-            let ctx = try #require(CGContext(
-                data: &pixels, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4, space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ))
-            return try #require(ctx.makeImage())
+        let w = 400
+        let h = 260
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h {
+            for x in 0..<w {
+                let offset = (y * w + x) * 4
+                let stripe: UInt8 = ((x / 4) % 2 == 0) ? 235 : 25
+                // Top half red-ish stripes, bottom half blue-ish stripes so Y-flip crop is verifiable.
+                pixels[offset] = y < h / 2 ? stripe : 30
+                pixels[offset + 1] = 80
+                pixels[offset + 2] = y < h / 2 ? 30 : stripe
+                pixels[offset + 3] = 255
+            }
         }
-        #expect(!LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 150, height: 84)))
-        #expect(!LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 300, height: 300)))
-        #expect(LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 640, height: 640)))
-        #expect(LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 1400, height: 1400)))
+        let ctx = try #require(CGContext(
+            data: &pixels, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: w * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let image = try #require(ctx.makeImage())
+        let target = CGSize(width: 1512, height: 982)
+        let sharpFull = try #require(LockScreenBackdropComposer.compose(
+            sourceKey: "fixture.noBlur",
+            image: image,
+            targetAspectSize: target,
+            blurEdges: false,
+            includeDepthEffect: false
+        ))
+
+        // Left flank must stay sharp (high stripe contrast) when blurEdges == false.
+        let stripW = 80
+        var strip = [UInt8](repeating: 0, count: stripW * 4)
+        let stripCtx = try #require(CGContext(
+            data: &strip, width: stripW, height: 1,
+            bitsPerComponent: 8, bytesPerRow: stripW * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let leftCrop = try #require(sharpFull.backdrop.cropping(to: CGRect(x: 16, y: 120, width: CGFloat(stripW), height: 1)))
+        stripCtx.draw(leftCrop, in: CGRect(x: 0, y: 0, width: CGFloat(stripW), height: 1))
+        var minR = 255
+        var maxR = 0
+        for x in 0..<stripW {
+            let r = Int(strip[x * 4])
+            if r < minR { minR = r }
+            if r > maxR { maxR = r }
+        }
+        #expect(maxR - minR > 100)
+
+        // Card sits in the lower lane (AppKit Y-up: y = 122..270 of 982) -> must crop the blue bottom half.
+        let screenFrame = CGRect(origin: .zero, size: target)
+        let cardFrame = CGRect(x: 582, y: 122, width: 348, height: 148)
+        let slice = try #require(LockScreenBackdropComposer.cropForCard(
+            backdrop: sharpFull.backdrop,
+            screenFrame: screenFrame,
+            cardFrame: cardFrame
+        ))
+        let expectedRatio = cardFrame.width / cardFrame.height
+        let actualRatio = CGFloat(slice.width) / CGFloat(slice.height)
+        #expect(abs(expectedRatio - actualRatio) < 0.05)
+
+        // Sample average pixel in the cropped slice: blue channel must exceed red channel.
+        var px = [UInt8](repeating: 0, count: 4)
+        let pxCtx = try #require(CGContext(
+            data: &px, width: 1, height: 1,
+            bitsPerComponent: 8, bytesPerRow: 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        pxCtx.draw(slice, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        #expect(px[2] > px[0])
     }
 
     @Test func depthClockOverlapSafetyGateRejectsEmptyAndOverwhelmingMasks() {

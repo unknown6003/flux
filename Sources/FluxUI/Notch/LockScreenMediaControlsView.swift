@@ -69,9 +69,10 @@ struct LockScreenMediaControlsView: View {
         let cardHeight = LockScreenMetrics.size(hasMedia: true,
                                                 hasActivity: false,
                                                 expandedOutputCount: showPicker ? pickerDevices.count : 0).height
+        let cardShape = RoundedRectangle(cornerRadius: LockScreenMetrics.cardCornerRadius, style: .continuous)
 
-        return VStack(spacing: 0) {
-            // Top row: Centered Title & Artist with symmetric live waveform on top-right.
+        let cardBody = VStack(spacing: 0) {
+            // Top row: Small album art thumbnail (left) — Centered Title & Artist — Live waveform (right).
             ZStack {
                 VStack(spacing: 2) {
                     Text(media.title)
@@ -79,21 +80,22 @@ struct LockScreenMediaControlsView: View {
                         .foregroundStyle(.white.opacity(0.96))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .shadow(color: .black.opacity(0.32), radius: 3, y: 1)
+                        .shadow(color: .black.opacity(0.36), radius: 4, y: 1)
 
                     if !media.artist.isEmpty {
                         Text(media.artist)
                             .font(.system(size: 13.5, weight: .regular))
-                            .foregroundStyle(.white.opacity(0.74))
+                            .foregroundStyle(.white.opacity(0.76))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .shadow(color: .black.opacity(0.28), radius: 3, y: 1)
+                            .shadow(color: .black.opacity(0.30), radius: 3, y: 1)
                     }
                 }
-                .padding(.horizontal, 42)
+                .padding(.horizontal, 44)
                 .frame(maxWidth: .infinity, alignment: .center)
 
                 HStack {
+                    smallArtwork(media.artwork)
                     Spacer()
                     LockScreenWaveformView(isPlaying: isPlaying)
                 }
@@ -120,8 +122,43 @@ struct LockScreenMediaControlsView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight, alignment: .top)
-        .lockScreenLiquidGlass(in: RoundedRectangle(cornerRadius: LockScreenMetrics.cardCornerRadius, style: .continuous))
+
+        return ZStack {
+            // Pixel-aligned slice of the lock-screen wallpaper directly inside
+            // this window so macOS 26/27 `.glassEffect(.clear)` performs real
+            // chromatic edge refraction & optical lensing over the exact pixels behind it.
+            if let slice = model.state.backdropSlice {
+                Image(decorative: slice, scale: 1)
+                    .interpolation(.high)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight)
+                    .clipShape(cardShape)
+            }
+
+            cardBody
+                .lockScreenLiquidGlass(in: cardShape, hasInWindowBackdrop: model.state.backdropSlice != nil)
+        }
+        .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight)
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: showPicker)
+    }
+
+    @ViewBuilder
+    private func smallArtwork(_ image: NSImage?) -> some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(.white.opacity(0.22), lineWidth: 0.6)
+                )
+                .shadow(color: .black.opacity(0.28), radius: 4, y: 2)
+        } else {
+            Color.clear.frame(width: 36, height: 36)
+        }
     }
 
     // MARK: - Progress & Interactive Scrubber
@@ -221,7 +258,7 @@ struct LockScreenMediaControlsView: View {
                     frameSize: 44,
                     isEnabled: true
                 ) {
-                    model.onAction(.togglePlayPause)
+                    model.onAction(isPlaying ? .pause : .play)
                 }
 
                 LockScreenTransportButton(
@@ -456,20 +493,27 @@ private struct LockScreenPressScaleStyle: ButtonStyle {
 
 // MARK: - Clear Liquid Glass Surface
 
-/// Uses macOS 26+ `.glassEffect(.clear)` for chromatic refractive lensing on
-/// live lock screens, with a luminous frosted-glass fallback for macOS 14–15
+/// Pure macOS 26+ `.glassEffect(.clear)` surface for authentic chromatic
+/// refractive lensing, with a luminous frosted-glass fallback for macOS 14–15
 /// and offscreen snapshots.
 private struct LockScreenLiquidGlassModifier<S: Shape>: ViewModifier {
     let shape: S
+    let hasInWindowBackdrop: Bool
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     @ViewBuilder
     func body(content: Content) -> some View {
 #if compiler(>=6.2)
         if #available(macOS 26.0, *), !isSnapshotRender {
-            content
-                .glassEffect(.clear.tint(.black.opacity(0.14)), in: shape)
-                .overlay(specularBorder)
+            if hasInWindowBackdrop {
+                // Pure `.clear` directly over the in-window wallpaper slice unlocks
+                // macOS 26/27's full chromatic edge refraction and lensing without muddying it.
+                content
+                    .glassEffect(.clear, in: shape)
+            } else {
+                content
+                    .glassEffect(.clear.tint(.black.opacity(0.08)), in: shape)
+            }
         } else {
             fallbackSurface(content)
         }
@@ -483,32 +527,30 @@ private struct LockScreenLiquidGlassModifier<S: Shape>: ViewModifier {
             .background(
                 ZStack {
                     shape.fill(.ultraThinMaterial)
-                    shape.fill(Color.black.opacity(0.24))
+                    shape.fill(Color.black.opacity(0.20))
                 }
             )
-            .overlay(specularBorder)
+            .overlay(
+                shape.stroke(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white.opacity(0.42), location: 0.0),
+                            .init(color: .white.opacity(0.10), location: 0.45),
+                            .init(color: .white.opacity(0.28), location: 1.0),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+            )
             .shadow(color: .black.opacity(0.32), radius: 22, y: 10)
-    }
-
-    private var specularBorder: some View {
-        shape.stroke(
-            LinearGradient(
-                stops: [
-                    .init(color: .white.opacity(0.38), location: 0.0),
-                    .init(color: .white.opacity(0.10), location: 0.45),
-                    .init(color: .white.opacity(0.24), location: 1.0),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            lineWidth: 0.8
-        )
     }
 }
 
 private extension View {
-    func lockScreenLiquidGlass<S: Shape>(in shape: S) -> some View {
-        modifier(LockScreenLiquidGlassModifier(shape: shape))
+    func lockScreenLiquidGlass<S: Shape>(in shape: S, hasInWindowBackdrop: Bool = false) -> some View {
+        modifier(LockScreenLiquidGlassModifier(shape: shape, hasInWindowBackdrop: hasInWindowBackdrop))
     }
 }
 

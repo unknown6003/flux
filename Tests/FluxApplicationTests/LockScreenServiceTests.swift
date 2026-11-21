@@ -188,4 +188,132 @@ import FluxPlatform
             #expect(bridge.detaches == 3)
         }
     }
+
+    @Test @MainActor func transientNilMediaDuringTrackSwitchDoesNotHideThePlayerCard() async throws {
+        _ = NSApplication.shared
+        let domain = "org.fluxfixture.lock.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        try preferences.set(true, for: Preferences.notchEnabled)
+        try preferences.set(true, for: Preferences.lockScreenEnabled)
+        let screen = try #require(NSScreen.screens.first)
+        let bridge = FixtureLockBridge()
+        let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+            makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+            mediaClearGracePeriod: .milliseconds(220))
+        let handle = try service.makeHandle()
+        defer { handle.stop() }
+        service.setPhase(.locked)
+
+        var parser = MediaStream()
+        let trackA = #"{"type":"data","diff":false,"payload":{"title":"Track A","artist":"Artist","playing":true,"duration":180,"elapsedTime":40}}"# + "\n"
+        let snapA = try #require(try parser.append(Data(trackA.utf8)).compactMap { $0 }.first)
+        service.receive(.media(.ready(snapA)))
+
+        let cardA = try #require(NSApp.windows.first { $0.contentViewController is LockScreenContentController && $0.isVisible })
+        // Browser drops metadata between tracks -> card must stay mounted during grace period!
+        service.receive(.media(.ready(nil)))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(cardA.isVisible)
+
+        // Next track arrives before grace period expires -> same card stays visible without disappearing.
+        let trackB = #"{"type":"data","diff":false,"payload":{"title":"Track B","artist":"Artist","playing":true,"duration":210,"elapsedTime":1}}"# + "\n"
+        let snapB = try #require(try parser.append(Data(trackB.utf8)).compactMap { $0 }.first)
+        service.receive(.media(.ready(snapB)))
+        try await Task.sleep(for: .milliseconds(260))
+        #expect(cardA.isVisible)
+
+        // Real stop (nil persists past grace period) eventually dismisses the card.
+        service.receive(.media(.ready(nil)))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while cardA.isVisible, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!cardA.isVisible)
+    }
+
+    @Test @MainActor func playActionTriggersMediaKeyFallbackOnlyWhenPlaybackStaysPaused() async throws {
+        _ = NSApplication.shared
+        let domain = "org.fluxfixture.lock.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        try preferences.set(true, for: Preferences.notchEnabled)
+        try preferences.set(true, for: Preferences.lockScreenEnabled)
+        let screen = try #require(NSScreen.screens.first)
+        let bridge = FixtureLockBridge()
+        var fallbackCount = 0
+        var sentActions: [LockScreenTransportAction] = []
+        let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+            makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+            playFallback: { fallbackCount += 1 },
+            playFallbackDelay: .milliseconds(120))
+        service.onTransport = { sentActions.append($0) }
+        let handle = try service.makeHandle()
+        defer { handle.stop() }
+        service.setPhase(.locked)
+
+        var parser = MediaStream()
+        let pausedLine = #"{"type":"data","diff":false,"payload":{"title":"Paused Track","artist":"Browser","playing":false,"duration":180,"elapsedTime":15}}"# + "\n"
+        let paused = try #require(try parser.append(Data(pausedLine.utf8)).compactMap { $0 }.first)
+        service.receive(.media(.ready(paused)))
+
+        // Case 1: Play command succeeds before fallback delay -> fallback must NOT fire.
+        service.handleTransport(.play)
+        #expect(sentActions == [.play])
+        let playingLine = #"{"type":"data","diff":false,"payload":{"title":"Paused Track","artist":"Browser","playing":true,"duration":180,"elapsedTime":16}}"# + "\n"
+        let playing = try #require(try parser.append(Data(playingLine.utf8)).compactMap { $0 }.first)
+        service.receive(.media(.ready(playing)))
+        try await Task.sleep(for: .milliseconds(180))
+        #expect(fallbackCount == 0)
+
+        // Case 2: Track stays paused -> hardware media key fallback fires once.
+        service.receive(.media(.ready(paused)))
+        service.handleTransport(.play)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(fallbackCount == 1)
+    }
+
+    @Test @MainActor func wallpaperPrecomposesWhileUnlockedWithoutCreatingABridge() async throws {
+        _ = NSApplication.shared
+        let domain = "org.fluxfixture.lock.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        try preferences.set(true, for: Preferences.notchEnabled)
+        try preferences.set(true, for: Preferences.lockScreenEnabled)
+        try preferences.set(false, for: Preferences.lockScreenDepthEffect)
+
+        // Write a tiny temporary PNG wallpaper file.
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("flux-prewarm-\(UUID()).png")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let rep = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 80,
+                                                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.systemTeal.setFill()
+        NSRect(x: 0, y: 0, width: 120, height: 80).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        try #require(rep.representation(using: .png, properties: [:])).write(to: tempURL)
+
+        let screen = try #require(NSScreen.screens.first)
+        var bridgeCreations = 0
+        let bridge = FixtureLockBridge()
+        let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+            makeBridge: { bridgeCreations += 1; return bridge },
+            geometry: { fixtureGeometry(screen) },
+            loadWallpaperURL: { tempURL })
+        service.setPhase(.unlocked)
+        let handle = try service.makeHandle()
+        defer { handle.stop() }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while service.composedBackdrop == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(service.composedBackdrop != nil)
+        #expect(bridgeCreations == 0)
+    }
 }

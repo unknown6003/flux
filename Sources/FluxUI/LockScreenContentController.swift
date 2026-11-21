@@ -93,16 +93,28 @@ public struct LockScreenContentState: Equatable {
     public var media: NowPlayingWidgetState?
     public var activity: LockScreenActivityCaption?
     public var audioOutput: LockScreenAudioOutputState?
+    /// Exact pixel-aligned slice of the lock-screen wallpaper directly behind
+    /// the card so `.glassEffect(.clear)` refracts live pixels inside this window.
+    public var backdropSlice: CGImage?
 
     public init(media: NowPlayingWidgetState? = nil,
                 activity: LockScreenActivityCaption? = nil,
-                audioOutput: LockScreenAudioOutputState? = nil) {
+                audioOutput: LockScreenAudioOutputState? = nil,
+                backdropSlice: CGImage? = nil) {
         self.media = media
         self.activity = activity
         self.audioOutput = audioOutput
+        self.backdropSlice = backdropSlice
     }
 
     public static var empty: LockScreenContentState { LockScreenContentState() }
+
+    public static func == (lhs: LockScreenContentState, rhs: LockScreenContentState) -> Bool {
+        lhs.media == rhs.media
+            && lhs.activity == rhs.activity
+            && lhs.audioOutput == rhs.audioOutput
+            && lhs.backdropSlice === rhs.backdropSlice
+    }
 
     public var showsMedia: Bool {
         guard let media else { return false }
@@ -121,6 +133,8 @@ public struct LockScreenContentState: Equatable {
 /// Interactive lock-screen player commands.
 public enum LockScreenTransportAction: Equatable, Sendable {
     case previous
+    case play
+    case pause
     case togglePlayPause
     case next
     /// Sent once, when the user releases the scrubber. Seconds from the start.

@@ -14,6 +14,34 @@ public enum Widget: String, CaseIterable, Sendable {
     case nowPlaying, shelf, calendar, mirror, clipboard
 }
 
+public enum LockScreenWallpaper: String, CaseIterable, Sendable {
+    case system
+    case goldenMeadow
+    case alpineDusk
+    case basaltStack
+    case oliveStone
+
+    public var displayName: String {
+        switch self {
+        case .system: "System Wallpaper"
+        case .goldenMeadow: "Golden Meadow"
+        case .alpineDusk: "Alpine Dusk"
+        case .basaltStack: "Basalt Stack"
+        case .oliveStone: "Olive Stone"
+        }
+    }
+
+    public var resourceName: String? {
+        switch self {
+        case .system: nil
+        case .goldenMeadow: "golden-meadow"
+        case .alpineDusk: "alpine-dusk"
+        case .basaltStack: "basalt-stack"
+        case .oliveStone: "olive-stone"
+        }
+    }
+}
+
 public enum Preferences {
     public static let launchAtLogin = Preference.boolean("flux.launchAtLogin", false)
     public static let alwaysHiddenEnabled = Preference.boolean("flux.showAlwaysHiddenSection", true)
@@ -47,7 +75,9 @@ public enum Preferences {
     public static let lockScreenNowPlaying = Preference.boolean("flux.notch.lockScreen.nowPlaying", true)
     public static let lockScreenActivities = Preference.boolean("flux.notch.lockScreen.activities", true)
     public static let lockScreenBackdrop = Preference.boolean("flux.notch.lockScreen.backdrop", true)
+    public static let lockScreenEdgeBlur = Preference.boolean("flux.notch.lockScreen.edgeBlur", true)
     public static let lockScreenDepthEffect = Preference.boolean("flux.notch.lockScreen.depthEffect", true)
+    public static let lockScreenWallpaper = Preference.choice("flux.notch.lockScreen.wallpaper", LockScreenWallpaper.system)
     public static let lockScreenLockSound = Preference.boolean("flux.notch.lockScreen.lockSound", true)
     public static let lockScreenUnlockSound = Preference.boolean("flux.notch.lockScreen.unlockSound", true)
     public static let notchHotkeyKeyCode = Preference.unsignedInteger("flux.notch.hotkey.keyCode", 45)
@@ -86,7 +116,9 @@ public enum Preferences {
         lockScreenNowPlaying.registration,
         lockScreenActivities.registration,
         lockScreenBackdrop.registration,
+        lockScreenEdgeBlur.registration,
         lockScreenDepthEffect.registration,
+        lockScreenWallpaper.registration,
         lockScreenLockSound.registration,
         lockScreenUnlockSound.registration,
         notchHotkeyKeyCode.registration,

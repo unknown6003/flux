@@ -1,4 +1,5 @@
 import AppKit
+import FluxCore
 
 /// The parent's fixed reading of whether Flux can show on the lock screen.
 public enum LockScreenCapability: Equatable, Sendable {
@@ -12,6 +13,8 @@ public struct LockScreenPreferencesState: Equatable, Sendable {
     /// `flux.notch.lockScreenExperiment`. Off for new profiles.
     public let isEnabled: Bool
     public let showsBackdrop: Bool
+    public let wallpaper: LockScreenWallpaper
+    public let blursEdges: Bool
     public let showsDepthEffect: Bool
     public let showsNowPlaying: Bool
     public let showsActivities: Bool
@@ -24,6 +27,8 @@ public struct LockScreenPreferencesState: Equatable, Sendable {
     public init(
         isEnabled: Bool,
         showsBackdrop: Bool = true,
+        wallpaper: LockScreenWallpaper = .system,
+        blursEdges: Bool = true,
         showsDepthEffect: Bool = true,
         showsNowPlaying: Bool,
         showsActivities: Bool,
@@ -34,6 +39,8 @@ public struct LockScreenPreferencesState: Equatable, Sendable {
     ) {
         self.isEnabled = isEnabled
         self.showsBackdrop = showsBackdrop
+        self.wallpaper = wallpaper
+        self.blursEdges = blursEdges
         self.showsDepthEffect = showsDepthEffect
         self.showsNowPlaying = showsNowPlaying
         self.showsActivities = showsActivities
@@ -48,6 +55,8 @@ public struct LockScreenPreferencesState: Equatable, Sendable {
 public enum LockScreenPreferencesAction: Equatable, Sendable {
     case setEnabled(Bool)
     case setBackdrop(Bool)
+    case setWallpaper(LockScreenWallpaper)
+    case setEdgeBlur(Bool)
     case setDepthEffect(Bool)
     case setNowPlaying(Bool)
     case setActivities(Bool)
@@ -82,15 +91,25 @@ public final class LockScreenPreferencesController: FormPageController {
         ), isOn: state.isEnabled, enabled: state.capability != .unavailable) { [weak self] in self?.onAction(.setEnabled($0)) }]
         if let status = statusRow() { rows.append(status) }
         let live = state.isEnabled && state.capability == .available
+        let backdropLive = live && state.showsBackdrop
+        let wallpaperOptions = LockScreenWallpaper.allCases.map { ($0.displayName, $0) }
         return [
             FluxUIStyle.section(nil, rows),
             FluxUIStyle.section(L("lockScreen.appearance", "Appearance"), [
                 switchRow("lockScreen.backdrop", L("lockScreen.backdrop", "Minimal lock screen"), help: L(
-                    "lockScreen.backdrop.helper", "Full-screen edge-blurred artwork and Liquid Glass clock."
+                    "lockScreen.backdrop.helper", "Clean Liquid Glass clock over your lock screen wallpaper."
                 ), isOn: state.showsBackdrop, enabled: live) { [weak self] in self?.onAction(.setBackdrop($0)) },
+                popupRow("lockScreen.wallpaper", L("lockScreen.wallpaper", "Wallpaper"), help: L(
+                    "lockScreen.wallpaper.helper", "Use your macOS desktop wallpaper or a bundled Flux photo."
+                ), wallpaperOptions, selected: state.wallpaper, enabled: backdropLive) { [weak self] in
+                    self?.onAction(.setWallpaper($0))
+                },
+                switchRow("lockScreen.edgeBlur", L("lockScreen.edgeBlur", "Blur photo edges"), help: L(
+                    "lockScreen.edgeBlur.helper", "Softly mirror and blur the left and right edges of the wallpaper."
+                ), isOn: state.blursEdges, enabled: backdropLive) { [weak self] in self?.onAction(.setEdgeBlur($0)) },
                 switchRow("lockScreen.depthEffect", L("lockScreen.depthEffect", "Depth effect"), help: L(
                     "lockScreen.depthEffect.helper", "Layer foreground subjects in front of the clock."
-                ), isOn: state.showsDepthEffect, enabled: live && state.showsBackdrop) { [weak self] in self?.onAction(.setDepthEffect($0)) },
+                ), isOn: state.showsDepthEffect, enabled: backdropLive) { [weak self] in self?.onAction(.setDepthEffect($0)) },
             ]),
             FluxUIStyle.section(L("lockScreen.show", "Show"), [
                 switchRow("lockScreen.nowPlaying", L("lockScreen.nowPlaying", "Now Playing"), help: L(

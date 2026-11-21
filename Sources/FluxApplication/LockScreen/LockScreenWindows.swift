@@ -1,6 +1,7 @@
 import AppKit
 import FluxPlatform
 import FluxUI
+import QuartzCore
 
 /// Puts lock-screen windows in a space that shows above the lock shield.
 @MainActor public protocol LockScreenWindowBridge: AnyObject {
@@ -73,7 +74,7 @@ enum LockScreenWidgetPosition {
 /// - `card`: interactive Liquid Glass music player / live activity pill, layered
 ///   one window level above the backdrop
 @MainActor final class LockScreenWindows {
-    static let fadeInDuration: TimeInterval = 0.4
+    static let fadeInDuration: TimeInterval = 0.16
     static let fadeOutDuration: TimeInterval = 0.25
 
     private let makeBridge: @MainActor () throws -> any LockScreenWindowBridge
@@ -82,16 +83,20 @@ enum LockScreenWidgetPosition {
     private var silhouette: LockScreenPanel?
     private var backdropPanel: LockScreenPanel?
     private var backdropController: LockScreenBackdropController?
+    private var prewarmedBackdropPanel: LockScreenPanel?
+    private var prewarmedBackdropController: LockScreenBackdropController?
+    private var prewarmedGeometry: LockScreenGeometry?
     private var card: LockScreenControlPanel?
     private var content: LockScreenContentController?
     private var geometry: LockScreenGeometry?
     private var lastCardState: LockScreenContentState = .empty
+    private var lastBackdropImage: CGImage?
     private var lastMinimalBackdrop = false
     private var fading: [NSWindow] = []
     private var fadeTask: Task<Void, Never>?
     private(set) var cleanupPending = false
     var appearance: NSAppearance? {
-        didSet { [silhouette, backdropPanel, card].forEach { $0?.appearance = appearance } }
+        didSet { [silhouette, backdropPanel, prewarmedBackdropPanel, card].forEach { $0?.appearance = appearance } }
     }
 
     init(makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
@@ -102,12 +107,60 @@ enum LockScreenWidgetPosition {
 
     var isShowing: Bool { bridge != nil }
 
+    /// Prepares the full-screen backdrop panel off-screen while unlocked (without
+    /// creating a SkyLight bridge or showing any window) so locking presents on
+    /// the very first frame.
+    func prewarmBackdrop(_ backdrop: LockScreenBackdropState, geometry next: LockScreenGeometry) {
+        guard bridge == nil, backdrop.hasBackdrop else {
+            discardPrewarmedBackdrop()
+            return
+        }
+        if let panel = prewarmedBackdropPanel, let controller = prewarmedBackdropController {
+            controller.update(backdrop)
+            panel.appearance = appearance
+            if prewarmedGeometry != next {
+                panel.setFrame(next.screenFrame, display: false)
+                panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
+                prewarmedGeometry = next
+            }
+            panel.contentView?.layoutSubtreeIfNeeded()
+            return
+        }
+        let controller = LockScreenBackdropController(state: backdrop)
+        let panel = LockScreenPanel(contentRect: next.screenFrame,
+                                    styleMask: [.borderless, .nonactivatingPanel],
+                                    backing: .buffered,
+                                    defer: false)
+        Self.configure(panel, level: Self.shieldedLevel, ignoresMouseEvents: true)
+        panel.appearance = appearance
+        panel.contentViewController = controller
+        panel.setFrame(next.screenFrame, display: false)
+        panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.alphaValue = 1
+        prewarmedBackdropPanel = panel
+        prewarmedBackdropController = controller
+        prewarmedGeometry = next
+    }
+
+    func discardPrewarmedBackdrop() {
+        if let panel = prewarmedBackdropPanel {
+            prewarmedBackdropController?.update(.empty)
+            Self.close(panel)
+        }
+        prewarmedBackdropPanel = nil
+        prewarmedBackdropController = nil
+        prewarmedGeometry = nil
+    }
+
     func show(_ state: LockScreenContentState,
               backdrop: LockScreenBackdropState = .empty,
               geometry next: LockScreenGeometry) throws {
         guard !cleanupPending else { throw LockScreenWindowError.cleanupPending }
         finishFadeOut()
+        let isInitialPresentation = (bridge == nil)
         if bridge != nil, geometry != next { try hide(animated: false) }
+        lastBackdropImage = backdrop.backdrop
         if bridge == nil {
             let newBridge = try makeBridge()
             bridge = newBridge
@@ -118,7 +171,8 @@ enum LockScreenWidgetPosition {
         }
         lastCardState = state
         lastMinimalBackdrop = backdrop.hasBackdrop
-        try syncCard(state, minimalBackdrop: backdrop.hasBackdrop)
+        try syncCard(state, minimalBackdrop: backdrop.hasBackdrop, immediate: isInitialPresentation)
+        CATransaction.flush()
     }
 
     /// Removes all lock-screen windows. Animated: the bridge detaches now, the
@@ -145,6 +199,7 @@ enum LockScreenWidgetPosition {
         card = nil
         content = nil
         lastCardState = .empty
+        lastBackdropImage = nil
         lastMinimalBackdrop = false
         guard animated, !windows.isEmpty else {
             windows.forEach(Self.close)
@@ -169,8 +224,8 @@ enum LockScreenWidgetPosition {
 
     private func setupBaseWindow(geometry next: LockScreenGeometry, backdrop: LockScreenBackdropState) throws {
         if backdrop.hasBackdrop {
-            try presentBackdrop(backdrop, geometry: next, initialAlpha: 0)
-            if let backdropPanel { Self.animate(backdropPanel, to: 1, duration: Self.fadeInDuration) }
+            // Instant full opacity on lock so the original macOS lock screen never lingers underneath.
+            try presentBackdrop(backdrop, geometry: next, initialAlpha: 1)
         } else if next.hasNotch {
             let panel = LockScreenPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                         backing: .buffered, defer: false)
@@ -180,11 +235,10 @@ enum LockScreenWidgetPosition {
             let width = max(next.notch.width, 1), height = max(next.notch.height, 8)
             panel.setFrame(NSRect(x: next.notch.midX - width / 2, y: next.screenFrame.maxY - height,
                                   width: width, height: height), display: true)
-            panel.alphaValue = 0
+            panel.alphaValue = 1
             panel.orderFrontRegardless()
             silhouette = panel
             do { try attach(panel) } catch { try? hide(animated: false); throw error }
-            Self.animate(panel, to: 1, duration: Self.fadeInDuration)
         }
     }
 
@@ -199,8 +253,7 @@ enum LockScreenWidgetPosition {
                 backdropPanel.setFrame(next.screenFrame, display: true)
                 backdropPanel.orderFrontRegardless()
             } else {
-                try presentBackdrop(backdrop, geometry: next, initialAlpha: 0)
-                if let backdropPanel { Self.animate(backdropPanel, to: 1, duration: Self.fadeInDuration) }
+                try presentBackdrop(backdrop, geometry: next, initialAlpha: 1)
             }
             card?.orderFrontRegardless()
         } else if let backdropPanel {
@@ -217,16 +270,30 @@ enum LockScreenWidgetPosition {
     private func presentBackdrop(_ backdrop: LockScreenBackdropState,
                                  geometry next: LockScreenGeometry,
                                  initialAlpha: CGFloat) throws {
-        let controller = LockScreenBackdropController(state: backdrop)
-        let panel = LockScreenPanel(contentRect: next.screenFrame,
+        let controller: LockScreenBackdropController
+        let panel: LockScreenPanel
+        if let warmPanel = prewarmedBackdropPanel, let warmController = prewarmedBackdropController {
+            prewarmedBackdropPanel = nil
+            prewarmedBackdropController = nil
+            prewarmedGeometry = nil
+            controller = warmController
+            panel = warmPanel
+            controller.update(backdrop)
+            panel.appearance = appearance
+            panel.setFrame(next.screenFrame, display: true)
+            panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
+        } else {
+            controller = LockScreenBackdropController(state: backdrop)
+            panel = LockScreenPanel(contentRect: next.screenFrame,
                                     styleMask: [.borderless, .nonactivatingPanel],
                                     backing: .buffered,
                                     defer: false)
-        Self.configure(panel, level: Self.shieldedLevel, ignoresMouseEvents: true)
-        panel.appearance = appearance
-        panel.contentViewController = controller
-        panel.setFrame(next.screenFrame, display: true)
-        panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
+            Self.configure(panel, level: Self.shieldedLevel, ignoresMouseEvents: true)
+            panel.appearance = appearance
+            panel.contentViewController = controller
+            panel.setFrame(next.screenFrame, display: true)
+            panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
+        }
         panel.alphaValue = initialAlpha
         panel.orderFrontRegardless()
         backdropPanel = panel
@@ -234,7 +301,7 @@ enum LockScreenWidgetPosition {
         do { try attach(panel) } catch { try? hide(animated: false); throw error }
     }
 
-    private func syncCard(_ state: LockScreenContentState, minimalBackdrop: Bool) throws {
+    private func syncCard(_ state: LockScreenContentState, minimalBackdrop: Bool, immediate: Bool) throws {
         guard let geometry else { return }
         guard !state.isEmpty else {
             if let card { content?.update(.empty); Self.close(card) }
@@ -247,10 +314,16 @@ enum LockScreenWidgetPosition {
         if let existingCard = card, let existingController = content {
             panel = existingCard
             controller = existingController
-            controller.update(state)
+            let size = existingController.preferredSize
+            let enriched = enrichWithBackdropSlice(state, panelSize: size, geometry: geometry, minimalBackdrop: minimalBackdrop)
+            controller.update(enriched)
             isNewCard = false
         } else {
-            let madeController = LockScreenContentController(state: state, onAction: transport)
+            let initialSize = LockScreenMetrics.size(hasMedia: state.showsMedia,
+                                                     hasActivity: state.showsActivity,
+                                                     expandedOutputCount: 0)
+            let enriched = enrichWithBackdropSlice(state, panelSize: initialSize, geometry: geometry, minimalBackdrop: minimalBackdrop)
+            let madeController = LockScreenContentController(state: enriched, onAction: transport)
             madeController.onPreferredSizeChange = { [weak self] _ in
                 guard let self else { return }
                 self.layoutCardFrame()
@@ -260,7 +333,7 @@ enum LockScreenWidgetPosition {
             Self.configure(panel, level: Self.cardLevel, ignoresMouseEvents: false)
             panel.appearance = appearance
             panel.contentViewController = madeController
-            panel.alphaValue = 0
+            panel.alphaValue = immediate ? 1 : 0
             card = panel
             content = madeController
             controller = madeController
@@ -270,15 +343,59 @@ enum LockScreenWidgetPosition {
                      hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop)
         panel.orderFrontRegardless()
         try attach(panel)
-        if isNewCard || panel.alphaValue < 1 {
+        if immediate {
+            panel.alphaValue = 1
+        } else if isNewCard || panel.alphaValue < 1 {
             Self.animate(panel, to: 1, duration: Self.fadeInDuration)
         }
     }
 
     private func layoutCardFrame() {
         guard let card, let content, let geometry, !lastCardState.isEmpty else { return }
-        positionCard(card, size: content.preferredSize, geometry: geometry,
+        let size = content.preferredSize
+        positionCard(card, size: size, geometry: geometry,
                      hasMedia: lastCardState.showsMedia, minimalBackdrop: lastMinimalBackdrop)
+        let enriched = enrichWithBackdropSlice(lastCardState, panelSize: size, geometry: geometry, minimalBackdrop: lastMinimalBackdrop)
+        content.update(enriched)
+    }
+
+    private func cardFrame(for size: CGSize,
+                           geometry: LockScreenGeometry,
+                           hasMedia: Bool,
+                           minimalBackdrop: Bool) -> CGRect {
+        let centerX = geometry.hasNotch ? geometry.notch.midX : geometry.screenFrame.midX
+        let originY = LockScreenWidgetPosition.originY(screenFrame: geometry.screenFrame,
+                                                       notchHeight: geometry.notch.height,
+                                                       widgetHeight: size.height,
+                                                       hasMedia: hasMedia,
+                                                       minimalBackdrop: minimalBackdrop)
+        return CGRect(x: centerX - size.width / 2, y: originY, width: size.width, height: size.height)
+    }
+
+    private func enrichWithBackdropSlice(_ state: LockScreenContentState,
+                                         panelSize: CGSize,
+                                         geometry: LockScreenGeometry,
+                                         minimalBackdrop: Bool) -> LockScreenContentState {
+        guard minimalBackdrop, state.showsMedia, let backdrop = lastBackdropImage else {
+            var plain = state
+            plain.backdropSlice = nil
+            return plain
+        }
+        let fullFrame = cardFrame(for: panelSize, geometry: geometry, hasMedia: true, minimalBackdrop: minimalBackdrop)
+        // Media card sits at the top of the panel; subtract auxiliary pill height if present.
+        let activityExtra = state.showsActivity ? (LockScreenMetrics.captionHeight + LockScreenMetrics.captionGap) : 0
+        let mediaHeight = max(1, fullFrame.height - activityExtra)
+        let mediaFrame = CGRect(x: fullFrame.minX,
+                                y: fullFrame.maxY - mediaHeight,
+                                width: fullFrame.width,
+                                height: mediaHeight)
+        var enriched = state
+        enriched.backdropSlice = LockScreenBackdropComposer.cropForCard(
+            backdrop: backdrop,
+            screenFrame: geometry.screenFrame,
+            cardFrame: mediaFrame
+        )
+        return enriched
     }
 
     private func positionCard(_ panel: NSWindow,
@@ -286,14 +403,8 @@ enum LockScreenWidgetPosition {
                               geometry: LockScreenGeometry,
                               hasMedia: Bool,
                               minimalBackdrop: Bool) {
-        let centerX = geometry.hasNotch ? geometry.notch.midX : geometry.screenFrame.midX
-        let originY = LockScreenWidgetPosition.originY(screenFrame: geometry.screenFrame,
-                                                       notchHeight: geometry.notch.height,
-                                                       widgetHeight: size.height,
-                                                       hasMedia: hasMedia,
-                                                       minimalBackdrop: minimalBackdrop)
-        panel.setFrame(NSRect(x: centerX - size.width / 2, y: originY,
-                              width: size.width, height: size.height), display: true)
+        let frame = cardFrame(for: size, geometry: geometry, hasMedia: hasMedia, minimalBackdrop: minimalBackdrop)
+        panel.setFrame(frame, display: true)
         panel.contentView?.frame = NSRect(origin: .zero, size: size)
     }
 
