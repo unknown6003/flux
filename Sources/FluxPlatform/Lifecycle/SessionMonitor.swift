@@ -3,10 +3,10 @@ import FluxCore
 
 private final class DistributedObservation: NSObject, @unchecked Sendable {
     private let center: DistributedNotificationCenter
-    private let receive: @Sendable (Notification) -> Void
+    private let receive: @Sendable () -> Void
 
     init(center: DistributedNotificationCenter, name: Notification.Name,
-         receive: @escaping @Sendable (Notification) -> Void) {
+         receive: @escaping @Sendable () -> Void) {
         self.center = center
         self.receive = receive
         super.init()
@@ -18,11 +18,12 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
     }
 
     @objc private func handle(_ notification: Notification) {
+        let callback = receive
         if Thread.isMainThread {
-            receive(notification)
+            callback()
         } else {
-            DispatchQueue.main.async { [receive] in
-                receive(notification)
+            DispatchQueue.main.async {
+                callback()
             }
         }
     }
@@ -114,8 +115,8 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
         }
         if let center {
             distributed = [
-                DistributedObservation(center: center, name: .init("com.apple.screenIsLocked")) { [weak self] _ in
-                    // Delivered on OperationQueue.main; run synchronously to avoid a run-loop frame delay.
+                DistributedObservation(center: center, name: .init("com.apple.screenIsLocked")) { [weak self] in
+                    // Delivered on main thread immediately; run synchronously to avoid a run-loop frame delay.
                     MainActor.assumeIsolated {
 #if FLUX_PERFORMANCE_TRACE
                         PerformanceTrace.record(.sessionLock)
@@ -123,7 +124,7 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
                         self?.setPhase(.locked)
                     }
                 },
-                DistributedObservation(center: center, name: .init("com.apple.screenIsUnlocked")) { [weak self] _ in
+                DistributedObservation(center: center, name: .init("com.apple.screenIsUnlocked")) { [weak self] in
                     MainActor.assumeIsolated {
                         guard let self else { return }
 #if FLUX_PERFORMANCE_TRACE
