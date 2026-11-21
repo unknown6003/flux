@@ -368,7 +368,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     private func resolvedWallpaperURL() -> (LockScreenWallpaper, URL)? {
         let choice = preferences.value(for: Preferences.lockScreenWallpaper)
-        if let resource = choice.bundledResourceName,
+        if let resource = choice.resourceName,
            let bundled = LockScreenBackdropComposer.bundledWallpaperURL(named: resource) {
             return (choice, bundled)
         }

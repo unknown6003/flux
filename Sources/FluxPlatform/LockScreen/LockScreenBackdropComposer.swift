@@ -170,11 +170,6 @@ public enum LockScreenBackdropComposer {
             let blurredFlanks = extended
                 .clampedToExtent()
                 .applyingGaussianBlur(sigma: blurRadius)
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 1.06,
-                    kCIInputBrightnessKey: -0.04,
-                    kCIInputContrastKey: 1.02,
-                ])
                 .cropped(to: canvasRect)
 
             let sharpAlphaMask = makeHorizontalFeatherMask(canvasSize: canvasSize, centerRect: centerRect, opaqueAlpha: false)
@@ -325,17 +320,12 @@ public enum LockScreenBackdropComposer {
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         for y in 0..<height {
             let ny = (Double(y) + 0.5) / Double(height)
-            let topEdge = max(0, (ny - 0.84) / 0.16)
-            let bottomEdge = max(0, (0.18 - ny) / 0.18)
-            let vDark = topEdge * topEdge * 0.12 + bottomEdge * bottomEdge * 0.20
+            let topEdge = max(0, (ny - 0.86) / 0.14)
+            let bottomEdge = max(0, (0.14 - ny) / 0.14)
+            let alpha = min(0.14, topEdge * topEdge * 0.06 + bottomEdge * bottomEdge * 0.10)
+            let byte = UInt8((alpha * 255).rounded())
 
             for x in 0..<width {
-                let nx = (Double(x) + 0.5) / Double(width)
-                let sideDist = abs(nx - 0.5) * 2.0
-                let sideEdge = max(0, (sideDist - 0.72) / 0.28)
-                let hDark = sideEdge * sideEdge * 0.20
-                let alpha = min(0.36, vDark + hDark)
-                let byte = UInt8((alpha * 255).rounded())
                 let offset = (y * width + x) * 4
                 pixels[offset] = 0
                 pixels[offset + 1] = 0
