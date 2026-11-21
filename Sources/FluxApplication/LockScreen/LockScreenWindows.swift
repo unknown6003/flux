@@ -202,6 +202,7 @@ enum LockScreenWidgetPosition {
                 try presentBackdrop(backdrop, geometry: next, initialAlpha: 0)
                 if let backdropPanel { Self.animate(backdropPanel, to: 1, duration: Self.fadeInDuration) }
             }
+            card?.orderFrontRegardless()
         } else if let backdropPanel {
             backdropController?.update(.empty)
             Self.close(backdropPanel)
@@ -242,11 +243,12 @@ enum LockScreenWidgetPosition {
         }
         let panel: LockScreenControlPanel
         let controller: LockScreenContentController
-        let baseAlpha = backdropPanel?.alphaValue ?? silhouette?.alphaValue ?? 1
+        let isNewCard: Bool
         if let existingCard = card, let existingController = content {
             panel = existingCard
             controller = existingController
             controller.update(state)
+            isNewCard = false
         } else {
             let madeController = LockScreenContentController(state: state, onAction: transport)
             madeController.onPreferredSizeChange = { [weak self] _ in
@@ -258,16 +260,17 @@ enum LockScreenWidgetPosition {
             Self.configure(panel, level: Self.cardLevel, ignoresMouseEvents: false)
             panel.appearance = appearance
             panel.contentViewController = madeController
-            panel.alphaValue = baseAlpha
+            panel.alphaValue = 0
             card = panel
             content = madeController
             controller = madeController
+            isNewCard = true
         }
         positionCard(panel, size: controller.preferredSize, geometry: geometry,
                      hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop)
         panel.orderFrontRegardless()
         try attach(panel)
-        if panel.alphaValue < 1, baseAlpha >= 1 {
+        if isNewCard || panel.alphaValue < 1 {
             Self.animate(panel, to: 1, duration: Self.fadeInDuration)
         }
     }

@@ -80,6 +80,21 @@ import FluxPlatform
                 #expect(!window.isKeyWindow)
                 if window.contentViewController is LockScreenContentController { #expect(!window.isVisible) }
             }
+            // Now deliver live media while locked and verify the interactive card appears and fades to alpha == 1.
+            let playing = MediaSnapshot(source: nil, title: "Sweet Relief", artist: "Madison Beer", album: "",
+                                        playing: true, duration: 162, elapsed: 107, sampledAt: .now,
+                                        rate: 1, canSkip: true, artwork: nil, artworkID: nil)
+            service.receive(.media(.ready(playing)))
+            let cardDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+            var foundCard: NSWindow?
+            while ContinuousClock.now < cardDeadline {
+                foundCard = NSApp.windows.first { $0.contentViewController is LockScreenContentController && $0.isVisible }
+                if let card = foundCard, card.alphaValue >= 0.99 { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            let visibleCard = try #require(foundCard)
+            #expect(!visibleCard.ignoresMouseEvents)
+            #expect(visibleCard.alphaValue >= 0.99)
             service.setPhase(.unlocked)
             service.setPhase(.unlocked)
             #expect(bridge.detaches == 1)

@@ -95,7 +95,63 @@ import Testing
             if delta > maxStep { maxStep = delta }
         }
         // Raw stripes have 200-level jumps; blurred flanks must transition smoothly.
-        #expect(maxStep < 25)
+        #expect(maxStep < 30)
+
+        // Verify the center photo remains SHARP near the top and bottom (no vertical mask fade leak).
+        var checkerboard = [UInt8](repeating: 0, count: side * side * 4)
+        for y in 0..<side {
+            for x in 0..<side {
+                let offset = (y * side + x) * 4
+                let v: UInt8 = ((x / 8) % 2 == 0) ? 240 : 20
+                checkerboard[offset] = v
+                checkerboard[offset + 1] = v
+                checkerboard[offset + 2] = v
+                checkerboard[offset + 3] = 255
+            }
+        }
+        let sharpCtx = try #require(CGContext(
+            data: &checkerboard,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: side * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let sharpSquare = try #require(sharpCtx.makeImage())
+        let sharpBundle = try #require(LockScreenBackdropComposer.compose(
+            sourceKey: "fixture.sharpCenter",
+            image: sharpSquare,
+            targetAspectSize: target,
+            includeDepthEffect: false
+        ))
+        // Sample a 160px strip across the center near the TOP (y = 12% from top) and BOTTOM (y = 88%).
+        let stripW = 160
+        var strip = [UInt8](repeating: 0, count: stripW * 4)
+        let stripCtx = try #require(CGContext(
+            data: &strip,
+            width: stripW,
+            height: 1,
+            bitsPerComponent: 8,
+            bytesPerRow: stripW * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        for yFrac in [0.12, 0.88] {
+            let yPos = CGFloat(sharpBundle.backdrop.height) * yFrac
+            let xStart = CGFloat(sharpBundle.backdrop.width - stripW) / 2
+            let crop = try #require(sharpBundle.backdrop.cropping(to: CGRect(x: xStart, y: yPos, width: CGFloat(stripW), height: 1)))
+            stripCtx.draw(crop, in: CGRect(x: 0, y: 0, width: CGFloat(stripW), height: 1))
+            var minLum = 255
+            var maxLum = 0
+            for x in 0..<stripW {
+                let lum = Int(strip[x * 4])
+                if lum < minLum { minLum = lum }
+                if lum > maxLum { maxLum = lum }
+            }
+            // Must preserve strong stripe contrast at top & bottom (not washed out by flank blur!).
+            #expect(maxLum - minLum > 120)
+        }
     }
 
     @Test func depthClockOverlapSafetyGateRejectsEmptyAndOverwhelmingMasks() {

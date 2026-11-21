@@ -125,6 +125,7 @@ struct LockScreenBackdropView: View {
                 ZStack {
                     // Layer 0: Full-screen blurred-edge photo backdrop.
                     Image(decorative: backdrop, scale: 1)
+                        .interpolation(.high)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .frame(width: size.width, height: size.height)
@@ -138,6 +139,7 @@ struct LockScreenBackdropView: View {
                     // Layer 2: Vision depth-effect foreground cutout in front of the clock.
                     if model.state.showsDepthEffect, let cutout = model.state.foregroundCutout {
                         Image(decorative: cutout, scale: 1)
+                            .interpolation(.high)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: size.width, height: size.height)
@@ -236,9 +238,9 @@ private struct LiquidGlassClockDigits: View {
                 .fill(
                     LinearGradient(
                         stops: [
-                            .init(color: .white.opacity(0.30), location: 0.0),
-                            .init(color: .white.opacity(0.10), location: 0.48),
-                            .init(color: .white.opacity(0.24), location: 1.0),
+                            .init(color: .white.opacity(0.44), location: 0.0),
+                            .init(color: .white.opacity(0.16), location: 0.48),
+                            .init(color: .white.opacity(0.36), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -250,18 +252,18 @@ private struct LiquidGlassClockDigits: View {
                 .stroke(
                     LinearGradient(
                         stops: [
-                            .init(color: .white.opacity(0.85), location: 0.0),
-                            .init(color: .white.opacity(0.22), location: 0.45),
-                            .init(color: .white.opacity(0.62), location: 1.0),
+                            .init(color: .white.opacity(0.92), location: 0.0),
+                            .init(color: .white.opacity(0.28), location: 0.45),
+                            .init(color: .white.opacity(0.72), location: 1.0),
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: max(1.4, fontSize * 0.011)
+                    lineWidth: max(1.6, fontSize * 0.012)
                 )
                 .clipShape(shape)
         }
-        .shadow(color: .black.opacity(0.22), radius: 18, y: 6)
+        .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
         .accessibilityHidden(true)
     }
 
@@ -270,16 +272,16 @@ private struct LiquidGlassClockDigits: View {
 #if compiler(>=6.2)
         if #available(macOS 26.0, *), !isSnapshotRender {
             Color.clear
-                .glassEffect(.clear, in: shape)
+                .glassEffect(.clear.tint(.white.opacity(0.12)), in: shape)
         } else {
             shape
                 .fill(.ultraThinMaterial)
-                .opacity(0.76)
+                .opacity(0.80)
         }
 #else
         shape
             .fill(.ultraThinMaterial)
-            .opacity(0.76)
+            .opacity(0.80)
 #endif
     }
 }
