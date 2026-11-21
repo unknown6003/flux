@@ -245,30 +245,16 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
 
     private func syncBackdropPipeline(showMedia: Bool, depthEffect: Bool, screenSize: CGSize) {
-        enum Source: Sendable {
-            case artwork(key: String, bytes: Data)
-            case wallpaper(key: String, url: URL)
-        }
+        let artworkBytes: Data? = (showMedia && !(media?.artwork?.isEmpty ?? true)) ? media?.artwork : nil
+        let artworkKey = artworkBytes != nil ? media?.artworkID?.uuidString : nil
+        let wallpaperURL = loadWallpaperURL()
 
-        let source: Source?
-        if showMedia, let id = media?.artworkID, let bytes = media?.artwork, !bytes.isEmpty {
-            source = .artwork(key: "media.\(id.uuidString).depth\(depthEffect ? 1 : 0)", bytes: bytes)
-        } else if let url = loadWallpaperURL() {
-            source = .wallpaper(key: "wallpaper.\(url.path).depth\(depthEffect ? 1 : 0)", url: url)
-        } else {
-            source = nil
-        }
-
-        guard let source else {
+        guard artworkKey != nil || wallpaperURL != nil else {
             clearBackdrop()
             return
         }
 
-        let key: String
-        switch source {
-        case .artwork(let k, _), .wallpaper(let k, _): key = k
-        }
-
+        let key = "\(artworkKey ?? "none")|\(wallpaperURL?.path ?? "none")|depth\(depthEffect ? 1 : 0)"
         if requestedBackdropKey == key { return }
         requestedBackdropKey = key
         backdropGeneration &+= 1
@@ -277,17 +263,21 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
         backdropTask = Task { @MainActor [weak self] in
             let bundle: LockScreenBackdropBundle? = await Task.detached(priority: .userInitiated) {
-                let decoded: CGImage?
-                switch source {
-                case .artwork(_, let bytes):
-                    decoded = LockScreenBackdropComposer.decodeImage(bytes, maxPixels: 2048)
-                case .wallpaper(_, let url):
-                    decoded = LockScreenBackdropComposer.decodeImage(at: url, maxPixels: 2048)
+                var chosen: CGImage?
+                if let artworkBytes,
+                   let decodedArt = LockScreenBackdropComposer.decodeImage(artworkBytes, maxPixels: 2560),
+                   LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(decodedArt) {
+                    chosen = decodedArt
                 }
-                guard !Task.isCancelled, let decoded else { return nil }
+                // Fall back to the full-res desktop wallpaper when media artwork is absent
+                // or is a tiny low-res thumbnail (e.g. 150x84 from a browser).
+                if chosen == nil, let wallpaperURL {
+                    chosen = LockScreenBackdropComposer.decodeImage(at: wallpaperURL, maxPixels: 2560)
+                }
+                guard !Task.isCancelled, let chosen else { return nil }
                 return LockScreenBackdropComposer.compose(
                     sourceKey: key,
-                    image: decoded,
+                    image: chosen,
                     targetAspectSize: screenSize,
                     includeDepthEffect: depthEffect
                 )

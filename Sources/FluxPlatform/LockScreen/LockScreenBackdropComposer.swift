@@ -24,10 +24,17 @@ public struct LockScreenBackdropBundle: @unchecked Sendable {
 public enum LockScreenBackdropComposer {
     /// Maximum rendered canvas width in pixels. Crisp on Retina while fast on GPU.
     public static let maximumCanvasWidth = 2560
+    /// Minimum short-edge pixels for album art to replace the desktop wallpaper.
+    /// Tiny thumbnails (e.g. 150x84 from browsers) fall back to the full-res wallpaper.
+    public static let minimumBackdropArtworkDimension = 480
     /// Minimum and maximum clock-band occlusion for the depth effect so the time
     /// always remains legible while allowing subjects to step cleanly in front.
     public static let minimumClockOverlap: Double = 0.025
     public static let maximumClockOverlap: Double = 0.62
+
+    public static func isSuitableForFullScreenBackdrop(_ image: CGImage) -> Bool {
+        min(image.width, image.height) >= minimumBackdropArtworkDimension
+    }
 
     /// Normalized clock band (top-left origin) where depth overlap is evaluated.
     public static let clockBandNormalized = CGRect(x: 0.30, y: 0.12, width: 0.40, height: 0.20)
@@ -98,23 +105,29 @@ public enum LockScreenBackdropComposer {
 
         // Place the photo centered at full canvas height using high-quality
         // Lanczos resampling so even moderate-resolution album art stays crisp.
-        let scale = canvasSize.height / srcH
-        let fittedW = srcW * scale
+        // Snap fitted dimensions to exact integer pixels and crop away fractional
+        // Lanczos edge fringes so mirrored flanks join with zero dark seam.
+        let rawScale = (canvasSize.height + 2) / srcH
+        let fittedW = max(2, floor(srcW * rawScale) - 2)
         let fittedH = canvasSize.height
-        let centerOriginX = (canvasSize.width - fittedW) / 2
+        let centerOriginX = floor((canvasSize.width - fittedW) / 2)
         let centerRect = CGRect(x: centerOriginX, y: 0, width: fittedW, height: fittedH)
 
-        var scaledSharp = sourceCI.applyingFilter("CILanczosScaleTransform", parameters: [
-            kCIInputScaleKey: scale,
-            kCIInputAspectRatioKey: 1.0,
-        ])
-        if scale > 1.25 {
+        var scaledSharp = sourceCI
+            .clampedToExtent()
+            .applyingFilter("CILanczosScaleTransform", parameters: [
+                kCIInputScaleKey: rawScale,
+                kCIInputAspectRatioKey: 1.0,
+            ])
+        if rawScale > 1.25 {
             scaledSharp = scaledSharp.applyingFilter("CISharpenLuminance", parameters: [
-                kCIInputSharpnessKey: min(0.45, (scale - 1.0) * 0.22),
+                kCIInputSharpnessKey: min(0.45, (rawScale - 1.0) * 0.22),
             ])
         }
-        let centeredSharp = scaledSharp
-            .transformed(by: CGAffineTransform(translationX: centerOriginX, y: 0))
+        let opaqueCenterCrop = scaledSharp
+            .cropped(to: CGRect(x: 1, y: 1, width: fittedW, height: fittedH))
+            .transformed(by: CGAffineTransform(translationX: centerOriginX - 1, y: -1))
+        let centeredSharp = opaqueCenterCrop
 
         // Build horizontally mirrored edge extensions seamlessly abutting left & right.
         let extended = buildMirroredExtension(centered: centeredSharp, centerRect: centerRect, canvasRect: canvasRect)
@@ -206,7 +219,8 @@ public enum LockScreenBackdropComposer {
                 } else {
                     tile = centered.transformed(by: CGAffineTransform(translationX: targetMinX - centerRect.minX, y: 0))
                 }
-                result = tile.composited(over: result)
+                // Place extensions behind `result` so the sharp center edge always stays intact.
+                result = result.composited(over: tile)
                 leftEdge = targetMinX
             }
 
@@ -221,7 +235,7 @@ public enum LockScreenBackdropComposer {
                 } else {
                     tile = centered.transformed(by: CGAffineTransform(translationX: targetMinX - centerRect.minX, y: 0))
                 }
-                result = tile.composited(over: result)
+                result = result.composited(over: tile)
                 rightEdge = targetMinX + tileW
             }
 

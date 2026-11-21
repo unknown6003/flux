@@ -55,54 +55,58 @@ import FluxPlatform
     @Test @MainActor func emptyLockCardCannotTakeInputAndLockAndUnlockSoundsFireOnce() async throws {
         _ = NSApplication.shared
         var faded: [NSWindow] = []
-        try profile { preferences in
-            let screen = try #require(NSScreen.screens.first)
-            let bridge = FixtureLockBridge()
-            var lockSounds = 0
-            var unlockSounds = 0
-            let service = NativeLockScreenService(preferences: preferences, availability: { .available },
-                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
-                lockSound: { lockSounds += 1 }, unlockSound: { unlockSounds += 1 })
-            let handle = try service.makeHandle()
-            defer { handle.stop() }
-            service.setPhase(.unlocked)
-            #expect(lockSounds == 0)
-            service.setPhase(.locked)
-            service.setPhase(.locked)
-            #expect(lockSounds == 1)
-            let ids = try #require(bridge.attached.first)
-            let windows = NSApp.windows.filter { window in
-                CGWindowID(exactly: window.windowNumber).map { ids.contains($0) } ?? false
-            }
-            #expect(!windows.isEmpty)
-            for window in windows {
-                #expect(window.ignoresMouseEvents)
-                #expect(!window.isKeyWindow)
-                if window.contentViewController is LockScreenContentController { #expect(!window.isVisible) }
-            }
-            // Now deliver live media while locked and verify the interactive card appears and fades to alpha == 1.
-            let playing = MediaSnapshot(source: nil, title: "Sweet Relief", artist: "Madison Beer", album: "",
-                                        playing: true, duration: 162, elapsed: 107, sampledAt: .now,
-                                        rate: 1, canSkip: true, artwork: nil, artworkID: nil)
-            service.receive(.media(.ready(playing)))
-            let cardDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-            var foundCard: NSWindow?
-            while ContinuousClock.now < cardDeadline {
-                foundCard = NSApp.windows.first { $0.contentViewController is LockScreenContentController && $0.isVisible }
-                if let card = foundCard, card.alphaValue >= 0.99 { break }
-                try await Task.sleep(for: .milliseconds(25))
-            }
-            let visibleCard = try #require(foundCard)
-            #expect(!visibleCard.ignoresMouseEvents)
-            #expect(visibleCard.alphaValue >= 0.99)
-            service.setPhase(.unlocked)
-            service.setPhase(.unlocked)
-            #expect(bridge.detaches == 1)
-            #expect(unlockSounds == 1)
-            faded = windows
-            handle.stop()
-            #expect(bridge.detaches == 1)
+        let domain = "org.fluxfixture.lock.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        try preferences.set(true, for: Preferences.notchEnabled)
+        try preferences.set(true, for: Preferences.lockScreenEnabled)
+        let screen = try #require(NSScreen.screens.first)
+        let bridge = FixtureLockBridge()
+        var lockSounds = 0
+        var unlockSounds = 0
+        let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+            makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+            lockSound: { lockSounds += 1 }, unlockSound: { unlockSounds += 1 })
+        let handle = try service.makeHandle()
+        defer { handle.stop() }
+        service.setPhase(.unlocked)
+        #expect(lockSounds == 0)
+        service.setPhase(.locked)
+        service.setPhase(.locked)
+        #expect(lockSounds == 1)
+        let ids = try #require(bridge.attached.first)
+        let windows = NSApp.windows.filter { window in
+            CGWindowID(exactly: window.windowNumber).map { ids.contains($0) } ?? false
         }
+        #expect(!windows.isEmpty)
+        for window in windows {
+            #expect(window.ignoresMouseEvents)
+            #expect(!window.isKeyWindow)
+            if window.contentViewController is LockScreenContentController { #expect(!window.isVisible) }
+        }
+        // Now deliver live media while locked and verify the interactive card appears and fades to alpha == 1.
+        var parser = MediaStream()
+        let line = #"{"type":"data","diff":false,"payload":{"title":"Sweet Relief","artist":"Madison Beer","playing":true,"duration":162,"elapsedTime":107}}"# + "\n"
+        let playing = try #require(try parser.append(Data(line.utf8)).compactMap { $0 }.first)
+        service.receive(.media(.ready(playing)))
+        let cardDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        var foundCard: NSWindow?
+        while ContinuousClock.now < cardDeadline {
+            foundCard = NSApp.windows.first { $0.contentViewController is LockScreenContentController && $0.isVisible }
+            if let card = foundCard, card.alphaValue >= 0.99 { break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        let visibleCard = try #require(foundCard)
+        #expect(!visibleCard.ignoresMouseEvents)
+        #expect(visibleCard.alphaValue >= 0.99)
+        service.setPhase(.unlocked)
+        service.setPhase(.unlocked)
+        #expect(bridge.detaches == 1)
+        #expect(unlockSounds == 1)
+        faded = windows + [visibleCard]
+        handle.stop()
+        #expect(bridge.detaches == 1)
         // The fade out takes 0.25 s before the windows close.
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while faded.contains(where: \.isVisible), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }

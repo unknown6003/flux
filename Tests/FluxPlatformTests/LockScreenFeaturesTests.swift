@@ -154,6 +154,23 @@ import Testing
         }
     }
 
+    @Test func fullScreenBackdropRejectsTinyThumbnailsAndAcceptsHighResArtwork() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        func makeImage(width: Int, height: Int) throws -> CGImage {
+            var pixels = [UInt8](repeating: 180, count: width * height * 4)
+            let ctx = try #require(CGContext(
+                data: &pixels, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            return try #require(ctx.makeImage())
+        }
+        #expect(!LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 150, height: 84)))
+        #expect(!LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 300, height: 300)))
+        #expect(LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 640, height: 640)))
+        #expect(LockScreenBackdropComposer.isSuitableForFullScreenBackdrop(try makeImage(width: 1400, height: 1400)))
+    }
+
     @Test func depthClockOverlapSafetyGateRejectsEmptyAndOverwhelmingMasks() {
         #expect(!LockScreenBackdropComposer.acceptsClockOverlap(0.0))
         #expect(!LockScreenBackdropComposer.acceptsClockOverlap(0.01))
