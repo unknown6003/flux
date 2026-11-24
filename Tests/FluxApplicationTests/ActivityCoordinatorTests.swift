@@ -28,8 +28,8 @@ struct ActivityCoordinatorTests {
         owner.receiveBrightness(BrightnessSnapshot(level: 0.75, adjustable: true))
         #expect(owner.queue.current?.kind == .brightnessHUD)
         #expect(owner.queue.current?.trailing == .gauge(value: 0.75, symbol: "sun.max.fill"))
-        owner.receiveBrightness(BrightnessSnapshot(level: 0.20, adjustable: true))
-        #expect(owner.queue.current?.trailing == .gauge(value: 0.20, symbol: "sun.min.fill"))
+        owner.receiveBrightness(BrightnessSnapshot(level: 0.25, adjustable: true))
+        #expect(owner.queue.current?.trailing == .gauge(value: 0.25, symbol: "sun.min.fill"))
     }
 
     @Test @MainActor func overflowScansRespectDismissalUntilTheBarFitsAgain() throws {
