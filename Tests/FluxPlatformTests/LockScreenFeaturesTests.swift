@@ -19,16 +19,31 @@ import Testing
             let pcm = data.subdata(in: 44..<data.count)
             #expect(pcm.count % 2 == 0)
             var peak: Int16 = 0
+            var maxStep: Int = 0
+            var firstSample: Int16 = 0
+            var lastSample: Int16 = 0
             pcm.withUnsafeBytes { raw in
                 let samples = raw.bindMemory(to: Int16.self)
-                for sample in samples {
+                if let first = samples.first { firstSample = first }
+                if let last = samples.last { lastSample = last }
+                var previous: Int = 0
+                for (index, sample) in samples.enumerated() {
                     let magnitude = sample == Int16.min ? Int16.max : abs(sample)
                     if magnitude > peak { peak = magnitude }
+                    let value = Int(sample)
+                    if index > 0 {
+                        let step = abs(value - previous)
+                        if step > maxStep { maxStep = step }
+                    }
+                    previous = value
                 }
             }
-            // Strong, tactile, and punchy without digital clipping.
+            // Strong, tactile, and smooth without digital clipping or harsh edge clicks.
             #expect(peak > 8_000, "\(name) sound is too quiet to feel tactile")
             #expect(peak < 30_000, "\(name) sound is near digital clipping")
+            #expect(abs(Int(firstSample)) < 64, "\(name) sound must start smoothly from silence")
+            #expect(abs(Int(lastSample)) < 64, "\(name) sound must end smoothly into silence")
+            #expect(maxStep < 2_500, "\(name) sound has a harsh sample discontinuity")
         }
     }
 

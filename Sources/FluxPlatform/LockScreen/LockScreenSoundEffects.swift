@@ -8,107 +8,124 @@ import Foundation
 public enum LockScreenSoundEffects {
     public static let sampleRate: Int = 44_100
 
-    /// Strong, clean (~95 ms) precision magnetic-latch click with a weighted low thump.
+    /// Smooth raised-cosine onset (`0 -> 1`) to guarantee a click-free, velvety attack.
+    private static func hannAttack(_ t: Double, duration: Double) -> Double {
+        if t <= 0 { return 0 }
+        if t >= duration { return 1 }
+        return 0.5 - 0.5 * cos(.pi * t / duration)
+    }
+
+    /// Smooth raised-cosine release (`1 -> 0`) so the tail melts cleanly into silence.
+    private static func hannRelease(_ t: Double, start: Double, duration: Double) -> Double {
+        if t <= start { return 1 }
+        if t >= start + duration { return 0 }
+        return 0.5 + 0.5 * cos(.pi * (t - start) / duration)
+    }
+
+    /// Smooth, clean (~165 ms) liquid-glass magnetic settle: velvety downward
+    /// thump with a pure glassy harmonic contour and soft cushion detent (zero noise grit).
     public static func lockSoundData() -> Data {
-        let duration = 0.095
+        let duration = 0.165
         let count = Int(Double(sampleRate) * duration)
         var samples = [Float](repeating: 0, count: count)
-        var phaseSub = 0.0
-        var phaseKnock = 0.0
-        var phaseSettle = 0.0
-        var lp1 = 0.0
-        var lp2 = 0.0
-        var seed: UInt64 = 0x51A7_9C3B_24F1_8E0D
+        var p1 = 0.0
+        var p2 = 0.0
+        var p3 = 0.0
+        var p4 = 0.0
 
         for i in 0..<count {
             let t = Double(i) / Double(sampleRate)
 
-            // Weighted low-end thump dropping smoothly (170 Hz -> 56 Hz).
-            let freqSub = 56.0 + 114.0 * exp(-t * 72.0)
-            phaseSub += 2.0 * .pi * freqSub / Double(sampleRate)
-            let attackSub = min(1.0, t / 0.0014)
-            let envSub = attackSub * exp(-t * 42.0)
-            let sub = sin(phaseSub) * envSub * 0.54
+            // 1) Velvety downward low-end thump (235 Hz -> 84 Hz).
+            let f1 = 84.0 + 151.0 * exp(-t * 52.0)
+            p1 += 2.0 * .pi * f1 / Double(sampleRate)
+            let e1 = hannAttack(t, duration: 0.0045) * exp(-t * 32.0)
+            let body = sin(p1) * e1 * 0.52
 
-            // Tight woody-aluminum knock resonance (1320 Hz -> 540 Hz, ~7 ms).
-            let freqKnock = 540.0 + 780.0 * exp(-t * 280.0)
-            phaseKnock += 2.0 * .pi * freqKnock / Double(sampleRate)
-            let envKnock = min(1.0, t / 0.0004) * exp(-t * 260.0)
-            let knock = sin(phaseKnock) * envKnock * 0.28
+            // 2) Pure liquid-glass harmonic contour (540 Hz -> 252 Hz, zero harsh noise).
+            let f2 = 252.0 + 288.0 * exp(-t * 85.0)
+            p2 += 2.0 * .pi * f2 / Double(sampleRate)
+            let e2 = hannAttack(t, duration: 0.0032) * exp(-t * 82.0)
+            let contour = sin(p2) * e2 * 0.24
 
-            // Band-limited crisp mechanical transient (~2.5 ms).
-            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-            let white = Double(Int64(bitPattern: seed) >> 33) / Double(1 << 30)
-            lp1 = lp1 * 0.60 + white * 0.40
-            lp2 = lp2 * 0.88 + lp1 * 0.12
-            let bandClick = lp1 - lp2
-            let clickEnv = min(1.0, t / 0.0003) * exp(-t * 620.0)
-            let click = bandClick * clickEnv * 0.46
+            // 3) Subtle liquid micro-sparkle (1120 Hz -> 840 Hz).
+            let f3 = 840.0 + 280.0 * exp(-t * 140.0)
+            p3 += 2.0 * .pi * f3 / Double(sampleRate)
+            let e3 = hannAttack(t, duration: 0.0028) * exp(-t * 145.0)
+            let sparkle = sin(p3) * e3 * 0.09
 
-            // Subtle secondary latch detent 20 ms later for solid closed feel.
+            // 4) Soft magnetic cushion settle 30 ms later (138 Hz -> 76 Hz).
             var settle = 0.0
-            let t2 = t - 0.020
+            let t2 = t - 0.030
             if t2 > 0 {
-                let freq2 = 72.0 + 68.0 * exp(-t2 * 110.0)
-                phaseSettle += 2.0 * .pi * freq2 / Double(sampleRate)
-                let env2 = min(1.0, t2 / 0.0016) * exp(-t2 * 64.0)
-                settle = sin(phaseSettle) * env2 * 0.18
+                let f4 = 76.0 + 62.0 * exp(-t2 * 58.0)
+                p4 += 2.0 * .pi * f4 / Double(sampleRate)
+                let e4 = hannAttack(t2, duration: 0.0065) * exp(-t2 * 34.0)
+                settle = sin(p4) * e4 * 0.26
             }
 
-            let tail = t > duration - 0.010 ? max(0.0, (duration - t) / 0.010) : 1.0
-            let raw = (sub + knock + click + settle) * tail
-            let warm = tanh(raw * 1.15) / tanh(1.15)
+            let tail = hannRelease(t, start: duration - 0.035, duration: 0.035)
+            let raw = (body + contour + sparkle + settle) * tail
+            let warm = tanh(raw * 1.08) / tanh(1.08)
             samples[i] = Float(warm * 0.78)
         }
         return encodeWAV(samples: samples, sampleRate: sampleRate)
     }
 
-    /// Clean, tactile (~110 ms) mechanical release click followed by a warm upward pop-thump.
+    /// Clean, fresh (~195 ms) elastic release thump opening into a smooth
+    /// upward liquid-glass bloom with a silky decay into silence.
     public static func unlockSoundData() -> Data {
-        let duration = 0.110
+        let duration = 0.195
         let count = Int(Double(sampleRate) * duration)
         var samples = [Float](repeating: 0, count: count)
-        var phaseTick = 0.0
-        var phaseThump = 0.0
-        var phaseAir = 0.0
-        var lp1 = 0.0
-        var lp2 = 0.0
-        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        var p1 = 0.0
+        var p2 = 0.0
+        var p3 = 0.0
+        var p4 = 0.0
+        var p5 = 0.0
 
         for i in 0..<count {
             let t = Double(i) / Double(sampleRate)
 
-            // Crisp initial unlatch tick at t = 0.
-            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-            let white = Double(Int64(bitPattern: seed) >> 33) / Double(1 << 30)
-            lp1 = lp1 * 0.52 + white * 0.48
-            lp2 = lp2 * 0.85 + lp1 * 0.15
-            let tickNoise = (lp1 - lp2) * min(1.0, t / 0.0003) * exp(-t * 720.0) * 0.36
+            // 1) Clean elastic lift thump at t = 0 (130 Hz -> 205 Hz).
+            let f1 = 205.0 - 75.0 * exp(-t * 68.0)
+            p1 += 2.0 * .pi * f1 / Double(sampleRate)
+            let e1 = hannAttack(t, duration: 0.0045) * exp(-t * 48.0)
+            let pre = sin(p1) * e1 * 0.36
 
-            let freqTick = 880.0 + 420.0 * exp(-t * 260.0)
-            phaseTick += 2.0 * .pi * freqTick / Double(sampleRate)
-            let tickTone = sin(phaseTick) * min(1.0, t / 0.0005) * exp(-t * 240.0) * 0.22
+            // Crisp harmonic contour on initial lift (440 Hz -> 560 Hz).
+            let f2 = 560.0 - 120.0 * exp(-t * 110.0)
+            p2 += 2.0 * .pi * f2 / Double(sampleRate)
+            let e2 = hannAttack(t, duration: 0.0035) * exp(-t * 115.0)
+            let preTop = sin(p2) * e2 * 0.14
 
-            // Confident warm release thump 15 ms later rising cleanly (98 Hz -> 185 Hz).
-            var thump = 0.0
-            var air = 0.0
-            let t2 = t - 0.015
+            // 2) Fresh rising liquid-glass bloom-thump 24 ms later.
+            var bloom = 0.0
+            var halo = 0.0
+            var shimmer = 0.0
+            let t2 = t - 0.024
             if t2 > 0 {
-                let freqThump = 185.0 - 87.0 * exp(-t2 * 95.0)
-                phaseThump += 2.0 * .pi * freqThump / Double(sampleRate)
-                let attack2 = min(1.0, t2 / 0.0018)
-                let env2 = attack2 * exp(-t2 * 38.0)
-                thump = (sin(phaseThump) + 0.22 * sin(phaseThump * 2.0)) * env2 * 0.48
+                // Elastic warm rising body (165 Hz -> 295 Hz).
+                let f3 = 295.0 - 130.0 * exp(-t2 * 56.0)
+                p3 += 2.0 * .pi * f3 / Double(sampleRate)
+                let e3 = hannAttack(t2, duration: 0.0060) * exp(-t2 * 26.0)
+                bloom = sin(p3) * e3 * 0.44
 
-                // Subtle damped high-end release sheen (zero bell ring).
-                phaseAir += 2.0 * .pi * 1180.0 / Double(sampleRate)
-                let envAir = min(1.0, t2 / 0.0010) * exp(-t2 * 145.0)
-                air = sin(phaseAir) * envAir * 0.10
+                // Clean liquid-glass fifth/octave overtone (515 Hz -> 590 Hz).
+                let f4 = 590.0 - 75.0 * exp(-t2 * 70.0)
+                p4 += 2.0 * .pi * f4 / Double(sampleRate)
+                let e4 = hannAttack(t2, duration: 0.0085) * exp(-t2 * 42.0)
+                halo = sin(p4) * e4 * 0.16
+
+                // Airy fresh upper glass harmonic (1180 Hz).
+                p5 += 2.0 * .pi * 1180.0 / Double(sampleRate)
+                let e5 = hannAttack(t2, duration: 0.0100) * exp(-t2 * 62.0)
+                shimmer = sin(p5) * e5 * 0.065
             }
 
-            let tail = t > duration - 0.012 ? max(0.0, (duration - t) / 0.012) : 1.0
-            let raw = (tickNoise + tickTone + thump + air) * tail
-            let warm = tanh(raw * 1.15) / tanh(1.15)
+            let tail = hannRelease(t, start: duration - 0.045, duration: 0.045)
+            let raw = (pre + preTop + bloom + halo + shimmer) * tail
+            let warm = tanh(raw * 1.08) / tanh(1.08)
             samples[i] = Float(warm * 0.78)
         }
         return encodeWAV(samples: samples, sampleRate: sampleRate)
