@@ -118,4 +118,8 @@ import FluxUI
         guard active else { return }
         runtime.sendLockScreenTransport(action)
     }
+    public func retryLockScreen() {
+        guard active else { return }
+        runtime.retry(.lockScreen)
+    }
 }

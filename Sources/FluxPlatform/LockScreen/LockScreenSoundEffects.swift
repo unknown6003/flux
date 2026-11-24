@@ -8,7 +8,14 @@ import Foundation
 public enum LockScreenSoundEffects {
     public static let sampleRate: Int = 44_100
 
-    /// Smooth raised-cosine onset (`0 -> 1`) to guarantee a click-free, velvety attack.
+    /// Smooth raised-cosine bell centered at `center` with total width `width`.
+    private static func hannBell(_ t: Double, center: Double, width: Double) -> Double {
+        let u = (t - (center - width * 0.5)) / width
+        if u <= 0 || u >= 1 { return 0 }
+        return 0.5 - 0.5 * cos(2.0 * .pi * u)
+    }
+
+    /// Smooth raised-cosine onset (`0 -> 1`) to guarantee a click-free attack.
     private static func hannAttack(_ t: Double, duration: Double) -> Double {
         if t <= 0 { return 0 }
         if t >= duration { return 1 }
@@ -22,146 +29,297 @@ public enum LockScreenSoundEffects {
         return 0.5 + 0.5 * cos(.pi * (t - start) / duration)
     }
 
-    /// Crisp, clean (~132 ms) ceramic-glass click + velvety downward thump
-    /// followed by a subtle magnetic detent tick-settle (zero noise grit).
-    public static func lockSoundData() -> Data {
-        let duration = 0.132
-        let count = Int(Double(sampleRate) * duration)
-        var samples = [Float](repeating: 0, count: count)
-        var pClk1 = 0.0
-        var pClk2 = 0.0
-        var pTap = 0.0
-        var pBody = 0.0
-        var pMid = 0.0
-        var pSettleClk = 0.0
-        var pSettleBody = 0.0
+    /// Single-stage 2-pole bandpass resonator (constant 0 dB peak, open high-end air).
+    private struct BiquadBandpass {
+        let b0: Double
+        let b2: Double
+        let a1: Double
+        let a2: Double
+        var z1: Double = 0
+        var z2: Double = 0
+
+        init(frequency: Double, q: Double, sampleRate: Double) {
+            let w0 = 2.0 * .pi * frequency / sampleRate
+            let alpha = sin(w0) / (2.0 * q)
+            let a0 = 1.0 + alpha
+            b0 = alpha / a0
+            b2 = -alpha / a0
+            a1 = (-2.0 * cos(w0)) / a0
+            a2 = (1.0 - alpha) / a0
+        }
+
+        mutating func process(_ x: Double) -> Double {
+            let y = b0 * x + z1
+            z1 = -a1 * y + z2
+            z2 = b2 * x - a2 * y
+            return y
+        }
+    }
+
+    /// 2-pole Butterworth high-pass filter to strip low-end mud cleanly.
+    private struct BiquadHighpass {
+        let b0: Double
+        let b1: Double
+        let b2: Double
+        let a1: Double
+        let a2: Double
+        var z1: Double = 0
+        var z2: Double = 0
+
+        init(frequency: Double, q: Double = 0.707, sampleRate: Double) {
+            let w0 = 2.0 * .pi * frequency / sampleRate
+            let cw = cos(w0)
+            let alpha = sin(w0) / (2.0 * q)
+            let a0 = 1.0 + alpha
+            b0 = ((1.0 + cw) * 0.5) / a0
+            b1 = (-(1.0 + cw)) / a0
+            b2 = ((1.0 + cw) * 0.5) / a0
+            a1 = (-2.0 * cw) / a0
+            a2 = (1.0 - alpha) / a0
+        }
+
+        mutating func process(_ x: Double) -> Double {
+            let y = b0 * x + z1
+            z1 = b1 * x - a1 * y + z2
+            z2 = b2 * x - a2 * y
+            return y
+        }
+    }
+
+    /// Deterministic xorshift64* PRNG yielding repeatable bipolar excitation in `-1...1`.
+    private struct DeterministicNoise {
+        var state: UInt64
+
+        mutating func nextBipolar() -> Double {
+            var x = state
+            x ^= x >> 12
+            x ^= x << 25
+            x ^= x >> 27
+            state = x
+            let value = x &* 2_685_821_657_736_338_717
+            return (Double(value >> 11) / Double(1 << 53)) * 2.0 - 1.0
+        }
+    }
+
+    /// Synthesizes a peak-normalized physical click burst by exciting single-stage
+    /// 2-pole modal resonators with a short Hann-windowed impulse and high-passing out mud.
+    private static func makeCrispClick(
+        count: Int,
+        onset: Double,
+        burstMs: Double,
+        seed: UInt64,
+        modes: [(frequency: Double, q: Double, weight: Double)],
+        level: Double,
+        highPassHz: Double
+    ) -> [Double] {
+        let sr = Double(sampleRate)
+        var rng = DeterministicNoise(state: seed)
+        var filters = modes.map { BiquadBandpass(frequency: $0.frequency, q: $0.q, sampleRate: sr) }
+        var hp = highPassHz > 0 ? BiquadHighpass(frequency: highPassHz, sampleRate: sr) : nil
+        var buffer = [Double](repeating: 0, count: count)
+        let burstSeconds = burstMs / 1000.0
+        let center = onset + burstSeconds * 0.5
 
         for i in 0..<count {
-            let t = Double(i) / Double(sampleRate)
-
-            // 1) Crisp, dry ceramic-glass tactile click at t = 0 (smooth Hann onset, 3-5 ms decay).
-            let fClk1 = 1750.0 + 1350.0 * exp(-t * 420.0)
-            pClk1 += 2.0 * .pi * fClk1 / Double(sampleRate)
-            let clk1 = sin(pClk1) * hannAttack(t, duration: 0.00060) * exp(-t * 360.0) * 0.40
-
-            let fClk2 = 3350.0 + 1300.0 * exp(-t * 540.0)
-            pClk2 += 2.0 * .pi * fClk2 / Double(sampleRate)
-            let clk2 = sin(pClk2) * hannAttack(t, duration: 0.00050) * exp(-t * 520.0) * 0.22
-
-            // Dry woody-glass tap bridging the click into the thump (1420 Hz -> 940 Hz).
-            let fTap = 940.0 + 480.0 * exp(-t * 240.0)
-            pTap += 2.0 * .pi * fTap / Double(sampleRate)
-            let tap = sin(pTap) * hannAttack(t, duration: 0.00085) * exp(-t * 210.0) * 0.24
-
-            // 2) Velvety downward low-end thump swelling cleanly right behind the click (270 -> 104 Hz).
-            let tBody = max(0.0, t - 0.0008)
-            let fBody = 104.0 + 166.0 * exp(-tBody * 66.0)
-            pBody += 2.0 * .pi * fBody / Double(sampleRate)
-            let body = sin(pBody) * hannAttack(tBody, duration: 0.0032) * exp(-tBody * 42.0) * 0.44
-
-            // Clean hollow-glass mid contour (640 Hz -> 340 Hz).
-            let fMid = 340.0 + 300.0 * exp(-tBody * 105.0)
-            pMid += 2.0 * .pi * fMid / Double(sampleRate)
-            let mid = sin(pMid) * hannAttack(tBody, duration: 0.0024) * exp(-tBody * 96.0) * 0.16
-
-            // 3) Subtle magnetic detent micro-click + soft cushion settle 25 ms later.
-            var settleClk = 0.0
-            var settleBody = 0.0
-            let t2 = t - 0.025
-            if t2 > 0 {
-                let fSClk = 1480.0 + 820.0 * exp(-t2 * 420.0)
-                pSettleClk += 2.0 * .pi * fSClk / Double(sampleRate)
-                settleClk = sin(pSettleClk) * hannAttack(t2, duration: 0.00065) * exp(-t2 * 380.0) * 0.17
-
-                let fSBody = 92.0 + 74.0 * exp(-t2 * 68.0)
-                pSettleBody += 2.0 * .pi * fSBody / Double(sampleRate)
-                settleBody = sin(pSettleBody) * hannAttack(t2, duration: 0.0040) * exp(-t2 * 46.0) * 0.22
+            let t = Double(i) / sr
+            let env = hannBell(t, center: center, width: burstSeconds)
+            let exc = env > 0 ? (rng.nextBipolar() * 0.76 + 0.24) * env : 0
+            var y = 0.0
+            for index in filters.indices {
+                y += filters[index].process(exc) * modes[index].weight
             }
-
-            let tail = hannRelease(t, start: duration - 0.038, duration: 0.038)
-            let raw = (clk1 + clk2 + tap + body + mid + settleClk + settleBody) * tail
-            let warm = tanh(raw * 1.05) / tanh(1.05)
-            samples[i] = Float(warm * 0.78)
+            if hp != nil {
+                y = hp!.process(y)
+            }
+            buffer[i] = y
         }
+
+        let peak = buffer.reduce(0.0) { max($0, abs($1)) }
+        let scale = peak > 0 ? level / peak : 0
+        if scale != 1 {
+            for i in buffer.indices { buffer[i] *= scale }
+        }
+        return buffer
+    }
+
+    private static func normalizeAndFinish(
+        _ input: [Double],
+        targetPeak: Double,
+        fadeInMs: Double,
+        fadeOutMs: Double
+    ) -> [Float] {
+        let count = input.count
+        guard count > 0 else { return [] }
+        let sr = Double(sampleRate)
+        let mean = input.reduce(0.0, +) / Double(count)
+        let duration = Double(count) / sr
+        let fadeIn = fadeInMs / 1000.0
+        let fadeOut = fadeOutMs / 1000.0
+
+        var shaped = [Double](repeating: 0, count: count)
+        var peak = 0.0
+        for i in 0..<count {
+            let t = Double(i) / sr
+            let v = (input[i] - mean) * hannAttack(t, duration: fadeIn) * hannRelease(t, start: duration - fadeOut, duration: fadeOut)
+            shaped[i] = v
+            peak = max(peak, abs(v))
+        }
+        let scale = peak > 0 ? targetPeak / peak : 0
+        let satDrive = 1.04
+        let satGain = targetPeak / (tanh(targetPeak * satDrive) / tanh(satDrive))
+        return shaped.map { sample in
+            let v = sample * scale
+            return Float((tanh(v * satDrive) / tanh(satDrive)) * satGain)
+        }
+    }
+
+    /// Fresh, open (~168 ms) two-stage glass-ceramic latch lock: crisp dry
+    /// high-end click followed 50 ms later by a tight warm settle with subtle
+    /// fifth/octave glass clarity and a clean fade to silence.
+    public static func lockSoundData() -> Data {
+        let duration = 0.168
+        let count = Int(Double(sampleRate) * duration)
+        let sr = Double(sampleRate)
+
+        let hit1 = makeCrispClick(
+            count: count,
+            onset: 0.0015,
+            burstMs: 1.05,
+            seed: 0xC201_0001,
+            modes: [
+                (3750.0, 4.4, 0.78),
+                (6300.0, 4.8, 0.95),
+                (9600.0, 4.0, 0.85),
+                (13_000.0, 3.4, 0.55),
+            ],
+            level: 1.00,
+            highPassHz: 1600.0
+        )
+        let seatClk = makeCrispClick(
+            count: count,
+            onset: 0.050,
+            burstMs: 1.10,
+            seed: 0xC201_0002,
+            modes: [
+                (3350.0, 4.6, 0.70),
+                (5950.0, 5.0, 0.82),
+                (9500.0, 4.2, 0.68),
+            ],
+            level: 0.62,
+            highPassHz: 1400.0
+        )
+        let chamber = makeCrispClick(
+            count: count,
+            onset: 0.0495,
+            burstMs: 2.2,
+            seed: 0xC201_0003,
+            modes: [
+                (330.0, 4.0, 0.80),
+                (660.0, 5.2, 0.65),
+                (990.0, 5.8, 0.45),
+                (1980.0, 6.2, 0.34),
+            ],
+            level: 0.44,
+            highPassHz: 180.0
+        )
+
+        var mixed = [Double](repeating: 0, count: count)
+        var pLow = 0.0
+        var pG1 = 0.0
+        var pG2 = 0.0
+
+        for i in 0..<count {
+            let t = Double(i) / sr
+            var low = 0.0
+            var glassSettle = 0.0
+            let t2 = t - 0.050
+            if t2 > 0 {
+                let fLow = 164.0 + 146.0 * exp(-t2 * 105.0)
+                pLow += 2.0 * .pi * fLow / sr
+                low = sin(pLow) * hannAttack(t2, duration: 0.0024) * exp(-t2 * 72.0) * 0.24
+
+                let fG1 = 880.0 + 108.0 * exp(-t2 * 140.0)
+                pG1 += 2.0 * .pi * fG1 / sr
+                let fG2 = 1760.0 + 216.0 * exp(-t2 * 160.0)
+                pG2 += 2.0 * .pi * fG2 / sr
+                glassSettle =
+                    sin(pG1) * hannAttack(t2, duration: 0.0018) * exp(-t2 * 95.0) * 0.11 +
+                    sin(pG2) * hannAttack(t2, duration: 0.0014) * exp(-t2 * 135.0) * 0.06
+            }
+            mixed[i] = hit1[i] + seatClk[i] + chamber[i] + low + glassSettle
+        }
+
+        let samples = normalizeAndFinish(mixed, targetPeak: 0.72, fadeInMs: 0.7, fadeOutMs: 34.0)
         return encodeWAV(samples: samples, sampleRate: sampleRate)
     }
 
-    /// Clean, fresh (~158 ms) tactile release micro-click followed 24 ms later
-    /// by a bright ceramic-glass click blooming into a smooth upward pop-thump.
+    /// Crisp, airy (~145 ms) precision release unlock: feather-light opening
+    /// tick into an open ceramic-titanium release snap at 26 ms and a delicate
+    /// rising upper air tick at 54 ms, with zero low-end mud.
     public static func unlockSoundData() -> Data {
-        let duration = 0.158
+        let duration = 0.145
         let count = Int(Double(sampleRate) * duration)
-        var samples = [Float](repeating: 0, count: count)
-        var pC1 = 0.0
-        var pC2 = 0.0
-        var pPre = 0.0
-        var pBC1 = 0.0
-        var pBC2 = 0.0
-        var pBTap = 0.0
-        var pBBody = 0.0
-        var pBHalo = 0.0
-        var pBAir = 0.0
 
+        let pre = makeCrispClick(
+            count: count,
+            onset: 0.0015,
+            burstMs: 0.95,
+            seed: 0xC102_0001,
+            modes: [
+                (4650.0, 4.2, 0.72),
+                (7900.0, 4.0, 0.90),
+                (11_800.0, 3.5, 0.68),
+            ],
+            level: 0.44,
+            highPassHz: 1800.0
+        )
+        let main = makeCrispClick(
+            count: count,
+            onset: 0.026,
+            burstMs: 1.15,
+            seed: 0xC102_0002,
+            modes: [
+                (3850.0, 4.2, 0.75),
+                (6450.0, 4.6, 1.00),
+                (9900.0, 4.0, 0.88),
+                (13_200.0, 3.4, 0.55),
+            ],
+            level: 1.00,
+            highPassHz: 1400.0
+        )
+        let glass = makeCrispClick(
+            count: count,
+            onset: 0.026,
+            burstMs: 2.0,
+            seed: 0xC102_0003,
+            modes: [
+                (620.0, 5.2, 0.55),
+                (1240.0, 5.8, 0.62),
+                (2480.0, 6.2, 0.45),
+            ],
+            level: 0.34,
+            highPassHz: 380.0
+        )
+        let airTick = makeCrispClick(
+            count: count,
+            onset: 0.054,
+            burstMs: 0.90,
+            seed: 0xC102_0004,
+            modes: [
+                (6200.0, 5.5, 0.75),
+                (9400.0, 5.0, 0.80),
+                (12_800.0, 4.2, 0.48),
+            ],
+            level: 0.28,
+            highPassHz: 2400.0
+        )
+
+        var mixed = [Double](repeating: 0, count: count)
         for i in 0..<count {
-            let t = Double(i) / Double(sampleRate)
-
-            // 1) Crisp initial release micro-click + tight elastic pre-lift.
-            let fC1 = 3650.0 - 750.0 * exp(-t * 460.0)
-            pC1 += 2.0 * .pi * fC1 / Double(sampleRate)
-            let c1 = sin(pC1) * hannAttack(t, duration: 0.00055) * exp(-t * 410.0) * 0.28
-
-            pC2 += 2.0 * .pi * 4850.0 / Double(sampleRate)
-            let c2 = sin(pC2) * hannAttack(t, duration: 0.00045) * exp(-t * 560.0) * 0.14
-
-            let tPre = max(0.0, t - 0.0006)
-            let fPre = 240.0 - 80.0 * exp(-tPre * 78.0)
-            pPre += 2.0 * .pi * fPre / Double(sampleRate)
-            let pre = sin(pPre) * hannAttack(tPre, duration: 0.0028) * exp(-tPre * 62.0) * 0.26
-
-            // 2) Bright tactile click + fresh rising glass pop 24 ms later.
-            var bc1 = 0.0
-            var bc2 = 0.0
-            var bTap = 0.0
-            var bBody = 0.0
-            var bHalo = 0.0
-            var bAir = 0.0
-            let t2 = t - 0.024
-            if t2 > 0 {
-                let fBC1 = 2650.0 + 1350.0 * exp(-t2 * 400.0)
-                pBC1 += 2.0 * .pi * fBC1 / Double(sampleRate)
-                bc1 = sin(pBC1) * hannAttack(t2, duration: 0.00055) * exp(-t2 * 350.0) * 0.38
-
-                let fBC2 = 4150.0 + 1350.0 * exp(-t2 * 530.0)
-                pBC2 += 2.0 * .pi * fBC2 / Double(sampleRate)
-                bc2 = sin(pBC2) * hannAttack(t2, duration: 0.00045) * exp(-t2 * 510.0) * 0.19
-
-                // Crisp glass-marimba tap (1660 Hz -> 2020 Hz).
-                let fBTap = 2020.0 - 360.0 * exp(-t2 * 240.0)
-                pBTap += 2.0 * .pi * fBTap / Double(sampleRate)
-                bTap = sin(pBTap) * hannAttack(t2, duration: 0.00085) * exp(-t2 * 185.0) * 0.20
-
-                // Smooth rising elastic pop-thump right behind the click (205 Hz -> 375 Hz).
-                let t2b = max(0.0, t2 - 0.0008)
-                let fBBody = 375.0 - 170.0 * exp(-t2b * 68.0)
-                pBBody += 2.0 * .pi * fBBody / Double(sampleRate)
-                bBody = sin(pBBody) * hannAttack(t2b, duration: 0.0032) * exp(-t2b * 34.0) * 0.39
-
-                // Fresh liquid-glass overtone (760 Hz -> 890 Hz).
-                let fBHalo = 890.0 - 130.0 * exp(-t2b * 82.0)
-                pBHalo += 2.0 * .pi * fBHalo / Double(sampleRate)
-                bHalo = sin(pBHalo) * hannAttack(t2b, duration: 0.0045) * exp(-t2b * 48.0) * 0.15
-
-                // Airy upper harmonic sheen (1520 Hz -> 1780 Hz).
-                let fBAir = 1780.0 - 260.0 * exp(-t2b * 92.0)
-                pBAir += 2.0 * .pi * fBAir / Double(sampleRate)
-                bAir = sin(pBAir) * hannAttack(t2b, duration: 0.0065) * exp(-t2b * 68.0) * 0.065
-            }
-
-            let tail = hannRelease(t, start: duration - 0.044, duration: 0.044)
-            let raw = (c1 + c2 + pre + bc1 + bc2 + bTap + bBody + bHalo + bAir) * tail
-            let warm = tanh(raw * 1.05) / tanh(1.05)
-            samples[i] = Float(warm * 0.78)
+            mixed[i] = pre[i] + main[i] + glass[i] + airTick[i]
         }
+
+        let samples = normalizeAndFinish(mixed, targetPeak: 0.70, fadeInMs: 0.7, fadeOutMs: 36.0)
         return encodeWAV(samples: samples, sampleRate: sampleRate)
     }
 

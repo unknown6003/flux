@@ -78,6 +78,7 @@ public final class NotchRuntime: WidgetEffects {
     private var monitor: SessionMonitor?
     private weak var volumeFeed: SoundHUDFeed?
     private var lockCommands: MediaCommandAuthorization?
+    private var reportedServiceFailures: Set<FeatureService> = []
 
     public func sendLockScreenTransport(_ action: LockScreenTransportAction) {
         guard active, phase == .locked,
@@ -187,6 +188,7 @@ public final class NotchRuntime: WidgetEffects {
         calendarBoundary?.cancel(); calendarBoundary = nil
         monitor?.stop(); monitor = nil
         services.stop()
+        reportedServiceFailures.removeAll()
         callbacks.cameraRunning(false)
         window.stop()
         widgets.dismiss()
@@ -262,7 +264,11 @@ public final class NotchRuntime: WidgetEffects {
         if next.phase == .locked, config.notchEnabled, config.lockScreenEnabled, config.lockScreenMediaEnabled {
             if lockCommands == nil { lockCommands = MediaCommandAuthorization() }
         } else { lockCommands?.revoke(); lockCommands = nil }
-        for failure in services.apply(next) { callbacks.report(.service(failure)) }
+        let failed = services.apply(next)
+        reportedServiceFailures.subtract(services.active)
+        for failure in failed where reportedServiceFailures.insert(failure).inserted {
+            callbacks.report(.service(failure))
+        }
     }
 
     private func makeService(_ service: FeatureService) throws -> any FeatureServiceHandle {
@@ -321,6 +327,7 @@ public final class NotchRuntime: WidgetEffects {
         case .lockScreen: stopped.configuration.lockScreenEnabled = false
         }
         services.apply(stopped)
+        reportedServiceFailures.remove(service)
         applyDemand()
         widgets.refresh()
     }

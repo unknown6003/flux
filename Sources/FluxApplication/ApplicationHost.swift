@@ -204,7 +204,11 @@ import FluxUI
     public func openLockScreenSettings() {
         open(URL(string: "x-apple.systempreferences:com.apple.Lock-Screen-Settings.extension")!)
     }
-    public func checkLockScreenAgain() { lockScreen.checkAgain(); settings.refresh() }
+    public func checkLockScreenAgain() {
+        lockScreen.checkAgain()
+        notch.retryLockScreen()
+        settings.refresh()
+    }
     public func copyDiagnosticReport() -> Bool {
         let phase = switch self.phase { case .unlocked: "unlocked"; case .locked: "locked"; case .sleeping: "sleeping" }
         let text = "Flux \(session.version.version) (\(session.version.build))\nSession: \(phase)\nAccessibility: \(PermissionAccess.status(.accessibility))\nScreen Recording: \(PermissionAccess.status(.screenRecording))\n"

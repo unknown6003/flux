@@ -94,5 +94,50 @@ struct NotchRuntimeTests {
         #expect(runtime.activeServices == [.media, .battery, .volume])
     }
 
+    @Test @MainActor func repeatedDemandRefreshesDoNotSpamServiceFailureReports() throws {
+        _ = NSApplication.shared
+        let domain = "org.fluxfixture.runtime.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("flux-runtime-\(UUID())")
+        var failures: [FeatureService] = []
+        var failDevices = true
+        let runtime = NotchRuntime(preferences: preferences, files: .init(applicationSupport: root),
+            mediaScript: root, mediaFramework: root,
+            callbacks: .init(report: {
+                if case .service(let service) = $0 { failures.append(service) }
+                else { Issue.record("Unexpected widget failure") }
+            }, event: { _ in }, battery: { _ in }, volume: { _, _ in }, device: { _ in }, compactAction: { _ in },
+                cameraRunning: { _ in }, accessChanged: {}, phaseChanged: { _ in },
+                presenting: { _ in }, environmentChanged: {},
+                makeAdditionalService: { _ in throw TestFailure.unexpectedFactory }),
+            permission: { _ in .notAllowed }, serviceOverride: { service in
+                if service == .devices, failDevices { throw TestFailure.unexpectedFactory }
+                return RuntimeLease(onStop: {})
+            })
+        defer { runtime.stop() }
+        runtime.begin(phase: .unlocked)
+        runtime.refresh()
+        runtime.refresh()
+        runtime.setPhase(.locked)
+        runtime.setPhase(.unlocked)
+        runtime.refresh()
+        // Persistently unavailable services report once instead of flooding telemetry on every refresh or space change.
+        #expect(failures == [.devices])
+        // Explicit user retry clears the latch and reports once if still unavailable.
+        runtime.retry(.devices)
+        #expect(failures == [.devices, .devices])
+        // Once the service recovers, a future failure reports once again.
+        failDevices = false
+        runtime.refresh()
+        #expect(runtime.activeServices.contains(.devices))
+        failDevices = true
+        runtime.setPhase(.locked)
+        runtime.setPhase(.unlocked)
+        runtime.refresh()
+        #expect(failures == [.devices, .devices, .devices])
+    }
+
     private enum TestFailure: Error { case unexpectedFactory }
 }
