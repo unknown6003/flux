@@ -265,7 +265,7 @@ public final class NotchPreferencesController: FormPageController {
         case .bluetooth: ("bluetooth", L("notch.activity.bluetooth", "Bluetooth devices"), L("notch.activity.bluetooth.helper", "When a device connects or disconnects."))
         case .calendarEvent: ("calendarEvent", L("notch.activity.calendarEvent", "Upcoming events"), L("notch.activity.calendarEvent.helper", "Before an event starts."))
         case .timer: ("timer", L("notch.activity.timer", "Timer"), L("notch.activity.timer.helper", "A countdown while a timer runs."))
-        case .soundHUD: ("soundHUD", L("notch.activity.soundHUD", "Volume"), L("notch.activity.soundHUD.helper", "Volume and mute changes."))
+        case .soundHUD: ("soundHUD", L("notch.activity.soundHUD", "Volume & Brightness"), L("notch.activity.soundHUD.helper", "Volume, mute, and brightness HUD."))
         }
     }
 

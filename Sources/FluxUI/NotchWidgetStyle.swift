@@ -17,9 +17,9 @@ enum NotchWidgetStyle {
 /// fixture render. The notch itself uses `NotchContentProviding` directly.
 @MainActor
 enum NotchWidgetHost {
-    /// The content area of the 0.21.35 expanded shell over a 180 pt notch.
-    static let standaloneSize = CGSize(width: NotchMetrics.expandedWidth(for: 180) - 32,
-                                       height: NotchMetrics.maxExpandedHeight - 32 - 14)
+    /// The content area of the expanded notch shell over a 180 pt notch.
+    static let standaloneSize = CGSize(width: NotchMetrics.expandedWidth(for: 180) - 44,
+                                       height: NotchMetrics.maxExpandedHeight - 32 - 12 - 16)
 
     static func make(_ content: AnyView) -> NSView {
         let view = NSHostingView(rootView: AnyView(content

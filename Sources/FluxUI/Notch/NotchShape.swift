@@ -38,17 +38,27 @@ public struct NotchShape: Shape {
 
     public static let collapsed = NotchShape(topRadius: 0, bottomRadius: 12)
     public static let activity = NotchShape(topRadius: 0, bottomRadius: 18)
+    public static let barHUD = NotchShape(topRadius: 0, bottomRadius: 24)
     public static let expanded = NotchShape(topRadius: 0, bottomRadius: 34)
 }
 
 /// The fixed notch sizes. Every widget shares one expanded footprint.
 public enum NotchMetrics {
     public static let wingWidth: CGFloat = 90
-    public static let minimumExpandedWidth: CGFloat = 328
-    public static let maxExpandedHeight: CGFloat = 164
+    public static let minimumExpandedWidth: CGFloat = 384
+    public static let maxExpandedHeight: CGFloat = 196
+    public static let barHUDExtraHeight: CGFloat = 44
     public static let duoCalendarPaneFraction: CGFloat = 0.36
     public static let shadowMarginHeight: CGFloat = 28
     public static let shadowMarginWidth: CGFloat = 48
+
+    public static func barHUDWidth(for notchWidth: CGFloat) -> CGFloat {
+        max(notchWidth + 140, 336)
+    }
+
+    public static func barHUDHeight(for notchHeight: CGFloat) -> CGFloat {
+        max(notchHeight, 32) + barHUDExtraHeight
+    }
 
     public static func expandedWidth(for notchWidth: CGFloat) -> CGFloat {
         max(notchWidth + wingWidth * 2, minimumExpandedWidth)

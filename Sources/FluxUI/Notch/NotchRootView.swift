@@ -45,9 +45,13 @@ public struct NotchRootView: View {
             .onChange(of: viewModel.duoActive) { _, _ in
                 updateInteractiveRect(panelWidth: proxy.size.width)
             }
+            .onChange(of: viewModel.activity?.kind) { _, _ in
+                updateInteractiveRect(panelWidth: proxy.size.width)
+            }
         }
         .environment(\.colorScheme, .dark)
         .animation(springFor(viewModel.state), value: viewModel.state)
+        .animation(.spring(response: 0.28, dampingFraction: 0.80), value: viewModel.activity?.kind)
         .ignoresSafeArea()
     }
 
@@ -55,7 +59,8 @@ public struct NotchRootView: View {
 
     private func size(for state: NotchState) -> CGSize {
         NotchLayout.size(for: state, notchSize: notchSize, collapsedFrame: collapsedFrame,
-                         duo: viewModel.duoActive && viewModel.widgets.contains(.calendar))
+                         duo: viewModel.duoActive && viewModel.widgets.contains(.calendar),
+                         activityKind: viewModel.activity?.kind)
     }
 
     private func isDuoLayout(for widget: FluxCore.Widget) -> Bool {
@@ -68,7 +73,8 @@ public struct NotchRootView: View {
 
     private func rect(for state: NotchState, panelWidth: CGFloat) -> CGRect {
         NotchLayout.rect(for: state, panelWidth: panelWidth, notchSize: notchSize, collapsedFrame: collapsedFrame,
-                         duo: viewModel.duoActive && viewModel.widgets.contains(.calendar))
+                         duo: viewModel.duoActive && viewModel.widgets.contains(.calendar),
+                         activityKind: viewModel.activity?.kind)
     }
 
     /// Widens the hit rect to the union of both shapes during a morph, then
@@ -97,7 +103,7 @@ public struct NotchRootView: View {
     private var shape: NotchShape {
         switch viewModel.state {
         case .collapsed: return .collapsed
-        case .activity: return .activity
+        case .activity: return viewModel.activity?.kind.isBarHUD == true ? .barHUD : .activity
         case .expanded: return .expanded
         }
     }
@@ -136,9 +142,9 @@ public struct NotchRootView: View {
 
         func body(content: Content) -> some View {
             content
-                .padding(.horizontal, 16)
-                .padding(.top, topInset)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 22)
+                .padding(.top, topInset + 12)
+                .padding(.bottom, 16)
         }
     }
 
@@ -162,17 +168,41 @@ public struct NotchRootView: View {
                                identity: ExpandedContentTransition(progress: 1))
     }
 
+    @ViewBuilder
     private var activityContent: some View {
-        let tint = viewModel.activity?.tint ?? .normal
-        return HStack(spacing: 0) {
-            wing(viewModel.activity?.leading ?? .none, tint: tint)
-                .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
-            Spacer(minLength: notchSize.width)
-            wing(viewModel.activity?.trailing ?? .none, tint: tint)
-                .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
+        if let activity = viewModel.activity, activity.kind.isBarHUD,
+           let hud = Self.barHUDReading(from: activity) {
+            NotchLevelHUDView(
+                symbol: hud.symbol,
+                value: hud.value,
+                isMuted: hud.isMuted,
+                topInset: max(notchSize.height, 32)
+            )
+            .frame(width: containerSize.width, height: containerSize.height, alignment: .top)
+            .transition(.opacity)
+        } else {
+            let tint = viewModel.activity?.tint ?? .normal
+            HStack(spacing: 0) {
+                wing(viewModel.activity?.leading ?? .none, tint: tint)
+                    .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
+                Spacer(minLength: notchSize.width)
+                wing(viewModel.activity?.trailing ?? .none, tint: tint)
+                    .frame(width: NotchMetrics.wingWidth, height: notchSize.height)
+            }
+            .frame(width: containerSize.width, height: containerSize.height)
+            .transition(.opacity)
         }
-        .frame(width: containerSize.width, height: containerSize.height)
-        .transition(.opacity)
+    }
+
+    private static func barHUDReading(from item: ActivityItem) -> (symbol: String, value: Double, isMuted: Bool)? {
+        switch item.trailing {
+        case .soundGauge(let value, let symbol):
+            return (symbol, value, symbol == "speaker.slash.fill")
+        case .gauge(let value, let symbol):
+            return (symbol, value, false)
+        default:
+            return nil
+        }
     }
 
     private func expandedContent(for widget: FluxCore.Widget) -> some View {
@@ -308,15 +338,68 @@ private struct SoundVisualizer: View {
     }
 }
 
+/// Full-width precision level HUD dropping smoothly beneath the notch for
+/// system Volume and Display Brightness adjustments.
+private struct NotchLevelHUDView: View {
+    let symbol: String
+    let value: Double
+    let isMuted: Bool
+    let topInset: CGFloat
+
+    var body: some View {
+        let clamped = min(max(value, 0), 1)
+        let displayed = isMuted ? 0 : clamped
+        let percent = Int((clamped * 100).rounded())
+
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(NotchDesign.primaryColor.opacity(isMuted ? 0.55 : 0.96))
+                .frame(width: 22, alignment: .center)
+                .contentTransition(.symbolEffect(.replace))
+
+            GeometryReader { geometry in
+                let width = max(geometry.size.width, 1)
+                let fillWidth = displayed > 0 ? max(7, width * CGFloat(displayed)) : 0
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(NotchDesign.primaryColor.opacity(0.18))
+                        .frame(height: 7)
+                    Capsule()
+                        .fill(NotchDesign.primaryColor.opacity(isMuted ? 0.35 : 0.96))
+                        .frame(width: fillWidth, height: 7)
+                        .animation(.spring(response: 0.18, dampingFraction: 0.85), value: displayed)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
+            }
+            .frame(height: 16)
+
+            Text(isMuted ? "Off" : "\(percent)%")
+                .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                .foregroundStyle(NotchDesign.primaryColor.opacity(0.76))
+                .frame(minWidth: 36, alignment: .trailing)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, topInset + 4)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
 /// The shape's footprint for each state, in the panel's top-left space.
 /// Top-anchored and centered, except the exact physical notch when closed.
 public enum NotchLayout {
-    public static func size(for state: NotchState, notchSize: CGSize, collapsedFrame: CGRect?, duo: Bool) -> CGSize {
+    public static func size(for state: NotchState, notchSize: CGSize, collapsedFrame: CGRect?,
+                            duo: Bool, activityKind: ActivityKind? = nil) -> CGSize {
         switch state {
         case .collapsed:
             if let collapsedFrame, collapsedFrame.width > 0, collapsedFrame.height > 0 { return collapsedFrame.size }
             return notchSize
         case .activity:
+            if activityKind?.isBarHUD == true {
+                return CGSize(width: NotchMetrics.barHUDWidth(for: notchSize.width),
+                              height: NotchMetrics.barHUDHeight(for: notchSize.height))
+            }
             return CGSize(width: notchSize.width + NotchMetrics.wingWidth * 2, height: max(notchSize.height, 32))
         case .expanded(let widget):
             if widget == .nowPlaying, duo {
@@ -329,11 +412,11 @@ public enum NotchLayout {
     }
 
     public static func rect(for state: NotchState, panelWidth: CGFloat, notchSize: CGSize,
-                            collapsedFrame: CGRect?, duo: Bool) -> CGRect {
+                            collapsedFrame: CGRect?, duo: Bool, activityKind: ActivityKind? = nil) -> CGRect {
         if case .collapsed = state, let collapsedFrame, collapsedFrame.width > 0, collapsedFrame.height > 0 {
             return collapsedFrame
         }
-        let size = size(for: state, notchSize: notchSize, collapsedFrame: collapsedFrame, duo: duo)
+        let size = size(for: state, notchSize: notchSize, collapsedFrame: collapsedFrame, duo: duo, activityKind: activityKind)
         return CGRect(origin: CGPoint(x: (panelWidth - size.width) / 2, y: 0), size: size)
     }
 }

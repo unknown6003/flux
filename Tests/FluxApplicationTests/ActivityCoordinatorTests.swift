@@ -25,6 +25,11 @@ struct ActivityCoordinatorTests {
         owner.receiveVolume(full, force: true)
         #expect(owner.queue.current?.kind == .soundHUD)
         #expect(owner.queue.current?.trailing == .soundGauge(value: 1, symbol: "speaker.wave.3.fill"))
+        owner.receiveBrightness(BrightnessSnapshot(level: 0.75, adjustable: true))
+        #expect(owner.queue.current?.kind == .brightnessHUD)
+        #expect(owner.queue.current?.trailing == .gauge(value: 0.75, symbol: "sun.max.fill"))
+        owner.receiveBrightness(BrightnessSnapshot(level: 0.20, adjustable: true))
+        #expect(owner.queue.current?.trailing == .gauge(value: 0.20, symbol: "sun.min.fill"))
     }
 
     @Test @MainActor func overflowScansRespectDismissalUntilTheBarFitsAgain() throws {

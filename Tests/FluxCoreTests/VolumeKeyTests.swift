@@ -17,4 +17,17 @@ struct VolumeKeyTests {
         #expect(VolumeKeyPacket(data1: 0x00000c00) == nil)
         #expect(VolumeKeyPacket(data1: -1) == nil)
     }
+
+    @Test func auxiliaryPacketsRecognizeBrightnessKeysAndPhases() {
+        let up = BrightnessKeyPacket(data1: 0x00020a00)
+        #expect(up?.key == .up)
+        #expect(up?.down == true)
+        #expect(up?.repeated == false)
+        let downRelease = BrightnessKeyPacket(data1: 0x00030b01)
+        #expect(downRelease?.key == .down)
+        #expect(downRelease?.down == false)
+        #expect(downRelease?.repeated == true)
+        #expect(BrightnessKeyPacket(data1: 0x00000a00) == nil)
+        #expect(BrightnessKeyPacket(data1: 0x00020c00) == nil)
+    }
 }

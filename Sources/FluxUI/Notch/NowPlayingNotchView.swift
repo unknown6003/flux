@@ -66,32 +66,31 @@ struct NowPlayingExpandedView: View {
     private func content(for state: NowPlayingWidgetState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             headerRow(state)
-                .frame(height: 64, alignment: .top)
-            Spacer(minLength: 0)
+                .frame(height: 58, alignment: .center)
+            scrubberSection(state)
+                .padding(.top, 14)
+            Spacer(minLength: 6)
             transportRow(state)
-                .padding(.top, 5)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
     }
 
     private func headerRow(_ state: NowPlayingWidgetState) -> some View {
-        HStack(alignment: .center, spacing: NotchDesign.space3) {
+        HStack(alignment: .center, spacing: 14) {
             FlippingArtwork(image: state.artwork,
                             flipKey: AnyHashable(flipKey(for: state)),
-                            side: 64)
+                            side: 58)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 MarqueeText(text: state.title, font: NotchDesign.titleFont,
-                            color: NotchDesign.primaryColor, height: 18)
+                            color: NotchDesign.primaryColor, height: 19)
                 if !state.artist.isEmpty {
                     MarqueeText(text: state.artist, font: .system(size: 13),
                                 color: NotchDesign.secondaryColor, height: 16)
                 }
-                Spacer(minLength: 0)
-                scrubberSection(state)
             }
-            .frame(maxWidth: .infinity, maxHeight: 64, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if !isNarrowPane {
                 WaveformVisualizer(isPlaying: model.isPlaying,
@@ -127,14 +126,9 @@ struct NowPlayingExpandedView: View {
     private func interactiveScrubber(duration: TimeInterval, at date: Date) -> some View {
         let elapsed = min(max(isDragging ? dragValue : model.elapsed(at: date), 0), duration)
         let remaining = max(duration - elapsed, 0)
-        return VStack(spacing: 2) {
-            HStack {
-                Text(Self.format(elapsed))
-                Spacer()
-                Text("-\(Self.format(remaining))")
-            }
-            .font(NotchDesign.monoDigitsSmall)
-            .foregroundStyle(NotchDesign.secondaryColor)
+        return HStack(spacing: 10) {
+            Text(Self.format(elapsed))
+                .frame(minWidth: 32, alignment: .leading)
 
             ScrubberTrack(
                 progress: elapsed / duration,
@@ -150,13 +144,20 @@ struct NowPlayingExpandedView: View {
                     model.onAction(.seek(value))
                 }
             )
+
+            Text("-\(Self.format(remaining))")
+                .frame(minWidth: 36, alignment: .trailing)
         }
+        .font(NotchDesign.monoDigitsSmall)
+        .foregroundStyle(NotchDesign.secondaryColor)
+        .frame(height: 16)
     }
 
     private var indeterminateScrubber: some View {
         Capsule()
             .fill(NotchDesign.primaryColor.opacity(0.15))
             .frame(height: 4)
+            .frame(height: 16)
     }
 
     static func format(_ seconds: TimeInterval) -> String {
@@ -166,21 +167,27 @@ struct NowPlayingExpandedView: View {
     }
 
     private func transportRow(_ state: NowPlayingWidgetState) -> some View {
-        HStack {
-            Spacer()
-            transportButton("backward.fill", size: 17, label: "Previous track") { model.onAction(.previous) }
-            Spacer()
-            transportButton(model.isPlaying ? "pause.fill" : "play.fill", size: 22, prominent: true,
-                            label: model.isPlaying ? "Pause" : "Play") {
-                model.onAction(.togglePlayPause)
+        HStack(spacing: 0) {
+            Color.clear
+                .frame(width: 32, height: 28)
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: isNarrowPane ? 16 : 28) {
+                transportButton("backward.fill", size: 17, label: "Previous track") { model.onAction(.previous) }
+                transportButton(model.isPlaying ? "pause.fill" : "play.fill", size: 23, prominent: true,
+                                label: model.isPlaying ? "Pause" : "Play") {
+                    model.onAction(.togglePlayPause)
+                }
+                transportButton("forward.fill", size: 17, label: "Next track") { model.onAction(.next) }
             }
-            Spacer()
-            transportButton("forward.fill", size: 17, label: "Next track") { model.onAction(.next) }
-            Spacer()
+
+            Spacer(minLength: 8)
+
             sourceButton(state)
-            Spacer()
+                .frame(width: 32, height: 28)
         }
-        .frame(height: 28)
+        .frame(height: 30)
     }
 
     private func transportButton(_ systemName: String, size: CGFloat, prominent: Bool = false,

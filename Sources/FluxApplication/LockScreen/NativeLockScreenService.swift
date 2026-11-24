@@ -453,9 +453,9 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         if changed { onChange?() }
     }
 
-    /// Pill caption: battery stays out, text is trailing or leading, symbol from leading wing.
+    /// Pill caption: battery and level HUDs stay out, text is trailing or leading, symbol from leading wing.
     static func caption(_ item: ActivityItem) -> LockScreenActivityCaption? {
-        guard item.kind != .battery else { return nil }
+        guard item.kind != .battery, !item.kind.isBarHUD else { return nil }
         func text(_ wing: ActivityWing) -> String? {
             switch wing {
             case .text(let value), .symbolText(_, let value): return value

@@ -58,14 +58,20 @@ enum ArtworkThumbnail {
     /// decodes the full image and never caches the source.
     static func make(_ data: Data) -> ArtworkImage? {
         guard !data.isEmpty,
-              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceThumbnailMaxPixelSize: maximumPixels,
-                  kCGImageSourceCreateThumbnailWithTransform: true,
-                  kCGImageSourceShouldCacheImmediately: true
-              ] as CFDictionary),
-              image.width <= maximumPixels, image.height <= maximumPixels else { return nil }
-        return ArtworkImage(image: image)
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { return nil }
+        if let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixels,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary),
+           thumb.width > 0, thumb.height > 0,
+           thumb.width <= maximumPixels, thumb.height <= maximumPixels {
+            return ArtworkImage(image: thumb)
+        }
+        guard let full = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              full.width > 0, full.height > 0 else { return nil }
+        return ArtworkImage(image: full)
     }
 }

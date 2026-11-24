@@ -30,24 +30,32 @@ private final class VolumeTapRegistration: @unchecked Sendable {
     }
 }
 
-/// An active filter for volume/mute packets only. It never reads text keys,
-/// prompts for access, posts synthetic input or does audio I/O in the callback.
+/// An active filter for volume/mute and brightness packets only. It never reads
+/// text keys, prompts for access, posts synthetic input or does audio I/O in the callback.
 @MainActor public final class VolumeKeyTap {
     private let canControl: @MainActor () -> Bool
     private let keyDown: @MainActor (VolumeKey, Bool, Bool) -> Bool
+    private let canControlBrightness: @MainActor () -> Bool
+    private let brightnessKeyDown: @MainActor (BrightnessKey, Bool, Bool) -> Bool
     private var registration: VolumeTapRegistration?
     private var held: Set<VolumeKey> = []
+    private var heldBrightness: Set<BrightnessKey> = []
     private var timeouts = 0
 
     public init(canControl: @escaping @MainActor () -> Bool,
-                keyDown: @escaping @MainActor (VolumeKey, Bool, Bool) -> Bool) {
-        self.canControl = canControl; self.keyDown = keyDown
+                keyDown: @escaping @MainActor (VolumeKey, Bool, Bool) -> Bool,
+                canControlBrightness: @escaping @MainActor () -> Bool = { false },
+                brightnessKeyDown: @escaping @MainActor (BrightnessKey, Bool, Bool) -> Bool = { _, _, _ in false }) {
+        self.canControl = canControl
+        self.keyDown = keyDown
+        self.canControlBrightness = canControlBrightness
+        self.brightnessKeyDown = brightnessKeyDown
     }
     public var isActive: Bool { registration.map { CGEvent.tapIsEnabled(tap: $0.tap) } ?? false }
 
     @discardableResult public func start() -> Bool {
         if registration != nil { return isActive }
-        guard PermissionAccess.status(.accessibility) == .allowed, canControl() else { return false }
+        guard PermissionAccess.status(.accessibility) == .allowed, canControl() || canControlBrightness() else { return false }
         repeat { VolumeTapCallbacks.next &+= 1 } while VolumeTapCallbacks.next == 0 || VolumeTapCallbacks.actions[VolumeTapCallbacks.next] != nil
         let token = VolumeTapCallbacks.next
         VolumeTapCallbacks.actions[token] = { [weak self] type, event in
@@ -77,7 +85,7 @@ private final class VolumeTapRegistration: @unchecked Sendable {
         return isActive
     }
 
-    public func stop() { held.removeAll(); registration = nil }
+    public func stop() { held.removeAll(); heldBrightness.removeAll(); registration = nil }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByUserInput { stop(); return Unmanaged.passUnretained(event) }
@@ -89,13 +97,25 @@ private final class VolumeTapRegistration: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
         guard type.rawValue == 14, registration != nil,
-              let packet = NSEvent(cgEvent: event), packet.subtype.rawValue == 8,
-              let key = VolumeKeyPacket(data1: Int64(packet.data1)) else { return Unmanaged.passUnretained(event) }
-        if !key.down { return held.remove(key.key) != nil ? nil : Unmanaged.passUnretained(event) }
-        guard canControl() else { return Unmanaged.passUnretained(event) }
+              let packet = NSEvent(cgEvent: event), packet.subtype.rawValue == 8 else { return Unmanaged.passUnretained(event) }
         let fine = event.flags.contains(.maskShift) && event.flags.contains(.maskAlternate)
-        guard keyDown(key.key, key.repeated, fine) else { return Unmanaged.passUnretained(event) }
-        held.insert(key.key)
-        return nil
+
+        if let key = VolumeKeyPacket(data1: Int64(packet.data1)) {
+            if !key.down { return held.remove(key.key) != nil ? nil : Unmanaged.passUnretained(event) }
+            guard canControl() else { return Unmanaged.passUnretained(event) }
+            guard keyDown(key.key, key.repeated, fine) else { return Unmanaged.passUnretained(event) }
+            held.insert(key.key)
+            return nil
+        }
+
+        if let key = BrightnessKeyPacket(data1: Int64(packet.data1)) {
+            if !key.down { return heldBrightness.remove(key.key) != nil ? nil : Unmanaged.passUnretained(event) }
+            guard canControlBrightness() else { return Unmanaged.passUnretained(event) }
+            guard brightnessKeyDown(key.key, key.repeated, fine) else { return Unmanaged.passUnretained(event) }
+            heldBrightness.insert(key.key)
+            return nil
+        }
+
+        return Unmanaged.passUnretained(event)
     }
 }

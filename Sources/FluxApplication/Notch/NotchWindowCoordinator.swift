@@ -409,7 +409,8 @@ public final class NotchWindowCoordinator {
         let collapsed = NotchMetrics.collapsedFrame(notchRect: physicalNotchRect, panelFrame: window.frame)
         return NotchLayout.rect(for: state, panelWidth: window.frame.width, notchSize: physicalNotchRect.size,
                                 collapsedFrame: collapsed.width > 0 ? collapsed : nil,
-                                duo: viewModel.duoActive && widgets.contains(.calendar))
+                                duo: viewModel.duoActive && widgets.contains(.calendar),
+                                activityKind: viewModel.activity?.kind)
     }
 
     private func stateChanged(_ state: NotchState) {

@@ -73,9 +73,11 @@ public final class WidgetCoordinator {
     private var artworkID: UUID?
     private var artwork: NSImage?
     private lazy var artworkPipeline = ArtworkPipeline { [weak self] id, decoded in
-        guard let self, self.visible == .nowPlaying, self.artworkID == id else { return }
-        self.artwork = decoded.map { NSImage(cgImage: $0.image, size: NSSize(width: $0.image.width, height: $0.image.height)) }
-        self.nowPlayingView?.update(self.nowPlayingState())
+        guard let self, self.artworkID == id else { return }
+        self.artwork = decoded.map { NSImage(cgImage: $0.image, size: .zero) }
+        if self.visible == .nowPlaying {
+            self.nowPlayingView?.update(self.nowPlayingState())
+        }
     }
     private var sourceNames: [ApplicationID: String] = [:]
     private var agenda: AgendaReadResult?
@@ -204,9 +206,6 @@ public final class WidgetCoordinator {
         elapsedTask?.cancel(); elapsedTask = nil
         clipboardSubscription?.cancel(); clipboardSubscription = nil
         shelfLoad?.cancel(); shelfLoad = nil
-        artworkPipeline.clear()
-        artworkID = nil
-        artwork = nil
         clipboardRecords = []
         clipboardThumbnails = [:]
         mirrorView?.setPreview(nil)
@@ -277,7 +276,7 @@ public final class WidgetCoordinator {
         if case .ready(let snapshot) = state {
             lastSnapshot = snapshot
             if let source = snapshot?.source { rememberName(source) }
-            if visible == .nowPlaying { loadArtwork(snapshot) }
+            loadArtwork(snapshot)
         }
         effects.widgetEvent(.media(state))
         refreshNowPlaying()

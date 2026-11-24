@@ -1,7 +1,10 @@
 import Foundation
 
 public enum ActivityKind: CaseIterable, Sendable {
-    case battery, bluetoothDevice, timer, shelfDrop, menuBarOverflow, nowPlaying, calendarEvent, soundHUD
+    case battery, bluetoothDevice, timer, shelfDrop, menuBarOverflow, nowPlaying, calendarEvent, soundHUD, brightnessHUD
+
+    /// True for full-width level-bar HUDs that expand smoothly below the notch.
+    public var isBarHUD: Bool { self == .soundHUD || self == .brightnessHUD }
 }
 public enum ActivityTint: Sendable { case normal, warning }
 public enum ActivityWing: Equatable, Sendable {

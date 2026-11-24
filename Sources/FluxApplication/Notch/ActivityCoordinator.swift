@@ -150,6 +150,12 @@ public final class ActivityCoordinator {
         post(.soundHUD, .none, .soundGauge(value: Double(snapshot.level), symbol: symbol), priority: 300, duration: 1.5)
     }
 
+    public func receiveBrightness(_ snapshot: BrightnessSnapshot?) {
+        guard active, enabled(.brightnessHUD), let snapshot else { return }
+        let symbol = Self.brightnessSymbol(level: snapshot.level)
+        post(.brightnessHUD, .none, .gauge(value: Double(snapshot.level), symbol: symbol), priority: 300, duration: 1.5)
+    }
+
     /// Device identity stays with the device owner. Only a local label and
     /// category symbol cross into the compact view.
     public func receiveDevice(name: String, symbol: String, connected: Bool, percent: Int?) {
@@ -304,6 +310,10 @@ public final class ActivityCoordinator {
         }
     }
 
+    static func brightnessSymbol(level: Float) -> String {
+        level < 0.34 ? "sun.min.fill" : "sun.max.fill"
+    }
+
     static func countdown(_ seconds: TimeInterval) -> String {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(min(seconds, Double(Int32.max)))
@@ -332,7 +342,7 @@ public final class ActivityCoordinator {
         case .menuBarOverflow: return true
         case .nowPlaying: return preferences.value(for: Preferences.nowPlayingEnabled)
         case .calendarEvent: return preferences.value(for: Preferences.calendarEventEnabled)
-        case .soundHUD: return preferences.value(for: Preferences.soundHUDEnabled)
+        case .soundHUD, .brightnessHUD: return preferences.value(for: Preferences.soundHUDEnabled)
         }
     }
 }

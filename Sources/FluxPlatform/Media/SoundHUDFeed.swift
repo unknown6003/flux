@@ -1,26 +1,41 @@
 import Foundation
 import FluxCore
 
-/// One audio listener plus an optional permitted key filter. Key repeats queue
-/// at most 32 small commands; a full queue leaves new input with macOS.
+/// One audio/brightness listener plus an optional permitted key filter. Key repeats
+/// queue at most 32 small commands; a full queue leaves new input with macOS.
 @MainActor public final class SoundHUDFeed: FeatureServiceHandle {
     private var feed: VolumeFeed?
+    private let brightness = BrightnessController()
     private var tap: VolumeKeyTap?
     private var snapshot: VolumeSnapshot?
     private var queue = SoundKeyQueue()
     private var command: Task<Void, Never>?
     private var receive: ((VolumeSnapshot?, Bool) -> Void)?
+    private var receiveBrightness: ((BrightnessSnapshot?) -> Void)?
     private var failed: (() -> Void)?
     private var active = true
 
-    public init(receive: @escaping (VolumeSnapshot?, Bool) -> Void, failed: @escaping () -> Void) {
-        self.receive = receive; self.failed = failed
-        tap = VolumeKeyTap(canControl: { [weak self] in self?.snapshot.map { $0.adjustable || $0.muteAdjustable } == true },
-                           keyDown: { [weak self] in self?.enqueue($0, repeated: $1, fine: $2) ?? false })
+    public init(receive: @escaping (VolumeSnapshot?, Bool) -> Void,
+                receiveBrightness: ((BrightnessSnapshot?) -> Void)? = nil,
+                failed: @escaping () -> Void) {
+        self.receive = receive
+        self.receiveBrightness = receiveBrightness
+        self.failed = failed
+        tap = VolumeKeyTap(
+            canControl: { [weak self] in self?.snapshot.map { $0.adjustable || $0.muteAdjustable } == true },
+            keyDown: { [weak self] in self?.enqueue($0, repeated: $1, fine: $2) ?? false },
+            canControlBrightness: { [weak self] in self?.canControlBrightness ?? false },
+            brightnessKeyDown: { [weak self] in self?.handleBrightness($0, fine: $2) ?? false }
+        )
         feed = VolumeFeed { [weak self] in self?.changed($0) }
+        updateTap()
     }
 
     deinit { command?.cancel() }
+
+    private var canControlBrightness: Bool {
+        active && receiveBrightness != nil && brightness.isAvailable
+    }
 
     public func refreshAccess() {
         guard active else { return }
@@ -45,7 +60,7 @@ import FluxCore
         tap?.stop(); tap = nil
         queue.fail(); command?.cancel(); command = nil
         feed?.stop(); feed = nil
-        receive = nil; failed = nil; snapshot = nil
+        receive = nil; receiveBrightness = nil; failed = nil; snapshot = nil
     }
 
     private func changed(_ state: VolumeSnapshot?) {
@@ -56,7 +71,16 @@ import FluxCore
         if initial || tap?.isActive == true { receive?(state, false) }
     }
     private func updateTap() {
-        if !queue.blocked, snapshot.map({ $0.adjustable || $0.muteAdjustable }) == true { _ = tap?.start() } else { tap?.stop() }
+        let audioReady = !queue.blocked && snapshot.map({ $0.adjustable || $0.muteAdjustable }) == true
+        if audioReady || canControlBrightness { _ = tap?.start() } else { tap?.stop() }
+    }
+    private func handleBrightness(_ key: BrightnessKey, fine: Bool) -> Bool {
+        guard canControlBrightness else { return false }
+        let step: Float = fine ? (1 / 64) : (1 / 16)
+        let delta: Float = key == .up ? step : -step
+        guard let updated = brightness.adjust(by: delta) else { return false }
+        receiveBrightness?(updated)
+        return true
     }
     private func enqueue(_ key: VolumeKey, repeated: Bool, fine: Bool) -> Bool {
         guard active else { return false }

@@ -195,149 +195,23 @@ struct FlippingArtwork: View {
     let side: CGFloat
 
     private nonisolated static let cornerRadius: CGFloat = 13
-    private static let halfDuration: Double = 0.175
-
-    /// The keyframe-animated value: just the Y-axis rotation angle, in
-    /// degrees. A plain `Double` conforms to `Animatable` already (SwiftUI
-    /// extends the standard floating-point types for exactly this), so this
-    /// wrapper exists purely to give `KeyframeTrack` a named key path.
-    private struct FlipAngle: Equatable {
-        var angle: Double = 0
-    }
-
-    /// The most recently SETTLED (fully flipped-to, at rest) image/key —
-    /// i.e. what a flip's front-half should show as the "old" side. Renamed
-    /// from the pre-M8 `displayedImage`/`displayedKey`: those used to be the
-    /// single source of truth for what's on screen every frame; now the
-    /// `content` closure below picks between this and the live `image`
-    /// property directly based on the animated angle, so these two only ever
-    /// need to be correct at REST (between flips), not mid-flight.
-    @State private var settledImage: NSImage?
-    @State private var committedKey: AnyHashable?
-    /// Bookkeeping-only — see the type's doc comment above.
-    @State private var commitTask: Task<Void, Never>?
-    /// M8 fix (Codex): the freshest `image` value seen so far, kept current
-    /// on EVERY change (unlike `settledImage`, which only updates at rest or
-    /// on commit) — see the doc comment on the `commitTask` assignment in
-    /// `onChange(of: flipKey)` above for why a commit in flight needs this
-    /// rather than a value captured back when it was scheduled.
-    @State private var latestImage: NSImage?
 
     init(image: NSImage?, flipKey: AnyHashable, side: CGFloat = 64) {
         self.image = image
         self.flipKey = flipKey
         self.side = side
-        _settledImage = State(initialValue: image)
-        _committedKey = State(initialValue: flipKey)
-        _latestImage = State(initialValue: image)
     }
 
     var body: some View {
-        // Swift 6: the animator content closure is nonisolated and Sendable.
-        let oldImage = settledImage
-        let newImage = image
-        let side = side
-        return Color.clear
-            .frame(width: side, height: side)
-            .keyframeAnimator(initialValue: FlipAngle(), trigger: flipKey) { _, value in
-                // Ignoring the placeholder `view` argument is deliberate:
-                // this flip needs to swap actual CONTENT (which image is
-                // shown), not just layer a modifier over fixed content, so
-                // the tile is rebuilt fresh from the animated `value` every
-                // frame instead.
-                Self.artworkTile(showing: value.angle > 0 ? oldImage : newImage, side: side)
-                    .rotation3DEffect(.degrees(value.angle), axis: (x: 0, y: 1, z: 0))
-            } keyframes: { _ in
-                KeyframeTrack(\.angle) {
-                    // M8 fix: an instantaneous, positive-EPSILON first
-                    // keyframe (0.0001°, not a real angle — just enough to be
-                    // `> 0`) rather than starting the track at a bare `90`.
-                    // `content` above picks `settledImage` (the OLD image)
-                    // exactly while `angle > 0`; without this keyframe, the
-                    // very first rendered frame of a flip is whatever `angle`
-                    // was left at (`0`, at rest) BEFORE animating toward `90`
-                    // even begins, which reads as `angle > 0 == false` and
-                    // picks the NEW `image` for that one frame — a one-frame
-                    // flash of the new artwork through the front-facing tile,
-                    // before it's rotated away enough to plausibly be showing
-                    // something new. Landing on `0.0001` instantly (zero
-                    // duration) flips the branch to "old image" from the very
-                    // first frame, so the front-half consistently shows the
-                    // OLD image for its entire rotation, exactly as intended.
-                    LinearKeyframe(0.0001, duration: 0)
-                    CubicKeyframe(90, duration: Self.halfDuration)
-                    LinearKeyframe(-90, duration: 0)
-                    CubicKeyframe(0, duration: Self.halfDuration)
-                }
-            }
-            .onChange(of: flipKey) { _, newKey in
-                // M8 fix: cancel any in-flight commit FIRST, before the
-                // dedup guard below — a rapid A→B→A track change used to
-                // return out of this handler (guard failing because
-                // `committedKey` is still `A`, unchanged since the B commit
-                // hasn't landed yet) WITHOUT cancelling B's still-pending
-                // commit `Task`. That task would then fire ~0.35s later and
-                // stomp `settledImage`/`committedKey` to B's target — wrong
-                // "old" image baked in for the next flip, and the late-
-                // artwork handler below permanently unable to match `A`
-                // again (`committedKey` stuck at `B`) until another real
-                // flip happened to land on `B`. Cancelling unconditionally,
-                // before the guard, means a stale commit from a superseded
-                // flip can never land no matter how the guard resolves.
-                commitTask?.cancel()
-                guard Optional(newKey) != committedKey else { return }
-                commitTask = Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(Self.halfDuration * 2))
-                    guard !Task.isCancelled else { return }
-                    // M8 fix (Codex): read `latestImage` HERE, at commit
-                    // time, rather than capturing `image`'s value back when
-                    // this Task was scheduled. Artwork can arrive
-                    // asynchronously for this same `newKey` track WHILE this
-                    // flip is still in flight — the `onChange(of: image...)`
-                    // handler below can't fold that straight into
-                    // `settledImage` yet (this flip hasn't committed, so
-                    // `committedKey` doesn't match `newKey` yet), but it does
-                    // keep `latestImage` current. Capturing `image` up front
-                    // instead would silently commit whatever (possibly nil/
-                    // placeholder) artwork was live at schedule time, even
-                    // after fresher artwork had since arrived for the exact
-                    // track this commit is for.
-                    settledImage = latestImage
-                    committedKey = newKey
-                }
-            }
-            // Bot-review fix (M7, preserved): artwork can arrive
-            // asynchronously AFTER track metadata (title/artist/source —
-            // whatever `flipKey` is derived from) — e.g. `NowPlayingService`
-            // publishes the new track first and its artwork fetch resolves a
-            // moment later, under the SAME `flipKey`. `content` above already
-            // reads the live `image` property directly once `angle <= 0`
-            // (i.e. at rest, no flip in flight), so a late-arriving image for
-            // an unchanged `flipKey` shows up immediately with no extra work
-            // — this handler's only remaining job is keeping `settledImage`
-            // (the "old" side for the NEXT flip) in sync for that same case,
-            // which `content` doesn't cover since it isn't mid-flip. Tracked
-            // by identity (`ObjectIdentifier`, not `Equatable`/`==`) — same
-            // reasoning as `ArtworkPalette.memo`'s own `===` comparison:
-            // `NSImage` isn't meaningfully value-comparable here, only "is
-            // this the same object" is.
-            .onChange(of: image.map(ObjectIdentifier.init)) { _, _ in
-                // M8 fix (Codex): always buffer into `latestImage`, even mid-
-                // flip when the guard below can't touch `settledImage` yet —
-                // see that property's own doc comment. The guarded update
-                // underneath is unchanged: it's still the at-rest case
-                // (unrelated to any flip in flight) where `content` needs
-                // `settledImage` itself kept in sync for the front-half of
-                // the NEXT flip.
-                latestImage = image
-                guard Optional(flipKey) == committedKey else { return }
-                settledImage = image
-            }
-            .onDisappear { commitTask?.cancel() }
+        Self.artworkTile(showing: image, side: side)
+            .id(flipKey)
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.20), value: flipKey)
     }
 
     @ViewBuilder
     private nonisolated static func artworkTile(showing shownImage: NSImage?, side: CGFloat) -> some View {
+        let radius = min(Self.cornerRadius, side * 0.24)
         Group {
             if let shownImage {
                 Image(nsImage: shownImage)
@@ -349,18 +223,15 @@ struct FlippingArtwork: View {
                     .overlay(
                         Image(systemName: "music.note")
                             .font(.system(size: 18))
-                            .foregroundStyle(NotchDesign.primaryColor.opacity(0.3))
+                            .foregroundStyle(NotchDesign.primaryColor.opacity(0.35))
                     )
             }
         }
         .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: min(Self.cornerRadius, side * 0.24), style: .continuous))
-        // A slight dim over the artwork itself — not the whole tile — so it
-        // reads as a photograph against the dark panel rather than a framed
-        // card.
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: min(Self.cornerRadius, side * 0.24), style: .continuous)
-                .fill(Color.black.opacity(0.06))
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(NotchDesign.primaryColor.opacity(0.14), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.35), radius: 6, y: 3)
     }

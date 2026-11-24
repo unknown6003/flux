@@ -60,6 +60,7 @@ import FluxUI
                 self?.callbacks.contentChanged(event)
             }, battery: { [weak self] in self?.activities.receiveBattery($0) },
             volume: { [weak self] state, force in self?.activities.receiveVolume(state, force: force) },
+            brightness: { [weak self] state in self?.activities.receiveBrightness(state) },
             device: { [weak self] in self?.activities.receiveDevice($0) },
             compactAction: { [weak self] in self?.activities.perform($0) },
             cameraRunning: { [weak self] in self?.callbacks.cameraRunning($0) },

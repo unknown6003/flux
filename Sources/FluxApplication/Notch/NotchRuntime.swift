@@ -18,6 +18,7 @@ public final class NotchRuntime: WidgetEffects {
         public var event: @MainActor (WidgetEvent) -> Void
         public var battery: @MainActor (PowerSnapshot?) -> Void
         public var volume: @MainActor (VolumeSnapshot?, Bool) -> Void
+        public var brightness: @MainActor (BrightnessSnapshot?) -> Void
         public var device: @MainActor (AccessoryConnection) -> Void
         public var compactAction: @MainActor (CompactNotchAction) -> Void
         public var cameraRunning: @MainActor (Bool) -> Void
@@ -37,6 +38,7 @@ public final class NotchRuntime: WidgetEffects {
                     event: @escaping @MainActor (WidgetEvent) -> Void,
                     battery: @escaping @MainActor (PowerSnapshot?) -> Void,
                     volume: @escaping @MainActor (VolumeSnapshot?, Bool) -> Void,
+                    brightness: @escaping @MainActor (BrightnessSnapshot?) -> Void = { _ in },
                     device: @escaping @MainActor (AccessoryConnection) -> Void,
                     compactAction: @escaping @MainActor (CompactNotchAction) -> Void,
                     cameraRunning: @escaping @MainActor (Bool) -> Void,
@@ -48,7 +50,7 @@ public final class NotchRuntime: WidgetEffects {
                     contextMenu: @escaping @MainActor () -> NSMenu? = { nil },
                     activityTap: @escaping @MainActor (ActivityKind) -> Bool = { _ in false }) {
             self.report = report; self.event = event; self.battery = battery
-            self.volume = volume; self.device = device; self.compactAction = compactAction
+            self.volume = volume; self.brightness = brightness; self.device = device; self.compactAction = compactAction
             self.cameraRunning = cameraRunning; self.accessChanged = accessChanged
             self.phaseChanged = phaseChanged; self.presenting = presenting
             self.environmentChanged = environmentChanged
@@ -273,6 +275,7 @@ public final class NotchRuntime: WidgetEffects {
         case .battery: return BatteryFeed(onChange: callbacks.battery)
         case .volume:
             let feed = SoundHUDFeed(receive: callbacks.volume,
+                                    receiveBrightness: callbacks.brightness,
                                     failed: { [weak self] in self?.callbacks.report(.service(.volume)) })
             volumeFeed = feed
             return feed
