@@ -146,12 +146,14 @@ public final class ActivityCoordinator {
         guard active, enabled(.soundHUD) else { return }
         defer { lastVolume = snapshot }
         guard let snapshot, force || lastVolume.map({ snapshot != $0 }) == true else { return }
+        queue.remove(.brightnessHUD)
         let symbol = Self.soundSymbol(level: snapshot.level, muted: snapshot.muted)
         post(.soundHUD, .none, .soundGauge(value: Double(snapshot.level), symbol: symbol), priority: 300, duration: 1.5)
     }
 
     public func receiveBrightness(_ snapshot: BrightnessSnapshot?) {
         guard active, enabled(.brightnessHUD), let snapshot else { return }
+        queue.remove(.soundHUD)
         let symbol = Self.brightnessSymbol(level: snapshot.level)
         post(.brightnessHUD, .none, .gauge(value: Double(snapshot.level), symbol: symbol), priority: 300, duration: 1.5)
     }
