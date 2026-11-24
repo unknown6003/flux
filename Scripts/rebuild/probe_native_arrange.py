@@ -61,6 +61,7 @@ import AppKit
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let item = NSStatusBar.system.statusItem(withLength: 24)
+item.autosaveName = "FluxArrangeItem"
 let marker = NSImage(size: NSSize(width: 18, height: 18))
 marker.lockFocus()
 let values = CommandLine.arguments.dropFirst().map { CGFloat(Double($0)!) }
