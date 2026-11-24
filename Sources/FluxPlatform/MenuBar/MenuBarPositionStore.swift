@@ -159,6 +159,16 @@ public actor MenuBarPositionStore {
         }
     }
 
+    private static func legacyPosition(forPositionKey key: String) -> Double? {
+        guard key.hasPrefix("status:") else { return nil }
+        let remainder = key.dropFirst("status:".count)
+        guard let separator = remainder.range(of: "::") else { return nil }
+        let bundleID = String(remainder[..<separator.lowerBound])
+        let itemName = String(remainder[separator.upperBound...])
+        guard !itemName.isEmpty, let application = ApplicationID(rawValue: bundleID) else { return nil }
+        return legacyPositions(application)[itemName]
+    }
+
     public func preferredOrder(identities: [MenuBarPositionIdentity]) throws -> [MenuBarItemID: Double] {
         let positions = weights(try read())
         let identities = resolvedIdentities(identities)
@@ -222,7 +232,13 @@ public actor MenuBarPositionStore {
             }
         }
         if let chevronKey {
-            guard let boundary = positions[chevronKey], boundary > 0, item != chevronKey else {
+            var boundary = positions[chevronKey]
+            if boundary == nil, raw[chevronKey] == nil,
+               let fallback = Self.legacyPosition(forPositionKey: chevronKey) {
+                boundary = fallback
+                positions[chevronKey] = fallback
+            }
+            guard let boundary, boundary > 0, item != chevronKey else {
                 throw MenuBarMoveFailure.positionIdentityUnavailable
             }
             let shown = move.group == .shown

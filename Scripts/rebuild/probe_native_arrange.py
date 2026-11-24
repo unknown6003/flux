@@ -28,7 +28,11 @@ from probe_tcc import accessibility_grant, screen_capture_grant  # noqa: E402
 
 ROWS = 80
 PROBE_ID = "com.flux.arrange-probe"
-COLORS = {"magenta": (1, 0, 1), "cyan": (0, 1, 1), "yellow": (1, 1, 0)}
+COLORS = {
+    "magenta": (1, 0, 1, 220.0),
+    "cyan": (0, 1, 1, 260.0),
+    "yellow": (1, 1, 0, 300.0),
+}
 MEASURE = r'''
 import AppKit
 guard let data = try? Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])),
@@ -60,11 +64,15 @@ FIXTURE = r'''
 import AppKit
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+let values = CommandLine.arguments.dropFirst().map { CGFloat(Double($0)!) }
+if values.count >= 4 {
+    UserDefaults.standard.set(Double(values[3]), forKey: "NSStatusItem Preferred Position FluxArrangeItem")
+    UserDefaults.standard.synchronize()
+}
 let item = NSStatusBar.system.statusItem(withLength: 24)
 item.autosaveName = "FluxArrangeItem"
 let marker = NSImage(size: NSSize(width: 18, height: 18))
 marker.lockFocus()
-let values = CommandLine.arguments.dropFirst().map { CGFloat(Double($0)!) }
 NSColor(srgbRed: values[0], green: values[1], blue: values[2], alpha: 1).setFill()
 NSRect(x: 0, y: 0, width: 18, height: 18).fill()
 marker.unlockFocus()
@@ -135,15 +143,16 @@ def main():
             _, measure = swift_app(temporary, "FluxArrangeMeasure", "com.flux.arrange-measure", MEASURE, temporary)
             binary = probe_app(temporary, root)
             ids = {}
-            for name, (red, green, blue) in COLORS.items():
+            for name, (red, green, blue, position) in COLORS.items():
                 identifier = f"com.flux.arrange-{name}.{uuid.uuid4().hex[:12]}"
                 app, _ = swift_app(temporary, "FluxArrange" + name.title(), identifier, FIXTURE, temporary)
                 target = Path("/Applications") / f"FluxArrangeFixture-{name}-{uuid.uuid4().hex[:8]}.app"
                 shutil.copytree(app, target, symlinks=True)
                 cleanup.append(lambda t=target: shutil.rmtree(t, ignore_errors=True))
+                cleanup.append(lambda ident=identifier: run(["defaults", "delete", ident], 10, check=False))
                 run([REGISTER, "-f", str(target)], 20)
                 cleanup.append(lambda t=target: run([REGISTER, "-u", str(t)], 20, check=False))
-                fixtures.append(subprocess.Popen([str(target / "Contents/MacOS" / app.stem), str(red), str(green), str(blue)],
+                fixtures.append(subprocess.Popen([str(target / "Contents/MacOS" / app.stem), str(red), str(green), str(blue), str(position)],
                                                  start_new_session=True))
                 ids[name] = identifier
                 time.sleep(1)

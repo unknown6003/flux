@@ -26,6 +26,10 @@ import FluxUI
         NSApp.setActivationPolicy(.accessory)
         UserDefaults.standard.removePersistentDomain(forName: domain)
         UserDefaults.standard.set(false, forKey: "flux.autoRehide")
+        let chevronAutosave = ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? "flux.chevron.v27" : "flux.chevron"
+        UserDefaults.standard.set(400.0, forKey: "NSStatusItem Preferred Position \(chevronAutosave)")
+        UserDefaults.standard.synchronize()
         Task { @MainActor in
             await run(domain: domain, first: first, second: second, grouped: grouped)
         }

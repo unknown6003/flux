@@ -114,6 +114,34 @@ import FluxCore
         #expect(try read()[legacyKey] == nil)
         #expect(try read()["futureField"] as? Data == opaque)
     }
+
+    @Test func chevronFallsBackToLegacyPreferredPositionWhenAbsentFromCentralStore() async throws {
+        let chevronApp = "org.fluxfixture.chevron.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: chevronApp))
+        defer { defaults.removePersistentDomain(forName: chevronApp) }
+        defaults.set(400.0, forKey: "NSStatusItem Preferred Position flux.chevron.v27")
+        defaults.synchronize()
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("flux-chevron-legacy-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("Library/Preferences"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let domain = "org.fluxfixture.order." + UUID().uuidString
+        let preferences = MenuBarContainerPreferences(domain: domain, key: "TrailingItemPreferredPositions", container: folder)
+        defer { _ = preferences.write(nil) }
+
+        let sourceID = MenuBarItemID(application: ApplicationID(rawValue: "org.fluxfixture.source")!, index: 0)
+        let sourceKey = "status:org.fluxfixture.source::Item-0"
+        #expect(preferences.write([sourceKey: 220.0] as CFDictionary))
+        let store = MenuBarPositionStore(domain: domain, container: folder, chevronKey: "status:\(chevronApp)::flux.chevron.v27")
+        let identities = [MenuBarPositionIdentity(item: sourceID, owners: [], identifier: nil, siblingCount: 1)]
+
+        let hideMove = MenuBarItemMove(item: sourceID, group: .hidden, left: nil, right: nil, intent: .group)
+        _ = try await store.place(hideMove, identities: identities)
+        let saved = try #require(preferences.read() as? [String: Any])
+        let movedWeight = try #require(saved[sourceKey] as? Double)
+        #expect(movedWeight > 400.0)
+        #expect(try await store.isPlaced(hideMove, identities: identities))
+    }
 }
 
 private final class ChevronPositionFixture {
