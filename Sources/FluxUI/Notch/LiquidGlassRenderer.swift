@@ -134,11 +134,11 @@ public final class LiquidGlassRenderer: @unchecked Sendable {
             patchSizePt: SIMD2<Float>(Float(expandedFrame.width), Float(expandedFrame.height)),
             outputSizePx: SIMD2<UInt32>(UInt32(outW), UInt32(outH)),
             scale: Float(resolvedScale),
-            refractionStrength: bevelWidth * 0.94,
-            dispersionStrength: 0.16,
-            centerBlurPt: 2.0,
-            rimBlurPt: 3.8,
-            darkTintBase: 0.10
+            refractionStrength: bevelWidth * 0.96,
+            dispersionStrength: 0.18,
+            centerBlurPt: 3.0,
+            rimBlurPt: 4.5,
+            darkTintBase: 0.12
         )
 
         enc.setComputePipelineState(pipeline)
@@ -266,7 +266,7 @@ public final class LiquidGlassRenderer: @unchecked Sendable {
               let cmd = queue.makeCommandBuffer(),
               let enc = cmd.makeComputeCommandEncoder() else { return nil }
 
-        let bevelPx = Float(max(12.0, fontSize * resolvedScale * 0.068))
+        let bevelPx = Float(max(8.0, fontSize * resolvedScale * 0.036))
         var jfaUniforms = JFAUniforms(
             size: SIMD2<UInt32>(UInt32(outW), UInt32(outH)),
             step: 1,
@@ -307,8 +307,8 @@ public final class LiquidGlassRenderer: @unchecked Sendable {
             outputSizePx: SIMD2<UInt32>(UInt32(outW), UInt32(outH)),
             scale: Float(resolvedScale),
             bevelPx: bevelPx,
-            refractPx: Float(fontSize * resolvedScale * 0.145),
-            blurPt: 5.5,
+            refractPx: Float(fontSize * resolvedScale * 0.18),
+            blurPt: 4.0,
             patchOriginPx: SIMD2<Float>(Float(overscanPt * resolvedScale), Float(overscanPt * resolvedScale)),
             patchSizePx: SIMD2<Float>(Float(patchTex.width), Float(patchTex.height))
         )
@@ -689,8 +689,9 @@ public final class LiquidGlassRenderer: @unchecked Sendable {
         float2 seed = seedTex.read(gid).xy;
         float distPx = (seed.x >= 0.0) ? length(float2(gid) - seed) : u.bevelPx;
         float norm = clamp(distPx / max(u.bevelPx, 1.0), 0.0, 1.0);
-        // Smooth circular-arc 3D glass rod dome profile across each digit stroke.
-        float h = sqrt(max(0.0, 1.0 - (1.0 - norm) * (1.0 - norm)));
+        // Smooth beveled slab profile: curved optical rim around each glyph edge,
+        // flat crystal plateau in the stroke interior (eliminates medial-axis emboss creases).
+        float h = 1.0 - pow(1.0 - norm, 2.5);
         heightTex.write(float4(h, 0.0, 0.0, 0.0), gid);
         distTex.write(float4(distPx, 0.0, 0.0, 0.0), gid);
     }
@@ -729,19 +730,21 @@ public final class LiquidGlassRenderer: @unchecked Sendable {
         gx /= 34.0;
         gy /= 34.0;
 
-        float hCenter = heightTex.read(gid).r;
         float distPx = distTex.read(gid).r;
 
         // Outward 3D surface normal pointing down the bevel toward the glyph boundary.
-        float3 normal = normalize(float3(-gx * 5.2, -gy * 5.2, 1.0));
+        float3 normal = normalize(float3(-gx * 4.4, -gy * 4.4, 1.0));
 
-        // Snell's-law cylindrical refraction + RGB chromatic dispersion through each glass stroke.
+        // Snell's-law refraction + RGB chromatic dispersion through each glass stroke.
+        // Add subtle vertical optical shift across the flat center so the glass slab
+        // visibly refracts sky/horizon light even away from the beveled edges.
         float2 basePx = u.patchOriginPx + float2(gid) + 0.5;
-        float2 dispPx = normal.xy * u.refractPx;
+        float2 flatShift = float2(0.0, -u.refractPx * 0.14);
+        float2 dispPx = normal.xy * u.refractPx + flatShift;
 
-        float2 uvR = (basePx + dispPx * 0.87) / u.patchSizePx;
+        float2 uvR = (basePx + dispPx * 0.84) / u.patchSizePx;
         float2 uvG = (basePx + dispPx * 1.00) / u.patchSizePx;
-        float2 uvB = (basePx + dispPx * 1.15) / u.patchSizePx;
+        float2 uvB = (basePx + dispPx * 1.18) / u.patchSizePx;
 
         float2 blurUV = float2(u.blurPt * u.scale) / u.patchSizePx;
         float r = sampleSoftRGB(patchTex, s, uvR, blurUV).r;
@@ -749,27 +752,34 @@ public final class LiquidGlassRenderer: @unchecked Sendable {
         float b = sampleSoftRGB(patchTex, s, uvB, blurUV).b;
         float3 refracted = float3(r, g, b);
 
-        // Enrich refracted scene tones inside the thick crystal glass.
+        // Enrich refracted scene tones inside the clear crystal glass.
         float luma = dot(refracted, float3(0.2126, 0.7152, 0.0722));
-        refracted = mix(float3(luma), refracted, 1.18);
+        refracted = mix(float3(luma), refracted, 1.22);
 
-        // Luminous frosted crystal-glass body (Apple lock-screen signature translucency):
-        // bright & legible against dark skies/foliage while preserving warm/cool refractions.
+        // Crystal-clear Liquid Glass body (matches Apple Lock Screen transparency):
+        // lets real sky, clouds, and warm horizon tones glow right through while
+        // keeping digits luminous and legible over dark or bright skies.
         float topLit = clamp(-normal.y * 0.5 + 0.5, 0.0, 1.0);
-        float fresnel = pow(clamp(1.0 - normal.z, 0.0, 1.0), 1.75);
-        float bodyScatter = 0.28 + 0.24 * topLit + 0.08 * hCenter;
-        float3 glass = mix(refracted * 1.15, float3(0.96, 0.97, 0.99), bodyScatter);
+        float verticalNorm = clamp(float(gid.y) / max(float(u.outputSizePx.y), 1.0), 0.0, 1.0);
+        float fresnel = pow(clamp(1.0 - normal.z, 0.0, 1.0), 1.65);
+        float bodyScatter = mix(0.20, 0.09, verticalNorm) + 0.10 * topLit;
+        float3 glass = mix(refracted * 1.16, float3(0.97, 0.98, 1.0), bodyScatter);
 
-        // Studio specular reflections across the curved 3D glass cross-section.
-        float3 lightTL = normalize(float3(-0.32, -0.82, 0.48));
-        float3 lightBR = normalize(float3( 0.36,  0.72, 0.59));
-        float specTL = pow(max(0.0, dot(normal, lightTL)), 5.5);
+        // Subtle dark internal reflection band just inside the steep glass rim for thickness.
+        float innerDepth = smoothstep(1.5, 4.5, distPx) * (1.0 - smoothstep(4.5, u.bevelPx * 0.9, distPx));
+        glass *= (1.0 - 0.10 * innerDepth);
+
+        // Directional specular catchlights along the beveled rim.
+        float3 lightTL = normalize(float3(-0.34, -0.82, 0.46));
+        float3 lightBR = normalize(float3( 0.36,  0.74, 0.57));
+        float specTL = pow(max(0.0, dot(normal, lightTL)), 5.0);
         float specBR = pow(max(0.0, dot(normal, lightBR)), 4.5);
-        glass += float3(1.0) * (0.34 * specTL + 0.20 * specBR + 0.22 * fresnel);
+        glass += float3(1.0) * (0.28 * specTL + 0.16 * specBR + 0.22 * fresnel);
 
         // Razor-crisp bright specular rim right at the beveled glyph outline.
-        float rim = exp(-distPx * (0.48 / max(u.scale * 0.5, 0.5)));
-        glass = mix(glass, float3(1.0), rim * (0.46 + 0.40 * topLit));
+        float rim = exp(-distPx * (0.58 / max(u.scale * 0.5, 0.5)));
+        float3 rimColor = mix(float3(1.0), clamp(refracted * 1.35 + 0.30, 0.0, 1.0), 0.25);
+        glass = mix(glass, rimColor, rim * (0.52 + 0.34 * topLit));
 
         glass = clamp(glass, 0.0, 1.0);
         outTex.write(float4(glass * alpha, alpha), gid);
