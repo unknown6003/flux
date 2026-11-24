@@ -8,81 +8,108 @@ import Foundation
 public enum LockScreenSoundEffects {
     public static let sampleRate: Int = 44_100
 
-    /// Short (~82 ms), muted tactile glass-latch click settling softly downward.
+    /// Strong, clean (~95 ms) precision magnetic-latch click with a weighted low thump.
     public static func lockSoundData() -> Data {
-        let duration = 0.082
+        let duration = 0.095
         let count = Int(Double(sampleRate) * duration)
         var samples = [Float](repeating: 0, count: count)
-        var phase1 = 0.0
-        var phase2 = 0.0
-        var noiseLP = 0.0
+        var phaseSub = 0.0
+        var phaseKnock = 0.0
+        var phaseSettle = 0.0
+        var lp1 = 0.0
+        var lp2 = 0.0
         var seed: UInt64 = 0x51A7_9C3B_24F1_8E0D
 
         for i in 0..<count {
             let t = Double(i) / Double(sampleRate)
 
-            // Primary damped woody-glass body sweeping gently down (560 Hz -> 275 Hz).
-            let freq1 = 275.0 + 285.0 * exp(-t * 68.0)
-            phase1 += 2.0 * .pi * freq1 / Double(sampleRate)
-            let attack1 = min(1.0, t / 0.0022)
-            let env1 = attack1 * exp(-t * 88.0)
-            let body = sin(phase1) * env1 * 0.24
+            // Weighted low-end thump dropping smoothly (170 Hz -> 56 Hz).
+            let freqSub = 56.0 + 114.0 * exp(-t * 72.0)
+            phaseSub += 2.0 * .pi * freqSub / Double(sampleRate)
+            let attackSub = min(1.0, t / 0.0014)
+            let envSub = attackSub * exp(-t * 42.0)
+            let sub = sin(phaseSub) * envSub * 0.54
 
-            // Subtle filtered mechanical tap transient (~3.5 ms).
+            // Tight woody-aluminum knock resonance (1320 Hz -> 540 Hz, ~7 ms).
+            let freqKnock = 540.0 + 780.0 * exp(-t * 280.0)
+            phaseKnock += 2.0 * .pi * freqKnock / Double(sampleRate)
+            let envKnock = min(1.0, t / 0.0004) * exp(-t * 260.0)
+            let knock = sin(phaseKnock) * envKnock * 0.28
+
+            // Band-limited crisp mechanical transient (~2.5 ms).
             seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             let white = Double(Int64(bitPattern: seed) >> 33) / Double(1 << 30)
-            noiseLP = noiseLP * 0.72 + white * 0.28
-            let clickEnv = min(1.0, t / 0.0006) * exp(-t * 420.0)
-            let click = noiseLP * clickEnv * 0.14
+            lp1 = lp1 * 0.60 + white * 0.40
+            lp2 = lp2 * 0.88 + lp1 * 0.12
+            let bandClick = lp1 - lp2
+            let clickEnv = min(1.0, t / 0.0003) * exp(-t * 620.0)
+            let click = bandClick * clickEnv * 0.46
 
-            // Quiet secondary latch settle 20 ms later for tactile closure.
-            var latch = 0.0
+            // Subtle secondary latch detent 20 ms later for solid closed feel.
+            var settle = 0.0
             let t2 = t - 0.020
             if t2 > 0 {
-                let freq2 = 225.0 + 55.0 * exp(-t2 * 95.0)
-                phase2 += 2.0 * .pi * freq2 / Double(sampleRate)
-                let env2 = min(1.0, t2 / 0.0025) * exp(-t2 * 78.0)
-                latch = sin(phase2) * env2 * 0.085
+                let freq2 = 72.0 + 68.0 * exp(-t2 * 110.0)
+                phaseSettle += 2.0 * .pi * freq2 / Double(sampleRate)
+                let env2 = min(1.0, t2 / 0.0016) * exp(-t2 * 64.0)
+                settle = sin(phaseSettle) * env2 * 0.18
             }
 
-            // Soft end fade to guarantee zero boundary click.
-            let tail = t > duration - 0.008 ? max(0.0, (duration - t) / 0.008) : 1.0
-            samples[i] = Float((body + click + latch) * tail)
+            let tail = t > duration - 0.010 ? max(0.0, (duration - t) / 0.010) : 1.0
+            let raw = (sub + knock + click + settle) * tail
+            let warm = tanh(raw * 1.15) / tanh(1.15)
+            samples[i] = Float(warm * 0.78)
         }
         return encodeWAV(samples: samples, sampleRate: sampleRate)
     }
 
-    /// Airy (~185 ms), translucent rising glass chime (D5 -> A5 pure fifth).
+    /// Clean, tactile (~110 ms) mechanical release click followed by a warm upward pop-thump.
     public static func unlockSoundData() -> Data {
-        let duration = 0.185
+        let duration = 0.110
         let count = Int(Double(sampleRate) * duration)
         var samples = [Float](repeating: 0, count: count)
-
-        let f1 = 587.33 // D5
-        let f2 = 880.00 // A5 (warm fifth)
+        var phaseTick = 0.0
+        var phaseThump = 0.0
+        var phaseAir = 0.0
+        var lp1 = 0.0
+        var lp2 = 0.0
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
 
         for i in 0..<count {
             let t = Double(i) / Double(sampleRate)
 
-            // First crystalline bloom.
-            let a1 = 0.5 - 0.5 * cos(.pi * min(1.0, t / 0.0075))
-            let env1 = a1 * exp(-t * 25.0)
-            let note1 = (sin(2.0 * .pi * f1 * t)
-                + 0.16 * sin(2.0 * .pi * f1 * 2.0 * t)
-                + 0.05 * sin(2.0 * .pi * f1 * 3.0 * t)) * env1 * 0.155
+            // Crisp initial unlatch tick at t = 0.
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let white = Double(Int64(bitPattern: seed) >> 33) / Double(1 << 30)
+            lp1 = lp1 * 0.52 + white * 0.48
+            lp2 = lp2 * 0.85 + lp1 * 0.15
+            let tickNoise = (lp1 - lp2) * min(1.0, t / 0.0003) * exp(-t * 720.0) * 0.36
 
-            // Second rising bloom 44 ms later.
-            var note2 = 0.0
-            let t2 = t - 0.044
+            let freqTick = 880.0 + 420.0 * exp(-t * 260.0)
+            phaseTick += 2.0 * .pi * freqTick / Double(sampleRate)
+            let tickTone = sin(phaseTick) * min(1.0, t / 0.0005) * exp(-t * 240.0) * 0.22
+
+            // Confident warm release thump 15 ms later rising cleanly (98 Hz -> 185 Hz).
+            var thump = 0.0
+            var air = 0.0
+            let t2 = t - 0.015
             if t2 > 0 {
-                let a2 = 0.5 - 0.5 * cos(.pi * min(1.0, t2 / 0.0085))
-                let env2 = a2 * exp(-t2 * 18.5)
-                note2 = (sin(2.0 * .pi * f2 * t2)
-                    + 0.12 * sin(2.0 * .pi * f2 * 2.0 * t2)) * env2 * 0.165
+                let freqThump = 185.0 - 87.0 * exp(-t2 * 95.0)
+                phaseThump += 2.0 * .pi * freqThump / Double(sampleRate)
+                let attack2 = min(1.0, t2 / 0.0018)
+                let env2 = attack2 * exp(-t2 * 38.0)
+                thump = (sin(phaseThump) + 0.22 * sin(phaseThump * 2.0)) * env2 * 0.48
+
+                // Subtle damped high-end release sheen (zero bell ring).
+                phaseAir += 2.0 * .pi * 1180.0 / Double(sampleRate)
+                let envAir = min(1.0, t2 / 0.0010) * exp(-t2 * 145.0)
+                air = sin(phaseAir) * envAir * 0.10
             }
 
-            let tail = t > duration - 0.015 ? max(0.0, (duration - t) / 0.015) : 1.0
-            samples[i] = Float((note1 + note2) * tail)
+            let tail = t > duration - 0.012 ? max(0.0, (duration - t) / 0.012) : 1.0
+            let raw = (tickNoise + tickTone + thump + air) * tail
+            let warm = tanh(raw * 1.15) / tanh(1.15)
+            samples[i] = Float(warm * 0.78)
         }
         return encodeWAV(samples: samples, sampleRate: sampleRate)
     }
@@ -143,7 +170,7 @@ public enum LockScreenSoundPlayer {
     private static func play(data: Data, fallbackNames: [String]) {
         activePlayer?.stop()
         let sound = NSSound(data: data) ?? fallbackNames.lazy.compactMap { NSSound(named: $0) }.first
-        sound?.volume = 0.85
+        sound?.volume = 0.95
         activePlayer = sound
         sound?.play()
     }

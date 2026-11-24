@@ -349,9 +349,8 @@ private struct NotchLevelHUDView: View {
     var body: some View {
         let clamped = min(max(value, 0), 1)
         let displayed = isMuted ? 0 : clamped
-        let percent = Int((clamped * 100).rounded())
 
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(NotchDesign.primaryColor.opacity(isMuted ? 0.55 : 0.96))
@@ -373,13 +372,8 @@ private struct NotchLevelHUDView: View {
                 .frame(maxHeight: .infinity, alignment: .center)
             }
             .frame(height: 16)
-
-            Text(isMuted ? "Off" : "\(percent)%")
-                .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                .foregroundStyle(NotchDesign.primaryColor.opacity(0.76))
-                .frame(minWidth: 36, alignment: .trailing)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 22)
         .padding(.top, topInset + 4)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)

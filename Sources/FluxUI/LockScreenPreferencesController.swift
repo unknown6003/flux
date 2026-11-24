@@ -121,10 +121,10 @@ public final class LockScreenPreferencesController: FormPageController {
             ]),
             FluxUIStyle.section(L("lockScreen.sounds", "Sounds"), [
                 switchRow("lockScreen.lockSound", L("lockScreen.lockSound", "Lock sound"), help: L(
-                    "lockScreen.lockSound.helper", "Subtle click when your Mac locks."
+                    "lockScreen.lockSound.helper", "Crisp tactile click when your Mac locks."
                 ), isOn: state.playsLockSound, enabled: live) { [weak self] in self?.onAction(.setLockSound($0)) },
                 switchRow("lockScreen.unlockSound", L("lockScreen.unlockSound", "Unlock sound"), help: L(
-                    "lockScreen.unlockSound.helper", "Soft glass chime when your Mac unlocks."
+                    "lockScreen.unlockSound.helper", "Clean tactile pop when your Mac unlocks."
                 ), isOn: state.playsUnlockSound, enabled: live) { [weak self] in self?.onAction(.setUnlockSound($0)) },
             ]),
         ]

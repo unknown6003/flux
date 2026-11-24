@@ -7,8 +7,8 @@ import Testing
 @Suite struct LockScreenFeaturesTests {
     @Test func lockAndUnlockSoundsProduceBoundedValidWAVBuffers() throws {
         for (name, data, minBytes) in [
-            ("lock", LockScreenSoundEffects.lockSoundData(), 5_000),
-            ("unlock", LockScreenSoundEffects.unlockSoundData(), 12_000),
+            ("lock", LockScreenSoundEffects.lockSoundData(), 6_000),
+            ("unlock", LockScreenSoundEffects.unlockSoundData(), 8_000),
         ] {
             #expect(data.count >= minBytes, "\(name) WAV buffer is unexpectedly short")
             #expect(String(data: data.subdata(in: 0..<4), encoding: .ascii) == "RIFF")
@@ -26,9 +26,9 @@ import Testing
                     if magnitude > peak { peak = magnitude }
                 }
             }
-            // Audible yet restrained — never silent and never anywhere near harsh clipping.
-            #expect(peak > 1_500, "\(name) sound is effectively silent")
-            #expect(peak < 18_000, "\(name) sound is louder than a reasonable system chime")
+            // Strong, tactile, and punchy without digital clipping.
+            #expect(peak > 8_000, "\(name) sound is too quiet to feel tactile")
+            #expect(peak < 30_000, "\(name) sound is near digital clipping")
         }
     }
 
