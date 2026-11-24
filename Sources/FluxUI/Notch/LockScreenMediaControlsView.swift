@@ -74,24 +74,24 @@ struct LockScreenMediaControlsView: View {
         let cardBody = VStack(spacing: 0) {
             // Top row: Small album art thumbnail (left) — Centered Title & Artist — Live waveform (right).
             ZStack {
-                VStack(spacing: 2) {
+                VStack(spacing: 3) {
                     Text(media.title)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.96))
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.97))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .shadow(color: .black.opacity(0.36), radius: 4, y: 1)
 
                     if !media.artist.isEmpty {
                         Text(media.artist)
-                            .font(.system(size: 13.5, weight: .regular))
-                            .foregroundStyle(.white.opacity(0.76))
+                            .font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.78))
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .shadow(color: .black.opacity(0.30), radius: 3, y: 1)
                     }
                 }
-                .padding(.horizontal, 44)
+                .padding(.horizontal, 54)
                 .frame(maxWidth: .infinity, alignment: .center)
 
                 HStack {
@@ -100,44 +100,45 @@ struct LockScreenMediaControlsView: View {
                     LockScreenWaveformView(isPlaying: isPlaying)
                 }
             }
-            .frame(height: 40)
+            .frame(height: 44)
 
             // Middle row: Elapsed — Interactive Pill Scrubber — Remaining.
             progressRow(for: media)
-                .padding(.top, 10)
+                .padding(.top, 18)
 
             // Bottom row: Mute — Prev / Play-Pause / Next — Audio Output Route.
             transportRow(isPlaying: isPlaying,
                          canGoPrevious: media.canGoPrevious,
                          canGoNext: media.canGoNext,
                          audioOutput: audioOutput)
-                .padding(.top, 12)
+                .padding(.top, 16)
 
             if showPicker {
                 outputPickerList(devices: pickerDevices)
-                    .padding(.top, 10)
+                    .padding(.top, 12)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 22)
         .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight, alignment: .top)
 
-        return ZStack {
-            // Pixel-aligned slice of the lock-screen wallpaper directly inside
-            // this window so macOS 26/27 `.glassEffect(.clear)` performs real
-            // chromatic edge refraction & optical lensing over the exact pixels behind it.
-            if let slice = model.state.backdropSlice {
-                Image(decorative: slice, scale: 1)
-                    .interpolation(.high)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight)
-                    .clipShape(cardShape)
-            }
+        return Group {
+            if let glassLens = model.state.backdropSlice {
+                // Physical Metal Liquid Glass lens slab with Snell's-law rim refraction,
+                // chromatic dispersion, and directional Fresnel specular catchlight.
+                ZStack {
+                    Image(decorative: glassLens, scale: 2.0)
+                        .interpolation(.high)
+                        .resizable()
+                        .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight)
 
-            cardBody
-                .lockScreenLiquidGlass(in: cardShape, hasInWindowBackdrop: model.state.backdropSlice != nil)
+                    cardBody
+                }
+            } else {
+                cardBody
+                    .lockScreenLiquidGlass(in: cardShape)
+            }
         }
         .frame(width: LockScreenMetrics.mediaWidth, height: cardHeight)
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: showPicker)
@@ -145,19 +146,21 @@ struct LockScreenMediaControlsView: View {
 
     @ViewBuilder
     private func smallArtwork(_ image: NSImage?) -> some View {
+        let side = LockScreenMetrics.artworkSide
+        let corner = LockScreenMetrics.artworkCornerRadius
         if let image {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 36, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(.white.opacity(0.22), lineWidth: 0.6)
+                    RoundedRectangle(cornerRadius: corner, style: .continuous)
+                        .stroke(.white.opacity(0.24), lineWidth: 0.65)
                 )
-                .shadow(color: .black.opacity(0.28), radius: 4, y: 2)
+                .shadow(color: .black.opacity(0.30), radius: 5, y: 2)
         } else {
-            Color.clear.frame(width: 36, height: 36)
+            Color.clear.frame(width: side, height: side)
         }
     }
 
@@ -181,9 +184,9 @@ struct LockScreenMediaControlsView: View {
             let displayedElapsed = scrubFraction.map { $0 * duration } ?? liveElapsed
             let progress = min(max(displayedElapsed / duration, 0), 1)
 
-            HStack(spacing: 9) {
+            HStack(spacing: 12) {
                 Text(timeLabel(displayedElapsed))
-                    .frame(minWidth: 32, alignment: .leading)
+                    .frame(minWidth: 34, alignment: .leading)
 
                 LockScreenScrubberBar(
                     progress: progress,
@@ -196,17 +199,17 @@ struct LockScreenMediaControlsView: View {
                 )
 
                 Text("-\(timeLabel(max(duration - displayedElapsed, 0)))")
-                    .frame(minWidth: 36, alignment: .trailing)
+                    .frame(minWidth: 38, alignment: .trailing)
             }
-            .font(.system(size: 11, weight: .medium).monospacedDigit())
-            .foregroundStyle(.white.opacity(0.80))
-            .shadow(color: .black.opacity(0.28), radius: 2, y: 1)
-            .frame(height: 16)
+            .font(.system(size: 12, weight: .medium).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.84))
+            .shadow(color: .black.opacity(0.30), radius: 2, y: 1)
+            .frame(height: 18)
         } else {
             Capsule()
                 .fill(.white.opacity(0.24))
-                .frame(height: 5.5)
-                .frame(height: 16)
+                .frame(height: 6)
+                .frame(height: 18)
         }
     }
 
@@ -225,25 +228,25 @@ struct LockScreenMediaControlsView: View {
             LockScreenTransportButton(
                 systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2",
                 label: isMuted ? "Unmute" : "Mute",
-                fontSize: 14.5,
+                fontSize: 16,
                 weight: .medium,
-                foregroundOpacity: isMuted ? 0.92 : (canMute ? 0.48 : 0.28),
-                frameSize: 34,
+                foregroundOpacity: isMuted ? 0.94 : (canMute ? 0.56 : 0.30),
+                frameSize: 36,
                 isEnabled: canMute
             ) {
                 model.onAction(.toggleMute)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 10)
 
-            HStack(spacing: 24) {
+            HStack(spacing: 32) {
                 LockScreenTransportButton(
                     systemName: "backward.fill",
                     label: "Previous track",
-                    fontSize: 19,
+                    fontSize: 21,
                     weight: .semibold,
-                    foregroundOpacity: canGoPrevious ? 0.94 : 0.35,
-                    frameSize: 38,
+                    foregroundOpacity: canGoPrevious ? 0.95 : 0.36,
+                    frameSize: 40,
                     isEnabled: canGoPrevious
                 ) {
                     model.onAction(.previous)
@@ -252,10 +255,10 @@ struct LockScreenMediaControlsView: View {
                 LockScreenTransportButton(
                     systemName: isPlaying ? "pause.fill" : "play.fill",
                     label: isPlaying ? "Pause" : "Play",
-                    fontSize: 25,
+                    fontSize: 28,
                     weight: .bold,
-                    foregroundOpacity: 0.98,
-                    frameSize: 44,
+                    foregroundOpacity: 0.99,
+                    frameSize: 46,
                     isEnabled: true
                 ) {
                     model.onAction(isPlaying ? .pause : .play)
@@ -264,31 +267,31 @@ struct LockScreenMediaControlsView: View {
                 LockScreenTransportButton(
                     systemName: "forward.fill",
                     label: "Next track",
-                    fontSize: 19,
+                    fontSize: 21,
                     weight: .semibold,
-                    foregroundOpacity: canGoNext ? 0.94 : 0.35,
-                    frameSize: 38,
+                    foregroundOpacity: canGoNext ? 0.95 : 0.36,
+                    frameSize: 40,
                     isEnabled: canGoNext
                 ) {
                     model.onAction(.next)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 10)
 
             LockScreenTransportButton(
                 systemName: outputSymbol,
                 label: audioOutput.map { "Audio output: \($0.currentDeviceName)" } ?? "Audio output",
-                fontSize: 15,
+                fontSize: 16,
                 weight: .medium,
-                foregroundOpacity: model.isOutputPickerExpanded ? 1.0 : (hasMultipleOutputs ? 0.80 : 0.50),
-                frameSize: 34,
+                foregroundOpacity: model.isOutputPickerExpanded ? 1.0 : (hasMultipleOutputs ? 0.84 : 0.52),
+                frameSize: 36,
                 isEnabled: hasMultipleOutputs
             ) {
                 model.isOutputPickerExpanded.toggle()
             }
         }
-        .frame(height: 44)
+        .frame(height: 42)
     }
 
     // MARK: - Inline Audio Output Picker
@@ -339,7 +342,9 @@ struct LockScreenMediaControlsView: View {
     private func auxiliaryPill(_ caption: LockScreenActivityCaption?) -> some View {
         HStack(spacing: NotchDesign.space2) {
             if let caption {
-                LockScreenActivityPill(systemName: caption.symbolName, caption: caption.text)
+                LockScreenActivityPill(systemName: caption.symbolName,
+                                       caption: caption.text,
+                                       glassImage: model.state.pillGlassImage)
             }
         }
         .frame(maxWidth: .infinity, minHeight: LockScreenMetrics.captionHeight)
@@ -559,24 +564,37 @@ private extension View {
 private struct LockScreenActivityPill: View {
     let systemName: String?
     let caption: String
+    let glassImage: CGImage?
 
     var body: some View {
-        HStack(spacing: NotchDesign.space2) {
+        let label = HStack(spacing: NotchDesign.space2) {
             if let systemName {
                 Image(systemName: systemName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.92))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.94))
                     .frame(width: 24, height: 24)
                     .background(Circle().fill(.white.opacity(0.14)))
             }
             Text(caption)
                 .font(NotchDesign.bodyFont)
-                .foregroundStyle(.white.opacity(0.94))
+                .foregroundStyle(.white.opacity(0.96))
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .padding(.horizontal, NotchDesign.space3)
+        .padding(.horizontal, 16)
         .frame(height: LockScreenMetrics.captionHeight)
-        .lockScreenLiquidGlass(in: Capsule())
+
+        if let glassImage {
+            label
+                .background(
+                    Image(decorative: glassImage, scale: 2.0)
+                        .interpolation(.high)
+                        .resizable()
+                        .clipShape(Capsule())
+                )
+        } else {
+            label
+                .lockScreenLiquidGlass(in: Capsule())
+        }
     }
 }

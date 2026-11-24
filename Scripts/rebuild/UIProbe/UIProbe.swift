@@ -176,7 +176,7 @@ import FluxUI
             for (name, state) in states {
                 let controller = LockScreenContentController(state: state, onAction: { _ in })
                 controller.isFixtureRender = true
-                let size = state.isEmpty ? NSSize(width: 348, height: 148) : controller.preferredSize
+                let size = state.isEmpty ? NSSize(width: LockScreenMetrics.mediaWidth, height: LockScreenMetrics.mediaCardHeight) : controller.preferredSize
                 let window = NSWindow(contentRect: .init(origin: .init(x: -10_000, y: -10_000), size: size),
                     styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false

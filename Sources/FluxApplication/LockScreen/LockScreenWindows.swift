@@ -376,25 +376,45 @@ enum LockScreenWidgetPosition {
                                          panelSize: CGSize,
                                          geometry: LockScreenGeometry,
                                          minimalBackdrop: Bool) -> LockScreenContentState {
-        guard minimalBackdrop, state.showsMedia, let backdrop = lastBackdropImage else {
+        guard minimalBackdrop, let backdrop = lastBackdropImage else {
             var plain = state
             plain.backdropSlice = nil
+            plain.pillGlassImage = nil
             return plain
         }
-        let fullFrame = cardFrame(for: panelSize, geometry: geometry, hasMedia: true, minimalBackdrop: minimalBackdrop)
-        // Media card sits at the top of the panel; subtract auxiliary pill height if present.
-        let activityExtra = state.showsActivity ? (LockScreenMetrics.captionHeight + LockScreenMetrics.captionGap) : 0
-        let mediaHeight = max(1, fullFrame.height - activityExtra)
-        let mediaFrame = CGRect(x: fullFrame.minX,
-                                y: fullFrame.maxY - mediaHeight,
-                                width: fullFrame.width,
-                                height: mediaHeight)
+        let fullFrame = cardFrame(for: panelSize, geometry: geometry, hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop)
         var enriched = state
-        enriched.backdropSlice = LockScreenBackdropComposer.cropForCard(
-            backdrop: backdrop,
-            screenFrame: geometry.screenFrame,
-            cardFrame: mediaFrame
-        )
+        if state.showsMedia {
+            let activityExtra = state.showsActivity ? (LockScreenMetrics.captionHeight + LockScreenMetrics.captionGap) : 0
+            let mediaHeight = max(1, fullFrame.height - activityExtra)
+            let mediaFrame = CGRect(x: fullFrame.minX,
+                                    y: fullFrame.maxY - mediaHeight,
+                                    width: fullFrame.width,
+                                    height: mediaHeight)
+            enriched.backdropSlice = LiquidGlassRenderer.shared.renderCardGlass(
+                backdrop: backdrop,
+                screenFrame: geometry.screenFrame,
+                cardFrame: mediaFrame,
+                cornerRadius: LockScreenMetrics.cardCornerRadius
+            )
+        } else {
+            enriched.backdropSlice = nil
+        }
+
+        if state.showsActivity {
+            let pillWidth = state.showsMedia ? min(LockScreenMetrics.activityOnlyWidth, fullFrame.width) : fullFrame.width
+            let pillFrame = CGRect(x: fullFrame.midX - pillWidth * 0.5,
+                                   y: fullFrame.minY,
+                                   width: pillWidth,
+                                   height: LockScreenMetrics.captionHeight)
+            enriched.pillGlassImage = LiquidGlassRenderer.shared.renderPillGlass(
+                backdrop: backdrop,
+                screenFrame: geometry.screenFrame,
+                pillFrame: pillFrame
+            )
+        } else {
+            enriched.pillGlassImage = nil
+        }
         return enriched
     }
 

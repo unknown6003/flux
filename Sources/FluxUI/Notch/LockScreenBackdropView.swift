@@ -133,8 +133,8 @@ struct LockScreenBackdropView: View {
                         .id(model.state.sourceKey ?? "backdrop")
                         .transition(.opacity.animation(.easeInOut(duration: 0.35)))
 
-                    // Layer 1: Date + Liquid Glass Clock positioned in the upper sky band.
-                    clockStack(in: size)
+                    // Layer 1: Date + Sculpted Liquid Glass Clock positioned in the upper sky band.
+                    clockStack(backdrop: backdrop, in: size)
 
                     // Layer 2: Vision depth-effect foreground cutout in front of the clock.
                     if model.state.showsDepthEffect, let cutout = model.state.foregroundCutout {
@@ -171,33 +171,50 @@ struct LockScreenBackdropView: View {
     }
 
     @ViewBuilder
-    private func clockStack(in screenSize: CGSize) -> some View {
+    private func clockStack(backdrop: CGImage, in screenSize: CGSize) -> some View {
         if let fixed = model.state.fixedDate {
-            clockContent(date: fixed, in: screenSize)
+            clockContent(date: fixed, backdrop: backdrop, in: screenSize)
         } else {
             TimelineView(.everyMinute) { timeline in
-                clockContent(date: timeline.date, in: screenSize)
+                clockContent(date: timeline.date, backdrop: backdrop, in: screenSize)
             }
         }
     }
 
-    private func clockContent(date: Date, in screenSize: CGSize) -> some View {
+    private func clockContent(date: Date, backdrop: CGImage, in screenSize: CGSize) -> some View {
         let dateFontSize = max(18, min(30, screenSize.height * 0.0265))
         let clockFontSize = max(120, min(230, screenSize.height * 0.205))
         let topOffset = max(56, screenSize.height * 0.095)
+        let dateLineHeight = ceil(dateFontSize * 1.24)
+        let stackSpacing = max(2, screenSize.height * 0.004)
+        let clockWidth = min(screenSize.width * 0.78, clockFontSize * 3.1)
+        let clockHeight = clockFontSize * 0.80
+        let clockRect = CGRect(
+            x: (screenSize.width - clockWidth) * 0.5,
+            y: topOffset + dateLineHeight + stackSpacing,
+            width: clockWidth,
+            height: clockHeight
+        )
         let dateText = Self.formatDate(date)
         let timeText = Self.formatTime(date)
 
-        return VStack(spacing: max(2, screenSize.height * 0.004)) {
+        return VStack(spacing: stackSpacing) {
             Text(dateText)
                 .font(.system(size: dateFontSize, weight: .semibold))
                 .tracking(-0.2)
                 .foregroundStyle(.white.opacity(0.92))
                 .shadow(color: .black.opacity(0.26), radius: 10, y: 2)
+                .frame(height: dateLineHeight)
 
-            LiquidGlassClockDigits(text: timeText, fontSize: clockFontSize)
-                .frame(width: min(screenSize.width * 0.78, clockFontSize * 3.1),
-                       height: clockFontSize * 0.80)
+            LiquidGlassClockDigits(
+                text: timeText,
+                fontSize: clockFontSize,
+                sourceKey: model.state.sourceKey,
+                backdrop: backdrop,
+                canvasSize: screenSize,
+                clockRectTopLeft: clockRect
+            )
+            .frame(width: clockWidth, height: clockHeight)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, topOffset)
@@ -220,35 +237,36 @@ struct LockScreenBackdropView: View {
     }
 }
 
-/// Renders clock digits with pure macOS 26+ Liquid Glass refraction inside the
-/// vector glyph outline (`ClockGlyphShape`), letting background tones refract
-/// cleanly through crystal-clear glass without milky overlays.
+/// Renders clock digits as sculpted 3D refractive crystal glass using our Metal
+/// GPU heightfield shader over the live wallpaper, with a translucent fallback
+/// if Metal is unavailable.
 private struct LiquidGlassClockDigits: View {
     let text: String
     let fontSize: CGFloat
-    @Environment(\.isSnapshotRender) private var isSnapshotRender
+    let sourceKey: String?
+    let backdrop: CGImage
+    let canvasSize: CGSize
+    let clockRectTopLeft: CGRect
 
     var body: some View {
-        let shape = ClockGlyphShape(text: text, fontSize: fontSize)
-        glassDigits(shape: shape)
-            .shadow(color: .black.opacity(0.16), radius: 12, y: 3)
-            .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private func glassDigits(shape: ClockGlyphShape) -> some View {
-#if compiler(>=6.2)
-        if #available(macOS 26.0, *), !isSnapshotRender {
-            // Pure macOS 26/27 Liquid Glass directly over the wallpaper layer:
-            // full hardware optical refraction and dynamic specular bevel rim.
-            Color.clear
-                .glassEffect(.clear, in: shape)
-        } else {
-            fallbackDigits(shape: shape)
+        Group {
+            if let rendered = LiquidGlassRenderer.shared.renderClockGlass(
+                sourceKey: sourceKey,
+                backdrop: backdrop,
+                canvasSizePt: canvasSize,
+                clockRectTopLeftPt: clockRectTopLeft,
+                timeText: text,
+                fontSize: fontSize
+            ) {
+                Image(decorative: rendered, scale: 2.0)
+                    .interpolation(.high)
+                    .resizable()
+            } else {
+                fallbackDigits(shape: ClockGlyphShape(text: text, fontSize: fontSize))
+            }
         }
-#else
-        fallbackDigits(shape: shape)
-#endif
+        .shadow(color: .black.opacity(0.22), radius: 14, y: 4)
+        .accessibilityHidden(true)
     }
 
     private func fallbackDigits(shape: ClockGlyphShape) -> some View {
@@ -261,9 +279,9 @@ private struct LiquidGlassClockDigits: View {
                 .fill(
                     LinearGradient(
                         stops: [
-                            .init(color: .white.opacity(0.24), location: 0.0),
-                            .init(color: .white.opacity(0.05), location: 0.50),
-                            .init(color: .white.opacity(0.18), location: 1.0),
+                            .init(color: .white.opacity(0.28), location: 0.0),
+                            .init(color: .white.opacity(0.08), location: 0.50),
+                            .init(color: .white.opacity(0.20), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom

@@ -11,25 +11,25 @@ import SwiftUI
 
 /// Dimensions for the floating Liquid Glass lock-screen music player and pill.
 public enum LockScreenMetrics {
-    public static let mediaWidth: CGFloat = 348
-    /// Matches the compact, balanced Liquid Glass lock-screen player proportions.
-    public static let mediaCardHeight: CGFloat = 148
-    public static let activityOnlyWidth: CGFloat = 240
-    public static let captionHeight: CGFloat = 38
-    public static let cardCornerRadius: CGFloat = 28
-    public static let artworkSide: CGFloat = 64
-    public static let artworkCornerRadius: CGFloat = 14
+    public static let mediaWidth: CGFloat = 408
+    /// Airy, well-proportioned Liquid Glass lock-screen player with generous perimeter breathing room.
+    public static let mediaCardHeight: CGFloat = 182
+    public static let activityOnlyWidth: CGFloat = 256
+    public static let captionHeight: CGFloat = 42
+    public static let cardCornerRadius: CGFloat = 32
+    public static let artworkSide: CGFloat = 42
+    public static let artworkCornerRadius: CGFloat = 10
     /// Space between the media card and the caption under it.
-    public static let captionGap: CGFloat = 8
+    public static let captionGap: CGFloat = 12
     /// Additional vertical room when the inline audio-output picker is open.
-    public static let outputPickerRowHeight: CGFloat = 30
+    public static let outputPickerRowHeight: CGFloat = 32
     public static let outputPickerMaxRows: Int = 4
 
     /// The card window size. `.zero` when there is nothing to show, so the
     /// parent can order the card window out and leave no mouse surface.
     public static func size(hasMedia: Bool, hasActivity: Bool, expandedOutputCount: Int = 0) -> CGSize {
         let pickerExtra: CGFloat = expandedOutputCount > 0
-            ? CGFloat(min(expandedOutputCount, outputPickerMaxRows)) * outputPickerRowHeight + 22
+            ? CGFloat(min(expandedOutputCount, outputPickerMaxRows)) * outputPickerRowHeight + 24
             : 0
         return switch (hasMedia, hasActivity) {
         case (true, true): CGSize(width: mediaWidth, height: mediaCardHeight + pickerExtra + captionGap + captionHeight)
@@ -93,18 +93,21 @@ public struct LockScreenContentState: Equatable {
     public var media: NowPlayingWidgetState?
     public var activity: LockScreenActivityCaption?
     public var audioOutput: LockScreenAudioOutputState?
-    /// Exact pixel-aligned slice of the lock-screen wallpaper directly behind
-    /// the card so `.glassEffect(.clear)` refracts live pixels inside this window.
+    /// Pre-rendered physical Liquid Glass lens slab for the media card.
     public var backdropSlice: CGImage?
+    /// Pre-rendered physical Liquid Glass lens capsule for the activity pill.
+    public var pillGlassImage: CGImage?
 
     public init(media: NowPlayingWidgetState? = nil,
                 activity: LockScreenActivityCaption? = nil,
                 audioOutput: LockScreenAudioOutputState? = nil,
-                backdropSlice: CGImage? = nil) {
+                backdropSlice: CGImage? = nil,
+                pillGlassImage: CGImage? = nil) {
         self.media = media
         self.activity = activity
         self.audioOutput = audioOutput
         self.backdropSlice = backdropSlice
+        self.pillGlassImage = pillGlassImage
     }
 
     public static var empty: LockScreenContentState { LockScreenContentState() }
@@ -114,6 +117,7 @@ public struct LockScreenContentState: Equatable {
             && lhs.activity == rhs.activity
             && lhs.audioOutput == rhs.audioOutput
             && lhs.backdropSlice === rhs.backdropSlice
+            && lhs.pillGlassImage === rhs.pillGlassImage
     }
 
     public var showsMedia: Bool {
