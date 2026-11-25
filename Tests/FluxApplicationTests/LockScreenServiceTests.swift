@@ -316,4 +316,31 @@ import FluxPlatform
         #expect(service.composedBackdrop != nil)
         #expect(bridgeCreations == 0)
     }
+
+    @Test @MainActor func immediateStopClosesAlreadyFadingLockWindowsWithoutWaitingForFadeOut() throws {
+        _ = NSApplication.shared
+        try profile { preferences in
+            let screen = try #require(NSScreen.screens.first)
+            let bridge = FixtureLockBridge()
+            let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+                lockSound: {}, unlockSound: {})
+            let handle = try service.makeHandle()
+            service.setPhase(.unlocked)
+            service.setPhase(.locked)
+            let ids = try #require(bridge.attached.first)
+            let windows = NSApp.windows.filter { window in
+                CGWindowID(exactly: window.windowNumber).map { ids.contains($0) } ?? false
+            }
+            #expect(!windows.isEmpty)
+            // Animated unlock starts the 0.25s fade-out.
+            service.setPhase(.unlocked)
+            // A redundant animated unlock must not snap the in-flight fade closed.
+            service.setPhase(.unlocked)
+            #expect(windows.contains { $0.isVisible })
+            // Immediate stop (e.g. sleep/quit) must close the fading windows synchronously.
+            handle.stop()
+            #expect(windows.allSatisfy { !$0.isVisible })
+        }
+    }
 }

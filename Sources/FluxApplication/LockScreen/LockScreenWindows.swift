@@ -201,10 +201,12 @@ enum LockScreenWidgetPosition {
         lastCardState = .empty
         lastBackdropImage = nil
         lastMinimalBackdrop = false
-        guard animated, !windows.isEmpty else {
+        guard animated else {
+            finishFadeOut()
             windows.forEach(Self.close)
             return
         }
+        guard !windows.isEmpty else { return }
         finishFadeOut()
         fading = windows
         windows.forEach { Self.animate($0, to: 0, duration: Self.fadeOutDuration) }

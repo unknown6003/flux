@@ -36,13 +36,27 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
 /// The two distributed lock notifications and dictionary key are empirical
 /// macOS interfaces. They need signed hardware checks on each supported OS.
 @MainActor public final class SessionMonitor {
+    static let defaultUnlockRecheckDelays: [Duration] = [
+        .milliseconds(20), .milliseconds(40), .milliseconds(80),
+        .milliseconds(160), .milliseconds(320), .milliseconds(640),
+    ]
+    static let defaultLockedReconcileInterval: Duration = .seconds(2)
+
     public private(set) var phase: SessionPhase
     private var onPhase: ((SessionPhase) -> Void)?
     private var onEnvironmentChange: (() -> Void)?
     private let readPhase: @MainActor () -> SessionPhase
+    private let unlockRecheckDelays: [Duration]
+    private let lockedReconcileInterval: Duration?
     private var observations: [NotificationObservation] = []
     private var distributed: [DistributedObservation] = []
+    private var unlockRecheckTask: Task<Void, Never>?
+    private var lockedReconcileTask: Task<Void, Never>?
     private var active = true
+
+    var hasActiveReconciliationTasks: Bool {
+        unlockRecheckTask != nil || lockedReconcileTask != nil
+    }
 
     public convenience init(onPhase: @escaping (SessionPhase) -> Void,
                             onEnvironmentChange: @escaping () -> Void) {
@@ -53,8 +67,12 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
 
     init(workspace: NotificationCenter, application: NotificationCenter,
          distributed center: DistributedNotificationCenter?, readPhase: @escaping @MainActor () -> SessionPhase,
+         unlockRecheckDelays: [Duration] = SessionMonitor.defaultUnlockRecheckDelays,
+         lockedReconcileInterval: Duration? = SessionMonitor.defaultLockedReconcileInterval,
          onPhase: @escaping (SessionPhase) -> Void, onEnvironmentChange: @escaping () -> Void) {
         self.readPhase = readPhase
+        self.unlockRecheckDelays = unlockRecheckDelays
+        self.lockedReconcileInterval = lockedReconcileInterval
         phase = readPhase()
         self.onPhase = onPhase
         self.onEnvironmentChange = onEnvironmentChange
@@ -72,15 +90,14 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
 #if FLUX_PERFORMANCE_TRACE
                 PerformanceTrace.record(.sessionWake)
 #endif
-                owner.setPhase(owner.readPhase())
-                owner.onEnvironmentChange?()
+                owner.reconcilePotentialUnlock()
             }
         }
         observe(workspace, NSWorkspace.sessionDidResignActiveNotification) { owner in
 #if FLUX_PERFORMANCE_TRACE
             PerformanceTrace.record(.sessionLock)
 #endif
-            owner.setPhase(.locked)
+            owner.handleScreenLockedNotification()
         }
         observe(workspace, NSWorkspace.activeSpaceDidChangeNotification) { owner in
 #if FLUX_PERFORMANCE_TRACE
@@ -110,8 +127,7 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
 #if FLUX_PERFORMANCE_TRACE
             PerformanceTrace.record(.applicationActivated)
 #endif
-            owner.setPhase(owner.readPhase())
-            owner.onEnvironmentChange?()
+            owner.reconcilePotentialUnlock()
         }
         if let center {
             distributed = [
@@ -121,21 +137,37 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
 #if FLUX_PERFORMANCE_TRACE
                         PerformanceTrace.record(.sessionLock)
 #endif
-                        self?.setPhase(.locked)
+                        self?.handleScreenLockedNotification()
                     }
                 },
                 DistributedObservation(center: center, name: .init("com.apple.screenIsUnlocked")) { [weak self] in
                     MainActor.assumeIsolated {
-                        guard let self else { return }
 #if FLUX_PERFORMANCE_TRACE
                         PerformanceTrace.record(.sessionUnlock)
 #endif
-                        self.setPhase(self.readPhase())
-                        self.onEnvironmentChange?()
+                        self?.handleScreenUnlockedNotification()
                     }
                 },
             ]
         }
+        syncLockedReconciliation()
+    }
+
+    deinit {
+        unlockRecheckTask?.cancel()
+        lockedReconcileTask?.cancel()
+    }
+
+    func handleScreenLockedNotification() {
+        guard active else { return }
+        cancelUnlockRecheck()
+        cancelLockedReconciliation()
+        setPhase(.locked)
+    }
+
+    func handleScreenUnlockedNotification() {
+        guard active else { return }
+        reconcilePotentialUnlock()
     }
 
     public func refresh() {
@@ -148,19 +180,99 @@ private final class DistributedObservation: NSObject, @unchecked Sendable {
 
     public func stop() {
         active = false
+        cancelUnlockRecheck()
+        cancelLockedReconciliation()
         observations.removeAll()
         distributed.removeAll()
         onPhase = nil
         onEnvironmentChange = nil
     }
 
+    private func reconcilePotentialUnlock() {
+        guard active else { return }
+        setPhase(readPhase())
+        if active {
+            onEnvironmentChange?()
+        }
+        if active, phase == .locked {
+            scheduleUnlockRecheck()
+        }
+    }
+
+    private func reconcileLockedPhase() -> Bool {
+        guard active, phase == .locked else { return true }
+        let next = readPhase()
+        guard next != phase else { return false }
+        setPhase(next)
+        if active { onEnvironmentChange?() }
+        return true
+    }
+
     private func setPhase(_ phase: SessionPhase) {
-        guard active, self.phase != phase else { return }
+        guard active else { return }
+        if phase != .locked {
+            cancelUnlockRecheck()
+            cancelLockedReconciliation()
+        }
+        guard self.phase != phase else {
+            syncLockedReconciliation()
+            return
+        }
 #if FLUX_PERFORMANCE_TRACE
         PerformanceTrace.record(.phaseChanged)
 #endif
         self.phase = phase
         onPhase?(phase)
+        syncLockedReconciliation()
+    }
+
+    private func scheduleUnlockRecheck() {
+        cancelUnlockRecheck()
+        guard active, phase == .locked, !unlockRecheckDelays.isEmpty else { return }
+        let delays = unlockRecheckDelays
+        unlockRecheckTask = Task { @MainActor [weak self] in
+            for delay in delays {
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, let self else { return }
+                if self.reconcileLockedPhase() { return }
+            }
+            if let self, !Task.isCancelled {
+                self.unlockRecheckTask = nil
+            }
+        }
+    }
+
+    private func cancelUnlockRecheck() {
+        unlockRecheckTask?.cancel()
+        unlockRecheckTask = nil
+    }
+
+    private func syncLockedReconciliation() {
+        guard active, phase == .locked, let interval = lockedReconcileInterval else {
+            cancelLockedReconciliation()
+            return
+        }
+        guard lockedReconcileTask == nil else { return }
+        lockedReconcileTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, let self else { return }
+                if self.reconcileLockedPhase() { return }
+            }
+        }
+    }
+
+    private func cancelLockedReconciliation() {
+        lockedReconcileTask?.cancel()
+        lockedReconcileTask = nil
     }
 
     private func observe(_ center: NotificationCenter, _ name: Notification.Name,
