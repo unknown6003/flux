@@ -33,6 +33,9 @@ struct LockScreenGeometry: Equatable {
 /// The card's vertical place:
 /// - Minimal full-screen backdrop mode: centered in the lower Canape lane
 ///   (center at 19.8%, never below 12.4%, cleanly above the bottom unlock hint).
+/// - Revealed native login mode (backdrop stays on screen with bottom band faded open):
+///   elevated lane (center at 31%, minimum 23% for media; 25% / 22% for caption) so the
+///   card stays cleanly above macOS's native avatar and password field.
 /// - Overlay-only mode (no full-screen backdrop): higher lane (center at 28%,
 ///   minimum 20% for media; 21% / 10% for caption) so native login controls stay clear.
 enum LockScreenWidgetPosition {
@@ -44,15 +47,23 @@ enum LockScreenWidgetPosition {
     static let minimalMediaMinimumOriginFraction: CGFloat = 0.124
     static let minimalCompanionPreferredCenterFraction: CGFloat = 0.15
     static let minimalCompanionMinimumOriginFraction: CGFloat = 0.11
+    static let revealedMediaPreferredCenterFraction: CGFloat = 0.31
+    static let revealedMediaMinimumOriginFraction: CGFloat = 0.23
+    static let revealedCompanionPreferredCenterFraction: CGFloat = 0.25
+    static let revealedCompanionMinimumOriginFraction: CGFloat = 0.22
 
     static func originY(screenFrame: CGRect,
                         notchHeight: CGFloat,
                         widgetHeight: CGFloat,
                         hasMedia: Bool,
-                        minimalBackdrop: Bool = false) -> CGFloat {
+                        minimalBackdrop: Bool = false,
+                        revealsNativeLogin: Bool = false) -> CGFloat {
         let center: CGFloat
         let minimum: CGFloat
-        if minimalBackdrop {
+        if minimalBackdrop && revealsNativeLogin {
+            center = hasMedia ? revealedMediaPreferredCenterFraction : revealedCompanionPreferredCenterFraction
+            minimum = hasMedia ? revealedMediaMinimumOriginFraction : revealedCompanionMinimumOriginFraction
+        } else if minimalBackdrop {
             center = hasMedia ? minimalMediaPreferredCenterFraction : minimalCompanionPreferredCenterFraction
             minimum = hasMedia ? minimalMediaMinimumOriginFraction : minimalCompanionMinimumOriginFraction
         } else {
@@ -60,7 +71,11 @@ enum LockScreenWidgetPosition {
             minimum = hasMedia ? mediaMinimumOriginFraction : companionMinimumOriginFraction
         }
         let preferredOriginY = screenFrame.minY + screenFrame.height * center - widgetHeight / 2
-        let minimumOriginY = screenFrame.minY + screenFrame.height * minimum
+        var minimumOriginY = screenFrame.minY + screenFrame.height * minimum
+        if minimalBackdrop && revealsNativeLogin {
+            let revealClearHeight = LockScreenBackdropMetrics.nativeLoginReveal(for: screenFrame.height).clearHeight
+            minimumOriginY = max(minimumOriginY, screenFrame.minY + revealClearHeight + 12)
+        }
         let maximumOriginY = screenFrame.maxY - notchHeight - 24 - widgetHeight
         return min(max(preferredOriginY, minimumOriginY), max(minimumOriginY, maximumOriginY))
     }
@@ -92,6 +107,7 @@ enum LockScreenWidgetPosition {
     private var lastCardState: LockScreenContentState = .empty
     private var lastBackdropImage: CGImage?
     private var lastMinimalBackdrop = false
+    private var lastRevealsNativeLogin = false
     private var fading: [NSWindow] = []
     private var fadeTask: Task<Void, Never>?
     private var cardFadeInTask: Task<Void, Never>?
@@ -174,7 +190,11 @@ enum LockScreenWidgetPosition {
         }
         lastCardState = state
         lastMinimalBackdrop = backdrop.hasBackdrop
-        try syncCard(state, minimalBackdrop: backdrop.hasBackdrop, immediate: isInitialPresentation)
+        lastRevealsNativeLogin = backdrop.revealsNativeLogin
+        try syncCard(state,
+                     minimalBackdrop: backdrop.hasBackdrop,
+                     revealsNativeLogin: backdrop.revealsNativeLogin,
+                     immediate: isInitialPresentation)
         CATransaction.flush()
     }
 
@@ -205,6 +225,7 @@ enum LockScreenWidgetPosition {
         lastCardState = .empty
         lastBackdropImage = nil
         lastMinimalBackdrop = false
+        lastRevealsNativeLogin = false
         guard animated else {
             finishFadeOut()
             windows.forEach(Self.close)
@@ -268,12 +289,17 @@ enum LockScreenWidgetPosition {
             }
             if let backdropPanel, let backdropController {
                 backdropController.update(backdrop)
-                backdropPanel.setFrame(next.screenFrame, display: true)
-                backdropPanel.orderFrontRegardless()
+                if backdropPanel.frame != next.screenFrame {
+                    backdropPanel.setFrame(next.screenFrame, display: true)
+                }
+                if !backdropPanel.isVisible {
+                    backdropPanel.orderFrontRegardless()
+                    card?.orderFrontRegardless()
+                }
             } else {
                 try presentBackdrop(backdrop, geometry: next, initialAlpha: 1)
+                card?.orderFrontRegardless()
             }
-            card?.orderFrontRegardless()
         } else if let backdropPanel {
             backdropController?.update(.empty)
             Self.close(backdropPanel)
@@ -325,7 +351,10 @@ enum LockScreenWidgetPosition {
         }
     }
 
-    private func syncCard(_ state: LockScreenContentState, minimalBackdrop: Bool, immediate: Bool) throws {
+    private func syncCard(_ state: LockScreenContentState,
+                          minimalBackdrop: Bool,
+                          revealsNativeLogin: Bool,
+                          immediate: Bool) throws {
         guard let geometry else { return }
         guard !state.isEmpty else {
             cancelCardFadeIn()
@@ -340,14 +369,18 @@ enum LockScreenWidgetPosition {
             panel = existingCard
             controller = existingController
             let size = existingController.preferredSize
-            let enriched = enrichWithBackdropSlice(state, panelSize: size, geometry: geometry, minimalBackdrop: minimalBackdrop)
+            let enriched = enrichWithBackdropSlice(state, panelSize: size, geometry: geometry,
+                                                   minimalBackdrop: minimalBackdrop,
+                                                   revealsNativeLogin: revealsNativeLogin)
             controller.update(enriched)
             isNewCard = false
         } else {
             let initialSize = LockScreenMetrics.size(hasMedia: state.showsMedia,
                                                      hasActivity: state.showsActivity,
                                                      expandedOutputCount: 0)
-            let enriched = enrichWithBackdropSlice(state, panelSize: initialSize, geometry: geometry, minimalBackdrop: minimalBackdrop)
+            let enriched = enrichWithBackdropSlice(state, panelSize: initialSize, geometry: geometry,
+                                                   minimalBackdrop: minimalBackdrop,
+                                                   revealsNativeLogin: revealsNativeLogin)
             let madeController = LockScreenContentController(state: enriched, onAction: transport)
             madeController.onPreferredSizeChange = { [weak self] _ in
                 guard let self else { return }
@@ -365,10 +398,13 @@ enum LockScreenWidgetPosition {
             isNewCard = true
         }
         positionCard(panel, size: controller.preferredSize, geometry: geometry,
-                     hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop)
-        // Join the SkyLight lock space before mapping onscreen so the card never flashes on the desktop.
-        try attach(panel)
-        panel.orderFrontRegardless()
+                     hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop,
+                     revealsNativeLogin: revealsNativeLogin)
+        if isNewCard || !panel.isVisible {
+            // Join the SkyLight lock space before mapping onscreen so the card never flashes on the desktop.
+            try attach(panel)
+            panel.orderFrontRegardless()
+        }
         if immediate {
             cancelCardFadeIn()
             panel.alphaValue = 1
@@ -390,35 +426,43 @@ enum LockScreenWidgetPosition {
         guard let card, let content, let geometry, !lastCardState.isEmpty else { return }
         let size = content.preferredSize
         positionCard(card, size: size, geometry: geometry,
-                     hasMedia: lastCardState.showsMedia, minimalBackdrop: lastMinimalBackdrop)
-        let enriched = enrichWithBackdropSlice(lastCardState, panelSize: size, geometry: geometry, minimalBackdrop: lastMinimalBackdrop)
+                     hasMedia: lastCardState.showsMedia,
+                     minimalBackdrop: lastMinimalBackdrop,
+                     revealsNativeLogin: lastRevealsNativeLogin)
+        let enriched = enrichWithBackdropSlice(lastCardState, panelSize: size, geometry: geometry,
+                                               minimalBackdrop: lastMinimalBackdrop,
+                                               revealsNativeLogin: lastRevealsNativeLogin)
         content.update(enriched)
     }
 
     private func cardFrame(for size: CGSize,
                            geometry: LockScreenGeometry,
                            hasMedia: Bool,
-                           minimalBackdrop: Bool) -> CGRect {
+                           minimalBackdrop: Bool,
+                           revealsNativeLogin: Bool) -> CGRect {
         let centerX = geometry.hasNotch ? geometry.notch.midX : geometry.screenFrame.midX
         let originY = LockScreenWidgetPosition.originY(screenFrame: geometry.screenFrame,
                                                        notchHeight: geometry.notch.height,
                                                        widgetHeight: size.height,
                                                        hasMedia: hasMedia,
-                                                       minimalBackdrop: minimalBackdrop)
+                                                       minimalBackdrop: minimalBackdrop,
+                                                       revealsNativeLogin: revealsNativeLogin)
         return CGRect(x: centerX - size.width / 2, y: originY, width: size.width, height: size.height)
     }
 
     private func enrichWithBackdropSlice(_ state: LockScreenContentState,
                                          panelSize: CGSize,
                                          geometry: LockScreenGeometry,
-                                         minimalBackdrop: Bool) -> LockScreenContentState {
+                                         minimalBackdrop: Bool,
+                                         revealsNativeLogin: Bool) -> LockScreenContentState {
         guard minimalBackdrop, let backdrop = lastBackdropImage else {
             var plain = state
             plain.backdropSlice = nil
             plain.pillGlassImage = nil
             return plain
         }
-        let fullFrame = cardFrame(for: panelSize, geometry: geometry, hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop)
+        let fullFrame = cardFrame(for: panelSize, geometry: geometry, hasMedia: state.showsMedia,
+                                  minimalBackdrop: minimalBackdrop, revealsNativeLogin: revealsNativeLogin)
         var enriched = state
         if state.showsMedia {
             let activityExtra = state.showsActivity ? (LockScreenMetrics.captionHeight + LockScreenMetrics.captionGap) : 0
@@ -458,10 +502,14 @@ enum LockScreenWidgetPosition {
                               size: CGSize,
                               geometry: LockScreenGeometry,
                               hasMedia: Bool,
-                              minimalBackdrop: Bool) {
-        let frame = cardFrame(for: size, geometry: geometry, hasMedia: hasMedia, minimalBackdrop: minimalBackdrop)
-        panel.setFrame(frame, display: true)
-        panel.contentView?.frame = NSRect(origin: .zero, size: size)
+                              minimalBackdrop: Bool,
+                              revealsNativeLogin: Bool) {
+        let frame = cardFrame(for: size, geometry: geometry, hasMedia: hasMedia,
+                              minimalBackdrop: minimalBackdrop, revealsNativeLogin: revealsNativeLogin)
+        if panel.frame != frame {
+            panel.setFrame(frame, display: true)
+            panel.contentView?.frame = NSRect(origin: .zero, size: size)
+        }
     }
 
     private func attach(_ window: NSWindow) throws {

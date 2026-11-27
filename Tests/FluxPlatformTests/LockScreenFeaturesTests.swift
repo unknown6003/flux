@@ -239,6 +239,55 @@ import notify
         #expect(px[2] > px[0])
     }
 
+    @Test func systemWallpaperMatchesMacOSAspectFillEvenWithEdgeBlurEnabled() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let squareSide = 400
+        var squarePixels = [UInt8](repeating: 0, count: squareSide * squareSide * 4)
+        for y in 0..<squareSide {
+            for x in 0..<squareSide {
+                let offset = (y * squareSide + x) * 4
+                // Paint top/bottom 17.5% bright red and middle 65% bright green.
+                // Under height-fit on a 16:10 canvas the red band stays visible at top;
+                // under aspectFill (matching macOS Fill Screen) the top/bottom 17.5% crops out.
+                let isTopOrBottomBand = y < 70 || y >= squareSide - 70
+                squarePixels[offset] = isTopOrBottomBand ? 240 : 20
+                squarePixels[offset + 1] = isTopOrBottomBand ? 20 : 230
+                squarePixels[offset + 2] = 30
+                squarePixels[offset + 3] = 255
+            }
+        }
+        let squareImage: CGImage = try squarePixels.withUnsafeMutableBytes { rawBuffer in
+            let squareCtx = try #require(CGContext(
+                data: rawBuffer.baseAddress, width: squareSide, height: squareSide,
+                bitsPerComponent: 8, bytesPerRow: squareSide * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            return try #require(squareCtx.makeImage())
+        }
+        let target = CGSize(width: 1512, height: 982)
+        let systemFill = try #require(LockScreenBackdropComposer.compose(
+            sourceKey: "fixture.systemFill",
+            image: squareImage,
+            targetAspectSize: target,
+            blurEdges: true,
+            matchSystemFill: true,
+            includeDepthEffect: false
+        ))
+        let topCenterCrop = try #require(systemFill.backdrop.cropping(
+            to: CGRect(x: CGFloat(systemFill.backdrop.width / 2), y: 20, width: 1, height: 1)
+        ))
+        var topPixel = [UInt8](repeating: 0, count: 4)
+        try topPixel.withUnsafeMutableBytes { rawBuffer in
+            let pixelCtx = try #require(CGContext(
+                data: rawBuffer.baseAddress, width: 1, height: 1,
+                bitsPerComponent: 8, bytesPerRow: 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ))
+            pixelCtx.draw(topCenterCrop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        #expect(topPixel[1] > topPixel[0])
+    }
+
     @Test func depthClockOverlapSafetyGateRejectsEmptyAndOverwhelmingMasks() {
         #expect(!LockScreenBackdropComposer.acceptsClockOverlap(0.0))
         #expect(!LockScreenBackdropComposer.acceptsClockOverlap(0.01))

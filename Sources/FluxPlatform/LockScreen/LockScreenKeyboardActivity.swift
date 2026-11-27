@@ -1,4 +1,5 @@
 import CoreGraphics
+import Dispatch
 import Foundation
 
 /// Detects hardware keyboard activity on the lock screen without reading
@@ -17,7 +18,7 @@ public enum LockScreenKeyboardActivity {
         /// Ignores key-downs whose own timestamp falls within this window after arming
         /// so late HID updates from the lock shortcut or wake key never false-trigger,
         /// regardless of poll timing.
-        public static let defaultSettlingGrace: TimeInterval = 0.15
+        public static let defaultSettlingGrace: TimeInterval = 0.12
 
         private let armedAtUptime: TimeInterval
         private let settlingGrace: TimeInterval
@@ -25,9 +26,14 @@ public enum LockScreenKeyboardActivity {
 
         public init(uptime: TimeInterval,
                     initialSecondsSinceKeyDown: TimeInterval,
-                    settlingGrace: TimeInterval = Detector.defaultSettlingGrace) {
+                    settlingGrace: TimeInterval? = nil) {
             armedAtUptime = uptime
-            self.settlingGrace = max(0, settlingGrace)
+            let resolvedGrace = settlingGrace ?? (
+                initialSecondsSinceKeyDown.isFinite && initialSecondsSinceKeyDown >= 0 && initialSecondsSinceKeyDown < 0.5
+                    ? Detector.defaultSettlingGrace
+                    : 0
+            )
+            self.settlingGrace = max(0, resolvedGrace)
             baselineKeyDownUptime = Self.keyDownUptime(
                 uptime: uptime,
                 secondsSinceKeyDown: initialSecondsSinceKeyDown
@@ -54,6 +60,92 @@ public enum LockScreenKeyboardActivity {
         private static func keyDownUptime(uptime: TimeInterval, secondsSinceKeyDown: TimeInterval) -> TimeInterval? {
             guard uptime.isFinite, secondsSinceKeyDown.isFinite, secondsSinceKeyDown >= 0 else { return nil }
             return uptime - secondsSinceKeyDown
+        }
+    }
+}
+
+/// Strict, non-coalesced lock-screen keyboard monitor. Uses a strict main-queue
+/// `DispatchSourceTimer` plus a short-lived `ProcessInfo` activity token (allowing
+/// idle sleep) so App Nap never delays the first password keystroke by hundreds of
+/// milliseconds. Stops immediately once typing is detected or the screen unlocks/sleeps.
+@MainActor
+public final class LockScreenKeyboardMonitor {
+    // Accessed only on MainActor during normal use, and in deinit after all references are gone.
+    private nonisolated(unsafe) var timer: DispatchSourceTimer?
+    private nonisolated(unsafe) var activityToken: NSObjectProtocol?
+    private var detector: LockScreenKeyboardActivity.Detector
+    private let readSystemUptime: @MainActor () -> TimeInterval
+    private let readSecondsSinceKeyDown: @MainActor () -> TimeInterval
+    private let onKeyActivity: @MainActor () -> Void
+
+    public var isRunning: Bool { timer != nil }
+
+    public init(pollInterval: Duration = .milliseconds(20),
+                settlingGrace: TimeInterval? = nil,
+                readSystemUptime: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                readSecondsSinceKeyDown: @escaping @MainActor () -> TimeInterval = LockScreenKeyboardActivity.secondsSinceLastKeyDown,
+                onKeyActivity: @escaping @MainActor () -> Void) {
+        self.readSystemUptime = readSystemUptime
+        self.readSecondsSinceKeyDown = readSecondsSinceKeyDown
+        self.onKeyActivity = onKeyActivity
+        self.detector = LockScreenKeyboardActivity.Detector(
+            uptime: readSystemUptime(),
+            initialSecondsSinceKeyDown: readSecondsSinceKeyDown(),
+            settlingGrace: settlingGrace
+        )
+        start(pollInterval: pollInterval)
+    }
+
+    private func start(pollInterval: Duration) {
+        let components = pollInterval.components
+        let intervalMs = max(5, Int(components.seconds * 1_000) + Int(components.attoseconds / 1_000_000_000_000_000))
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "Detect lock screen password typing"
+        )
+        let source = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        source.schedule(
+            deadline: .now() + .milliseconds(intervalMs),
+            repeating: .milliseconds(intervalMs),
+            leeway: .milliseconds(2)
+        )
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                self?.tick()
+            }
+        }
+        timer = source
+        source.resume()
+    }
+
+    private func tick() {
+        guard timer != nil else { return }
+        if detector.recordSample(uptime: readSystemUptime(),
+                                 secondsSinceKeyDown: readSecondsSinceKeyDown()) {
+            stop()
+            onKeyActivity()
+        }
+    }
+
+    public func stop() {
+        if let source = timer {
+            timer = nil
+            source.setEventHandler {}
+            source.cancel()
+        }
+        if let token = activityToken {
+            activityToken = nil
+            ProcessInfo.processInfo.endActivity(token)
+        }
+    }
+
+    deinit {
+        if let source = timer {
+            source.setEventHandler {}
+            source.cancel()
+        }
+        if let token = activityToken {
+            ProcessInfo.processInfo.endActivity(token)
         }
     }
 }

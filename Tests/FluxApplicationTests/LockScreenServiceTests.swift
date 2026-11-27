@@ -166,6 +166,20 @@ import FluxPlatform
         let minimalCenteredY = LockScreenWidgetPosition.originY(screenFrame: tall, notchHeight: 32, widgetHeight: 148,
                                                                 hasMedia: true, minimalBackdrop: true)
         #expect(abs(minimalCenteredY - (2000 * 0.198 - 74)) < 0.01)
+        // When macOS's native bottom login band is revealed inside the backdrop,
+        // the card elevates cleanly above the password field (31% center, min 23%).
+        let revealedFloorY = LockScreenWidgetPosition.originY(screenFrame: screen, notchHeight: 32, widgetHeight: 148,
+                                                              hasMedia: true, minimalBackdrop: true,
+                                                              revealsNativeLogin: true)
+        #expect(abs(revealedFloorY - (982 * 0.31 - 74)) < 0.01)
+        #expect(revealedFloorY > minimalFloorY)
+        // On a compact 768 pt display, the card still clears the shared bottom login reveal band.
+        let compact = CGRect(x: 0, y: 0, width: 1280, height: 768)
+        let compactRevealedY = LockScreenWidgetPosition.originY(screenFrame: compact, notchHeight: 0, widgetHeight: 148,
+                                                                hasMedia: true, minimalBackdrop: true,
+                                                                revealsNativeLogin: true)
+        let compactClearHeight = LockScreenBackdropMetrics.nativeLoginReveal(for: compact.height).clearHeight
+        #expect(compactRevealedY >= compactClearHeight + 12)
     }
 
     /// Loads SkyLight's private symbols on this Mac without locking the
@@ -505,40 +519,37 @@ import FluxPlatform
                 try await Task.sleep(for: .milliseconds(20))
             }
 
-            // Lock while Touch ID is locked out (e.g. 48-hour token expired): opaque full-screen
-            // backdrop must yield so macOS's native password prompt stays visible, while the
-            // composed backdrop remains cached for the next lock.
+            // Lock while Touch ID is locked out (e.g. 48-hour token expired): keep Flux's
+            // backdrop mounted while revealing macOS's native bottom login area and hiding
+            // Flux's static unlock hint so the native prompt and password box stay visible.
             service.setPhase(.locked)
-            let lockedOutBackdrop = NSApp.windows.compactMap {
-                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
-            }.first
-            #expect(lockedOutBackdrop == nil)
+            let lockedOutBackdrop = try #require(
+                NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
+            )
+            #expect(lockedOutBackdrop.state.revealsNativeLogin)
             #expect(service.composedBackdrop != nil)
 
-            // Even if biometry flips ready mid-lock, keep the backdrop yielded until unlock
-            // so an opaque panel never covers an in-progress password entry.
+            // Even if biometry flips ready mid-lock, keep the native bottom login revealed
+            // until unlock so an opaque panel never covers an in-progress password entry.
             biometry = .ready
             service.refreshBiometryState()
-            let stillYielded = NSApp.windows.compactMap {
-                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
-            }.first
-            #expect(stillYielded == nil)
+            #expect(lockedOutBackdrop.state.revealsNativeLogin)
 
-            // Unlock and re-lock while ready: full-screen backdrop restores immediately.
+            // Unlock and re-lock while ready: full-screen backdrop restores cleanly.
             service.setPhase(.unlocked)
             service.setPhase(.locked)
             let readyController = try #require(
                 NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
             )
+            #expect(!readyController.state.revealsNativeLogin)
             #expect(readyController.state.unlockHint == "Touch ID or Enter Password")
 
-            // Mid-lock lockout immediately yields the opaque backdrop again.
+            // Mid-lock lockout immediately reveals the bottom login band in place while keeping
+            // unlockHint populated so SwiftUI fades it smoothly via opacity.
             biometry = .lockedOut
             service.refreshBiometryState()
-            let afterLockout = NSApp.windows.compactMap {
-                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
-            }.first
-            #expect(afterLockout == nil)
+            #expect(readyController.state.revealsNativeLogin)
+            #expect(readyController.state.unlockHint != nil)
 
             // Non-Touch-ID / unavailable Macs show an accurate password-only hint on lock.
             service.setPhase(.unlocked)
@@ -547,6 +558,7 @@ import FluxPlatform
             let unavailableController = try #require(
                 NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
             )
+            #expect(!unavailableController.state.revealsNativeLogin)
             #expect(unavailableController.state.unlockHint == "Enter Password")
         }
     }
@@ -642,37 +654,46 @@ import FluxPlatform
                 try await Task.sleep(for: .milliseconds(20))
             }
 
-            // Lock via shortcut: backdrop stays up while no new key is pressed.
+            // Lock via shortcut with media playing: backdrop stays opaque and card sits in lower lane.
+            var parser = MediaStream()
+            let line = #"{"type":"data","diff":false,"payload":{"title":"Track","artist":"Artist","playing":true,"duration":180,"elapsedTime":10}}"# + "\n"
+            let playing = try #require(try parser.append(Data(line.utf8)).compactMap { $0 }.first)
+            service.receive(.media(.ready(playing)))
             service.setPhase(.locked)
             uptime = 1000.20
-            try await Task.sleep(for: .milliseconds(60))
-            let beforeTyping = NSApp.windows.compactMap {
-                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
-            }.first
-            #expect(beforeTyping != nil)
+            try await Task.sleep(for: .milliseconds(50))
+            let beforeTyping = try #require(
+                NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
+            )
+            let cardBefore = try #require(
+                NSApp.windows.first { $0.isVisible && $0.contentViewController is LockScreenContentController }
+            )
+            let cardOriginBefore = cardBefore.frame.minY
+            #expect(!beforeTyping.state.revealsNativeLogin)
+            #expect(beforeTyping.state.unlockHint == "Touch ID or Enter Password")
 
-            // User starts typing password: full-screen backdrop yields immediately.
+            // User starts typing password: same backdrop controller stays mounted, reveals
+            // only the bottom native login band, hides static hint, and elevates the media card.
             uptime = 1000.55
             lastKeyDownAt = 1000.54
-            let yieldDeadline = ContinuousClock.now.advanced(by: .seconds(1))
-            while NSApp.windows.contains(where: { $0.isVisible && $0.contentViewController is LockScreenBackdropController }),
-                  ContinuousClock.now < yieldDeadline {
-                try await Task.sleep(for: .milliseconds(15))
+            let revealDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while !beforeTyping.state.revealsNativeLogin, ContinuousClock.now < revealDeadline {
+                try await Task.sleep(for: .milliseconds(10))
             }
-            let afterTyping = NSApp.windows.compactMap {
-                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
-            }.first
-            #expect(afterTyping == nil)
+            #expect(beforeTyping.state.revealsNativeLogin)
+            #expect(beforeTyping.state.unlockHint == "Touch ID or Enter Password")
+            #expect(cardBefore.frame.minY > cardOriginBefore)
             #expect(service.composedBackdrop != nil)
 
-            // Unlock and lock again: full-screen backdrop restores cleanly.
+            // Unlock and lock again: full-screen backdrop restores cleanly without bottom cutout.
             service.setPhase(.unlocked)
             uptime = 1010.00
             service.setPhase(.locked)
-            let restored = NSApp.windows.compactMap {
-                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
-            }.first
-            #expect(restored != nil)
+            let restored = try #require(
+                NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
+            )
+            #expect(!restored.state.revealsNativeLogin)
+            #expect(restored.state.unlockHint == "Touch ID or Enter Password")
         }
     }
 }

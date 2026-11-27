@@ -116,10 +116,13 @@ public enum LockScreenBackdropComposer {
 
     /// Composes the full-screen wallpaper backdrop (with optional mirrored/feathered
     /// edge blur) and an optional Vision foreground cutout aligned to the exact same canvas.
+    /// Set `matchSystemFill` to true for macOS's System Wallpaper so the central canvas
+    /// matches macOS's native aspect-fill crop pixel-for-pixel when the bottom login bar reveals.
     public static func compose(sourceKey: String,
                                image: CGImage,
                                targetAspectSize: CGSize,
                                blurEdges: Bool = true,
+                               matchSystemFill: Bool = false,
                                includeDepthEffect: Bool) -> LockScreenBackdropBundle? {
         let canvasSize = resolvedCanvasSize(for: targetAspectSize)
         guard canvasSize.width >= 64, canvasSize.height >= 64 else { return nil }
@@ -131,12 +134,12 @@ public enum LockScreenBackdropComposer {
         guard srcW > 0, srcH > 0 else { return nil }
 
         let rawScale: CGFloat
-        if blurEdges {
-            // Height-fit so portrait/square photos get mirrored blurred flanks,
+        if blurEdges && !matchSystemFill {
+            // Height-fit so custom portrait/square photos get mirrored blurred flanks,
             // while widescreen photos fill height and get soft blurred left/right edges.
             rawScale = (canvasSize.height + 2) / srcH
         } else {
-            // Clean aspectFill with no edge blur.
+            // Exact aspectFill matching macOS's native lock-screen wallpaper framing.
             rawScale = max((canvasSize.width + 2) / srcW, (canvasSize.height + 2) / srcH)
         }
 

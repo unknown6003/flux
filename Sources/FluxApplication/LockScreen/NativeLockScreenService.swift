@@ -37,11 +37,12 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private var phase: SessionPhase = .sleeping
     private var biometryState: LockScreenBiometryState = .ready
     /// Once Touch ID is locked out or the user starts typing a password during a
-    /// lock session, keep the full-screen backdrop yielded until unlock so an opaque
-    /// panel never covers macOS's native password prompt or typed bullets.
-    private var yieldedBackdropForCurrentLock = false
+    /// lock session, keep macOS's native bottom login area revealed until unlock so
+    /// Flux's Liquid Glass clock and upper backdrop stay on screen while the real
+    /// macOS password field and bullets remain visible.
+    private var revealsNativeLoginForCurrentLock = false
     private var biometryObserver: BiometryLockoutObserver?
-    private var keyboardMonitorTask: Task<Void, Never>?
+    private var keyboardMonitor: LockScreenKeyboardMonitor?
     private var handleID: UUID?
     private var media: MediaSnapshot?
     private var activity: ActivityItem?
@@ -92,7 +93,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.readSecondsSinceKeyDown = LockScreenKeyboardActivity.secondsSinceLastKeyDown
         self.readSystemUptime = { ProcessInfo.processInfo.systemUptime }
         self.observeKeyboardActivity = true
-        self.keyboardPollInterval = .milliseconds(50)
+        self.keyboardPollInterval = .milliseconds(20)
         self.mediaClearGracePeriod = .seconds(3.5)
         self.playFallbackDelay = .milliseconds(700)
         let cache = LockScreenGeometryCache()
@@ -113,7 +114,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
          readSecondsSinceKeyDown: @escaping @MainActor () -> TimeInterval = { .infinity },
          readSystemUptime: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          observeKeyboardActivity: Bool = false,
-         keyboardPollInterval: Duration = .milliseconds(50),
+         keyboardPollInterval: Duration = .milliseconds(20),
          mediaClearGracePeriod: Duration = .seconds(3.5),
          playFallbackDelay: Duration = .milliseconds(700)) {
         self.preferences = preferences
@@ -178,7 +179,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let previous = self.phase
         self.phase = phase
         if phase != .locked {
-            yieldedBackdropForCurrentLock = false
+            revealsNativeLoginForCurrentLock = false
             cancelPlayFallback()
             if mediaClearTask != nil {
                 mediaClearTask?.cancel()
@@ -210,18 +211,18 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         guard next != biometryState else { return }
         biometryState = next
         if next == .lockedOut {
-            yieldBackdropForPasswordEntry(reason: "biometryLockout")
+            revealNativeLogin(reason: "biometryLockout")
             return
         }
         syncKeyboardObserver()
         render()
     }
 
-    private func yieldBackdropForPasswordEntry(reason: String) {
-        guard !yieldedBackdropForCurrentLock else { return }
-        yieldedBackdropForCurrentLock = true
+    private func revealNativeLogin(reason: String) {
+        guard !revealsNativeLoginForCurrentLock else { return }
+        revealsNativeLoginForCurrentLock = true
         clearKeyboardObserver()
-        Self.logger.notice("lock.backdrop.yield reason=\(reason, privacy: .public)")
+        Self.logger.notice("lock.nativeLogin.reveal reason=\(reason, privacy: .public)")
         render()
     }
 
@@ -229,13 +230,13 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         if phase == .locked {
             biometryState = readBiometryState()
             if biometryState == .lockedOut {
-                if !yieldedBackdropForCurrentLock {
-                    Self.logger.notice("lock.backdrop.yield reason=biometryLockout")
+                if !revealsNativeLoginForCurrentLock {
+                    Self.logger.notice("lock.nativeLogin.reveal reason=biometryLockout")
                 }
-                yieldedBackdropForCurrentLock = true
+                revealsNativeLoginForCurrentLock = true
             }
         } else {
-            yieldedBackdropForCurrentLock = false
+            revealsNativeLoginForCurrentLock = false
         }
         syncBiometryObserver()
         syncKeyboardObserver()
@@ -262,39 +263,24 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
             && observeKeyboardActivity
             && preferences.value(for: Preferences.lockScreenBackdrop)
             && biometryState != .lockedOut
-            && !yieldedBackdropForCurrentLock
+            && !revealsNativeLoginForCurrentLock
         guard shouldMonitor else {
             clearKeyboardObserver()
             return
         }
-        guard keyboardMonitorTask == nil else { return }
-        var detector = LockScreenKeyboardActivity.Detector(
-            uptime: readSystemUptime(),
-            initialSecondsSinceKeyDown: readSecondsSinceKeyDown()
-        )
-        let interval = keyboardPollInterval
-        keyboardMonitorTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: interval)
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled, let self, self.presenting, !self.yieldedBackdropForCurrentLock else {
-                    return
-                }
-                if detector.recordSample(uptime: self.readSystemUptime(),
-                                         secondsSinceKeyDown: self.readSecondsSinceKeyDown()) {
-                    self.yieldBackdropForPasswordEntry(reason: "keyboard")
-                    return
-                }
-            }
+        guard keyboardMonitor == nil else { return }
+        keyboardMonitor = LockScreenKeyboardMonitor(
+            pollInterval: keyboardPollInterval,
+            readSystemUptime: readSystemUptime,
+            readSecondsSinceKeyDown: readSecondsSinceKeyDown
+        ) { [weak self] in
+            self?.revealNativeLogin(reason: "keyboard")
         }
     }
 
     private func clearKeyboardObserver() {
-        keyboardMonitorTask?.cancel()
-        keyboardMonitorTask = nil
+        keyboardMonitor?.stop()
+        keyboardMonitor = nil
     }
 
     public func receive(_ event: WidgetEvent) {
@@ -349,7 +335,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     private func tearDown(keepBackdrop: Bool) {
         handleID = nil
-        yieldedBackdropForCurrentLock = false
+        revealsNativeLoginForCurrentLock = false
         clearBiometryObserver()
         clearKeyboardObserver()
         cancelMediaClear()
@@ -490,13 +476,13 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let caption = preferences.value(for: Preferences.lockScreenActivities) ? activity.flatMap(Self.caption) : nil
 
         let backdropState: LockScreenBackdropState
-        // When macOS locks out Touch ID (e.g. 48-hour token expiry, reboot, or
-        // failed attempts), yield the opaque full-screen backdrop for the rest of
-        // this lock session so macOS's native password prompt and input field stay
-        // fully visible and usable.
-        let allowFullScreenBackdrop = showBackdrop && biometryState != .lockedOut && !yieldedBackdropForCurrentLock
-        if allowFullScreenBackdrop, let bundle = readyBackdrop {
-            backdropState = makeBackdropState(bundle: bundle, showDepth: showDepth)
+        let revealsNativeLogin = biometryState == .lockedOut || revealsNativeLoginForCurrentLock
+        if showBackdrop, let bundle = readyBackdrop {
+            backdropState = makeBackdropState(
+                bundle: bundle,
+                showDepth: showDepth,
+                revealsNativeLogin: revealsNativeLogin
+            )
         } else {
             backdropState = .empty
         }
@@ -511,14 +497,19 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         }
     }
 
-    private func makeBackdropState(bundle: LockScreenBackdropBundle, showDepth: Bool) -> LockScreenBackdropState {
+    private func makeBackdropState(bundle: LockScreenBackdropBundle,
+                                   showDepth: Bool,
+                                   revealsNativeLogin: Bool = false) -> LockScreenBackdropState {
+        // Keep unlockHint populated even while revealing native login so LockScreenBackdropView
+        // can animate its opacity fade smoothly instead of unmounting the view abruptly.
         let hint = biometryState == .ready ? "Touch ID or Enter Password" : "Enter Password"
         return LockScreenBackdropState(
             sourceKey: bundle.sourceKey,
             backdrop: bundle.backdrop,
             foregroundCutout: showDepth ? bundle.foregroundCutout : nil,
             showsDepthEffect: showDepth && bundle.foregroundCutout != nil,
-            unlockHint: hint
+            unlockHint: hint,
+            revealsNativeLogin: revealsNativeLogin
         )
     }
 
@@ -572,6 +563,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         backdropTask?.cancel()
 
         backdropTask = Task { @MainActor [weak self] in
+            let matchSystemFill = choice == .system
             let bundle: LockScreenBackdropBundle? = await Task.detached(priority: .userInitiated) {
                 guard let chosen = LockScreenBackdropComposer.decodeImage(at: wallpaperURL, maxPixels: 2560),
                       !Task.isCancelled else { return nil }
@@ -580,6 +572,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
                     image: chosen,
                     targetAspectSize: screenSize,
                     blurEdges: blurEdges,
+                    matchSystemFill: matchSystemFill,
                     includeDepthEffect: depthEffect
                 )
             }.value

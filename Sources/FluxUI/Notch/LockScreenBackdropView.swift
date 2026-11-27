@@ -13,19 +13,24 @@ public struct LockScreenBackdropState: Equatable {
     public var fixedDate: Date?
     /// Minimal bottom hint shown when the full-screen backdrop is active.
     public var unlockHint: String?
+    /// Softly fades open only the bottom login band so macOS's native password
+    /// input field, avatar, and error feedback appear directly inside Flux's UI.
+    public var revealsNativeLogin: Bool
 
     public init(sourceKey: String? = nil,
                 backdrop: CGImage? = nil,
                 foregroundCutout: CGImage? = nil,
                 showsDepthEffect: Bool = true,
                 fixedDate: Date? = nil,
-                unlockHint: String? = "Touch ID or Enter Password") {
+                unlockHint: String? = "Touch ID or Enter Password",
+                revealsNativeLogin: Bool = false) {
         self.sourceKey = sourceKey
         self.backdrop = backdrop
         self.foregroundCutout = foregroundCutout
         self.showsDepthEffect = showsDepthEffect
         self.fixedDate = fixedDate
         self.unlockHint = unlockHint
+        self.revealsNativeLogin = revealsNativeLogin
     }
 
     public static var empty: LockScreenBackdropState { LockScreenBackdropState(unlockHint: nil) }
@@ -38,6 +43,7 @@ public struct LockScreenBackdropState: Equatable {
             && lhs.showsDepthEffect == rhs.showsDepthEffect
             && lhs.fixedDate == rhs.fixedDate
             && lhs.unlockHint == rhs.unlockHint
+            && lhs.revealsNativeLogin == rhs.revealsNativeLogin
     }
 }
 
@@ -109,6 +115,16 @@ public struct ClockGlyphShape: Shape, Sendable {
     }
 }
 
+/// Shared geometry for revealing macOS's native bottom login controls inside
+/// Flux's full-screen lock-screen backdrop without leaving Flux's UI.
+public enum LockScreenBackdropMetrics {
+    public static func nativeLoginReveal(for screenHeight: CGFloat) -> (clearHeight: CGFloat, featherHeight: CGFloat) {
+        let clearHeight = max(215, min(255, screenHeight * 0.215))
+        let featherHeight = max(56, min(84, screenHeight * 0.065))
+        return (clearHeight, featherHeight)
+    }
+}
+
 /// Full-screen minimal lock screen:
 ///   Layer 0: Edge-blurred widescreen album artwork / wallpaper
 ///   Layer 1: Crisp date + giant Liquid Glass clock
@@ -121,33 +137,54 @@ struct LockScreenBackdropView: View {
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
+            let revealMetrics = LockScreenBackdropMetrics.nativeLoginReveal(for: size.height)
             if let backdrop = model.state.backdrop {
                 ZStack {
-                    // Layer 0: Full-screen blurred-edge photo backdrop (no opacity transition so
-                    // the native macOS lock screen never bleeds through on lock or wake).
-                    Image(decorative: backdrop, scale: 1)
-                        .interpolation(.high)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: size.width, height: size.height)
-                        .clipped()
-                        .id(model.state.sourceKey ?? "backdrop")
-
-                    // Layer 1: Date + Sculpted Liquid Glass Clock positioned in the upper sky band.
-                    clockStack(backdrop: backdrop, in: size)
-
-                    // Layer 2: Vision depth-effect foreground cutout in front of the clock.
-                    if model.state.showsDepthEffect, let cutout = model.state.foregroundCutout {
-                        Image(decorative: cutout, scale: 1)
+                    // Layers 0–2: Full-screen backdrop, Liquid Glass clock, and depth cutout.
+                    // When revealing macOS's native password area, fade open only the bottom
+                    // band so the clock, depth cutout, and upper wallpaper stay untouched.
+                    ZStack {
+                        Image(decorative: backdrop, scale: 1)
                             .interpolation(.high)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .frame(width: size.width, height: size.height)
                             .clipped()
-                            .id((model.state.sourceKey ?? "cutout") + ".depth")
+                            .id(model.state.sourceKey ?? "backdrop")
+
+                        clockStack(backdrop: backdrop, in: size)
+
+                        if model.state.showsDepthEffect, let cutout = model.state.foregroundCutout {
+                            Image(decorative: cutout, scale: 1)
+                                .interpolation(.high)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: size.width, height: size.height)
+                                .clipped()
+                                .id((model.state.sourceKey ?? "cutout") + ".depth")
+                        }
+                    }
+                    .frame(width: size.width, height: size.height)
+                    .mask {
+                        VStack(spacing: 0) {
+                            Color.black
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .black, location: 0),
+                                    .init(color: .black.opacity(model.state.revealsNativeLogin ? 0 : 1), location: 1),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: revealMetrics.featherHeight)
+                            Color.black
+                                .opacity(model.state.revealsNativeLogin ? 0 : 1)
+                                .frame(height: revealMetrics.clearHeight)
+                        }
+                        .animation(.easeOut(duration: 0.14), value: model.state.revealsNativeLogin)
                     }
 
-                    // Layer 3: Quiet minimal bottom prompt.
+                    // Layer 3: Quiet minimal bottom prompt (fades out when native login is revealed).
                     if let hint = model.state.unlockHint, !hint.isEmpty {
                         VStack {
                             Spacer()
@@ -157,6 +194,8 @@ struct LockScreenBackdropView: View {
                                 .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
                                 .padding(.bottom, max(24, size.height * 0.056))
                         }
+                        .opacity(model.state.revealsNativeLogin ? 0 : 1)
+                        .animation(.easeOut(duration: 0.10), value: model.state.revealsNativeLogin)
                     }
                 }
                 .frame(width: size.width, height: size.height)

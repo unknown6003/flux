@@ -14,7 +14,7 @@ struct LockScreenKeyboardActivityTests {
             initialSecondsSinceKeyDown: 0.13
         )
 
-        // A late wake-key timestamp inside the 150 ms settling window (1000.21) is ignored
+        // A late wake-key timestamp inside the 120 ms settling window (1000.21) is ignored
         // under both an early poll (1000.22) and a delayed poll (1000.40).
         let earlyWakePoll = fastPoll.recordSample(uptime: 1000.22, secondsSinceKeyDown: 0.01)
         let delayedWakePoll = delayedPoll.recordSample(uptime: 1000.40, secondsSinceKeyDown: 0.19)
@@ -48,14 +48,74 @@ struct LockScreenKeyboardActivityTests {
         #expect(!repeatedPoll)
     }
 
-    @Test func detectorFiresAfterLongIdlePeriodOnceSettled() {
+    @Test func detectorFiresImmediatelyAfterLongIdlePeriodWithoutSettlingDelay() {
         var detector = LockScreenKeyboardActivity.Detector(
             uptime: 5000.0,
             initialSecondsSinceKeyDown: 1800.0
         )
-        let stillIdle = detector.recordSample(uptime: 5000.20, secondsSinceKeyDown: 1800.20)
-        let pressedKey = detector.recordSample(uptime: 5000.25, secondsSinceKeyDown: 0.02)
+        let stillIdle = detector.recordSample(uptime: 5000.03, secondsSinceKeyDown: 1800.03)
+        // First password character pressed 40 ms after lock (no keyboard lock shortcut active).
+        let pressedKey = detector.recordSample(uptime: 5000.05, secondsSinceKeyDown: 0.01)
         #expect(!stillIdle)
         #expect(pressedKey)
+    }
+
+    @MainActor private final class ClockState {
+        var uptime: TimeInterval
+        var lastKeyDownAt: TimeInterval
+        var triggers = 0
+
+        init(uptime: TimeInterval, lastKeyDownAt: TimeInterval) {
+            self.uptime = uptime
+            self.lastKeyDownAt = lastKeyDownAt
+        }
+    }
+
+    @Test @MainActor func strictMonitorFiresOnceOnKeyActivityAndStopsCleanly() async throws {
+        let clock = ClockState(uptime: 2000.10, lastKeyDownAt: 2000.00)
+
+        let monitor = LockScreenKeyboardMonitor(
+            pollInterval: .milliseconds(10),
+            readSystemUptime: { clock.uptime },
+            readSecondsSinceKeyDown: { max(0, clock.uptime - clock.lastKeyDownAt) },
+            onKeyActivity: { clock.triggers += 1 }
+        )
+        defer { monitor.stop() }
+        #expect(monitor.isRunning)
+
+        // Wait a couple ticks without typing: must stay running and not fire.
+        clock.uptime = 2000.20
+        try await Task.sleep(for: .milliseconds(35))
+        #expect(clock.triggers == 0)
+        #expect(monitor.isRunning)
+
+        // Simulate key #1 past settling window: must fire promptly and stop itself.
+        clock.uptime = 2000.40
+        clock.lastKeyDownAt = 2000.39
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(500))
+        while clock.triggers == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(clock.triggers == 1)
+        #expect(!monitor.isRunning)
+    }
+
+    @Test @MainActor func stoppedMonitorIgnoresSubsequentKeyActivity() async throws {
+        let clock = ClockState(uptime: 3000.00, lastKeyDownAt: 2900.00)
+
+        let monitor = LockScreenKeyboardMonitor(
+            pollInterval: .milliseconds(10),
+            readSystemUptime: { clock.uptime },
+            readSecondsSinceKeyDown: { max(0, clock.uptime - clock.lastKeyDownAt) },
+            onKeyActivity: { clock.triggers += 1 }
+        )
+        #expect(monitor.isRunning)
+        monitor.stop()
+        #expect(!monitor.isRunning)
+
+        clock.uptime = 3000.50
+        clock.lastKeyDownAt = 3000.49
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(clock.triggers == 0)
     }
 }
