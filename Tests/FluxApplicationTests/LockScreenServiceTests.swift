@@ -605,4 +605,74 @@ import FluxPlatform
             #expect(bridge.firstAttachWasVisible.values.allSatisfy { !$0 })
         }
     }
+
+    @Test @MainActor func typingPasswordWhileLockedYieldsBackdropAndRestoresOnNextLock() async throws {
+        _ = NSApplication.shared
+        try await asyncProfile { preferences in
+            try preferences.set(true, for: Preferences.lockScreenBackdrop)
+            try preferences.set(false, for: Preferences.lockScreenDepthEffect)
+
+            let tempURL = try makeWallpaper(color: .systemMint, prefix: "flux-key-yield")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            let screen = try #require(NSScreen.screens.first)
+            let bridge = FixtureLockBridge()
+            // Simulate Cmd+Ctrl+Q 130ms before lock arrived.
+            var uptime: TimeInterval = 1000.13
+            var lastKeyDownAt: TimeInterval = 1000.00
+            let service = NativeLockScreenService(
+                preferences: preferences,
+                availability: { .available },
+                makeBridge: { bridge },
+                geometry: { fixtureGeometry(screen) },
+                loadWallpaperURL: { tempURL },
+                readBiometryState: { .ready },
+                readSecondsSinceKeyDown: { max(0, uptime - lastKeyDownAt) },
+                readSystemUptime: { uptime },
+                observeKeyboardActivity: true,
+                keyboardPollInterval: .milliseconds(15)
+            )
+            defer { service.stop() }
+            service.setPhase(.unlocked)
+            let handle = try service.makeHandle()
+            defer { handle.stop() }
+
+            let composeDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while service.composedBackdrop == nil, ContinuousClock.now < composeDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+
+            // Lock via shortcut: backdrop stays up while no new key is pressed.
+            service.setPhase(.locked)
+            uptime = 1000.20
+            try await Task.sleep(for: .milliseconds(60))
+            let beforeTyping = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(beforeTyping != nil)
+
+            // User starts typing password: full-screen backdrop yields immediately.
+            uptime = 1000.55
+            lastKeyDownAt = 1000.54
+            let yieldDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while NSApp.windows.contains(where: { $0.isVisible && $0.contentViewController is LockScreenBackdropController }),
+                  ContinuousClock.now < yieldDeadline {
+                try await Task.sleep(for: .milliseconds(15))
+            }
+            let afterTyping = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(afterTyping == nil)
+            #expect(service.composedBackdrop != nil)
+
+            // Unlock and lock again: full-screen backdrop restores cleanly.
+            service.setPhase(.unlocked)
+            uptime = 1010.00
+            service.setPhase(.locked)
+            let restored = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(restored != nil)
+        }
+    }
 }

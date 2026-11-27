@@ -43,6 +43,7 @@ private actor NativeUpdates: UpdateBackend {
 /// timer is created while automatic checks are off and no check was requested.
 @MainActor public final class UpdateCoordinator {
     public private(set) var status: UpdateStatus = .idle
+    var isAutomatic: Bool { automatic }
     private let current: ReleaseVersion?
     private let installURL: URL
     private let backend: any UpdateBackend

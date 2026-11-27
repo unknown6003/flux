@@ -160,4 +160,66 @@ struct ApplicationHostTests {
         #expect(!FileManager.default.fileExists(atPath: root.path))
         #expect(defaults.object(forKey: UsageCollection.identityKey) == nil)
     }
+
+    @Test @MainActor func unpublishedCandidateBundleDisablesAutomaticUpdates() async throws {
+        _ = NSApplication.shared
+        let appearance = NSApp.appearance
+        defer { NSApp.appearance = appearance }
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("flux-bundle-\(UUID())")
+        let candidateDir = temp.appendingPathComponent("Candidate.bundle")
+        let releaseDir = temp.appendingPathComponent("Release.bundle")
+        try FileManager.default.createDirectory(at: candidateDir.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: releaseDir.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+
+        let candidatePlist: [String: Any] = [
+            "CFBundleIdentifier": "com.flux.menubar",
+            "CFBundleShortVersionString": "0.22.0",
+            "CFBundleVersion": "64",
+            "FluxNativeCandidate": true,
+        ]
+        let releasePlist: [String: Any] = [
+            "CFBundleIdentifier": "com.flux.menubar",
+            "CFBundleShortVersionString": "0.23.2",
+            "CFBundleVersion": "65",
+            "FluxNativeApp": true,
+        ]
+        try PropertyListSerialization.data(fromPropertyList: candidatePlist, format: .xml, options: 0)
+            .write(to: candidateDir.appendingPathComponent("Contents/Info.plist"))
+        try PropertyListSerialization.data(fromPropertyList: releasePlist, format: .xml, options: 0)
+            .write(to: releaseDir.appendingPathComponent("Contents/Info.plist"))
+
+        let candidateBundle = try #require(Bundle(url: candidateDir))
+        let releaseBundle = try #require(Bundle(url: releaseDir))
+        #expect(!ApplicationHost.allowsAutomaticUpdates(for: candidateBundle))
+        #expect(ApplicationHost.allowsAutomaticUpdates(for: releaseBundle))
+
+        let domain = "org.fluxfixture.host.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let root = temp.appendingPathComponent("support")
+        let trace = HostTrace()
+        let session = try HostFixtureSession(root: root, defaults: defaults, domain: domain, trace: trace)
+        try session.preferences.set(true, for: Preferences.automaticUpdateChecks)
+
+        let host = ApplicationHost(owner: session, menuBar: HostFixtureMenu(trace), lockScreen: HostFixtureLockScreen(),
+            bundle: candidateBundle,
+            failure: { _ in Issue.record("Unexpected host failure") },
+            quit: { Issue.record("Unexpected quit") })
+        try host.start()
+        #expect(!host.automaticUpdatesActive)
+        host.apply(.automaticUpdateChecks(true))
+        #expect(!host.automaticUpdatesActive)
+        await host.stop()
+
+        let releaseHost = ApplicationHost(owner: session, menuBar: HostFixtureMenu(trace), lockScreen: HostFixtureLockScreen(),
+            bundle: releaseBundle,
+            failure: { _ in Issue.record("Unexpected host failure") },
+            quit: { Issue.record("Unexpected quit") })
+        try releaseHost.start()
+        #expect(releaseHost.automaticUpdatesActive)
+        releaseHost.apply(.automaticUpdateChecks(false))
+        #expect(!releaseHost.automaticUpdatesActive)
+        await releaseHost.stop()
+    }
 }

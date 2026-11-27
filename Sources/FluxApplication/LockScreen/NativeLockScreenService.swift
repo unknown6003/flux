@@ -2,12 +2,15 @@ import AppKit
 import FluxCore
 import FluxPlatform
 import FluxUI
+import OSLog
 
 public enum LockScreenServiceError: Error { case unavailable, busy, presentation }
 
 /// Local state, sound effects, backdrop/depth composition, and window lifetime
 /// for Flux on the lock screen.
 @MainActor public final class NativeLockScreenService: LockScreenService {
+    private static let logger = Logger(subsystem: "com.flux.menubar", category: "lockscreen")
+
     public var onChange: (@MainActor () -> Void)?
     public var onTransport: (@MainActor (LockScreenTransportAction) -> Void)?
     public var capability: LockScreenCapability { failureCode == nil ? availability() : .unavailable }
@@ -25,14 +28,20 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private let playFallback: @MainActor () -> Void
     private let readBiometryState: @MainActor () -> LockScreenBiometryState
     private let observeBiometryLockout: Bool
+    private let readSecondsSinceKeyDown: @MainActor () -> TimeInterval
+    private let readSystemUptime: @MainActor () -> TimeInterval
+    private let observeKeyboardActivity: Bool
+    private let keyboardPollInterval: Duration
     private let mediaClearGracePeriod: Duration
     private let playFallbackDelay: Duration
     private var phase: SessionPhase = .sleeping
     private var biometryState: LockScreenBiometryState = .ready
-    /// Once Touch ID is locked out during a lock session, keep the full-screen backdrop
-    /// yielded until unlock so an opaque panel never covers an in-progress password entry.
+    /// Once Touch ID is locked out or the user starts typing a password during a
+    /// lock session, keep the full-screen backdrop yielded until unlock so an opaque
+    /// panel never covers macOS's native password prompt or typed bullets.
     private var yieldedBackdropForCurrentLock = false
     private var biometryObserver: BiometryLockoutObserver?
+    private var keyboardMonitorTask: Task<Void, Never>?
     private var handleID: UUID?
     private var media: MediaSnapshot?
     private var activity: ActivityItem?
@@ -80,13 +89,17 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.playFallback = MediaKeyFallback.sendPlayPauseKey
         self.readBiometryState = LockScreenBiometry.currentState
         self.observeBiometryLockout = true
+        self.readSecondsSinceKeyDown = LockScreenKeyboardActivity.secondsSinceLastKeyDown
+        self.readSystemUptime = { ProcessInfo.processInfo.systemUptime }
+        self.observeKeyboardActivity = true
+        self.keyboardPollInterval = .milliseconds(50)
         self.mediaClearGracePeriod = .seconds(3.5)
         self.playFallbackDelay = .milliseconds(700)
         let cache = LockScreenGeometryCache()
         geometry = { cache.current() }
     }
 
-    /// For fixtures: fixed screen geometry and injectable audio/wallpaper/fallback/biometry hooks.
+    /// For fixtures: fixed screen geometry and injectable audio/wallpaper/fallback/biometry/keyboard hooks.
     init(preferences: PreferenceStore,
          availability: @escaping @MainActor () -> LockScreenCapability,
          makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
@@ -97,6 +110,10 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
          playFallback: @escaping @MainActor () -> Void = {},
          readBiometryState: @escaping @MainActor () -> LockScreenBiometryState = { .ready },
          observeBiometryLockout: Bool = false,
+         readSecondsSinceKeyDown: @escaping @MainActor () -> TimeInterval = { .infinity },
+         readSystemUptime: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         observeKeyboardActivity: Bool = false,
+         keyboardPollInterval: Duration = .milliseconds(50),
          mediaClearGracePeriod: Duration = .seconds(3.5),
          playFallbackDelay: Duration = .milliseconds(700)) {
         self.preferences = preferences
@@ -112,6 +129,10 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.playFallback = playFallback
         self.readBiometryState = readBiometryState
         self.observeBiometryLockout = observeBiometryLockout
+        self.readSecondsSinceKeyDown = readSecondsSinceKeyDown
+        self.readSystemUptime = readSystemUptime
+        self.observeKeyboardActivity = observeKeyboardActivity
+        self.keyboardPollInterval = keyboardPollInterval
         self.mediaClearGracePeriod = mediaClearGracePeriod
         self.playFallbackDelay = playFallbackDelay
     }
@@ -127,6 +148,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         render()
         guard failureCode == nil else {
             clearBiometryObserver()
+            clearKeyboardObserver()
             handleID = nil
             throw LockScreenServiceError.presentation
         }
@@ -188,8 +210,18 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         guard next != biometryState else { return }
         biometryState = next
         if next == .lockedOut {
-            yieldedBackdropForCurrentLock = true
+            yieldBackdropForPasswordEntry(reason: "biometryLockout")
+            return
         }
+        syncKeyboardObserver()
+        render()
+    }
+
+    private func yieldBackdropForPasswordEntry(reason: String) {
+        guard !yieldedBackdropForCurrentLock else { return }
+        yieldedBackdropForCurrentLock = true
+        clearKeyboardObserver()
+        Self.logger.notice("lock.backdrop.yield reason=\(reason, privacy: .public)")
         render()
     }
 
@@ -197,12 +229,16 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         if phase == .locked {
             biometryState = readBiometryState()
             if biometryState == .lockedOut {
+                if !yieldedBackdropForCurrentLock {
+                    Self.logger.notice("lock.backdrop.yield reason=biometryLockout")
+                }
                 yieldedBackdropForCurrentLock = true
             }
         } else {
             yieldedBackdropForCurrentLock = false
         }
         syncBiometryObserver()
+        syncKeyboardObserver()
     }
 
     private func syncBiometryObserver() {
@@ -219,6 +255,46 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private func clearBiometryObserver() {
         biometryObserver?.stop()
         biometryObserver = nil
+    }
+
+    private func syncKeyboardObserver() {
+        let shouldMonitor = presenting
+            && observeKeyboardActivity
+            && preferences.value(for: Preferences.lockScreenBackdrop)
+            && biometryState != .lockedOut
+            && !yieldedBackdropForCurrentLock
+        guard shouldMonitor else {
+            clearKeyboardObserver()
+            return
+        }
+        guard keyboardMonitorTask == nil else { return }
+        var detector = LockScreenKeyboardActivity.Detector(
+            uptime: readSystemUptime(),
+            initialSecondsSinceKeyDown: readSecondsSinceKeyDown()
+        )
+        let interval = keyboardPollInterval
+        keyboardMonitorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, let self, self.presenting, !self.yieldedBackdropForCurrentLock else {
+                    return
+                }
+                if detector.recordSample(uptime: self.readSystemUptime(),
+                                         secondsSinceKeyDown: self.readSecondsSinceKeyDown()) {
+                    self.yieldBackdropForPasswordEntry(reason: "keyboard")
+                    return
+                }
+            }
+        }
+    }
+
+    private func clearKeyboardObserver() {
+        keyboardMonitorTask?.cancel()
+        keyboardMonitorTask = nil
     }
 
     public func receive(_ event: WidgetEvent) {
@@ -275,6 +351,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         handleID = nil
         yieldedBackdropForCurrentLock = false
         clearBiometryObserver()
+        clearKeyboardObserver()
         cancelMediaClear()
         cancelPlayFallback()
         clearArtwork()
@@ -543,6 +620,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     private func fail(_ code: String) {
         clearBiometryObserver()
+        clearKeyboardObserver()
         clearArtwork()
         clearBackdrop()
         windows.discardPrewarmedBackdrop()

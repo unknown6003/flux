@@ -72,7 +72,7 @@ enum InstallHandoffScript {
           fi
           sleep 0.1
         done
-        if ! bounded 30 /usr/bin/codesign --verify --deep --strict -R 'identifier "com.flux.menubar" and certificate leaf = H"A7378EAF65FB4E0A254BAA69167FB772C9DFFBBC"' "$STAGED"; then
+        if ! bounded 30 /usr/bin/codesign --verify --deep --strict -R '=identifier "com.flux.menubar" and certificate leaf = H"A7378EAF65FB4E0A254BAA69167FB772C9DFFBBC"' "$STAGED"; then
           echo "FAIL: staged publisher verification failed; kept the installed app"
           bounded 15 /usr/bin/open "$DEST"
           exit 1

@@ -57,6 +57,12 @@ import FluxUI
 
     deinit { permissionTask?.cancel() }
 
+    var automaticUpdatesActive: Bool { updates.isAutomatic }
+
+    static func allowsAutomaticUpdates(for bundle: Bundle) -> Bool {
+        bundle.object(forInfoDictionaryKey: "FluxNativeCandidate") as? Bool != true
+    }
+
     public func start() throws {
         guard !active else { return }
         active = true
@@ -71,7 +77,8 @@ import FluxUI
         // A synchronous first menu-bar scan can now publish its overflow.
         menuBar.start()
         try session.markReady()
-        updates.start(automatic: session.preferences.value(for: Preferences.automaticUpdateChecks))
+        updates.start(automatic: Self.allowsAutomaticUpdates(for: bundle)
+            && session.preferences.value(for: Preferences.automaticUpdateChecks))
     }
 
     /// Call from applicationShouldTerminate's asynchronous termination path.
@@ -161,7 +168,8 @@ import FluxUI
         switch change {
         case .hotkeysEnabled: shortcuts.refresh()
         case .appearance: setAppearance()
-        case .automaticUpdateChecks(let enabled): updates.setAutomatic(enabled)
+        case .automaticUpdateChecks(let enabled):
+            updates.setAutomatic(Self.allowsAutomaticUpdates(for: bundle) && enabled)
         case .menuBarOptions: menuBar.configure()
         case .presentation, .features: notch.refresh(); lockScreen.configure()
         }

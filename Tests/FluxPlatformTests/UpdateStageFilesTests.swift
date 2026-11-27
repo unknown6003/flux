@@ -15,4 +15,15 @@ struct UpdateStageFilesTests {
         try UpdateStageFiles.discard(directory: missingStage, workspace: workspace)
         #expect(!FileManager.default.fileExists(atPath: workspace.path))
     }
+
+    @Test func installHandoffScriptPrefixesInlineCodesignRequirementWithEquals() {
+        let script = InstallHandoffScript.make(
+            staged: URL(fileURLWithPath: "/Applications/.Flux-update-token/Flux.app"),
+            installURL: URL(fileURLWithPath: "/Applications/Flux.app"),
+            backup: URL(fileURLWithPath: "/Applications/.Flux-backup-token.app"),
+            workspace: URL(fileURLWithPath: "/tmp/flux-update-token"),
+            parentPID: 4242
+        )
+        #expect(script.contains(#"-R '=identifier "com.flux.menubar" and certificate leaf = H"A7378EAF65FB4E0A254BAA69167FB772C9DFFBBC"'"#))
+    }
 }
