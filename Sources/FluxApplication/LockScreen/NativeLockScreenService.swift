@@ -29,6 +29,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private let readBiometryState: @MainActor () -> LockScreenBiometryState
     private let observeBiometryLockout: Bool
     private let readSecondsSinceKeyDown: @MainActor () -> TimeInterval
+    private let readCursorVisible: @MainActor () -> Bool?
     private let readSystemUptime: @MainActor () -> TimeInterval
     private let observeKeyboardActivity: Bool
     private let keyboardPollInterval: Duration
@@ -91,9 +92,10 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.readBiometryState = LockScreenBiometry.currentState
         self.observeBiometryLockout = true
         self.readSecondsSinceKeyDown = LockScreenKeyboardActivity.secondsSinceLastKeyDown
+        self.readCursorVisible = LockScreenKeyboardActivity.isCursorVisible
         self.readSystemUptime = { ProcessInfo.processInfo.systemUptime }
         self.observeKeyboardActivity = true
-        self.keyboardPollInterval = .milliseconds(20)
+        self.keyboardPollInterval = .milliseconds(10)
         self.mediaClearGracePeriod = .seconds(3.5)
         self.playFallbackDelay = .milliseconds(700)
         let cache = LockScreenGeometryCache()
@@ -112,9 +114,10 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
          readBiometryState: @escaping @MainActor () -> LockScreenBiometryState = { .ready },
          observeBiometryLockout: Bool = false,
          readSecondsSinceKeyDown: @escaping @MainActor () -> TimeInterval = { .infinity },
+         readCursorVisible: @escaping @MainActor () -> Bool? = { nil },
          readSystemUptime: @escaping @MainActor () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          observeKeyboardActivity: Bool = false,
-         keyboardPollInterval: Duration = .milliseconds(20),
+         keyboardPollInterval: Duration = .milliseconds(10),
          mediaClearGracePeriod: Duration = .seconds(3.5),
          playFallbackDelay: Duration = .milliseconds(700)) {
         self.preferences = preferences
@@ -131,6 +134,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.readBiometryState = readBiometryState
         self.observeBiometryLockout = observeBiometryLockout
         self.readSecondsSinceKeyDown = readSecondsSinceKeyDown
+        self.readCursorVisible = readCursorVisible
         self.readSystemUptime = readSystemUptime
         self.observeKeyboardActivity = observeKeyboardActivity
         self.keyboardPollInterval = keyboardPollInterval
@@ -223,7 +227,8 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         revealsNativeLoginForCurrentLock = true
         clearKeyboardObserver()
         Self.logger.notice("lock.nativeLogin.reveal reason=\(reason, privacy: .public)")
-        render()
+        // Skip synchronous wallpaper XPC lookup on keystroke #1 so the reveal starts on the next frame.
+        render(syncWallpaper: readyBackdrop == nil)
     }
 
     private func syncBiometry() {
@@ -272,7 +277,8 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         keyboardMonitor = LockScreenKeyboardMonitor(
             pollInterval: keyboardPollInterval,
             readSystemUptime: readSystemUptime,
-            readSecondsSinceKeyDown: readSecondsSinceKeyDown
+            readSecondsSinceKeyDown: readSecondsSinceKeyDown,
+            readCursorVisible: readCursorVisible
         ) { [weak self] in
             self?.revealNativeLogin(reason: "keyboard")
         }
@@ -440,7 +446,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         }
     }
 
-    private func render(animated: Bool = false) {
+    private func render(animated: Bool = false, syncWallpaper: Bool = true) {
         guard presenting, availability() == .available else { clearArtwork(); hide(animated: animated); return }
         guard let geometry = geometry() else { hide(animated: false); return }
 
@@ -460,7 +466,9 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         }
 
         if showBackdrop {
-            syncBackdropPipeline(blurEdges: blurEdges, depthEffect: showDepth, screenSize: geometry.screenFrame.size)
+            if syncWallpaper {
+                syncBackdropPipeline(blurEdges: blurEdges, depthEffect: showDepth, screenSize: geometry.screenFrame.size)
+            }
         } else {
             clearBackdrop()
             windows.discardPrewarmedBackdrop()

@@ -63,21 +63,98 @@ struct LockScreenKeyboardActivityTests {
     @MainActor private final class ClockState {
         var uptime: TimeInterval
         var lastKeyDownAt: TimeInterval
+        var cursorVisible: Bool?
         var triggers = 0
 
-        init(uptime: TimeInterval, lastKeyDownAt: TimeInterval) {
+        init(uptime: TimeInterval, lastKeyDownAt: TimeInterval, cursorVisible: Bool? = true) {
             self.uptime = uptime
             self.lastKeyDownAt = lastKeyDownAt
+            self.cursorVisible = cursorVisible
         }
     }
 
+    @Test func detectorFiresImmediatelyOnCursorHideWhenKeyDownAgeIsQuantized() {
+        // Simulates macOS 27 lock screen where CGEventSource key-down age is quantized
+        // to whole-second ticks while loginwindow hides the cursor ~7 ms after key #1.
+        var detector = LockScreenKeyboardActivity.Detector(
+            uptime: 1000.50,
+            initialSecondsSinceKeyDown: 10.0,
+            initialCursorVisible: true
+        )
+        let idleVisible = detector.recordSample(uptime: 1000.55, secondsSinceKeyDown: 10.05, cursorVisible: true)
+        #expect(!idleVisible)
+
+        // Key #1 pressed: key-down age hasn't flipped yet, but WindowServer hides cursor.
+        let cursorHidden = detector.recordSample(uptime: 1000.57, secondsSinceKeyDown: 10.07, cursorVisible: false)
+        #expect(cursorHidden)
+
+        // Cursor staying hidden does not re-fire.
+        let stillHidden = detector.recordSample(uptime: 1000.59, secondsSinceKeyDown: 10.09, cursorVisible: false)
+        #expect(!stillHidden)
+
+        // A constant quantized 0.0 age plateau never triggers a phantom key-down without a real drop.
+        var plateau = LockScreenKeyboardActivity.Detector(
+            uptime: 3000.00,
+            initialSecondsSinceKeyDown: 0.0,
+            initialCursorVisible: true
+        )
+        let plateauSample1 = plateau.recordSample(uptime: 3000.20, secondsSinceKeyDown: 0.0, cursorVisible: true)
+        let plateauSample2 = plateau.recordSample(uptime: 3000.50, secondsSinceKeyDown: 0.0, cursorVisible: true)
+        #expect(!plateauSample1)
+        #expect(!plateauSample2)
+
+        // If cursor started hidden before lock, moving the mouse (false -> true) never triggers,
+        // and typing afterward (true -> false) triggers immediately.
+        var startedHidden = LockScreenKeyboardActivity.Detector(
+            uptime: 2000.00,
+            initialSecondsSinceKeyDown: 5.0,
+            initialCursorVisible: false
+        )
+        let mouseMoved = startedHidden.recordSample(uptime: 2000.20, secondsSinceKeyDown: 5.20, cursorVisible: true)
+        let typedAfterMouse = startedHidden.recordSample(uptime: 2000.25, secondsSinceKeyDown: 5.25, cursorVisible: false)
+        #expect(!mouseMoved)
+        #expect(typedAfterMouse)
+
+        // A cursor hide inside the minimum 50 ms post-arming settling window is ignored.
+        var earlyHide = LockScreenKeyboardActivity.Detector(
+            uptime: 6000.00,
+            initialSecondsSinceKeyDown: 12.0,
+            initialCursorVisible: true
+        )
+        let earlyCursorFlip = earlyHide.recordSample(uptime: 6000.02, secondsSinceKeyDown: 12.02, cursorVisible: false)
+        #expect(!earlyCursorFlip)
+    }
+
+    @Test @MainActor func strictMonitorFiresOnCursorHideBeforeKeyDownAgeFlips() async throws {
+        let clock = ClockState(uptime: 4000.50, lastKeyDownAt: 3990.00, cursorVisible: true)
+        let monitor = LockScreenKeyboardMonitor(
+            pollInterval: .milliseconds(10),
+            readSystemUptime: { clock.uptime },
+            readSecondsSinceKeyDown: { max(0, clock.uptime - clock.lastKeyDownAt) },
+            readCursorVisible: { clock.cursorVisible },
+            onKeyActivity: { clock.triggers += 1 }
+        )
+        defer { monitor.stop() }
+        #expect(monitor.isRunning)
+
+        clock.uptime = 4000.55
+        clock.cursorVisible = false
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(300))
+        while clock.triggers == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(clock.triggers == 1)
+        #expect(!monitor.isRunning)
+    }
+
     @Test @MainActor func strictMonitorFiresOnceOnKeyActivityAndStopsCleanly() async throws {
-        let clock = ClockState(uptime: 2000.10, lastKeyDownAt: 2000.00)
+        let clock = ClockState(uptime: 2000.10, lastKeyDownAt: 2000.00, cursorVisible: nil)
 
         let monitor = LockScreenKeyboardMonitor(
             pollInterval: .milliseconds(10),
             readSystemUptime: { clock.uptime },
             readSecondsSinceKeyDown: { max(0, clock.uptime - clock.lastKeyDownAt) },
+            readCursorVisible: { clock.cursorVisible },
             onKeyActivity: { clock.triggers += 1 }
         )
         defer { monitor.stop() }
@@ -107,6 +184,7 @@ struct LockScreenKeyboardActivityTests {
             pollInterval: .milliseconds(10),
             readSystemUptime: { clock.uptime },
             readSecondsSinceKeyDown: { max(0, clock.uptime - clock.lastKeyDownAt) },
+            readCursorVisible: { nil },
             onKeyActivity: { clock.triggers += 1 }
         )
         #expect(monitor.isRunning)

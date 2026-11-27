@@ -682,6 +682,19 @@ import FluxPlatform
             }
             #expect(beforeTyping.state.revealsNativeLogin)
             #expect(beforeTyping.state.unlockHint == "Touch ID or Enter Password")
+            let expectedRevealedY = LockScreenWidgetPosition.originY(
+                screenFrame: screen.frame,
+                notchHeight: fixtureGeometry(screen).notch.height,
+                widgetHeight: cardBefore.frame.height,
+                hasMedia: true,
+                minimalBackdrop: true,
+                revealsNativeLogin: true
+            )
+            let moveDeadline = ContinuousClock.now.advanced(by: .milliseconds(800))
+            while abs(cardBefore.frame.minY - expectedRevealedY) > 1.0, ContinuousClock.now < moveDeadline {
+                try await Task.sleep(for: .milliseconds(15))
+            }
+            #expect(abs(cardBefore.frame.minY - expectedRevealedY) <= 1.0)
             #expect(cardBefore.frame.minY > cardOriginBefore)
             #expect(service.composedBackdrop != nil)
 

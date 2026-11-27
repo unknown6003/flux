@@ -120,7 +120,7 @@ public struct ClockGlyphShape: Shape, Sendable {
 public enum LockScreenBackdropMetrics {
     public static func nativeLoginReveal(for screenHeight: CGFloat) -> (clearHeight: CGFloat, featherHeight: CGFloat) {
         let clearHeight = max(215, min(255, screenHeight * 0.215))
-        let featherHeight = max(56, min(84, screenHeight * 0.065))
+        let featherHeight = max(88, min(120, screenHeight * 0.095))
         return (clearHeight, featherHeight)
     }
 }
@@ -133,6 +133,19 @@ public enum LockScreenBackdropMetrics {
 struct LockScreenBackdropView: View {
     @ObservedObject var model: LockScreenBackdropModel
     @Environment(\.isSnapshotRender) private var isSnapshotRender
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var revealAnimation: Animation {
+        reduceMotion
+            ? .easeOut(duration: 0.14)
+            : .timingCurve(0.23, 1, 0.32, 1, duration: 0.24)
+    }
+
+    private var hintFadeAnimation: Animation {
+        reduceMotion
+            ? .easeOut(duration: 0.12)
+            : .timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -141,8 +154,9 @@ struct LockScreenBackdropView: View {
             if let backdrop = model.state.backdrop {
                 ZStack {
                     // Layers 0–2: Full-screen backdrop, Liquid Glass clock, and depth cutout.
-                    // When revealing macOS's native password area, fade open only the bottom
-                    // band so the clock, depth cutout, and upper wallpaper stay untouched.
+                    // The mask uses a static eased feather plus a single GPU-animated opacity
+                    // cover (never animating LinearGradient stops) so the bottom band dissolves
+                    // smoothly at native display refresh rate.
                     ZStack {
                         Image(decorative: backdrop, scale: 1)
                             .interpolation(.high)
@@ -166,22 +180,29 @@ struct LockScreenBackdropView: View {
                     }
                     .frame(width: size.width, height: size.height)
                     .mask {
-                        VStack(spacing: 0) {
+                        ZStack(alignment: .bottom) {
+                            VStack(spacing: 0) {
+                                Color.black
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: .black, location: 0.0),
+                                        .init(color: .black.opacity(0.65), location: 0.42),
+                                        .init(color: .black.opacity(0.18), location: 0.78),
+                                        .init(color: .clear, location: 1.0),
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                                .frame(height: revealMetrics.featherHeight)
+                                Color.clear
+                                    .frame(height: revealMetrics.clearHeight)
+                            }
                             Color.black
-                            LinearGradient(
-                                stops: [
-                                    .init(color: .black, location: 0),
-                                    .init(color: .black.opacity(model.state.revealsNativeLogin ? 0 : 1), location: 1),
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: revealMetrics.featherHeight)
-                            Color.black
+                                .frame(height: revealMetrics.featherHeight + revealMetrics.clearHeight)
                                 .opacity(model.state.revealsNativeLogin ? 0 : 1)
-                                .frame(height: revealMetrics.clearHeight)
+                                .animation(revealAnimation, value: model.state.revealsNativeLogin)
                         }
-                        .animation(.easeOut(duration: 0.14), value: model.state.revealsNativeLogin)
+                        .compositingGroup()
                     }
 
                     // Layer 3: Quiet minimal bottom prompt (fades out when native login is revealed).
@@ -195,7 +216,8 @@ struct LockScreenBackdropView: View {
                                 .padding(.bottom, max(24, size.height * 0.056))
                         }
                         .opacity(model.state.revealsNativeLogin ? 0 : 1)
-                        .animation(.easeOut(duration: 0.10), value: model.state.revealsNativeLogin)
+                        .offset(y: model.state.revealsNativeLogin && !reduceMotion ? 6 : 0)
+                        .animation(hintFadeAnimation, value: model.state.revealsNativeLogin)
                     }
                 }
                 .frame(width: size.width, height: size.height)

@@ -91,6 +91,7 @@ enum LockScreenWidgetPosition {
 @MainActor final class LockScreenWindows {
     static let fadeInDuration: TimeInterval = 0.16
     static let fadeOutDuration: TimeInterval = 0.25
+    static let cardMoveDuration: TimeInterval = 0.24
 
     private let makeBridge: @MainActor () throws -> any LockScreenWindowBridge
     private let transport: @MainActor (LockScreenTransportAction) -> Void
@@ -111,6 +112,8 @@ enum LockScreenWidgetPosition {
     private var fading: [NSWindow] = []
     private var fadeTask: Task<Void, Never>?
     private var cardFadeInTask: Task<Void, Never>?
+    private var cardFrameTask: Task<Void, Never>?
+    private var pendingCardFrame: CGRect?
     private(set) var cleanupPending = false
     var appearance: NSAppearance? {
         didSet { [silhouette, backdropPanel, prewarmedBackdropPanel, card].forEach { $0?.appearance = appearance } }
@@ -188,13 +191,15 @@ enum LockScreenWidgetPosition {
         } else {
             try syncBackdrop(backdrop, geometry: next)
         }
+        let revealChanged = !isInitialPresentation && lastRevealsNativeLogin != backdrop.revealsNativeLogin
         lastCardState = state
         lastMinimalBackdrop = backdrop.hasBackdrop
         lastRevealsNativeLogin = backdrop.revealsNativeLogin
         try syncCard(state,
                      minimalBackdrop: backdrop.hasBackdrop,
                      revealsNativeLogin: backdrop.revealsNativeLogin,
-                     immediate: isInitialPresentation)
+                     immediate: isInitialPresentation,
+                     animatePosition: revealChanged)
         CATransaction.flush()
     }
 
@@ -215,6 +220,7 @@ enum LockScreenWidgetPosition {
         }
         cleanupPending = false
         cancelCardFadeIn()
+        cancelCardFrameAnimation()
         bridge = nil
         geometry = nil
         silhouette = nil
@@ -252,6 +258,12 @@ enum LockScreenWidgetPosition {
     private func cancelCardFadeIn() {
         cardFadeInTask?.cancel()
         cardFadeInTask = nil
+    }
+
+    private func cancelCardFrameAnimation() {
+        cardFrameTask?.cancel()
+        cardFrameTask = nil
+        pendingCardFrame = nil
     }
 
     private func setupBaseWindow(geometry next: LockScreenGeometry, backdrop: LockScreenBackdropState) throws {
@@ -354,10 +366,12 @@ enum LockScreenWidgetPosition {
     private func syncCard(_ state: LockScreenContentState,
                           minimalBackdrop: Bool,
                           revealsNativeLogin: Bool,
-                          immediate: Bool) throws {
+                          immediate: Bool,
+                          animatePosition: Bool = false) throws {
         guard let geometry else { return }
         guard !state.isEmpty else {
             cancelCardFadeIn()
+            cancelCardFrameAnimation()
             if let card { content?.update(.empty); Self.close(card) }
             card = nil; content = nil
             return
@@ -399,7 +413,8 @@ enum LockScreenWidgetPosition {
         }
         positionCard(panel, size: controller.preferredSize, geometry: geometry,
                      hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop,
-                     revealsNativeLogin: revealsNativeLogin)
+                     revealsNativeLogin: revealsNativeLogin,
+                     animated: animatePosition && !isNewCard && panel.isVisible)
         if isNewCard || !panel.isVisible {
             // Join the SkyLight lock space before mapping onscreen so the card never flashes on the desktop.
             try attach(panel)
@@ -503,10 +518,36 @@ enum LockScreenWidgetPosition {
                               geometry: LockScreenGeometry,
                               hasMedia: Bool,
                               minimalBackdrop: Bool,
-                              revealsNativeLogin: Bool) {
+                              revealsNativeLogin: Bool,
+                              animated: Bool = false) {
         let frame = cardFrame(for: size, geometry: geometry, hasMedia: hasMedia,
                               minimalBackdrop: minimalBackdrop, revealsNativeLogin: revealsNativeLogin)
-        if panel.frame != frame {
+        // Preserve an in-flight glide to the exact same destination (for example when
+        // media metadata refreshes mid-reveal) instead of snapping the card early.
+        if cardFrameTask != nil, pendingCardFrame == frame { return }
+        cancelCardFrameAnimation()
+        guard panel.frame != frame else { return }
+        let shouldAnimate = animated
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && panel.frame.size == frame.size
+        if shouldAnimate {
+            pendingCardFrame = frame
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.cardMoveDuration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1.0, 0.32, 1.0)
+                panel.animator().setFrame(frame, display: true)
+            }
+            cardFrameTask = Task { @MainActor [weak self, weak panel] in
+                try? await Task.sleep(for: .seconds(Self.cardMoveDuration))
+                guard !Task.isCancelled, let self, let panel, self.card === panel else { return }
+                self.cardFrameTask = nil
+                self.pendingCardFrame = nil
+                if panel.frame != frame {
+                    panel.setFrame(frame, display: true)
+                    panel.contentView?.frame = NSRect(origin: .zero, size: size)
+                }
+            }
+        } else {
             panel.setFrame(frame, display: true)
             panel.contentView?.frame = NSRect(origin: .zero, size: size)
         }
