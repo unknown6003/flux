@@ -94,6 +94,7 @@ enum LockScreenWidgetPosition {
     private var lastMinimalBackdrop = false
     private var fading: [NSWindow] = []
     private var fadeTask: Task<Void, Never>?
+    private var cardFadeInTask: Task<Void, Never>?
     private(set) var cleanupPending = false
     var appearance: NSAppearance? {
         didSet { [silhouette, backdropPanel, prewarmedBackdropPanel, card].forEach { $0?.appearance = appearance } }
@@ -123,6 +124,7 @@ enum LockScreenWidgetPosition {
                 panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
                 prewarmedGeometry = next
             }
+            LockScreenBackdropController.prewarmClock(for: backdrop, screenSize: next.screenFrame.size)
             panel.contentView?.layoutSubtreeIfNeeded()
             return
         }
@@ -136,6 +138,7 @@ enum LockScreenWidgetPosition {
         panel.contentViewController = controller
         panel.setFrame(next.screenFrame, display: false)
         panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
+        LockScreenBackdropController.prewarmClock(for: backdrop, screenSize: next.screenFrame.size)
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.alphaValue = 1
         prewarmedBackdropPanel = panel
@@ -191,6 +194,7 @@ enum LockScreenWidgetPosition {
             }
         }
         cleanupPending = false
+        cancelCardFadeIn()
         bridge = nil
         geometry = nil
         silhouette = nil
@@ -224,6 +228,11 @@ enum LockScreenWidgetPosition {
         fading = []
     }
 
+    private func cancelCardFadeIn() {
+        cardFadeInTask?.cancel()
+        cardFadeInTask = nil
+    }
+
     private func setupBaseWindow(geometry next: LockScreenGeometry, backdrop: LockScreenBackdropState) throws {
         if backdrop.hasBackdrop {
             // Instant full opacity on lock so the original macOS lock screen never lingers underneath.
@@ -238,9 +247,16 @@ enum LockScreenWidgetPosition {
             panel.setFrame(NSRect(x: next.notch.midX - width / 2, y: next.screenFrame.maxY - height,
                                   width: width, height: height), display: true)
             panel.alphaValue = 1
-            panel.orderFrontRegardless()
             silhouette = panel
-            do { try attach(panel) } catch { try? hide(animated: false); throw error }
+            do {
+                // Attach to the SkyLight lock space before ordering front so the window
+                // never flashes on the desktop space first.
+                try attach(panel)
+                panel.orderFrontRegardless()
+            } catch {
+                try? hide(animated: false)
+                throw error
+            }
         }
     }
 
@@ -297,15 +313,22 @@ enum LockScreenWidgetPosition {
             panel.contentView?.frame = NSRect(origin: .zero, size: next.screenFrame.size)
         }
         panel.alphaValue = initialAlpha
-        panel.orderFrontRegardless()
         backdropPanel = panel
         backdropController = controller
-        do { try attach(panel) } catch { try? hide(animated: false); throw error }
+        do {
+            // Join the SkyLight lock space before mapping onscreen to prevent a desktop-space flash.
+            try attach(panel)
+            panel.orderFrontRegardless()
+        } catch {
+            try? hide(animated: false)
+            throw error
+        }
     }
 
     private func syncCard(_ state: LockScreenContentState, minimalBackdrop: Bool, immediate: Bool) throws {
         guard let geometry else { return }
         guard !state.isEmpty else {
+            cancelCardFadeIn()
             if let card { content?.update(.empty); Self.close(card) }
             card = nil; content = nil
             return
@@ -343,12 +366,23 @@ enum LockScreenWidgetPosition {
         }
         positionCard(panel, size: controller.preferredSize, geometry: geometry,
                      hasMedia: state.showsMedia, minimalBackdrop: minimalBackdrop)
-        panel.orderFrontRegardless()
+        // Join the SkyLight lock space before mapping onscreen so the card never flashes on the desktop.
         try attach(panel)
+        panel.orderFrontRegardless()
         if immediate {
+            cancelCardFadeIn()
             panel.alphaValue = 1
         } else if isNewCard || panel.alphaValue < 1 {
             Self.animate(panel, to: 1, duration: Self.fadeInDuration)
+            // Guarantee settlement if AppKit's window animator does not advance alpha
+            // (e.g. non-active accessory windows or headless test runs on macOS 27).
+            cancelCardFadeIn()
+            cardFadeInTask = Task { @MainActor [weak self, weak panel] in
+                try? await Task.sleep(for: .seconds(Self.fadeInDuration))
+                guard !Task.isCancelled, let self, let panel, self.card === panel else { return }
+                panel.alphaValue = 1
+                self.cardFadeInTask = nil
+            }
         }
     }
 

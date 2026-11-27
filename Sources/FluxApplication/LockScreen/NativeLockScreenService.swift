@@ -23,9 +23,16 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     private let selectAudioOutputDevice: @MainActor (UInt32) -> Bool
     private let loadWallpaperURL: @MainActor () -> URL?
     private let playFallback: @MainActor () -> Void
+    private let readBiometryState: @MainActor () -> LockScreenBiometryState
+    private let observeBiometryLockout: Bool
     private let mediaClearGracePeriod: Duration
     private let playFallbackDelay: Duration
     private var phase: SessionPhase = .sleeping
+    private var biometryState: LockScreenBiometryState = .ready
+    /// Once Touch ID is locked out during a lock session, keep the full-screen backdrop
+    /// yielded until unlock so an opaque panel never covers an in-progress password entry.
+    private var yieldedBackdropForCurrentLock = false
+    private var biometryObserver: BiometryLockoutObserver?
     private var handleID: UUID?
     private var media: MediaSnapshot?
     private var activity: ActivityItem?
@@ -71,13 +78,15 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.selectAudioOutputDevice = AudioOutputRoute.selectDevice
         self.loadWallpaperURL = Self.currentDesktopWallpaperURL
         self.playFallback = MediaKeyFallback.sendPlayPauseKey
+        self.readBiometryState = LockScreenBiometry.currentState
+        self.observeBiometryLockout = true
         self.mediaClearGracePeriod = .seconds(3.5)
         self.playFallbackDelay = .milliseconds(700)
         let cache = LockScreenGeometryCache()
         geometry = { cache.current() }
     }
 
-    /// For fixtures: fixed screen geometry and injectable audio/wallpaper/fallback hooks.
+    /// For fixtures: fixed screen geometry and injectable audio/wallpaper/fallback/biometry hooks.
     init(preferences: PreferenceStore,
          availability: @escaping @MainActor () -> LockScreenCapability,
          makeBridge: @escaping @MainActor () throws -> any LockScreenWindowBridge,
@@ -86,6 +95,8 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
          unlockSound: @escaping @MainActor () -> Void = {},
          loadWallpaperURL: @escaping @MainActor () -> URL? = { nil },
          playFallback: @escaping @MainActor () -> Void = {},
+         readBiometryState: @escaping @MainActor () -> LockScreenBiometryState = { .ready },
+         observeBiometryLockout: Bool = false,
          mediaClearGracePeriod: Duration = .seconds(3.5),
          playFallbackDelay: Duration = .milliseconds(700)) {
         self.preferences = preferences
@@ -99,6 +110,8 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         self.selectAudioOutputDevice = AudioOutputRoute.selectDevice
         self.loadWallpaperURL = loadWallpaperURL
         self.playFallback = playFallback
+        self.readBiometryState = readBiometryState
+        self.observeBiometryLockout = observeBiometryLockout
         self.mediaClearGracePeriod = mediaClearGracePeriod
         self.playFallbackDelay = playFallbackDelay
     }
@@ -109,15 +122,21 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let id = UUID()
         handleID = id
         windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
+        syncBiometry()
         prewarmBackdropIfNeeded()
         render()
-        guard failureCode == nil else { handleID = nil; throw LockScreenServiceError.presentation }
+        guard failureCode == nil else {
+            clearBiometryObserver()
+            handleID = nil
+            throw LockScreenServiceError.presentation
+        }
         return LockScreenLifetime { [weak self] in self?.stop(id) }
     }
 
     public func configure() {
         if !enabled { stop(); return }
         windows.appearance = Self.appearance(preferences.value(for: Preferences.appearance))
+        syncBiometry()
         prewarmBackdropIfNeeded()
         render()
     }
@@ -127,6 +146,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     public func checkAgain() {
         do { try windows.hide(animated: false); failureCode = nil }
         catch { failureCode = "lock.cleanup" }
+        syncBiometry()
         prewarmBackdropIfNeeded()
         render()
         onChange?()
@@ -136,6 +156,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let previous = self.phase
         self.phase = phase
         if phase != .locked {
+            yieldedBackdropForCurrentLock = false
             cancelPlayFallback()
             if mediaClearTask != nil {
                 mediaClearTask?.cancel()
@@ -145,6 +166,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
             clearArtwork()
         }
         if phase == .sleeping { media = nil; activity = nil }
+        syncBiometry()
         let wasShowing = windows.isShowing
         render(animated: true)
         if phase == .unlocked {
@@ -158,6 +180,45 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
            preferences.value(for: Preferences.lockScreenUnlockSound) {
             unlockSound()
         }
+    }
+
+    func refreshBiometryState() {
+        guard presenting else { return }
+        let next = readBiometryState()
+        guard next != biometryState else { return }
+        biometryState = next
+        if next == .lockedOut {
+            yieldedBackdropForCurrentLock = true
+        }
+        render()
+    }
+
+    private func syncBiometry() {
+        if phase == .locked {
+            biometryState = readBiometryState()
+            if biometryState == .lockedOut {
+                yieldedBackdropForCurrentLock = true
+            }
+        } else {
+            yieldedBackdropForCurrentLock = false
+        }
+        syncBiometryObserver()
+    }
+
+    private func syncBiometryObserver() {
+        guard presenting, observeBiometryLockout else {
+            clearBiometryObserver()
+            return
+        }
+        guard biometryObserver == nil else { return }
+        biometryObserver = BiometryLockoutObserver { [weak self] in
+            self?.refreshBiometryState()
+        }
+    }
+
+    private func clearBiometryObserver() {
+        biometryObserver?.stop()
+        biometryObserver = nil
     }
 
     public func receive(_ event: WidgetEvent) {
@@ -199,19 +260,37 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
 
     public func stop() {
-        handleID = nil
-        cancelMediaClear()
-        cancelPlayFallback()
-        clearArtwork()
-        clearBackdrop()
-        windows.discardPrewarmedBackdrop()
-        media = nil; activity = nil
-        hide(animated: false)
+        tearDown(keepBackdrop: false)
     }
 
     private func stop(_ id: UUID) {
         guard handleID == id else { return }
-        stop()
+        // Sleep or temporary demand pause while enabled: close visible windows
+        // immediately while keeping any already-composed wallpaper bundle so
+        // waking onto the lock screen presents the full backdrop on frame 1.
+        tearDown(keepBackdrop: enabled)
+    }
+
+    private func tearDown(keepBackdrop: Bool) {
+        handleID = nil
+        yieldedBackdropForCurrentLock = false
+        clearBiometryObserver()
+        cancelMediaClear()
+        cancelPlayFallback()
+        clearArtwork()
+        if keepBackdrop {
+            // Cancel any in-flight compose and align requestedBackdropKey with the
+            // retained bundle so a sleep mid-compose never blocks wake recomposition.
+            backdropGeneration &+= 1
+            backdropTask?.cancel()
+            backdropTask = nil
+            requestedBackdropKey = composedBackdrop?.sourceKey
+        } else {
+            clearBackdrop()
+        }
+        windows.discardPrewarmedBackdrop()
+        media = nil; activity = nil
+        hide(animated: false)
     }
 
     private var enabled: Bool {
@@ -274,6 +353,13 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         playFallbackTask = nil
     }
 
+    /// Only expose a composed backdrop whose key matches the active pipeline request
+    /// so a stale pre-sleep wallpaper can never be prewarmed or presented.
+    private var readyBackdrop: LockScreenBackdropBundle? {
+        guard let bundle = composedBackdrop, bundle.sourceKey == requestedBackdropKey else { return nil }
+        return bundle
+    }
+
     private func prewarmBackdropIfNeeded() {
         guard handleID != nil, enabled, failureCode == nil, availability() == .available else { return }
         let showBackdrop = preferences.value(for: Preferences.lockScreenBackdrop)
@@ -286,7 +372,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let showDepth = preferences.value(for: Preferences.lockScreenDepthEffect)
         let blurEdges = preferences.value(for: Preferences.lockScreenEdgeBlur)
         syncBackdropPipeline(blurEdges: blurEdges, depthEffect: showDepth, screenSize: geom.screenFrame.size)
-        if !presenting, let bundle = composedBackdrop {
+        if !presenting, let bundle = readyBackdrop {
             windows.prewarmBackdrop(makeBackdropState(bundle: bundle, showDepth: showDepth), geometry: geom)
         }
     }
@@ -327,7 +413,12 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let caption = preferences.value(for: Preferences.lockScreenActivities) ? activity.flatMap(Self.caption) : nil
 
         let backdropState: LockScreenBackdropState
-        if showBackdrop, let bundle = composedBackdrop {
+        // When macOS locks out Touch ID (e.g. 48-hour token expiry, reboot, or
+        // failed attempts), yield the opaque full-screen backdrop for the rest of
+        // this lock session so macOS's native password prompt and input field stay
+        // fully visible and usable.
+        let allowFullScreenBackdrop = showBackdrop && biometryState != .lockedOut && !yieldedBackdropForCurrentLock
+        if allowFullScreenBackdrop, let bundle = readyBackdrop {
             backdropState = makeBackdropState(bundle: bundle, showDepth: showDepth)
         } else {
             backdropState = .empty
@@ -344,11 +435,13 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
 
     private func makeBackdropState(bundle: LockScreenBackdropBundle, showDepth: Bool) -> LockScreenBackdropState {
-        LockScreenBackdropState(
+        let hint = biometryState == .ready ? "Touch ID or Enter Password" : "Enter Password"
+        return LockScreenBackdropState(
             sourceKey: bundle.sourceKey,
             backdrop: bundle.backdrop,
             foregroundCutout: showDepth ? bundle.foregroundCutout : nil,
-            showsDepthEffect: showDepth && bundle.foregroundCutout != nil
+            showsDepthEffect: showDepth && bundle.foregroundCutout != nil,
+            unlockHint: hint
         )
     }
 
@@ -380,7 +473,11 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
 
     private func syncBackdropPipeline(blurEdges: Bool, depthEffect: Bool, screenSize: CGSize) {
         guard let (choice, wallpaperURL) = resolvedWallpaperURL() else {
-            clearBackdrop()
+            // NSWorkspace.desktopImageURL can transiently return nil during lock/wake;
+            // only clear a cached backdrop when unlocked.
+            if phase == .unlocked {
+                clearBackdrop()
+            }
             return
         }
 
@@ -388,6 +485,10 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
         let sizeKey = "\(Int(screenSize.width.rounded()))x\(Int(screenSize.height.rounded()))"
         let key = "\(choice.rawValue)|\(wallpaperURL.path)|\(Int(mtime))|\(sizeKey)|blur\(blurEdges ? 1 : 0)|depth\(depthEffect ? 1 : 0)"
         if requestedBackdropKey == key { return }
+        if composedBackdrop?.sourceKey != key {
+            composedBackdrop = nil
+            windows.discardPrewarmedBackdrop()
+        }
         requestedBackdropKey = key
         backdropGeneration &+= 1
         let generation = backdropGeneration
@@ -405,11 +506,16 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
                     includeDepthEffect: depthEffect
                 )
             }.value
-            guard !Task.isCancelled, let self, self.handleID != nil, self.enabled, self.backdropGeneration == generation else { return }
+            guard !Task.isCancelled, let self, self.backdropGeneration == generation else { return }
+            self.backdropTask = nil
+            guard self.handleID != nil, self.enabled, let bundle else {
+                self.requestedBackdropKey = self.composedBackdrop?.sourceKey
+                return
+            }
             self.composedBackdrop = bundle
             if self.presenting {
                 self.render()
-            } else if let bundle, let geom = self.geometry(),
+            } else if let geom = self.geometry(),
                       self.preferences.value(for: Preferences.lockScreenBackdrop) {
                 let showDepth = self.preferences.value(for: Preferences.lockScreenDepthEffect)
                 self.windows.prewarmBackdrop(self.makeBackdropState(bundle: bundle, showDepth: showDepth), geometry: geom)
@@ -436,6 +542,7 @@ public enum LockScreenServiceError: Error { case unavailable, busy, presentation
     }
 
     private func fail(_ code: String) {
+        clearBiometryObserver()
         clearArtwork()
         clearBackdrop()
         windows.discardPrewarmedBackdrop()

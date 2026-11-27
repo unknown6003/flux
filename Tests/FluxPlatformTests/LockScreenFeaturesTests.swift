@@ -1,7 +1,9 @@
 import CoreAudio
 import CoreGraphics
 import Foundation
+import LocalAuthentication
 import Testing
+import notify
 @testable import FluxPlatform
 
 @Suite struct LockScreenFeaturesTests {
@@ -250,5 +252,48 @@ import Testing
         #expect(AudioOutputRoute.symbolName(forName: "MacBook Pro Speakers", transportType: kAudioDeviceTransportTypeBuiltIn) == "display")
         #expect(AudioOutputRoute.symbolName(forName: "Living Room", transportType: kAudioDeviceTransportTypeAirPlay) == "airplayaudio")
         #expect(AudioOutputRoute.symbolName(forName: "Studio Headphones", transportType: kAudioDeviceTransportTypeBluetooth) == "headphones")
+    }
+
+    @Test func biometryStateClassificationSeparatesReadyLockoutAndUnavailable() {
+        #expect(LockScreenBiometry.classify(canEvaluate: true, errorDomain: nil, errorCode: nil) == .ready)
+        #expect(LockScreenBiometry.classify(
+            canEvaluate: false,
+            errorDomain: LAError.errorDomain,
+            errorCode: LAError.Code.biometryLockout.rawValue
+        ) == .lockedOut)
+        #expect(LockScreenBiometry.classify(
+            canEvaluate: false,
+            errorDomain: LAError.errorDomain,
+            errorCode: LAError.Code.biometryNotAvailable.rawValue
+        ) == .unavailable)
+        #expect(LockScreenBiometry.classify(
+            canEvaluate: false,
+            errorDomain: LAError.errorDomain,
+            errorCode: LAError.Code.biometryNotEnrolled.rawValue
+        ) == .unavailable)
+        #expect(LockScreenBiometry.classify(canEvaluate: false, errorDomain: "other", errorCode: -8) == .unavailable)
+    }
+
+    @Test @MainActor func biometryLockoutObserverDeliversDarwinNotificationUntilStopped() async throws {
+        let name = "org.fluxfixture.biometry.\(UUID().uuidString)"
+        var deliveries = 0
+        let observer = BiometryLockoutObserver(notificationName: name) {
+            deliveries += 1
+        }
+        defer { observer.stop() }
+        #expect(observer.isRegistered)
+
+        notify_post(name)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while deliveries == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(deliveries == 1)
+
+        observer.stop()
+        #expect(!observer.isRegistered)
+        notify_post(name)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(deliveries == 1)
     }
 }

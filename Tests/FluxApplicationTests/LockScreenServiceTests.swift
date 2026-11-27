@@ -32,6 +32,30 @@ import FluxPlatform
         try body(preferences)
     }
 
+    @MainActor private func asyncProfile(_ body: (PreferenceStore) async throws -> Void) async throws {
+        let domain = "org.fluxfixture.lock.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: domain))
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let preferences = PreferenceStore(defaults: defaults, domain: domain, evidence: .init())
+        try preferences.set(true, for: Preferences.notchEnabled)
+        try preferences.set(true, for: Preferences.lockScreenEnabled)
+        try await body(preferences)
+    }
+
+    @MainActor private func makeWallpaper(color: NSColor, prefix: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID()).png")
+        let rep = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 160, pixelsHigh: 100,
+                                                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        color.setFill()
+        NSRect(x: 0, y: 0, width: 160, height: 100).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        try #require(rep.representation(using: .png, properties: [:])).write(to: url)
+        return url
+    }
+
     @Test @MainActor func unsupportedOrUnlockedBackendNeverCreatesAPrivateBridge() throws {
         try profile { preferences in
             var created = 0
@@ -341,6 +365,244 @@ import FluxPlatform
             // Immediate stop (e.g. sleep/quit) must close the fading windows synchronously.
             handle.stop()
             #expect(windows.allSatisfy { !$0.isVisible })
+        }
+    }
+
+    @Test @MainActor func sleepPausePreservesComposedBackdropSoWakePresentsFullBackdropImmediately() async throws {
+        _ = NSApplication.shared
+        try await asyncProfile { preferences in
+            try preferences.set(true, for: Preferences.lockScreenBackdrop)
+            try preferences.set(false, for: Preferences.lockScreenDepthEffect)
+
+            let tempURL = try makeWallpaper(color: .systemIndigo, prefix: "flux-sleep-wake")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            let screen = try #require(NSScreen.screens.first)
+            let bridge = FixtureLockBridge()
+            var wallpaperURL: URL? = tempURL
+            let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+                loadWallpaperURL: { wallpaperURL }, readBiometryState: { .ready })
+            defer { service.stop() }
+            service.setPhase(.unlocked)
+            let firstHandle = try service.makeHandle()
+
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while service.composedBackdrop == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let initialBackdrop = try #require(service.composedBackdrop)
+
+            // Lock, then simulate display sleep (FeatureRuntime stops the handle, then sets .sleeping).
+            service.setPhase(.locked)
+            firstHandle.stop()
+            service.setPhase(.sleeping)
+            #expect(service.composedBackdrop != nil)
+            #expect(service.composedBackdrop?.backdrop === initialBackdrop.backdrop)
+
+            // Simulate display wake while still locked (even if desktopWallpaperURL transiently returns nil).
+            bridge.attached.removeAll()
+            wallpaperURL = nil
+            let wakeHandle = try service.makeHandle()
+            defer { wakeHandle.stop() }
+            service.setPhase(.locked)
+
+            // Full-screen backdrop must already be mounted synchronously on the first wake frame
+            // without waiting for an async CoreImage/Vision re-decode.
+            let attachedIDs = Set(bridge.attached.joined())
+            let wakeWindows = NSApp.windows.filter { window in
+                CGWindowID(exactly: window.windowNumber).map { attachedIDs.contains($0) } ?? false
+            }
+            #expect(wakeWindows.contains { $0.contentViewController is LockScreenBackdropController && $0.isVisible })
+
+            // Full service shutdown must still clear the cached backdrop.
+            service.stop()
+            #expect(service.composedBackdrop == nil)
+        }
+    }
+
+    @Test @MainActor func sleepMidComposeReconcilesKeyAndWallpaperChangeDuringSleepClearsStaleBackdrop() async throws {
+        _ = NSApplication.shared
+        try await asyncProfile { preferences in
+            try preferences.set(true, for: Preferences.lockScreenBackdrop)
+            try preferences.set(false, for: Preferences.lockScreenDepthEffect)
+
+            let firstURL = try makeWallpaper(color: .systemTeal, prefix: "flux-first-wall")
+            let secondURL = try makeWallpaper(color: .systemOrange, prefix: "flux-second-wall")
+            defer {
+                try? FileManager.default.removeItem(at: firstURL)
+                try? FileManager.default.removeItem(at: secondURL)
+            }
+
+            let screen = try #require(NSScreen.screens.first)
+            let bridge = FixtureLockBridge()
+            var wallpaperURL: URL? = firstURL
+            let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+                loadWallpaperURL: { wallpaperURL }, readBiometryState: { .ready })
+            defer { service.stop() }
+
+            // Start composing, then immediately pause for sleep before compose finishes.
+            service.setPhase(.unlocked)
+            let interruptedHandle = try service.makeHandle()
+            interruptedHandle.stop()
+            service.setPhase(.sleeping)
+
+            // Wake must still compose and present (requestedBackdropKey must not stay stuck).
+            let wakeHandle = try service.makeHandle()
+            service.setPhase(.locked)
+            let firstDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while service.composedBackdrop == nil, ContinuousClock.now < firstDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let firstBundle = try #require(service.composedBackdrop)
+            #expect(firstBundle.sourceKey.contains(firstURL.path))
+
+            // Sleep again, switch wallpaper while asleep, then wake: old wallpaper must NOT be shown.
+            wakeHandle.stop()
+            service.setPhase(.sleeping)
+            wallpaperURL = secondURL
+            let secondHandle = try service.makeHandle()
+            defer { secondHandle.stop() }
+            service.setPhase(.locked)
+            let staleController = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(staleController?.state.sourceKey != firstBundle.sourceKey)
+
+            let secondDeadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while service.composedBackdrop?.sourceKey.contains(secondURL.path) != true,
+                  ContinuousClock.now < secondDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            #expect(service.composedBackdrop?.sourceKey.contains(secondURL.path) == true)
+        }
+    }
+
+    @Test @MainActor func biometryLockoutYieldsOpaqueBackdropAndRestoresWhenReady() async throws {
+        _ = NSApplication.shared
+        try await asyncProfile { preferences in
+            try preferences.set(true, for: Preferences.lockScreenBackdrop)
+            try preferences.set(false, for: Preferences.lockScreenDepthEffect)
+
+            let tempURL = try makeWallpaper(color: .systemPurple, prefix: "flux-bio-lockout")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            let screen = try #require(NSScreen.screens.first)
+            let bridge = FixtureLockBridge()
+            var biometry: LockScreenBiometryState = .lockedOut
+            let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+                loadWallpaperURL: { tempURL }, readBiometryState: { biometry },
+                observeBiometryLockout: true)
+            defer { service.stop() }
+            service.setPhase(.unlocked)
+            let handle = try service.makeHandle()
+            defer { handle.stop() }
+
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while service.composedBackdrop == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+
+            // Lock while Touch ID is locked out (e.g. 48-hour token expired): opaque full-screen
+            // backdrop must yield so macOS's native password prompt stays visible, while the
+            // composed backdrop remains cached for the next lock.
+            service.setPhase(.locked)
+            let lockedOutBackdrop = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(lockedOutBackdrop == nil)
+            #expect(service.composedBackdrop != nil)
+
+            // Even if biometry flips ready mid-lock, keep the backdrop yielded until unlock
+            // so an opaque panel never covers an in-progress password entry.
+            biometry = .ready
+            service.refreshBiometryState()
+            let stillYielded = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(stillYielded == nil)
+
+            // Unlock and re-lock while ready: full-screen backdrop restores immediately.
+            service.setPhase(.unlocked)
+            service.setPhase(.locked)
+            let readyController = try #require(
+                NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
+            )
+            #expect(readyController.state.unlockHint == "Touch ID or Enter Password")
+
+            // Mid-lock lockout immediately yields the opaque backdrop again.
+            biometry = .lockedOut
+            service.refreshBiometryState()
+            let afterLockout = NSApp.windows.compactMap {
+                $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil
+            }.first
+            #expect(afterLockout == nil)
+
+            // Non-Touch-ID / unavailable Macs show an accurate password-only hint on lock.
+            service.setPhase(.unlocked)
+            biometry = .unavailable
+            service.setPhase(.locked)
+            let unavailableController = try #require(
+                NSApp.windows.compactMap { $0.isVisible ? ($0.contentViewController as? LockScreenBackdropController) : nil }.first
+            )
+            #expect(unavailableController.state.unlockHint == "Enter Password")
+        }
+    }
+
+    @Test @MainActor func lockScreenWindowsAttachToBridgeBeforeOrderingFront() async throws {
+        _ = NSApplication.shared
+        final class VisibilityCapturingBridge: LockScreenWindowBridge {
+            var firstAttachWasVisible: [CGWindowID: Bool] = [:]
+            var missingWindows = 0
+            func attach(windowIDs: [CGWindowID]) {
+                for id in windowIDs where firstAttachWasVisible[id] == nil {
+                    guard let window = NSApp.windows.first(where: { CGWindowID(exactly: $0.windowNumber) == id }) else {
+                        missingWindows += 1
+                        continue
+                    }
+                    firstAttachWasVisible[id] = window.isVisible
+                }
+            }
+            func detach() {}
+        }
+        try await asyncProfile { preferences in
+            let tempURL = try makeWallpaper(color: .systemBlue, prefix: "flux-attach-order")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+            try preferences.set(false, for: Preferences.lockScreenDepthEffect)
+
+            let screen = try #require(NSScreen.screens.first)
+            let bridge = VisibilityCapturingBridge()
+            let service = NativeLockScreenService(preferences: preferences, availability: { .available },
+                makeBridge: { bridge }, geometry: { fixtureGeometry(screen) },
+                loadWallpaperURL: { tempURL }, readBiometryState: { .ready })
+            defer { service.stop() }
+            let handle = try service.makeHandle()
+            defer { handle.stop() }
+
+            // 1. Silhouette + interactive card (backdrop off)
+            try preferences.set(false, for: Preferences.lockScreenBackdrop)
+            service.setPhase(.unlocked)
+            service.setPhase(.locked)
+            var parser = MediaStream()
+            let line = #"{"type":"data","diff":false,"payload":{"title":"Track","artist":"Artist","playing":true,"duration":180,"elapsedTime":10}}"# + "\n"
+            let playing = try #require(try parser.append(Data(line.utf8)).compactMap { $0 }.first)
+            service.receive(.media(.ready(playing)))
+
+            // 2. Full-screen backdrop (backdrop on)
+            service.setPhase(.unlocked)
+            try preferences.set(true, for: Preferences.lockScreenBackdrop)
+            service.configure()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while service.composedBackdrop == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            service.setPhase(.locked)
+
+            #expect(bridge.missingWindows == 0)
+            #expect(bridge.firstAttachWasVisible.count >= 3)
+            #expect(bridge.firstAttachWasVisible.values.allSatisfy { !$0 })
         }
     }
 }

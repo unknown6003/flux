@@ -35,6 +35,22 @@ public final class LockScreenBackdropController: NSViewController {
         get { model.isFixtureRender }
         set { model.isFixtureRender = newValue }
     }
+
+    /// Pre-renders the Metal Liquid Glass clock texture for the current time into
+    /// `LiquidGlassRenderer.shared` so the first lock or wake frame never stalls.
+    public static func prewarmClock(for state: LockScreenBackdropState, screenSize: CGSize) {
+        guard let backdrop = state.backdrop, screenSize.width > 0, screenSize.height > 0 else { return }
+        let layout = LockScreenBackdropView.ClockLayout(screenSize: screenSize)
+        let timeText = LockScreenBackdropView.formatTime(state.fixedDate ?? Date())
+        _ = LiquidGlassRenderer.shared.renderClockGlass(
+            sourceKey: state.sourceKey,
+            backdrop: backdrop,
+            canvasSizePt: screenSize,
+            clockRectTopLeftPt: layout.clockRect,
+            timeText: timeText,
+            fontSize: layout.clockFontSize
+        )
+    }
 }
 
 @MainActor

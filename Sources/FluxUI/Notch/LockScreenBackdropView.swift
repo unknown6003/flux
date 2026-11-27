@@ -123,7 +123,8 @@ struct LockScreenBackdropView: View {
             let size = proxy.size
             if let backdrop = model.state.backdrop {
                 ZStack {
-                    // Layer 0: Full-screen blurred-edge photo backdrop.
+                    // Layer 0: Full-screen blurred-edge photo backdrop (no opacity transition so
+                    // the native macOS lock screen never bleeds through on lock or wake).
                     Image(decorative: backdrop, scale: 1)
                         .interpolation(.high)
                         .resizable()
@@ -131,7 +132,6 @@ struct LockScreenBackdropView: View {
                         .frame(width: size.width, height: size.height)
                         .clipped()
                         .id(model.state.sourceKey ?? "backdrop")
-                        .transition(.opacity.animation(.easeInOut(duration: 0.35)))
 
                     // Layer 1: Date + Sculpted Liquid Glass Clock positioned in the upper sky band.
                     clockStack(backdrop: backdrop, in: size)
@@ -145,7 +145,6 @@ struct LockScreenBackdropView: View {
                             .frame(width: size.width, height: size.height)
                             .clipped()
                             .id((model.state.sourceKey ?? "cutout") + ".depth")
-                            .transition(.opacity.animation(.easeInOut(duration: 0.35)))
                     }
 
                     // Layer 3: Quiet minimal bottom prompt.
@@ -181,43 +180,58 @@ struct LockScreenBackdropView: View {
         }
     }
 
+    struct ClockLayout {
+        let dateFontSize: CGFloat
+        let clockFontSize: CGFloat
+        let topOffset: CGFloat
+        let dateLineHeight: CGFloat
+        let stackSpacing: CGFloat
+        let clockWidth: CGFloat
+        let clockHeight: CGFloat
+        let clockRect: CGRect
+
+        init(screenSize: CGSize) {
+            dateFontSize = max(18, min(30, screenSize.height * 0.0265))
+            clockFontSize = max(120, min(230, screenSize.height * 0.205))
+            topOffset = max(56, screenSize.height * 0.095)
+            dateLineHeight = ceil(dateFontSize * 1.24)
+            stackSpacing = max(2, screenSize.height * 0.004)
+            clockWidth = min(screenSize.width * 0.78, clockFontSize * 3.1)
+            clockHeight = clockFontSize * 0.80
+            clockRect = CGRect(
+                x: (screenSize.width - clockWidth) * 0.5,
+                y: topOffset + dateLineHeight + stackSpacing,
+                width: clockWidth,
+                height: clockHeight
+            )
+        }
+    }
+
     private func clockContent(date: Date, backdrop: CGImage, in screenSize: CGSize) -> some View {
-        let dateFontSize = max(18, min(30, screenSize.height * 0.0265))
-        let clockFontSize = max(120, min(230, screenSize.height * 0.205))
-        let topOffset = max(56, screenSize.height * 0.095)
-        let dateLineHeight = ceil(dateFontSize * 1.24)
-        let stackSpacing = max(2, screenSize.height * 0.004)
-        let clockWidth = min(screenSize.width * 0.78, clockFontSize * 3.1)
-        let clockHeight = clockFontSize * 0.80
-        let clockRect = CGRect(
-            x: (screenSize.width - clockWidth) * 0.5,
-            y: topOffset + dateLineHeight + stackSpacing,
-            width: clockWidth,
-            height: clockHeight
-        )
+        let layout = ClockLayout(screenSize: screenSize)
         let dateText = Self.formatDate(date)
         let timeText = Self.formatTime(date)
 
-        return VStack(spacing: stackSpacing) {
+        return VStack(spacing: layout.stackSpacing) {
             Text(dateText)
-                .font(.system(size: dateFontSize, weight: .semibold))
+                .font(.system(size: layout.dateFontSize, weight: .semibold))
                 .tracking(-0.2)
                 .foregroundStyle(.white.opacity(0.92))
                 .shadow(color: .black.opacity(0.26), radius: 10, y: 2)
-                .frame(height: dateLineHeight)
+                .frame(height: layout.dateLineHeight)
 
             LiquidGlassClockDigits(
                 text: timeText,
-                fontSize: clockFontSize,
+                fontSize: layout.clockFontSize,
                 sourceKey: model.state.sourceKey,
                 backdrop: backdrop,
                 canvasSize: screenSize,
-                clockRectTopLeft: clockRect
+                clockRectTopLeft: layout.clockRect
             )
-            .frame(width: clockWidth, height: clockHeight)
+            .frame(width: layout.clockWidth, height: layout.clockHeight)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, topOffset)
+        .padding(.top, layout.topOffset)
     }
 
     static func formatDate(_ date: Date, locale: Locale = .current) -> String {

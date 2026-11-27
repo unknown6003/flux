@@ -246,9 +246,12 @@ public final class NotchRuntime: WidgetEffects {
         // Stop private services before the old view can be removed or redrawn.
         applyDemand()
         window.setSessionLocked(next != .unlocked)
+        // Present the lock screen ahead of unlocked widget/calendar teardown so
+        // lock and wake transitions land on the first frame.
+        if next == .locked { callbacks.phaseChanged(next) }
         widgets.refresh()
         reconcileCalendar()
-        callbacks.phaseChanged(next)
+        if next != .locked { callbacks.phaseChanged(next) }
     }
 
     private var demand: FeatureDemand {
